@@ -17,8 +17,29 @@ export interface EnqueueResult {
   created: boolean;
 }
 
+/** BullMQ job states plus `null` when the job does not exist (anymore). */
+export type QueueJobState =
+  | 'waiting'
+  | 'active'
+  | 'delayed'
+  | 'prioritized'
+  | 'waiting-children'
+  | 'completed'
+  | 'failed'
+  | 'unknown';
+
+/** States in which the queue still owns the job and will (re)deliver it. */
+export const LIVE_JOB_STATES: readonly QueueJobState[] = ['waiting', 'active', 'delayed', 'prioritized', 'waiting-children'];
+
 export interface RunQueue {
   enqueue(job: RunJob, options?: EnqueueOptions): Promise<EnqueueResult>;
+  /**
+   * Like `enqueue`, but first removes a finished (completed/failed) job holding the same
+   * idempotency key, so a recovered run gets a fresh job under the same id.
+   */
+  requeue(job: RunJob, options?: EnqueueOptions): Promise<EnqueueResult>;
+  /** State of the job for `idempotencyKey`, or null when it does not exist. */
+  getJobState(idempotencyKey: string): Promise<QueueJobState | null>;
   close(): Promise<void>;
 }
 
@@ -63,6 +84,24 @@ export class BullRunQueue implements RunQueue {
     return { jobId, created: true };
   }
 
+  async requeue(job: RunJob, options: EnqueueOptions = {}): Promise<EnqueueResult> {
+    const existing = await this.queue.getJob(toQueueJobId(job.idempotencyKey));
+    if (existing) {
+      const state = await existing.getState();
+      if (state !== 'completed' && state !== 'failed' && state !== 'unknown') {
+        return { jobId: toQueueJobId(job.idempotencyKey), created: false };
+      }
+      await existing.remove();
+    }
+    return this.enqueue(job, options);
+  }
+
+  async getJobState(idempotencyKey: string): Promise<QueueJobState | null> {
+    const job = await this.queue.getJob(toQueueJobId(idempotencyKey));
+    if (!job) return null;
+    return (await job.getState()) as QueueJobState;
+  }
+
   async close(): Promise<void> {
     await this.queue.close();
   }
@@ -77,6 +116,14 @@ export class MemoryRunQueue implements RunQueue {
     if (this.jobs.has(jobId)) return { jobId, created: false };
     this.jobs.set(jobId, { job, options });
     return { jobId, created: true };
+  }
+
+  async requeue(job: RunJob, options: EnqueueOptions = {}): Promise<EnqueueResult> {
+    return this.enqueue(job, options);
+  }
+
+  async getJobState(idempotencyKey: string): Promise<QueueJobState | null> {
+    return this.jobs.has(toQueueJobId(idempotencyKey)) ? 'waiting' : null;
   }
 
   /** Removes and returns all pending jobs. */

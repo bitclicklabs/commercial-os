@@ -1,22 +1,26 @@
 # Runbook de operación local
 
-Guía para arrancar, parar y diagnosticar el entorno local de Commercial OS. Es un esqueleto: los huecos marcados `[POR COMPLETAR]` dependen del trabajo de infra, del runtime y de la Twenty App. Cuando uno de esos trabajos se integre en `main`, sustituye el hueco por el valor real y quita la marca.
+Guía para arrancar, parar y diagnosticar el entorno local de Commercial OS: Twenty CRM, la infraestructura del Agent OS y el Agent Runtime.
+
+Los huecos que siguen abiertos están marcados con `[POR COMPLETAR]`. Cuando cierres uno, sustituye el texto por el valor real y quita la marca.
 
 > **Precaución:** el host ejecuta otras instancias Docker en producción. Trabaja solo con recursos cuyo nombre empiece por `pxos`. **Nunca** ejecutes `docker compose down -v`, `docker volume rm`, `docker system prune` ni `rm -rf` fuera de tu worktree.
 
 ## Mapa del entorno
 
-| Servicio | Contenedor | Puerto host | Estado documentado |
-|---|---|---|---|
-| Twenty (UI + API) | `pxos-twenty` | `127.0.0.1:3020` | Definido en la rama `feat/infra-docker` |
-| Worker de Twenty | `pxos-twenty-worker` | — | Definido en la rama `feat/infra-docker` |
-| Postgres de Twenty | `pxos-twenty-db` | — (interno) | Definido en la rama `feat/infra-docker` |
-| Redis de Twenty | `pxos-twenty-redis` | — (interno) | Definido en la rama `feat/infra-docker` |
-| PostgreSQL del Agent OS (BD `agentos`) | `pxos-postgres` | `127.0.0.1:5440` | Definido en la rama `feat/infra-docker` |
-| Redis del Agent OS (BullMQ) | `pxos-redis` | `127.0.0.1:6391` | Definido en la rama `feat/infra-docker` |
-| Agent Runtime API | `pxos-runtime` | `127.0.0.1:4020` | `[POR COMPLETAR]` Reservado; lo añade el trabajo del runtime |
+| Servicio | Contenedor | Puerto host |
+|---|---|---|
+| Twenty (UI + API) | `pxos-twenty` | `127.0.0.1:3020` |
+| Worker de Twenty | `pxos-twenty-worker` | — |
+| Postgres de Twenty | `pxos-twenty-db` | — (interno) |
+| Redis de Twenty | `pxos-twenty-redis` | — (interno) |
+| PostgreSQL del Agent OS (BD `agentos`) | `pxos-postgres` | `127.0.0.1:5440` |
+| Redis del Agent OS (BullMQ) | `pxos-redis` | `127.0.0.1:6391` |
+| Agent Runtime (API + worker) | `pxos-runtime` | `127.0.0.1:4020` |
 
-Red: `pxos-net`. Puertos reservados y ocupados por otros proyectos: [PORTS.md](PORTS.md).
+Red: `pxos-net`. Volúmenes: `pxos-twenty-db-data`, `pxos-twenty-local-data`, `pxos-postgres-data`, `pxos-redis-data`. Puertos reservados y ocupados por otros proyectos: [PORTS.md](PORTS.md).
+
+Todos los comandos `docker compose` de este runbook se ejecutan desde `deployments/`.
 
 ## Antes de empezar
 
@@ -35,25 +39,77 @@ Red: `pxos-net`. Puertos reservados y ocupados por otros proyectos: [PORTS.md](P
 
    Si alguno de `3020`, `5440`, `6391` o `4020` aparece en un contenedor que no empieza por `pxos`, detente y revisa [PORTS.md](PORTS.md).
 
-3. Verifica que existe el archivo `deployments/.env`. Si no existe, créalo desde `deployments/.env.example` y genera los secretos como indica `deployments/README.md`:
+3. Verifica que existe el archivo `deployments/.env`. Si no existe, créalo desde `deployments/.env.example` y genera los secretos:
 
    ```bash
    cd deployments
    cp .env.example .env
+   openssl rand -base64 32   # pega el resultado en ENCRYPTION_KEY
+   openssl rand -base64 32   # pega el resultado en APP_SECRET
    ```
 
-   `[POR COMPLETAR]` Variables del runtime en `.env` (token de la API, `TWENTY_API_KEY`, proveedor de modelo). Las define el trabajo del runtime.
+   `.env` está en `.gitignore`. No lo subas nunca al repositorio.
+
+4. Añade al final de `deployments/.env` las variables del runtime que `.env.example` todavía no incluye. El compose las lee con `${...}` y las pasa a `pxos-runtime`:
+
+   ```bash
+   TWENTY_API_KEY=
+   ANTHROPIC_API_KEY=
+   ```
+
+   Déjalas vacías en el primer arranque. Rellena `TWENTY_API_KEY` después de crear el workspace (paso 5 de [Arranque](#arranque)). `ANTHROPIC_API_KEY` solo hace falta si un agente usa `model_provider=anthropic`; con el proveedor `stub` (valor por defecto) puedes dejarla vacía.
+
+### Variables del runtime
+
+`pxos-runtime` recibe su configuración del bloque `environment` de `deployments/docker-compose.yml`. Para el runtime fuera de Docker, las mismas variables viven en `runtime/agent-runtime/.env`.
+
+| Variable | Valor en el compose | Uso |
+|---|---|---|
+| `RUNTIME_ROLE` | `all` | `all` (API y worker), `api` o `worker` |
+| `RUNTIME_HOST` / `RUNTIME_PORT` | `0.0.0.0` / `4020` | Escucha de la API dentro del contenedor |
+| `DATABASE_URL` | `postgres://agentos:…@pxos-postgres:5432/agentos` | PostgreSQL del Agent OS, por la red `pxos-net` |
+| `REDIS_URL` | `redis://pxos-redis:6379` | Redis de BullMQ |
+| `QUEUE_NAME` | `pxos-agent-runs` | Cola BullMQ |
+| `WORKER_CONCURRENCY` | `4` | Jobs simultáneos por worker |
+| `DEFAULT_TENANT_ID` | `publiexpe` | Tenant si la petición no envía `x-tenant-id` |
+| `DEFAULT_MODEL_PROVIDER` | `stub` | Proveedor para agentes creados sin `model_provider` |
+| `RUN_MIGRATIONS` | `true` | El contenedor aplica las migraciones de Drizzle al arrancar |
+| `LOG_LEVEL` | `info` | Nivel de log |
+| `ANTHROPIC_API_KEY` | `${ANTHROPIC_API_KEY:-}` | Solo para agentes con `model_provider=anthropic` |
+| `TWENTY_BASE_URL` | `http://pxos-twenty:3000` | URL de Twenty por la red `pxos-net` |
+| `TWENTY_API_KEY` | `${TWENTY_API_KEY:-}` | API key de Twenty para que el runtime escriba en el CRM |
+
+## Credenciales de desarrollo
+
+Son valores de desarrollo. Cámbialos fuera de local.
+
+| Recurso | Valor |
+|---|---|
+| Twenty (navegador) | `http://localhost:3020`. No trae usuarios: el primero se crea en el onboarding |
+| PostgreSQL del Agent OS | `postgres://agentos:agentos_dev@localhost:5440/agentos` |
+| Redis del Agent OS | `redis://localhost:6391` (sin contraseña) |
+| Postgres interno de Twenty | `twenty` / `twenty_dev`, BD `twenty` (sin puerto al host) |
+| `ENCRYPTION_KEY`, `APP_SECRET` | Los generas tú en `deployments/.env` |
+| `TWENTY_API_KEY` | La creas tú en Twenty y la guardas en `deployments/.env` |
+
+Las contraseñas de Postgres solo se aplican al crear el volumen por primera vez. Si cambias `ENCRYPTION_KEY` con datos existentes, copia la anterior en `FALLBACK_ENCRYPTION_KEY`.
 
 ## Arranque
 
-1. Levanta el stack desde `deployments/`:
+1. Levanta el stack completo desde `deployments/`:
 
    ```bash
    cd deployments
    docker compose up -d
    ```
 
-   El primer arranque descarga imágenes e inicializa la base de datos de Twenty. Tarda entre 1 y 3 minutos.
+   El primer arranque descarga imágenes (unos 2 GB), construye la imagen `pxos/agent-runtime:0.1.0` e inicializa la base de datos de Twenty. Tarda entre 3 y 6 minutos. El runtime espera a que `pxos-postgres` y `pxos-redis` estén `healthy` antes de arrancar.
+
+   Si cambias el código del runtime, reconstruye la imagen:
+
+   ```bash
+   docker compose up -d --build pxos-runtime
+   ```
 
 2. Espera a que los servicios estén en estado `healthy`:
 
@@ -70,39 +126,189 @@ Red: `pxos-net`. Puertos reservados y ocupados por otros proyectos: [PORTS.md](P
    | Twenty | `curl http://localhost:3020/healthz` | `{"status":"ok",...}` |
    | PostgreSQL del Agent OS | `docker exec pxos-postgres pg_isready -U agentos -d agentos` | `accepting connections` |
    | Redis del Agent OS | `docker exec pxos-redis redis-cli ping` | `PONG` |
-   | Runtime | `curl http://127.0.0.1:4020/health` | `{"status":"ok",...}` con `postgres`, `redis` y `twenty` en `ok` (contrato en el [LLD v0.2, sección 6.3](LLD-0.2-especificacion.md#63-endpoints)) |
+   | Runtime | `curl http://127.0.0.1:4020/health` | `{"status":"ok","db":"ok"}` |
 
-   `[POR COMPLETAR]` Si el runtime se arranca fuera de Docker (por ejemplo con `pnpm dev` durante el desarrollo), indica el comando y el directorio.
+   > **Nota:** el `/health` actual del runtime solo comprueba PostgreSQL. El contrato del [LLD v0.2, sección 6.3](LLD-0.2-especificacion.md#63-endpoints) prevé también `redis` y `twenty`; llegará con una versión posterior del runtime.
 
-4. Aplica las migraciones del Agent OS (primer arranque y tras cada actualización):
+4. Aplica las migraciones del Agent OS.
 
-   `[POR COMPLETAR]` Comando de migración de Drizzle del runtime (por ejemplo, `pnpm db:migrate`).
+   En el contenedor no tienes que hacer nada: `pxos-runtime` las aplica al arrancar porque `RUN_MIGRATIONS=true`. Las migraciones son idempotentes (journal de Drizzle).
 
-5. Primer uso de Twenty: crea el workspace en el navegador (`http://localhost:3020`) y genera una API key en **Settings → APIs & Webhooks**, como describe `deployments/README.md`.
+   Para aplicarlas a mano, por ejemplo tras añadir una migración o con el runtime fuera de Docker, ejecuta desde `runtime/agent-runtime/`:
 
-6. Instala la Twenty App con los objetos comerciales:
+   ```bash
+   cd runtime/agent-runtime
+   pnpm install
+   pnpm db:migrate
+   ```
 
-   `[POR COMPLETAR]` Comando de despliegue de la Twenty App (`apps/twenty-app/`) y verificación de que existen `commercialSignal`, `research`, `commercialHypothesis` y `agentRunSummary` (criterio AC-01 del LLD v0.2).
+   `pnpm db:migrate` usa `DATABASE_URL` de `runtime/agent-runtime/.env` (copia `.env.example`; el valor por defecto apunta a `127.0.0.1:5440`). Tras un cambio de esquema, genera la migración con `pnpm db:generate` y revisa el SQL antes de aplicarla.
+
+5. Crea el workspace de Twenty y la API key:
+
+   1. Abre `http://localhost:3020`. Te redirige a `/welcome`.
+   2. Elige **Continuar con email**, introduce tu email y una contraseña. No se envía email de verificación porque no hay SMTP configurado.
+   3. Completa el onboarding: nombre del workspace (por ejemplo `PubliEXPE`) y tu perfil. Puedes omitir la invitación de miembros.
+   4. Ve a **Settings → APIs & Webhooks → Create API key**, copia la clave y pégala en `TWENTY_API_KEY` de `deployments/.env`.
+   5. Recrea el runtime para que reciba la clave:
+
+      ```bash
+      docker compose up -d pxos-runtime
+      ```
+
+      Compose detecta el cambio de entorno y recrea solo `pxos-runtime`.
+
+6. Instala la Twenty App con los objetos comerciales. Consulta [Sincronizar la Twenty App](#sincronizar-la-twenty-app).
 
 7. Registra los agentes y la tarea `daily-event-prospecting`:
 
-   `[POR COMPLETAR]` Script de *seed* o secuencia de llamadas a `POST /agents` y `POST /tasks`.
+   `[POR COMPLETAR]` Script de *seed* con los agentes y la tarea reales. Mientras tanto, usa las llamadas a `POST /agents` y `POST /tasks` del [flujo de prueba](#flujo-de-prueba-end-to-end), que crean un agente con proveedor `stub`.
+
+### Runtime fuera de Docker
+
+Durante el desarrollo del runtime puedes ejecutarlo en tu máquina con recarga en caliente. El puerto `4020` es el mismo, así que para primero el contenedor:
+
+```bash
+cd deployments
+docker compose stop pxos-runtime
+
+cd ../runtime/agent-runtime
+pnpm install
+cp .env.example .env     # los valores por defecto apuntan a 127.0.0.1:5440 y 127.0.0.1:6391
+pnpm db:migrate
+pnpm dev                 # API y worker en un proceso; escucha en http://127.0.0.1:4020
+```
+
+Para separar procesos, usa `pnpm dev:api` y `pnpm dev:worker` en terminales distintas. Cuando termines, vuelve al contenedor con `docker compose start pxos-runtime`.
+
+## Flujo de prueba end-to-end
+
+Comprueba que el runtime crea un agente y una tarea, lanza una ejecución idempotente y guarda el trace. Necesitas `jq` y el runtime en `127.0.0.1:4020`, sea en Docker o con `pnpm dev`. En Windows, ejecuta el bloque en Git Bash.
+
+```bash
+B=http://127.0.0.1:4020
+H='x-tenant-id: publiexpe'
+J='Content-Type: application/json'
+
+# 1. Crea un agente (versión 1 ACTIVE, proveedor stub)
+AGENT_ID=$(curl -s -X POST $B/agents -H "$H" -H "$J" \
+  -d '{"name":"Prospector","role":"prospecting","version":{"model_provider":"stub","system_prompt":"Eres el prospector de PubliEXPE"}}' \
+  | jq -r .agent.id)
+
+# 2. Crea una tarea para ese agente
+TASK_ID=$(curl -s -X POST $B/tasks -H "$H" -H "$J" \
+  -d "{\"name\":\"Prospeccion diaria\",\"agent_id\":\"$AGENT_ID\",\"schedule\":{\"type\":\"CRON\",\"expression\":\"0 8 * * *\"},\"default_input\":{\"query\":\"ferias 2027\"}}" \
+  | jq -r .task.id)
+
+# 3. Lanza la ejecución del slot de las 08:00 (202). Repetirla devuelve 200 y el mismo TaskRun.
+RUN_ID=$(curl -s -X POST $B/tasks/$TASK_ID/run -H "$H" -H "$J" \
+  -d '{"scheduled_at":"2026-10-07T08:00:00Z"}' | jq -r .task_run.id)
+curl -s -o /dev/null -w '%{http_code}\n' -X POST $B/tasks/$TASK_ID/run -H "$H" -H "$J" \
+  -d '{"scheduled_at":"2026-10-07T08:00:00Z"}'
+
+# 4. Consulta el TaskRun y su trace
+curl -s $B/task-runs/$RUN_ID -H "$H" | jq '{status: .task_run.status, cost: .task_run.cost,
+  execution: .execution.status, steps: [.trace.steps[] | {sequence, type, tool}]}'
+```
+
+El paso 3 imprime `200` en la segunda llamada. El paso 4 debe devolver:
+
+```json
+{
+  "status": "COMPLETED",
+  "cost": 0,
+  "execution": "COMPLETED",
+  "steps": [
+    { "sequence": 1, "type": "THINK", "tool": null },
+    { "sequence": 2, "type": "TOOL", "tool": "stub.lookup" },
+    { "sequence": 3, "type": "FINAL", "tool": null }
+  ]
+}
+```
+
+> **Nota:** `POST /agents` devuelve `409` si el nombre ya existe en el tenant. Para repetir el flujo, cambia el nombre del agente o el valor de `x-tenant-id`.
+
+Si el paso 4 devuelve `QUEUED` de forma sostenida, el worker no está procesando la cola. Revisa `docker compose logs pxos-runtime` y que `pxos-redis` esté `healthy`.
+
+## Sincronizar la Twenty App
+
+La Twenty App vive en `apps/twenty-app/` y añade los objetos `commercialSignal`, `research`, `commercialHypothesis` y `agentRunSummary` (criterio AC-01 del LLD v0.2). Necesitas una API key de Twenty (paso 5 de [Arranque](#arranque)).
+
+Elige la variante según tu sistema:
+
+| Sistema | Variante |
+|---|---|
+| Linux o macOS | Ejecuta `yarn twenty apply` directamente. Pasos en el [README de la App](../apps/twenty-app/README.md#sincronizar-con-la-instancia-de-twenty) |
+| Windows | Usa `scripts/sync-twenty-app.ps1` |
+
+### Windows: workaround del CLI de Twenty
+
+En Windows, `yarn twenty apply` falla por dos motivos:
+
+- Aborta con `Resource path must not contain backslashes` porque el CLI compone rutas de recursos con `\`.
+- La subida de archivos usa la `SERVER_URL` del servidor (`http://localhost:3020`). Dentro de un contenedor, `localhost` no apunta a Twenty y la subida falla.
+
+El script `scripts/sync-twenty-app.ps1` evita ambos problemas. Ejecuta el `apply` en un contenedor efímero `node:24` conectado a la red `pxos-net`:
+
+1. Copia `apps/twenty-app` a un directorio temporal, sin `node_modules`, `.twenty` ni `.yarn`.
+2. Lee `TWENTY_API_KEY` de `deployments/.env`.
+3. Lanza `docker run --rm` con la copia montada. Dentro, `socat` reenvía `127.0.0.1:3020` a `pxos-twenty:3000`, de modo que `http://localhost:3020` resuelve como en el host.
+4. En el contenedor ejecuta `corepack enable`, `yarn install`, `yarn twenty remote:add --url http://localhost:3020 --api-key $TWENTY_API_KEY --as pxos-tunnel`, `yarn twenty remote:use pxos-tunnel` y `yarn twenty apply`.
+5. Elimina el directorio temporal.
+
+Para usarlo, desde la raíz del repositorio en PowerShell (Windows PowerShell 5.1 o posterior):
+
+```powershell
+.\scripts\sync-twenty-app.ps1              # apply
+.\scripts\sync-twenty-app.ps1 -Action plan # solo previsualiza los cambios
+.\scripts\sync-twenty-app.ps1 -Force       # apply --force, tras revisar los borrados con plan
+```
+
+Requisitos: Docker Desktop en marcha, el stack levantado (`pxos-twenty` en ejecución y red `pxos-net`) y `TWENTY_API_KEY` definida en `deployments/.env`. La primera ejecución descarga `node:24`, instala `socat` e instala las dependencias de la App; tarda varios minutos. La salida del contenedor aparece en tu terminal.
+
+> **Nota:** si ya tienes `TWENTY_API_KEY` como variable de entorno de la sesión, el script usa esa y no lee `deployments/.env`.
+
+Para comprobar el resultado:
+
+1. Abre `http://localhost:3020/settings/applications#developer` y verifica que aparece `publiexpe-commercial-os`.
+2. Abre la barra lateral y verifica la carpeta **Commercial OS** con **Signals**, **Research**, **Hypotheses** y **Agent runs**.
+3. En **Settings → Data model**, verifica que existen los cuatro objetos.
+
+## Rotar la API key de Twenty
+
+Rota la clave si se filtra, caduca o el runtime recibe `401` de Twenty.
+
+1. En Twenty, abre **Settings → APIs & Webhooks** y crea una API key nueva. Cópiala.
+2. Sustituye el valor de `TWENTY_API_KEY` en `deployments/.env`.
+3. Recrea el runtime para que cargue la clave nueva:
+
+   ```bash
+   cd deployments
+   docker compose up -d pxos-runtime
+   ```
+
+4. Comprueba que el runtime arranca sano: `curl http://127.0.0.1:4020/health`.
+5. En Twenty, revoca la clave anterior desde **Settings → APIs & Webhooks**.
+
+`scripts/sync-twenty-app.ps1` lee la clave de `deployments/.env`, así que usa la nueva automáticamente. Si tienes un remote guardado en `~/.twenty/config.json` (por ejemplo `pxos-local`), actualízalo con `yarn twenty remote:add ... --as pxos-local` y la clave nueva.
+
+> **Nota:** la versión actual del runtime recibe `TWENTY_BASE_URL` y `TWENTY_API_KEY` pero todavía no escribe en Twenty. El procedimiento ya es válido para cuando lo haga.
 
 ## Parada segura
 
-1. Comprueba si hay una task run en curso antes de parar:
+1. Comprueba si hay ejecuciones en curso antes de parar:
 
    ```bash
-   curl -H "Authorization: Bearer $RUNTIME_API_TOKEN" "http://127.0.0.1:4020/tasks"
+   curl -H 'x-tenant-id: publiexpe' "http://127.0.0.1:4020/executions?status=RUNNING"
    ```
 
-   `[POR COMPLETAR]` Nombre real de la variable del token y filtro para listar runs `RUNNING`. Si hay una run activa, espera a que termine o pausa la tarea con `POST /tasks/:id/pause` y cancela la ejecución con `POST /executions/:id/cancel`.
+   Si hay una run activa, espera a que termine, o pausa la tarea con `POST /tasks/:id/pause` y cancela la ejecución con `POST /executions/:id/cancel`. El runtime no exige token en esta versión.
 
 2. Para el runtime primero y la infraestructura después:
 
    ```bash
    cd deployments
-   docker compose stop pxos-runtime      # [POR COMPLETAR] solo si el runtime corre en Docker
+   docker compose stop pxos-runtime
    docker compose stop
    ```
 
@@ -128,7 +334,7 @@ Red: `pxos-net`. Puertos reservados y ocupados por otros proyectos: [PORTS.md](P
 docker compose restart pxos-twenty
 ```
 
-Si cambias `SERVER_URL`, reinicia `pxos-twenty` y `pxos-twenty-worker`.
+Si cambias `SERVER_URL`, reinicia `pxos-twenty` y `pxos-twenty-worker`. Debe coincidir con la URL del navegador.
 
 ## Dónde mirar los logs
 
@@ -136,19 +342,21 @@ Si cambias `SERVER_URL`, reinicia `pxos-twenty` y `pxos-twenty-worker`.
 |---|---|
 | Logs de Twenty | `docker compose logs -f pxos-twenty` |
 | Logs del worker de Twenty (colas, importaciones, webhooks) | `docker compose logs -f pxos-twenty-worker` |
+| Logs de PostgreSQL de Twenty | `docker compose logs -f pxos-twenty-db` |
 | Logs de PostgreSQL del Agent OS | `docker compose logs -f pxos-postgres` |
 | Logs de Redis del Agent OS | `docker compose logs -f pxos-redis` |
-| Logs del runtime | `[POR COMPLETAR]` `docker compose logs -f pxos-runtime`, o la salida de `pnpm dev` si corre en local |
-| Qué hizo un agente en una ejecución | `GET /executions/:id/trace` (trace estructurado, [LLD v0.2 sección 8](LLD-0.2-especificacion.md#8-trace-schema)) |
+| Logs del runtime (API y worker) | `docker compose logs -f pxos-runtime`, o la salida de `pnpm dev` si corre en local |
+| Salida de la sincronización de la Twenty App | La terminal donde ejecutas `scripts/sync-twenty-app.ps1` (el contenedor es efímero y no deja logs) |
+| Qué hizo un agente en una ejecución | `GET /executions/:id`, que incluye el trace y sus pasos ([LLD v0.2 sección 8](LLD-0.2-especificacion.md#8-trace-schema)) |
+| Resultado de una run y su trace | `GET /task-runs/:id` |
 | Resumen comercial de una ejecución | Objeto `agentRunSummary` en Twenty (**Agent runs**), con enlace al trace |
 | Historial de una tarea | `GET /tasks/:id/runs` |
-| Cambios de versión, pausas y promociones | Tabla `audit_log` del Agent OS |
 
 Opciones útiles de `docker compose logs`:
 
 ```bash
 docker compose logs --since 30m pxos-twenty     # últimos 30 minutos
-docker compose logs --tail 200 pxos-postgres    # últimas 200 líneas
+docker compose logs --tail 200 pxos-runtime     # últimas 200 líneas
 ```
 
 ### Consultas SQL de diagnóstico
@@ -162,7 +370,7 @@ docker exec -it pxos-postgres psql -U agentos -d agentos
 Últimas task runs:
 
 ```sql
-SELECT id, status, scheduled_at, started_at, finished_at, cost_eur
+SELECT id, status, scheduled_at, started_at, finished_at, cost
 FROM task_runs
 ORDER BY scheduled_at DESC
 LIMIT 10;
@@ -171,25 +379,31 @@ LIMIT 10;
 Ejecuciones fallidas en las últimas 24 horas:
 
 ```sql
-SELECT id, stage, status, error, queued_at
+SELECT id, status, error, created_at
 FROM agent_executions
 WHERE status IN ('FAILED','TIMED_OUT')
-  AND queued_at > now() - interval '24 hours'
-ORDER BY queued_at DESC;
+  AND created_at > now() - interval '24 hours'
+ORDER BY created_at DESC;
 ```
 
-> **Nota:** estas consultas asumen el esquema del [LLD v0.2, sección 4](LLD-0.2-especificacion.md#4-esquema-de-bd-del-agent-os). Funcionan cuando las migraciones del runtime están aplicadas.
+> **Nota:** las consultas usan el esquema real de `runtime/agent-runtime/src/db/schema.ts`. Funcionan cuando las migraciones están aplicadas. Difieren en nombres de columna del esquema teórico del [LLD v0.2, sección 4](LLD-0.2-especificacion.md#4-esquema-de-bd-del-agent-os).
 
 ## Problemas frecuentes
 
 | Síntoma | Causa probable | Qué hacer |
 |---|---|---|
 | `docker compose up` falla con "port is already allocated" | Otro contenedor del host usa el puerto | Identifica el contenedor con `docker ps`. No lo toques. Revisa [PORTS.md](PORTS.md) y, si es un conflicto real, cambia el puerto de este proyecto y documéntalo. |
+| `pnpm dev` falla con `EADDRINUSE` en el `4020` | El contenedor `pxos-runtime` sigue en ejecución | `docker compose stop pxos-runtime` y repite. |
 | `curl http://localhost:3020/` devuelve 404 en JSON | Twenty solo sirve la web a peticiones con `Accept: text/html` | Abre la URL en el navegador, o usa `curl -H "Accept: text/html" ...`. |
-| `/health` del runtime devuelve `503` | Falla una dependencia (`postgres`, `redis` o `twenty`) | Lee el campo `checks` del cuerpo de la respuesta y arranca la dependencia que figure en error. |
-| El runtime no consigue escribir en Twenty | API key ausente, caducada o con alcance insuficiente | `[POR COMPLETAR]` Procedimiento de rotación de la API key. |
-| La tarea de las 08:00 no se ejecutó | Tarea en `PAUSED`, runtime parado a esa hora o `enabled = false` | Consulta `GET /tasks`, `task_runs` y los logs del runtime. Lanza una run manual con `POST /tasks/:id/run`. |
+| `/health` del runtime devuelve `503` con `"db":"unreachable"` | `pxos-postgres` caído o `DATABASE_URL` incorrecta | Comprueba `docker compose ps` y arranca `pxos-postgres`. |
+| `pxos-runtime` se reinicia en bucle | Falla la migración al arrancar o falta una dependencia | Lee `docker compose logs --tail 200 pxos-runtime`. |
+| `docker compose up` falla con "Define ENCRYPTION_KEY en deployments/.env" | Falta `ENCRYPTION_KEY` en `deployments/.env` | Genera el valor con `openssl rand -base64 32`. |
+| El runtime no consigue escribir en Twenty | API key ausente, caducada o con alcance insuficiente | Rota la clave: [Rotar la API key de Twenty](#rotar-la-api-key-de-twenty). |
+| `yarn twenty apply` falla con `Resource path must not contain backslashes` | Limitación del CLI de Twenty en Windows | Usa `scripts/sync-twenty-app.ps1`: [workaround](#windows-workaround-del-cli-de-twenty). |
+| `apply` falla subiendo archivos a `localhost:3020` desde un contenedor | La `SERVER_URL` de Twenty no resuelve dentro del contenedor | Usa el script, que reenvía `127.0.0.1:3020` con `socat`. |
+| `sync-twenty-app.ps1` dice que no existe la red `pxos-net` | El stack no está levantado | `docker compose up -d` en `deployments/`. |
 | Una ejecución se queda en `RUNNING` | Llamada colgada o límite de tiempo no aplicado | Cancela con `POST /executions/:id/cancel` y revisa el trace. |
+| La tarea de las 08:00 no se ejecutó | En esta versión no hay scheduler: las runs son manuales | Lanza una run con `POST /tasks/:id/run`. Revisa `GET /tasks` y los logs del runtime. |
 | Hipótesis duplicadas en Twenty | Fallo de idempotencia | Conserva los datos, anota las `idempotencyKey` afectadas y abre una incidencia. No borres registros sin revisión. |
 
 ## Backup
@@ -215,11 +429,14 @@ Guarda los volcados **fuera** del repositorio. `[POR COMPLETAR]` Ubicación y ro
    ```
 
    El servidor aplica las migraciones de Twenty al arrancar.
-4. Verifica `/healthz` y que la Twenty App sigue funcionando. `[POR COMPLETAR]` Procedimiento de reinstalación o migración de la App tras un cambio de versión (paridad de versión pendiente de validar, LLD v0.1 sección 27, decisión 3).
+4. Verifica `/healthz` y que la Twenty App sigue funcionando. Vuelve a sincronizar la App con `yarn twenty plan` (o `.\scripts\sync-twenty-app.ps1 -Action plan` en Windows) para detectar diferencias. `[POR COMPLETAR]` Procedimiento de migración de la App tras un cambio de versión mayor de Twenty (paridad de versión pendiente de validar, LLD v0.1 sección 27, decisión 3). La App usa `twenty-sdk` 2.45.0.
 
 ## Referencias
 
-- [Runbook y README de despliegue](../deployments/README.md) `[POR COMPLETAR]` (se integra con la rama `feat/infra-docker`)
+- [README de despliegue](../deployments/README.md)
+- [README del Agent Runtime](../runtime/agent-runtime/README.md)
+- [README de la Twenty App](../apps/twenty-app/README.md)
+- [Script de sincronización de la Twenty App (Windows)](../scripts/sync-twenty-app.ps1)
 - [LLD v0.2](LLD-0.2-especificacion.md)
 - [Puertos reservados](PORTS.md)
 - [Guía de contribución](CONTRIBUTING.md)

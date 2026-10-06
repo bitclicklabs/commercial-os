@@ -39,7 +39,15 @@ async function main(): Promise<void> {
   consoleLogger = logger;
 
   if (has('worker')) {
-    const processor = new RunProcessor(dbHandle.db, createProviderRegistry({ anthropicApiKey: config.anthropicApiKey }), logger);
+    const processor = new RunProcessor(
+      dbHandle.db,
+      createProviderRegistry({
+        anthropicApiKey: config.anthropicApiKey,
+        geminiApiKey: config.geminiApiKey,
+        geminiModel: config.geminiModel,
+      }),
+      logger,
+    );
     worker = startBullWorker(processor, {
       queueName: config.queueName,
       redisUrl: config.redisUrl,

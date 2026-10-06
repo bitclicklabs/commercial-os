@@ -2,6 +2,7 @@ import { and, desc, eq } from 'drizzle-orm';
 import type { FastifyInstance } from 'fastify';
 import { agents, agentVersions } from '../../db/schema.js';
 import { DEFAULT_ANTHROPIC_MODEL } from '../../providers/anthropic-provider.js';
+import { DEFAULT_GEMINI_MODEL } from '../../providers/gemini-provider.js';
 import type { ApiContext } from '../context.js';
 import { conflict, IdParams, notFound, parse, serialize, tenantOf } from '../http.js';
 import { CreateAgentBody, ListAgentsQuery, PatchAgentBody } from '../schemas.js';
@@ -20,7 +21,9 @@ export async function agentRoutes(app: FastifyInstance, ctx: ApiContext): Promis
     const tenantId = tenantOf(req, ctx.config.defaultTenantId);
     const body = parse(CreateAgentBody, req.body);
     const provider = body.version.model_provider ?? ctx.config.defaultModelProvider;
-    const model = body.version.model ?? (provider === 'anthropic' ? DEFAULT_ANTHROPIC_MODEL : 'stub-model');
+    const model =
+      body.version.model ??
+      (provider === 'anthropic' ? DEFAULT_ANTHROPIC_MODEL : provider === 'gemini' ? (ctx.config.geminiModel ?? DEFAULT_GEMINI_MODEL) : 'stub-model');
 
     const existing = await db.query.agents.findFirst({
       where: and(eq(agents.tenantId, tenantId), eq(agents.name, body.name)),

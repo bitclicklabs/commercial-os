@@ -11,7 +11,7 @@ export const SkillRefSchema = z.object({ skill_id: z.string().min(1), version: z
 
 export const AgentVersionInput = z.object({
   model: z.string().min(1).optional(),
-  model_provider: z.enum(['stub', 'anthropic']).optional(),
+  model_provider: z.enum(['stub', 'anthropic', 'gemini']).optional(),
   system_prompt: z.string().default(''),
   configuration: JsonObject.default({}),
   skill_refs: z.array(SkillRefSchema).default([]),

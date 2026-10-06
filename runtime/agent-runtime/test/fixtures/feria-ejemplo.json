@@ -1,0 +1,29 @@
+{
+  "event": {
+    "name": "Expo Alimentaria Ibérica 2026",
+    "type": "FAIR",
+    "date": "2026-11-24",
+    "location": "Madrid (IFEMA)",
+    "source_url": "https://expoalimentariaiberica.example/expositores"
+  },
+  "exhibitors": [
+    {
+      "name": "Conservas Marineras del Cantábrico",
+      "domain": "conservasdelcantabrico.example",
+      "sector": "Alimentación gourmet",
+      "description": "Fabricante de conservas de pescado con 140 empleados y exportación a 18 países. Presenta en la feria su nueva línea de ventresca en lata y ocupa un stand de 60 m² con cinco comerciales."
+    },
+    {
+      "name": "Envases y Bolsas Garrido",
+      "domain": "envasesgarrido.example",
+      "sector": "Packaging",
+      "description": "Distribuidor de envases alimentarios para el canal HORECA. También ofrece impresión de bolsas promocionales a sus clientes. Stand compartido en el pabellón de proveedores."
+    },
+    {
+      "name": "Instituto Regional de Promoción Agroalimentaria",
+      "domain": "promocionagroalimentaria.example",
+      "sector": "Administración pública",
+      "description": "Organismo público autonómico que gestiona el pabellón institucional de la región. Sus compras se adjudican por licitación pública."
+    }
+  ]
+}

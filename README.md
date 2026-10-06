@@ -41,6 +41,9 @@ Twenty queda disponible en `http://localhost:3020`.
 ## Documentación
 
 - [LLD v0.1 — arquitectura](docs/LLD-0.1-publiexpe-commercial-os.md)
+- [LLD v0.2 — especificación del MVP-0](docs/LLD-0.2-especificacion.md)
+- [Guía de contribución](docs/CONTRIBUTING.md)
+- [Runbook de operación local](docs/runbook-local.md)
 - [Puertos reservados](docs/PORTS.md)
 
 ## Reglas del repositorio

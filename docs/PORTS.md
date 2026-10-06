@@ -7,9 +7,11 @@ El host ejecuta otras instancias Docker. Antes de exponer un puerto nuevo, compr
 | Puerto host | Servicio | Contenedor |
 |---|---|---|
 | 3020 | Twenty (UI + API) | pxos-twenty |
-| 5440 | PostgreSQL (Twenty + Agent OS) | pxos-postgres |
-| 6391 | Redis | pxos-redis |
-| 4020 | Agent Runtime API | pxos-runtime |
+| 5440 | PostgreSQL + pgvector (Agent OS) | pxos-postgres |
+| 6391 | Redis (Agent OS) | pxos-redis |
+| 4020 | Agent Runtime API (reservado) | pxos-runtime |
+
+Servicios internos sin puerto al host: `pxos-twenty-worker`, `pxos-twenty-db` (Postgres de Twenty) y `pxos-twenty-redis`. Ver [deployments/README.md](../deployments/README.md).
 
 ## Ocupados por otros proyectos del host (2026-10-06 — NO usar)
 

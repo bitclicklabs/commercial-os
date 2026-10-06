@@ -165,6 +165,8 @@ services:
       DEFAULT_MODEL_PROVIDER: stub
       RUN_MIGRATIONS: "true"
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      GEMINI_MODEL: ${GEMINI_MODEL:-}
       TWENTY_BASE_URL: http://pxos-twenty:3000
       TWENTY_API_KEY: ${TWENTY_API_KEY:-}
     depends_on:

@@ -1,6 +1,6 @@
 import { z } from 'zod';
 
-const RuntimeRole = z.enum(['all', 'api', 'worker']);
+const RuntimeRole = z.enum(['all', 'api', 'worker', 'scheduler']);
 export type RuntimeRole = z.infer<typeof RuntimeRole>;
 
 const ConfigSchema = z.object({
@@ -15,6 +15,12 @@ const ConfigSchema = z.object({
   defaultTenantId: z.string().min(1).default('publiexpe'),
   defaultModelProvider: z.enum(['stub', 'anthropic']).default('stub'),
   anthropicApiKey: z.string().optional(),
+  schedulerSyncIntervalMs: z.coerce.number().int().positive().default(60_000),
+  reconcileIntervalMs: z.coerce.number().int().positive().default(60_000),
+  reconcileGraceMs: z.coerce.number().int().nonnegative().default(120_000),
+  concurrencyDeferMs: z.coerce.number().int().positive().default(2_000),
+  stalledIntervalMs: z.coerce.number().int().positive().default(30_000),
+  maxStalledCount: z.coerce.number().int().nonnegative().default(1),
 });
 
 export type Config = z.infer<typeof ConfigSchema>;
@@ -38,5 +44,11 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env, argv: string[] 
     defaultTenantId: emptyToUndefined(env.DEFAULT_TENANT_ID),
     defaultModelProvider: emptyToUndefined(env.DEFAULT_MODEL_PROVIDER),
     anthropicApiKey: emptyToUndefined(env.ANTHROPIC_API_KEY),
+    schedulerSyncIntervalMs: emptyToUndefined(env.SCHEDULER_SYNC_INTERVAL_MS),
+    reconcileIntervalMs: emptyToUndefined(env.RECONCILE_INTERVAL_MS),
+    reconcileGraceMs: emptyToUndefined(env.RECONCILE_GRACE_MS),
+    concurrencyDeferMs: emptyToUndefined(env.CONCURRENCY_DEFER_MS),
+    stalledIntervalMs: emptyToUndefined(env.STALLED_INTERVAL_MS),
+    maxStalledCount: emptyToUndefined(env.MAX_STALLED_COUNT),
   });
 }

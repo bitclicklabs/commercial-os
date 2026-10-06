@@ -54,6 +54,11 @@ export const ScheduleSchema = z.object({
   at: z.iso.datetime({ offset: true }).optional(),
   interval_seconds: z.number().int().positive().optional(),
   event: z.string().optional(),
+  // Scheduler aliases (LLD v0.2 section 5.6); validated by src/scheduler/schedule.ts.
+  cron: z.string().optional(),
+  run_at: z.iso.datetime({ offset: true }).optional(),
+  every_seconds: z.number().int().positive().optional(),
+  timezone: z.string().optional(),
 });
 
 export const RetryPolicySchema = z.object({

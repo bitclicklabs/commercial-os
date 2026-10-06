@@ -5,6 +5,7 @@ import { installErrorHandler } from './http.js';
 import { agentRoutes } from './routes/agents.js';
 import { executionRoutes } from './routes/executions.js';
 import { taskRoutes } from './routes/tasks.js';
+import { schedulerRoutes } from '../scheduler/routes.js';
 
 export async function buildServer(
   ctx: ApiContext,
@@ -25,5 +26,6 @@ export async function buildServer(
   await agentRoutes(app, ctx);
   await taskRoutes(app, ctx);
   await executionRoutes(app, ctx);
+  await schedulerRoutes(app, ctx);
   return app;
 }

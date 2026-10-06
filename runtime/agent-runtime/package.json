@@ -12,6 +12,7 @@
     "dev": "tsx watch --env-file-if-exists=.env src/main.ts",
     "dev:api": "tsx watch --env-file-if-exists=.env src/main.ts --role=api",
     "dev:worker": "tsx watch --env-file-if-exists=.env src/main.ts --role=worker",
+    "dev:scheduler": "tsx watch --env-file-if-exists=.env src/main.ts --role=scheduler",
     "build": "tsc -p tsconfig.build.json",
     "start": "node dist/main.js",
     "typecheck": "tsc -p tsconfig.json --noEmit",
@@ -24,6 +25,7 @@
   "dependencies": {
     "@anthropic-ai/sdk": "^0.131.0",
     "bullmq": "^6.3.11",
+    "cron-parser": "5.10.1",
     "drizzle-orm": "^0.45.3",
     "fastify": "^5.12.5",
     "pg": "^8.23.1",

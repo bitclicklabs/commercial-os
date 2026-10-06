@@ -1,6 +1,6 @@
 # Agent Runtime
 
-Servicio del Agent OS de PubliEXPE Commercial OS (LLD v0.1, sección 8). Expone la API HTTP del runtime y ejecuta un worker BullMQ que lanza agentes y persiste `TaskRun`, `AgentExecution`, `Trace` y `TraceStep` en PostgreSQL.
+Servicio del Agent OS de PubliEXPE Commercial OS (LLD v0.1, sección 8). Expone la API HTTP del runtime, planifica tareas (`ONCE`, `CRON`, `INTERVAL`) y ejecuta un worker BullMQ que lanza agentes y persiste `TaskRun`, `AgentExecution`, `Trace` y `TraceStep` en PostgreSQL.
 
 Estado: esqueleto MVP. Los agentes se ejecutan con `StubAgent` (sin LLM) o con `SmokeAgent`, que ejecuta tools reales contra Twenty (consulta [Tools](#tools)). `AnthropicProvider` existe como esqueleto y no se llama en los tests.
 
@@ -18,7 +18,7 @@ Estado: esqueleto MVP. Los agentes se ejecutan con `StubAgent` (sin LLM) o con `
 runtime/agent-runtime/
 ├── drizzle/                  Migraciones SQL generadas por drizzle-kit
 ├── src/
-│   ├── main.ts               Entrada: API y/o worker según RUNTIME_ROLE o --role=
+│   ├── main.ts               Entrada: API, worker y/o scheduler según RUNTIME_ROLE o --role=
 │   ├── config.ts             Configuración desde variables de entorno
 │   ├── api/                  Servidor Fastify, contratos zod y rutas
 │   ├── agents/               Interfaz de agente, StubAgent y SmokeAgent
@@ -28,11 +28,12 @@ runtime/agent-runtime/
 │   ├── domain/               Estados, máquina de estados e idempotency keys
 │   ├── providers/            ModelProvider, StubProvider y AnthropicProvider
 │   ├── queue/                RunQueue (BullMQ y en memoria)
+│   ├── scheduler/            TaskScheduler sobre BullMQ, parseo de schedules y rutas
 │   ├── services/             Lanzamiento idempotente de TaskRuns
-│   └── worker/               RunProcessor y worker BullMQ
+│   └── worker/               RunProcessor, worker BullMQ, locks por entidad y reconciliador
 └── test/
     ├── unit/                 Corren siempre, sin BD ni Redis
-    ├── integration/          API + worker contra PostgreSQL y tools contra Twenty; se saltan si no hay servicio
+    ├── integration/          API, worker, scheduler, locks y tools (PostgreSQL, Redis y Twenty); se saltan si falta el servicio
     ├── helpers/              FakeTwenty: API REST de Twenty en memoria para los unitarios
     └── setup-env.ts          Carga .env (si existe) antes de los tests
 ```
@@ -66,18 +67,24 @@ Requisitos: Node.js 22, pnpm, y los contenedores `pxos-postgres` (127.0.0.1:5440
    pnpm dev
    ```
 
-   La API escucha en `http://127.0.0.1:4020`. Para separar procesos, usa `pnpm dev:api` y `pnpm dev:worker`.
+   La API escucha en `http://127.0.0.1:4020`. Para separar procesos, usa `pnpm dev:api`, `pnpm dev:worker` y `pnpm dev:scheduler`.
 
 ### Variables de entorno
 
 | Variable | Por defecto | Uso |
 |---|---|---|
-| `RUNTIME_ROLE` | `all` | `all`, `api` o `worker` |
+| `RUNTIME_ROLE` | `all` | `all`, `api`, `worker` o `scheduler` |
 | `RUNTIME_HOST` / `RUNTIME_PORT` | `127.0.0.1` / `4020` | Escucha de la API |
 | `DATABASE_URL` | `postgres://agentos:agentos_dev@127.0.0.1:5440/agentos` | PostgreSQL del Agent OS |
 | `REDIS_URL` | `redis://127.0.0.1:6391` | Redis de BullMQ |
 | `QUEUE_NAME` | `pxos-agent-runs` | Cola BullMQ |
 | `WORKER_CONCURRENCY` | `4` | Jobs simultáneos por worker |
+| `SCHEDULER_SYNC_INTERVAL_MS` | `60000` | Cada cuánto el scheduler reconcilia todas las tareas con BullMQ |
+| `RECONCILE_INTERVAL_MS` | `60000` | Cada cuánto el worker busca `TaskRun` huérfanos |
+| `RECONCILE_GRACE_MS` | `120000` | Antigüedad mínima de un `TaskRun` para considerarlo huérfano |
+| `CONCURRENCY_DEFER_MS` | `2000` | Espera antes de reintentar un job aplazado por `max_concurrency` |
+| `STALLED_INTERVAL_MS` | `30000` | Frecuencia del chequeo de jobs stalled de BullMQ |
+| `MAX_STALLED_COUNT` | `1` | Veces que un job puede quedar stalled antes de que BullMQ lo marque `failed` |
 | `DEFAULT_TENANT_ID` | `publiexpe` | Tenant si la petición no envía `x-tenant-id` |
 | `DEFAULT_MODEL_PROVIDER` | `stub` | Proveedor para agentes creados sin `model_provider` |
 | `ANTHROPIC_API_KEY` | vacío | Solo para agentes con `model_provider=anthropic` |
@@ -101,6 +108,13 @@ El esquema vive en `src/db/schema.ts`. Todas las tablas llevan `tenant_id` (C6).
   pnpm db:migrate
   ```
 
+| Migración | Contenido |
+|---|---|
+| `0000_init` | Esquema inicial (agentes, tareas, runs, ejecuciones, traces) |
+| `0001_scheduler_locks` | Tabla `entity_locks` e índice `task_runs (status, updated_at)` para el reconciliador |
+
+Importante: el migrador de Drizzle aplica solo las migraciones con fecha posterior a la última aplicada. Si dos ramas generan migraciones en paralelo contra la misma BD de desarrollo, aplica primero la más antigua o regenera la nueva tras el merge.
+
 El contenedor aplica las migraciones al arrancar si `RUN_MIGRATIONS=true`.
 
 ## Tests
@@ -108,12 +122,18 @@ El contenedor aplica las migraciones al arrancar si `RUN_MIGRATIONS=true`.
 ```sh
 pnpm test              # todo
 pnpm test:unit         # sin dependencias externas
-pnpm test:integration  # necesita PostgreSQL; Redis no
+pnpm test:integration  # necesita PostgreSQL; los tests del scheduler también Redis
 pnpm typecheck
 pnpm build
 ```
 
-Los tests de integración comprueban la conexión a `DATABASE_URL` y, si falla, se saltan con un aviso. Para forzar el salto, define `SKIP_DB_TESTS=1`. Cada ejecución usa un tenant nuevo (`it-xxxxxxxx`), así que no borran datos.
+Los tests de integración comprueban la conexión a `DATABASE_URL` (y a `REDIS_URL` los del scheduler) y, si falla, se saltan con un aviso. Para forzar el salto, define `SKIP_DB_TESTS=1` o `SKIP_REDIS_TESTS=1`. Cada ejecución usa un tenant nuevo (`it-xxxxxxxx`), así que no borran datos. Los tests del scheduler usan colas BullMQ propias (`it-runs-xxxxxxxx`) y las eliminan al terminar.
+
+Para no interferir con otras ramas que comparten la BD de desarrollo, puedes apuntar los tests a una base propia del mismo servidor:
+
+```sh
+DATABASE_URL=postgres://agentos:agentos_dev@127.0.0.1:5440/agentos_wt2_scheduler pnpm test
+```
 
 `test/setup-env.ts` carga `runtime/agent-runtime/.env` antes de cada fichero de test, sin sobrescribir variables ya definidas. Los tests de Twenty (`test/integration/twenty-tools.test.ts`) se saltan si `TWENTY_API_KEY` está vacía o si `TWENTY_BASE_URL` no responde. Para ejecutarlos en local:
 
@@ -148,7 +168,9 @@ Cabecera opcional `x-tenant-id` en todas las rutas. Las respuestas usan `snake_c
 | `GET /tasks`, `GET /tasks/:id` | Lista o detalle con versiones |
 | `PATCH /tasks/:id` | Cada cambio crea una `TaskDefinitionVersion` nueva |
 | `POST /tasks/:id/run` | Lanza un `TaskRun` idempotente: `202` nuevo, `200` duplicado |
-| `POST /tasks/:id/pause`, `/resume`, `/archive` | Ciclo de vida. No hay `DELETE` |
+| `POST /tasks/:id/pause`, `/resume`, `/archive` | Ciclo de vida. No hay `DELETE`. Registran o retiran el schedule |
+| `GET /tasks/:id/schedule` | Schedule deseado frente al registrado en BullMQ y próximos disparos |
+| `GET /scheduler/status` | Job schedulers y jobs `ONCE` registrados del tenant, y contadores de la cola |
 | `GET /tasks/:id/runs` | Historial de ejecuciones de la tarea |
 | `GET /task-runs/:id` | `TaskRun` con su ejecución, trace y pasos |
 | `POST /executions` | Ejecuta un agente sin tarea (idempotente con `idempotency_key`) |
@@ -173,6 +195,62 @@ COMPLETED, FAILED, TIMED_OUT, CANCELLED: terminales e inmutables
 ```
 
 Cada intento crea una `AgentExecution` nueva. `task_runs.execution_id` apunta al último intento.
+
+## Scheduler
+
+`TaskDefinition.schedule` admite estos tipos con disparo temporal:
+
+| Tipo | Campos | Ejemplo |
+|---|---|---|
+| `ONCE` | `run_at` (o `at`), ISO 8601 | `{"type":"ONCE","run_at":"2026-10-07T08:00:00+02:00"}` |
+| `CRON` | `expression` (o `cron`), 5 o 6 campos; `timezone` opcional | `{"type":"CRON","expression":"0 8 * * 1-5"}` |
+| `INTERVAL` | `every_seconds` (o `interval_seconds`) | `{"type":"INTERVAL","every_seconds":900}` |
+
+`MANUAL`, `EVENT`, `DEPENDENCY` y `CONDITION` no registran nada en el scheduler. La zona horaria de `CRON` es `schedule.timezone`, si existe, o `task.timezone` (por defecto `Europe/Madrid`). `POST /tasks` y `PATCH /tasks/:id` devuelven `400 invalid_schedule` si el schedule no es válido.
+
+### Funcionamiento
+
+- El registro vive en la cola `{QUEUE_NAME}-schedule`. `CRON` e `INTERVAL` usan un Job Scheduler de BullMQ por tarea (`task__{task_id}`). `ONCE` usa un job diferido (`once__{task_id}__{run_at_ms}`).
+- Una tarea tiene schedule registrado solo si está `ACTIVE`, `enabled` y su schedule es temporal y válido.
+- La API sincroniza tras `POST /tasks`, `PATCH /tasks/:id` (versión nueva), `pause`, `resume` y `archive`. Si Redis no responde, la petición no falla: la sincronización periódica lo corrige.
+- El proceso con rol `scheduler` (o `all`) consume los disparos y ejecuta `syncAll` al arrancar y cada `SCHEDULER_SYNC_INTERVAL_MS`. `syncAll` registra lo que falte, actualiza lo que haya cambiado y retira los schedules de tareas que ya no cumplen. Solo toca BullMQ si el estado deseado difiere del registrado.
+- Cada disparo pasa por `requestTaskRun`, el mismo camino que `POST /tasks/:id/run`, con `scheduled_at` igual al instante planificado del slot (no al de entrega). Un disparo repetido por un reinicio o un job stalled genera la misma clave `taskrun:{task_id}:{scheduled_at}` y no duplica el `TaskRun`.
+- Si la tarea ya no está activa cuando llega el disparo, se descarta y se retira el schedule. Si el agente no está `ACTIVE`, el slot se omite con un aviso en el log.
+
+### max_concurrency por tarea
+
+El worker aplica `max_concurrency` antes de pasar un `TaskRun` de `QUEUED` a `RUNNING`:
+
+1. Abre una transacción y toma `pg_advisory_xact_lock` con una clave derivada del `task_id`. Así dos workers no ven el mismo hueco libre.
+1. Cuenta los `TaskRun` `RUNNING` de la tarea. Si hay `max_concurrency` o más, el run sigue `QUEUED` y el job pasa a `delayed` durante `CONCURRENCY_DEFER_MS` (con un pequeño jitter) mediante `moveToDelayed` + `DelayedError`. No consume intentos.
+1. Si hay hueco, hace la transición guardada a `RUNNING` dentro de la misma transacción.
+
+Se eligió un advisory lock en vez de `SELECT ... FOR UPDATE` sobre `task_definitions` para no bloquear los `PATCH` de la tarea, y en vez de grupos de BullMQ porque son de la versión Pro.
+
+### Locks por entidad
+
+`EntityLocks` (`src/worker/entity-locks.ts`) gestiona arrendamientos sobre la tabla `entity_locks` (`tenant_id`, `entity_type`, `entity_id`, `locked_by_execution`, `expires_at`):
+
+- `acquire({ tenantId, entityType, entityId, executionId, ttlMs })` es un único `INSERT ... ON CONFLICT DO UPDATE ... WHERE` atómico. Devuelve el lock si estaba libre, caducado o ya era de la misma ejecución (reentrante, renueva el TTL). Devuelve `null` si lo tiene otra ejecución. No espera.
+- `release(...)`, `releaseAll(executionId)`, `holder(...)` y `withLock(..., fn)`.
+- Usa el reloj de PostgreSQL (`now()`). Liberar pone `expires_at = now()`; no hay `DELETE` físico.
+- El worker llama a `releaseAll` al terminar cada intento. Si el worker cae, el lock caduca por TTL.
+
+Aún no hay tools que lo usen. El processor expone la instancia en `RunProcessor.locks`.
+
+### Recuperación de huérfanos
+
+El rol `worker` (o `all`) ejecuta `OrphanReconciler` al arrancar y cada `RECONCILE_INTERVAL_MS`. Para cada `TaskRun` `QUEUED` o `RUNNING` sin cambios durante `RECONCILE_GRACE_MS`, consulta el estado de su job en BullMQ:
+
+| Estado del run | Job de BullMQ | Acción |
+|---|---|---|
+| Cualquiera | `waiting`, `delayed`, `active`, `prioritized` | Nada: BullMQ sigue siendo dueño del job |
+| `QUEUED` | No existe, `completed` o `failed` | Re-encola con la misma idempotency key |
+| `RUNNING` | No existe, `completed` o `failed` | `RUNNING -> QUEUED` y re-encola, o `RUNNING -> FAILED` si `attempts >= max_attempts` |
+
+La ejecución (`AgentExecution`) del intento muerto pasa a `FAILED` con `error.name = "OrphanedRun"`. Todas las transiciones son `UPDATE` guardados por estado en SQL, así que el reconciliador nunca pisa a un worker que haya terminado entre medias.
+
+Los jobs `active` de un worker caído los gestiona el chequeo de stalled de BullMQ (`STALLED_INTERVAL_MS`, `MAX_STALLED_COUNT`): los devuelve a `wait`. Cuando el processor recibe un job cuyo run sigue `RUNNING`, sabe que el intento anterior murió y aplica la misma recuperación antes de continuar. Si BullMQ lo marca `failed` por superar `MAX_STALLED_COUNT`, lo recoge el reconciliador.
 
 ## Ejemplo end-to-end con curl
 
@@ -364,15 +442,16 @@ Quien mantenga `deployments/` puede añadir este servicio a la red `pxos-net`:
     networks: [pxos-net]
 ```
 
-Para escalar, separa roles: un servicio con `RUNTIME_ROLE=api` y N réplicas con `RUNTIME_ROLE=worker` y `RUN_MIGRATIONS=false`.
+Para escalar, separa roles: un servicio con `RUNTIME_ROLE=api`, N réplicas con `RUNTIME_ROLE=worker` y `RUN_MIGRATIONS=false`, y un servicio con `RUNTIME_ROLE=scheduler`. Puedes tener varias réplicas del scheduler: los disparos se deduplican por idempotency key.
 
 ## Pendiente
 
-- Scheduler (`CRON`, `INTERVAL`, `EVENT`...): hoy solo hay lanzamiento manual con `POST /tasks/:id/run`.
-- `max_concurrency` por tarea y locks por entidad (LLD sección 21).
-- Recuperación de jobs atascados (`RUNNING` tras caída del worker).
-- Harness, skills, memoria y verificador reales; promote, rollback y evaluate.
+- Triggers `EVENT`, `DEPENDENCY` y `CONDITION` (hoy no registran nada).
+- Columna `trigger` (`SCHEDULE`, `MANUAL`...) en `task_runs` para distinguir el origen de cada run (LLD v0.2, AC-04).
+- Exponer `EntityLocks` a las tools (el helper está listo en `RunProcessor.locks`).
+- Política de catch-up si el scheduler estuvo parado: hoy, al volver, se procesa el slot pendiente (tarde, con su `scheduled_at` original) y los demás slots perdidos se omiten.
 - Tools pendientes del registro del MVP-0: `search_web`, `fetch_url`, `create_activity` y las del Catalog Service.
 - Validación de URL en campos de texto libre contra las fuentes del trace (LLD v0.2 sección 10.4, punto 4).
+- Harness, skills, memoria y verificador reales; promote, rollback y evaluate.
 - Publicación de eventos (`task.started`, `task.completed`...) en el event bus.
 - Export de los contratos zod a JSON Schema versionado en `schemas/`.

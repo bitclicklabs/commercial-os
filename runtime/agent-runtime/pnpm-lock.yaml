@@ -172,6 +172,9 @@ importers:
       bullmq:
         specifier: ^6.3.11
         version: 6.3.11(ioredis@6.0.0)(pg@8.23.1)
+      cron-parser:
+        specifier: 5.10.1
+        version: 5.10.1
       drizzle-orm:
         specifier: ^0.45.3
         version: 0.45.3(@types/pg@8.23.1)(pg@8.23.1)

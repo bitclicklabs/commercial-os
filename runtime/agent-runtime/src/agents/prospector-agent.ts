@@ -164,6 +164,18 @@ type ExhibitorStatus =
   | 'llm_invalid'
   | 'tool_error';
 
+/** Labels for the commercial-facing run summary in Twenty. */
+const STATUS_LABELS_ES: Record<ExhibitorStatus, string> = {
+  hypothesis_created: 'hipótesis creada',
+  hypothesis_existing: 'hipótesis ya existente',
+  discarded_irrelevant: 'descartado (sin encaje)',
+  discarded_low_confidence: 'descartado (confianza baja)',
+  skipped_no_domain: 'omitido (sin dominio verificado)',
+  llm_error: 'error del modelo',
+  llm_invalid: 'respuesta del modelo no válida',
+  tool_error: 'error al escribir en el CRM',
+};
+
 export interface ExhibitorResult {
   name: string;
   domain: string | null;
@@ -495,7 +507,7 @@ export class ProspectorAgent implements AgentImplementation {
           `Coste del modelo: ${formatEur(costEur)} (${llmCalls} llamadas, ${usage.inputTokens} tokens de entrada y ${usage.outputTokens} de salida).`,
           ...results.map(
             (r) =>
-              `- ${r.name}: ${r.status}${r.confidence !== undefined ? ` (confianza ${r.confidence.toFixed(2)})` : ''}${r.error ? ` — ${r.error.code}` : ''}`,
+              `- ${r.name}: ${STATUS_LABELS_ES[r.status]}${r.confidence !== undefined ? ` (confianza ${r.confidence.toFixed(2).replace('.', ',')})` : ''}${r.error ? ` — ${r.error.code}` : ''}`,
           ),
         ]
       : [`Entrada inválida: ${issues(parsedInput.error)}`];

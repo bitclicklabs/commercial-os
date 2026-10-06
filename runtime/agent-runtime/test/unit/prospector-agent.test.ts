@@ -157,6 +157,7 @@ describe('ProspectorAgent', () => {
     const summary = fake.tables.agentRunSummaries[0]!;
     expect(summary).toMatchObject({ outcome: 'SUCCESS', task: 'daily-event-prospecting', agentName: 'Prospector', agentVersion: '2' });
     expect(String(summary.resultSummary)).toContain('relevantes: 2');
+    expect(String(summary.resultSummary)).toContain('- Conservas Marineras del Cantábrico: hipótesis creada (confianza 0,85)');
 
     // Cost aggregation: 4 calls x 0.001 USD; EUR at the configured rate (0.86).
     expect(result.modelCost).toBeCloseTo(0.004, 9);

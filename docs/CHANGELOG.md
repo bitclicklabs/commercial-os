@@ -2,6 +2,14 @@
 
 Cambios notables de PubliEXPE Commercial OS, agrupados por tanda de trabajo. Formato basado en [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/). Las fechas usan el formato `AAAA-MM-DD`.
 
+## 2026-10-06 — Tanda 2 (PR #2)
+
+- Scheduler (CRON/INTERVAL/ONCE, timezone Europe/Madrid) sobre BullMQ, con deduplicación por slot, `max_concurrency` por tarea, locks por entidad (`entity_locks`) y recuperación de runs huérfanos.
+- Capa de tools contra Twenty: 7 tools (find/get/upsert company, create signal/research/hypothesis/run summary), registry con clases de riesgo, allowlist por agente y executor con límites.
+- GeminiProvider (REST v1beta, salida JSON estructurada, tabla de precios por modelo real servido) y factory multi-proveedor stub | gemini | anthropic. Decisión: Gemini como proveedor de trabajo.
+- Prospector v1: clasifica expositores de un evento y escribe en Twenty empresa + señal (NEW) + hipótesis (PROPOSED) + resumen de ejecución, con coste real por paso (~0,005 €/run). Seed de agente y tarea `daily-event-prospecting` (CRON 08:00).
+- Runbook completo, `scripts/sync-twenty-app.ps1` (workaround Windows del CLI de Twenty) y fixes de `deployments/`.
+
 ## Sin publicar
 
 ### Documentación y herramientas

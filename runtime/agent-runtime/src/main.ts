@@ -26,7 +26,11 @@ async function main(): Promise<void> {
 
   if (config.role === 'all' || config.role === 'worker') {
     const logger = app?.log ?? console;
-    const processor = new RunProcessor(dbHandle.db, createProviderRegistry({ anthropicApiKey: config.anthropicApiKey }), {
+    const processor = new RunProcessor(dbHandle.db, createProviderRegistry({
+        anthropicApiKey: config.anthropicApiKey,
+        geminiApiKey: config.geminiApiKey,
+        geminiModel: config.geminiModel,
+      }), {
       info: (o, m) => logger.info(o, m),
       warn: (o, m) => logger.warn(o, m),
       error: (o, m) => logger.error(o, m),

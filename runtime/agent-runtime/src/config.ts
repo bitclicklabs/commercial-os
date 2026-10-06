@@ -13,8 +13,10 @@ const ConfigSchema = z.object({
   queueName: z.string().default('pxos-agent-runs'),
   workerConcurrency: z.coerce.number().int().positive().default(4),
   defaultTenantId: z.string().min(1).default('publiexpe'),
-  defaultModelProvider: z.enum(['stub', 'anthropic']).default('stub'),
+  defaultModelProvider: z.enum(['stub', 'anthropic', 'gemini']).default('stub'),
   anthropicApiKey: z.string().optional(),
+  geminiApiKey: z.string().optional(),
+  geminiModel: z.string().optional(),
 });
 
 export type Config = z.infer<typeof ConfigSchema>;
@@ -38,5 +40,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env, argv: string[] 
     defaultTenantId: emptyToUndefined(env.DEFAULT_TENANT_ID),
     defaultModelProvider: emptyToUndefined(env.DEFAULT_MODEL_PROVIDER),
     anthropicApiKey: emptyToUndefined(env.ANTHROPIC_API_KEY),
+    geminiApiKey: emptyToUndefined(env.GEMINI_API_KEY),
+    geminiModel: emptyToUndefined(env.GEMINI_MODEL),
   });
 }

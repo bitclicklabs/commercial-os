@@ -17,7 +17,7 @@ Tablero de avance por tandas. Lo actualiza el PM en cada rama de integración; e
 |---|---|---|---|
 | Scheduler (CRON/INTERVAL/ONCE), `max_concurrency`, locks por entidad, recuperación de runs huérfanos | `feat/scheduler-locks` | Opus | 🔄 en curso |
 | Tools reales contra Twenty (find/get/upsert company, create signal/research/hypothesis/run summary) + tool registry con clases de riesgo | `feat/twenty-tools` | Opus | 🔄 en curso |
-| Runbook completado, script de sync de la App (workaround Windows), CHANGELOG | `docs/runbook-ops` | Sonnet | 🔄 en curso |
+| Runbook completado, script de sync de la App (workaround Windows), CHANGELOG | `docs/runbook-ops` | Sonnet | ✅ fusionado en feat/tanda2 (+ fix de README/.env.example de deployments por el PM) |
 | Prospector v1 con LLM (hipótesis desde datos de evento; HITL por estados) | `feat/prospector` | Opus | ⏸️ espera a twenty-tools |
 | Integración, pruebas e2e y PR | `feat/tanda2` | PM | ⏸️ |
 

@@ -144,8 +144,42 @@ services:
     restart: unless-stopped
     networks: [pxos-net]
 
-  # pxos-runtime (Agent Runtime API) -> 127.0.0.1:4020. Reservado; lo añade
-  # la rama del runtime.
+  pxos-runtime:
+    build:
+      context: ../runtime/agent-runtime
+      dockerfile: Dockerfile
+    image: pxos/agent-runtime:0.1.0
+    container_name: pxos-runtime
+    ports:
+      - "127.0.0.1:4020:4020"
+    environment:
+      RUNTIME_ROLE: all
+      RUNTIME_HOST: 0.0.0.0
+      RUNTIME_PORT: "4020"
+      LOG_LEVEL: info
+      DATABASE_URL: postgres://${AGENTOS_PG_USER:-agentos}:${AGENTOS_PG_PASSWORD:-agentos_dev}@pxos-postgres:5432/${AGENTOS_PG_DB:-agentos}
+      REDIS_URL: redis://pxos-redis:6379
+      QUEUE_NAME: pxos-agent-runs
+      WORKER_CONCURRENCY: "4"
+      DEFAULT_TENANT_ID: publiexpe
+      DEFAULT_MODEL_PROVIDER: stub
+      RUN_MIGRATIONS: "true"
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      TWENTY_BASE_URL: http://pxos-twenty:3000
+      TWENTY_API_KEY: ${TWENTY_API_KEY:-}
+    depends_on:
+      pxos-postgres:
+        condition: service_healthy
+      pxos-redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://localhost:4020/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+    restart: unless-stopped
+    networks: [pxos-net]
 
 networks:
   pxos-net:

@@ -6,11 +6,7 @@ import type { SchedulerControl } from '../scheduler/task-scheduler.js';
 export interface ApiContext {
   db: Db;
   queue: RunQueue;
-<<<<<<< HEAD
-  config: Pick<Config, 'defaultTenantId' | 'defaultModelProvider'>;
+  config: Pick<Config, 'defaultTenantId' | 'defaultModelProvider'> & Partial<Pick<Config, 'geminiModel'>>;
   /** Optional: when absent, schedule changes are only picked up by the scheduler's periodic sync. */
   scheduler?: SchedulerControl;
-=======
-  config: Pick<Config, 'defaultTenantId' | 'defaultModelProvider'> & Partial<Pick<Config, 'geminiModel'>>;
->>>>>>> feat/prospector
 }

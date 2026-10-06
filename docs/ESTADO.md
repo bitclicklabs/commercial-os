@@ -19,12 +19,10 @@ Tablero de avance por tandas. Lo actualiza el PM en cada rama de integración; e
 | Tools reales contra Twenty (7 tools) + registry con clases de riesgo y allowlist | `feat/twenty-tools` | Opus | ✅ fusionado (77/77 tests, e2e real contra Twenty) |
 | Runbook completado, script de sync de la App (workaround Windows), CHANGELOG | `docs/runbook-ops` | Sonnet | ✅ fusionado en feat/tanda2 (+ fix de README/.env.example de deployments por el PM) |
 | Prospector v1 con LLM (hipótesis desde datos de evento; HITL por estados) + GeminiProvider | `feat/prospector` | Opus | 🔄 en curso (desde feat/tanda2 con tools incluidas) |
-
-Decisión (2026-10-06): el proveedor LLM de trabajo es **Gemini** (coste), con arquitectura multi-proveedor intacta: `ModelProvider` conmutable por agente/entorno (stub | gemini | anthropic), y el evaluador podrá usar un proveedor distinto al ejecutor (LLD §18). `GEMINI_API_KEY`/`GEMINI_MODEL` ya cableadas en el compose.
 | Integración, pruebas e2e y PR | `feat/tanda2` | PM | ⏸️ |
 
 Notas:
-- `ANTHROPIC_API_KEY` no está en el entorno del host: el Prospector se entrega con StubProvider por defecto y LLM real activable por env.
+- Decisión (2026-10-06): el proveedor LLM de trabajo es **Gemini** (`gemini-flash-latest`, clave verificada en vivo), con arquitectura multi-proveedor intacta: `ModelProvider` conmutable por agente/entorno (stub | gemini | anthropic) y evaluador con proveedor distinto al ejecutor cuando llegue MVP-2 (LLD §18). `GEMINI_API_KEY`/`GEMINI_MODEL` cableadas en el compose.
 - Alcance del Prospector en esta tanda: clasificación y generación de hipótesis desde datos de entrada (fixture/manual). La búsqueda web real es de la tanda 3.
 
 ## Tanda 3 — previsto

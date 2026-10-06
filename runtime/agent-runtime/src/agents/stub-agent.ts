@@ -1,4 +1,5 @@
 import type { AgentContext, AgentImplementation, AgentResult, AgentStep } from './agent.js';
+import { SmokeAgent } from './smoke-agent.js';
 
 /**
  * StubAgent: no LLM reasoning. Emits a fixed THINK -> TOOL -> FINAL trace and a
@@ -71,6 +72,8 @@ export function resolveAgentImplementation(configuration: Record<string, unknown
   switch (kind) {
     case 'stub':
       return new StubAgent();
+    case 'smoke':
+      return new SmokeAgent();
     default:
       throw new Error(`Unknown agent implementation: ${kind}`);
   }

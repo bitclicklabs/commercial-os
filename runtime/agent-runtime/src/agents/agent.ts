@@ -1,5 +1,6 @@
 import type { TraceStepType } from '../domain/statuses.js';
 import type { ModelProvider, TokenUsage } from '../providers/model-provider.js';
+import type { AgentToolbox } from '../tools/executor.js';
 
 /** Resolved, immutable configuration the runtime hands to an agent implementation. */
 export interface AgentContext {
@@ -17,6 +18,11 @@ export interface AgentContext {
   input: Record<string, unknown>;
   provider: ModelProvider;
   signal: AbortSignal;
+  /**
+   * Real tools from the registry, already filtered by the version's `tool_policy`.
+   * Every call yields a TOOL step the agent appends to its steps.
+   */
+  tools?: AgentToolbox;
 }
 
 /** Operational event recorded in the trace (no private model reasoning, section 17.1). */

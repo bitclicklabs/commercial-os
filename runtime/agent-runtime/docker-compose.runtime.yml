@@ -1,0 +1,34 @@
+# Fragmento de ejemplo: NO es el compose oficial (deployments/docker-compose.yml pertenece a infra).
+# Para integrarlo, copia el servicio pxos-runtime al compose de deployments/ y ajusta
+# `context`, la red y los nombres de los servicios de Postgres/Redis (ver README.md).
+#
+# Uso aislado (con pxos-postgres y pxos-redis ya publicados en 127.0.0.1:5440/6391):
+#   docker compose -f docker-compose.runtime.yml up --build
+name: pxos-runtime-example
+
+services:
+  pxos-runtime:
+    container_name: pxos-runtime
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: pxos/agent-runtime:0.1.0
+    restart: unless-stopped
+    environment:
+      RUNTIME_ROLE: all
+      RUNTIME_HOST: 0.0.0.0
+      RUNTIME_PORT: "4020"
+      LOG_LEVEL: info
+      # Dentro de la red del compose de infra serían pxos-postgres:5432 y pxos-redis:6379.
+      DATABASE_URL: postgres://agentos:agentos_dev@host.docker.internal:5440/agentos
+      REDIS_URL: redis://host.docker.internal:6391
+      QUEUE_NAME: pxos-agent-runs
+      WORKER_CONCURRENCY: "4"
+      DEFAULT_TENANT_ID: publiexpe
+      DEFAULT_MODEL_PROVIDER: stub
+      RUN_MIGRATIONS: "true"
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    ports:
+      - "127.0.0.1:4020:4020"

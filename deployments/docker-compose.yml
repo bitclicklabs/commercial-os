@@ -1,0 +1,196 @@
+# PubliEXPE Commercial OS — stack local de desarrollo
+#
+# Basado en el compose oficial de Twenty:
+#   https://github.com/twentyhq/twenty/blob/main/packages/twenty-docker/docker-compose.yml
+#
+# Puertos publicados al host (solo 127.0.0.1, ver docs/PORTS.md):
+#   3020 -> pxos-twenty        (UI + API de Twenty)
+#   5440 -> pxos-postgres      (PostgreSQL + pgvector del Agent OS)
+#   6391 -> pxos-redis         (Redis del Agent OS)
+#   4020 -> RESERVADO para pxos-runtime (Agent Runtime API). Lo integra otro
+#           agente; no se define aquí.
+#
+# El Postgres y el Redis de Twenty son internos: NO publican puerto al host.
+#
+# IMPORTANTE: para parar usa `docker compose stop`. NUNCA `docker compose down -v`
+# (borra los volúmenes con los datos).
+
+name: pxos
+
+x-twenty-env: &twenty-env
+  PG_DATABASE_URL: postgres://${TWENTY_PG_USER:-twenty}:${TWENTY_PG_PASSWORD:-twenty_dev}@pxos-twenty-db:5432/${TWENTY_PG_DB:-twenty}
+  SERVER_URL: ${SERVER_URL:-http://localhost:3020}
+  REDIS_URL: redis://pxos-twenty-redis:6379
+
+  STORAGE_TYPE: ${STORAGE_TYPE:-local}
+  STORAGE_S3_REGION: ${STORAGE_S3_REGION:-}
+  STORAGE_S3_NAME: ${STORAGE_S3_NAME:-}
+  STORAGE_S3_ENDPOINT: ${STORAGE_S3_ENDPOINT:-}
+
+  ENCRYPTION_KEY: ${ENCRYPTION_KEY:?Define ENCRYPTION_KEY en deployments/.env}
+  FALLBACK_ENCRYPTION_KEY: ${FALLBACK_ENCRYPTION_KEY:-}
+  APP_SECRET: ${APP_SECRET:-}
+
+services:
+  # ---------------------------------------------------------------- Twenty
+  pxos-twenty:
+    image: twentycrm/twenty:${TWENTY_TAG:-v2.45.6}
+    container_name: pxos-twenty
+    volumes:
+      - pxos-twenty-local-data:/app/packages/twenty-server/.local-storage
+    ports:
+      - "127.0.0.1:3020:3000"
+    environment:
+      <<: *twenty-env
+      NODE_PORT: 3000
+      DISABLE_DB_MIGRATIONS: ${DISABLE_DB_MIGRATIONS:-false}
+      DISABLE_CRON_JOBS_REGISTRATION: ${DISABLE_CRON_JOBS_REGISTRATION:-false}
+    depends_on:
+      pxos-twenty-db:
+        condition: service_healthy
+      pxos-twenty-redis:
+        condition: service_healthy
+    healthcheck:
+      test: curl --fail http://localhost:3000/healthz
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 60s
+    restart: unless-stopped
+    networks: [pxos-net]
+
+  pxos-twenty-worker:
+    image: twentycrm/twenty:${TWENTY_TAG:-v2.45.6}
+    container_name: pxos-twenty-worker
+    command: ["yarn", "worker:prod"]
+    volumes:
+      - pxos-twenty-local-data:/app/packages/twenty-server/.local-storage
+    environment:
+      <<: *twenty-env
+      DISABLE_DB_MIGRATIONS: "true"          # ya las ejecuta el server
+      DISABLE_CRON_JOBS_REGISTRATION: "true" # ya las registra el server
+    depends_on:
+      pxos-twenty-db:
+        condition: service_healthy
+      pxos-twenty:
+        condition: service_healthy
+    restart: unless-stopped
+    networks: [pxos-net]
+
+  pxos-twenty-db:
+    image: postgres:16
+    container_name: pxos-twenty-db
+    volumes:
+      - pxos-twenty-db-data:/var/lib/postgresql/data
+    environment:
+      POSTGRES_DB: ${TWENTY_PG_DB:-twenty}
+      POSTGRES_USER: ${TWENTY_PG_USER:-twenty}
+      POSTGRES_PASSWORD: ${TWENTY_PG_PASSWORD:-twenty_dev}
+    healthcheck:
+      test: pg_isready -U ${TWENTY_PG_USER:-twenty} -h localhost -d postgres
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+    networks: [pxos-net]
+
+  pxos-twenty-redis:
+    image: redis:7.4
+    container_name: pxos-twenty-redis
+    command: ["--maxmemory-policy", "noeviction"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+    networks: [pxos-net]
+
+  # ---------------------------------------------------------------- Agent OS
+  pxos-postgres:
+    image: pgvector/pgvector:pg16
+    container_name: pxos-postgres
+    ports:
+      - "127.0.0.1:5440:5432"
+    volumes:
+      - pxos-postgres-data:/var/lib/postgresql/data
+      - ./postgres/init:/docker-entrypoint-initdb.d:ro
+    environment:
+      POSTGRES_DB: ${AGENTOS_PG_DB:-agentos}
+      POSTGRES_USER: ${AGENTOS_PG_USER:-agentos}
+      POSTGRES_PASSWORD: ${AGENTOS_PG_PASSWORD:-agentos_dev}
+    healthcheck:
+      test: pg_isready -U ${AGENTOS_PG_USER:-agentos} -h localhost -d ${AGENTOS_PG_DB:-agentos}
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+    networks: [pxos-net]
+
+  pxos-redis:
+    image: redis:7.4
+    container_name: pxos-redis
+    # noeviction: requisito de BullMQ. appendonly: persistencia de colas.
+    command: ["--appendonly", "yes", "--maxmemory-policy", "noeviction"]
+    ports:
+      - "127.0.0.1:6391:6379"
+    volumes:
+      - pxos-redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+    networks: [pxos-net]
+
+  pxos-runtime:
+    build:
+      context: ../runtime/agent-runtime
+      dockerfile: Dockerfile
+    image: pxos/agent-runtime:0.1.0
+    container_name: pxos-runtime
+    ports:
+      - "127.0.0.1:4020:4020"
+    environment:
+      RUNTIME_ROLE: all
+      RUNTIME_HOST: 0.0.0.0
+      RUNTIME_PORT: "4020"
+      LOG_LEVEL: info
+      DATABASE_URL: postgres://${AGENTOS_PG_USER:-agentos}:${AGENTOS_PG_PASSWORD:-agentos_dev}@pxos-postgres:5432/${AGENTOS_PG_DB:-agentos}
+      REDIS_URL: redis://pxos-redis:6379
+      QUEUE_NAME: pxos-agent-runs
+      WORKER_CONCURRENCY: "4"
+      DEFAULT_TENANT_ID: publiexpe
+      DEFAULT_MODEL_PROVIDER: stub
+      RUN_MIGRATIONS: "true"
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      TWENTY_BASE_URL: http://pxos-twenty:3000
+      TWENTY_API_KEY: ${TWENTY_API_KEY:-}
+    depends_on:
+      pxos-postgres:
+        condition: service_healthy
+      pxos-redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://localhost:4020/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+    restart: unless-stopped
+    networks: [pxos-net]
+
+networks:
+  pxos-net:
+    name: pxos-net
+
+volumes:
+  pxos-twenty-db-data:
+    name: pxos-twenty-db-data
+  pxos-twenty-local-data:
+    name: pxos-twenty-local-data
+  pxos-postgres-data:
+    name: pxos-postgres-data
+  pxos-redis-data:
+    name: pxos-redis-data

@@ -2,7 +2,7 @@
 
 Servicio del Agent OS de PubliEXPE Commercial OS (LLD v0.1, sección 8). Expone la API HTTP del runtime y ejecuta un worker BullMQ que lanza agentes y persiste `TaskRun`, `AgentExecution`, `Trace` y `TraceStep` en PostgreSQL.
 
-Estado: esqueleto MVP. Los agentes se ejecutan con `StubAgent` (sin LLM) o con `SmokeAgent`, que ejecuta tools reales contra Twenty (consulta [Tools](#tools)). `AnthropicProvider` existe como esqueleto y no se llama en los tests.
+Estado: MVP. Además de `StubAgent` (sin LLM) y `SmokeAgent` (tools reales contra Twenty, consulta [Tools](#tools)), el runtime ejecuta el **Prospector v1** con Gemini (consulta [Prospector](#prospector)). `AnthropicProvider` existe como esqueleto y no se llama en los tests.
 
 ## Stack
 
@@ -21,19 +21,21 @@ runtime/agent-runtime/
 │   ├── main.ts               Entrada: API y/o worker según RUNTIME_ROLE o --role=
 │   ├── config.ts             Configuración desde variables de entorno
 │   ├── api/                  Servidor Fastify, contratos zod y rutas
-│   ├── agents/               Interfaz de agente, StubAgent y SmokeAgent
+│   ├── agents/               Interfaz de agente, StubAgent, SmokeAgent y ProspectorAgent (+ prompt)
 │   ├── integrations/twenty/  TwentyClient REST tipado y mapeo de objetos de la App
 │   ├── tools/                Interfaz Tool, registry, tool_policy, executor y tools de Twenty
 │   ├── db/                   Esquema Drizzle, cliente y migrador
 │   ├── domain/               Estados, máquina de estados e idempotency keys
-│   ├── providers/            ModelProvider, StubProvider y AnthropicProvider
+│   ├── providers/            ModelProvider, StubProvider, AnthropicProvider, GeminiProvider y tabla de precios
 │   ├── queue/                RunQueue (BullMQ y en memoria)
+│   ├── seed/                 Seed idempotente del Prospector y su tarea (pnpm seed)
 │   ├── services/             Lanzamiento idempotente de TaskRuns
 │   └── worker/               RunProcessor y worker BullMQ
 └── test/
     ├── unit/                 Corren siempre, sin BD ni Redis
     ├── integration/          API + worker contra PostgreSQL y tools contra Twenty; se saltan si no hay servicio
     ├── helpers/              FakeTwenty: API REST de Twenty en memoria para los unitarios
+    ├── fixtures/             feria-ejemplo.json: evento de demo con 3 expositores
     └── setup-env.ts          Carga .env (si existe) antes de los tests
 ```
 
@@ -79,8 +81,10 @@ Requisitos: Node.js 22, pnpm, y los contenedores `pxos-postgres` (127.0.0.1:5440
 | `QUEUE_NAME` | `pxos-agent-runs` | Cola BullMQ |
 | `WORKER_CONCURRENCY` | `4` | Jobs simultáneos por worker |
 | `DEFAULT_TENANT_ID` | `publiexpe` | Tenant si la petición no envía `x-tenant-id` |
-| `DEFAULT_MODEL_PROVIDER` | `stub` | Proveedor para agentes creados sin `model_provider` |
+| `DEFAULT_MODEL_PROVIDER` | `stub` | Proveedor para agentes creados sin `model_provider`: `stub`, `anthropic` o `gemini` |
 | `ANTHROPIC_API_KEY` | vacío | Solo para agentes con `model_provider=anthropic` |
+| `GEMINI_API_KEY` | vacío | API key de Google AI Studio para agentes con `model_provider=gemini` |
+| `GEMINI_MODEL` | `gemini-flash-latest` | Modelo de Gemini si la versión del agente no fija uno |
 | `TWENTY_BASE_URL` | `http://localhost:3020` | API REST de Twenty. En el contenedor: `http://pxos-twenty:3000` |
 | `TWENTY_API_KEY` | vacío | API key de Twenty. Sin ella, las tools de Twenty responden `TWENTY_NOT_CONFIGURED` |
 | `TWENTY_TIMEOUT_MS` | `10000` | Timeout por petición a Twenty |
@@ -327,6 +331,99 @@ curl -s -X POST $B/executions -H "$H" -H "$J" -d "{\"agent_id\":\"$AGENT_ID\",\"
 
 El `StubAgent` sigue usando su tool simulada (`stub.lookup`), que no pasa por el registry.
 
+## Prospector
+
+`ProspectorAgent` (`configuration.implementation = "prospector"`) evalúa los expositores de un evento y propone hipótesis de merchandising para PubliEXPE. Es la versión 1: recibe el evento y los expositores ya extraídos (todavía no busca en la web).
+
+### Entrada
+
+```json
+{
+  "event": { "name": "Expo Alimentaria Ibérica 2026", "type": "FAIR", "date": "2026-11-24",
+             "location": "Madrid (IFEMA)", "source_url": "https://expoalimentariaiberica.example/expositores" },
+  "exhibitors": [{ "name": "Conservas Marineras del Cantábrico", "domain": "conservasdelcantabrico.example",
+                   "sector": "Alimentación gourmet", "description": "..." }]
+}
+```
+
+- `event.type` es un `signalType` de Twenty (`FAIR`, `CONGRESS`, `EVENT`...). También acepta `feria`, `congreso` y `evento`.
+- `date` es `YYYY-MM-DD`. Entre 1 y 50 expositores; `domain`, `description` y `sector` son opcionales.
+
+### Flujo por expositor
+
+1. Una llamada al LLM con salida JSON estructurada (`responseJsonSchema`), validada con zod. Si la respuesta no es válida, se hace **un** reintento con el error de validación en el prompt.
+1. El modelo decide `relevant`, `confidence` (0-1) y `reason`. Si es relevante, genera la hipótesis: `need`, `why_now`, `quantity_min/max`, `budget_min_eur/max_eur`, `recommended_products` (genéricos, aún sin catálogo), `timing` y los diferenciales de PubliEXPE que aplican.
+1. Si `relevant` y `confidence >= min_confidence` (por defecto `0.5`):
+   - `upsert_company` por dominio. Sin dominio, solo reutiliza una empresa con el mismo nombre exacto (`find_company`); nunca crea una empresa sin dominio verificado.
+   - `create_signal`: el evento, con su `signalType`, `status = NEW` y la confianza.
+   - `create_hypothesis` con `status = PROPOSED` y nombre `{empresa} — {evento}`, para que repetir el mismo evento no duplique la hipótesis.
+1. Al final, **siempre**, `create_agent_run_summary` con `outcome` (`SUCCESS`, `PARTIAL` si algún expositor falló, `FAILED` si fallaron todos o la entrada no es válida), un `resultSummary` en español con contadores y el coste real del modelo en EUR.
+
+Un error en un expositor (modelo o Twenty) no detiene la ejecución: queda en `output.results[]` y cuenta como error. El agente devuelve su resultado aunque el `outcome` sea `FAILED`, para que el trace conserve todos los pasos y el coste; el estado de negocio está en `output.outcome` y en el `agentRunSummary` de Twenty.
+
+### Trace y coste
+
+Cada llamada al LLM es un paso `MODEL` con `model` (el modelo real que respondió, por ejemplo `gemini-3.8-flash`), tokens y `output.cost` (`amount`, `currency`). Cada tool es un paso `TOOL` con `output.costEur`. `AgentExecution.model_cost` y `TaskRun.cost` acumulan el coste del proveedor en USD; `output.cost.eur` y el `agentRunSummary` lo convierten a EUR con `configuration.usd_to_eur` (por defecto `0.86`).
+
+### Configuración de la versión
+
+| Clave de `configuration` | Por defecto | Uso |
+|---|---|---|
+| `implementation` | — | `prospector` |
+| `tool_policy` | — | `find_company`, `upsert_company`, `create_signal`, `create_hypothesis`, `create_agent_run_summary`; techo `LOW_WRITE` |
+| `min_confidence` | `0.5` | Umbral para escribir en Twenty |
+| `usd_to_eur` | `0.86` | Conversión del coste para Twenty |
+| `model_options` | `{}` | `thinking_level` (Gemini 3.x), `thinking_budget` (Gemini 2.5), `temperature` |
+| `max_output_tokens` | `4096` | Por llamada; incluye los tokens de razonamiento |
+| `task_name` | `daily-event-prospecting` | Campo `task` del `agentRunSummary` |
+
+### Seed
+
+```sh
+pnpm seed                                        # tenant DEFAULT_TENANT_ID (publiexpe)
+pnpm seed -- --tenant=otro --input=evento.json
+```
+
+Es idempotente:
+
+- **Agente `Prospector`**: si no existe, lo crea con la versión 1 `ACTIVE` (`model_provider = gemini`, `model = gemini-flash-latest`, `thinking_level = low`, la tool policy anterior y el prompt en español con los diferenciales de PubliEXPE: ofertas, trato cercano, taller propio y precio). Si existe y su versión activa es distinta, añade una versión nueva, la activa y pasa la anterior a `DEPRECATED`. Si es igual, no cambia nada.
+- **Tarea `daily-event-prospecting`**: `CRON 0 8 * * *` en `Europe/Madrid`, `timeout_ms = 900000`, sin reintentos, con `test/fixtures/feria-ejemplo.json` como `default_input`. Si cambia, se actualiza y se guarda una `TaskDefinitionVersion` nueva. El scheduler que la dispara a las 08:00 llega en otra rama; mientras tanto, lánzala con `POST /tasks/:id/run`.
+
+La fixture tiene tres expositores ficticios: uno claramente relevante (fabricante de conservas con stand propio), uno dudoso (distribuidor de envases que también imprime bolsas promocionales) y uno irrelevante (organismo público que compra por licitación).
+
+### Gemini
+
+`GeminiProvider` usa la API REST v1beta (`models/{model}:generateContent`) con la cabecera `x-goog-api-key`:
+
+- `system` va a `systemInstruction` y los mensajes `assistant` se envían con el rol `model`.
+- `options.responseSchema` activa `responseMimeType: application/json` y `responseJsonSchema`.
+- Tokens desde `usageMetadata`. Los tokens de razonamiento (`thoughtsTokenCount`) se facturan como salida y los de caché se restan de la entrada.
+- Reintenta `429`, `5xx`, errores de red y timeouts con backoff exponencial (1 s, 2 s, 4 s; máximo 3 reintentos) y respeta `Retry-After` y `RetryInfo.retryDelay`.
+- Prioridad del modelo: `agent_version.model` (si empieza por `gemini`) > `GEMINI_MODEL` > `gemini-flash-latest`.
+
+El coste se calcula con la tabla editable de `src/providers/gemini-pricing.ts`, por el modelo concreto de `modelVersion` (los alias `*-latest` se resuelven a su modelo real). Precios de la capa de pago, USD por millón de tokens, consultados el 2026-10-06 en [ai.google.dev/gemini-api/docs/pricing](https://ai.google.dev/gemini-api/docs/pricing):
+
+| Modelo | Entrada | Salida (incluye razonamiento) | Caché |
+|---|---|---|---|
+| `gemini-3.8-flash` (servía `gemini-flash-latest` el 2026-10-06) | 0,75 (1,50 desde 2027-01-01) | 3,75 (7,50 desde 2027-01-01) | 0,075 (0,15) |
+| `gemini-3.5-flash` | 1,50 | 9,00 | 0,15 |
+| `gemini-2.5-flash` | 0,30 | 2,50 | 0,03 |
+| `gemini-2.5-flash-lite` | 0,10 | 0,40 | 0,01 |
+
+Cuando Google cambie un precio, añade un periodo nuevo con su fecha `from` en vez de sobrescribir el anterior.
+
+### Tests del Prospector
+
+- `test/unit/prospector-agent.test.ts` y `test/unit/gemini-provider.test.ts`: con `StubProvider` (respuestas guionizadas) y `FakeTwenty`. Cubren el parseo, el reintento por JSON inválido, el flujo de tools, la idempotencia y la agregación de coste.
+- `test/integration/prospector-live.test.ts`: **en vivo**. Ejecuta el seed y un `TaskRun` con la fixture contra Gemini, Twenty y PostgreSQL reales, y comprueba empresa, señal, hipótesis y `agentRunSummary` en Twenty. Se salta si falta `GEMINI_API_KEY`, `TWENTY_API_KEY`, Twenty o PostgreSQL, o si `SKIP_LLM_TESTS=1`. Usa los nombres de la fixture (datos de demo, sin prefijo `[TEST]`) en el tenant `publiexpe`; como todas las escrituras son idempotentes, repetirlo solo añade un `agentRunSummary`. Cuesta unos 0,005 € por ejecución.
+
+Para ejecutarlo en local, copia también la clave de Gemini a tu `.env`:
+
+```sh
+grep '^GEMINI_API_KEY=' ../../deployments/.env >> .env
+pnpm vitest run test/integration/prospector-live.test.ts
+```
+
 ## Docker
 
 El `Dockerfile` es multi-stage (build con pnpm, imagen final solo con dependencias de producción, usuario `node`, healthcheck sobre `/health`).
@@ -351,6 +448,8 @@ Quien mantenga `deployments/` puede añadir este servicio a la red `pxos-net`:
       REDIS_URL: redis://pxos-redis:6379
       RUN_MIGRATIONS: "true"
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      GEMINI_MODEL: ${GEMINI_MODEL:-}
       TWENTY_BASE_URL: http://pxos-twenty:3000
       TWENTY_API_KEY: ${TWENTY_API_KEY:-}
     ports:
@@ -372,7 +471,8 @@ Para escalar, separa roles: un servicio con `RUNTIME_ROLE=api` y N réplicas con
 - `max_concurrency` por tarea y locks por entidad (LLD sección 21).
 - Recuperación de jobs atascados (`RUNNING` tras caída del worker).
 - Harness, skills, memoria y verificador reales; promote, rollback y evaluate.
-- Tools pendientes del registro del MVP-0: `search_web`, `fetch_url`, `create_activity` y las del Catalog Service.
+- Tools pendientes del registro del MVP-0: `search_web`, `fetch_url`, `create_activity` y las del Catalog Service. Con ellas, el Prospector descubrirá eventos y expositores por sí mismo y recomendará productos reales del catálogo.
+- `GeminiProvider.stream()` no es incremental: devuelve la respuesta completa en un solo fragmento.
 - Validación de URL en campos de texto libre contra las fuentes del trace (LLD v0.2 sección 10.4, punto 4).
 - Publicación de eventos (`task.started`, `task.completed`...) en el event bus.
 - Export de los contratos zod a JSON Schema versionado en `schemas/`.

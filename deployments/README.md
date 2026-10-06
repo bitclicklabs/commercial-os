@@ -14,7 +14,7 @@ Stack Docker Compose de desarrollo: Twenty CRM self-hosted más la infraestructu
 | `pxos-twenty-redis` | `redis:7.4` | — (interno) | Cache y colas de Twenty |
 | `pxos-postgres` | `pgvector/pgvector:pg16` | `127.0.0.1:5440` | PostgreSQL del Agent OS (extensiones `vector` y `pgcrypto`) |
 | `pxos-redis` | `redis:7.4` | `127.0.0.1:6391` | Redis del Agent OS (BullMQ, AOF activado) |
-| `pxos-runtime` | — | `127.0.0.1:4020` | Reservado para el Agent Runtime (aún no definido) |
+| `pxos-runtime` | pxos/agent-runtime:0.1.0 | `127.0.0.1:4020` | Agent Runtime (API + worker) |
 
 Red: `pxos-net`. Volúmenes: `pxos-twenty-db-data`, `pxos-twenty-local-data`, `pxos-postgres-data`, `pxos-redis-data`.
 
@@ -95,7 +95,7 @@ Twenty no trae usuarios precargados: el primer usuario se crea en el navegador.
 1. Abre http://localhost:3020. Te redirige a `/welcome` ("Inicia sesión o crea una cuenta").
 2. Elige **Continuar con email**, introduce tu email y una contraseña. No se envía email de verificación porque no hay SMTP configurado.
 3. Completa el onboarding: nombre del workspace (por ejemplo `PubliEXPE`), tu perfil y, si lo pide, la invitación de miembros (puedes omitirla).
-4. Para que el Agent OS acceda a la API, crea una API key en **Settings → APIs & Webhooks** y guárdala en el `.env` del runtime (no en este).
+4. Para que el Agent OS acceda a la API, crea una API key en **Settings → MCP y API → API** y guárdala como `TWENTY_API_KEY` en este `deployments/.env` (el compose se la pasa a `pxos-runtime`).
 
 ## Variables que debes revisar
 

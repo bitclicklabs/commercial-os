@@ -18,6 +18,7 @@ import { allowedSources } from '../domain/run-state.js';
 import type { RunStatus } from '../domain/statuses.js';
 import type { ProviderFactory } from '../providers/index.js';
 import type { RunJob } from '../queue/run-queue.js';
+import { createDefaultToolRegistry, parseToolPolicy, ToolExecutor, type ToolRegistry } from '../tools/index.js';
 
 export interface ProcessorLogger {
   info(obj: object, msg?: string): void;
@@ -65,6 +66,8 @@ export class RunProcessor {
     private readonly db: Db,
     private readonly providers: ProviderFactory,
     private readonly logger: ProcessorLogger = silentLogger,
+    /** Tool registry; defaults to the MVP-0 tools with the Twenty client from env. */
+    private readonly tools: ToolRegistry = createDefaultToolRegistry(),
   ) {}
 
   async process(job: RunJob, attempt: AttemptInfo = { attempt: 1, maxAttempts: 1 }): Promise<void> {
@@ -220,6 +223,23 @@ export class RunProcessor {
           reject(new TimeoutError(timeoutMs));
         }, timeoutMs);
       });
+      // Per-execution executor: enforces the version's tool_policy allowlist.
+      const toolLogger = {
+        info: (msg: string, meta?: object) => this.logger.info({ executionId: execution.id, ...meta }, msg),
+        error: (msg: string, meta?: object) => this.logger.error({ executionId: execution.id, ...meta }, msg),
+      };
+      const tools = new ToolExecutor(
+        this.tools,
+        parseToolPolicy(version.configuration),
+        {
+          tenantId: execution.tenantId,
+          executionId: execution.id,
+          agentId: agent.id,
+          stage: typeof version.configuration.stage === 'string' ? version.configuration.stage : (agent.role?.toUpperCase() ?? null),
+          logger: toolLogger,
+        },
+        controller.signal,
+      );
       const result = await Promise.race([
         impl.run({
           tenantId: execution.tenantId,
@@ -236,6 +256,7 @@ export class RunProcessor {
           input: execution.input,
           provider,
           signal: controller.signal,
+          tools,
         }),
         timeout,
       ]);

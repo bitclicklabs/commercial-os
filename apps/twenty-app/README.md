@@ -183,6 +183,27 @@ La sincronización necesita un *remote* autenticado. Las credenciales se guardan
 
 > **Importante:** usa `yarn twenty apply` (una pasada, sale con código 0 o 1). Evita `yarn twenty dev` (modo watch) en agentes y CI.
 
+### Windows: sincronizar con el script
+
+En Windows, `yarn twenty apply` falla por dos motivos:
+
+- Aborta con `Resource path must not contain backslashes`.
+- La subida de archivos usa la `SERVER_URL` del servidor (`http://localhost:3020`), que dentro de un contenedor no resuelve.
+
+Usa el script [`scripts/sync-twenty-app.ps1`](../../scripts/sync-twenty-app.ps1) en lugar de los pasos 3 y 4. El script copia la App a un directorio temporal (sin `node_modules`, `.twenty` ni `.yarn`) y ejecuta `yarn twenty apply` en un contenedor efímero `node:24` conectado a la red `pxos-net`. Dentro, `socat` reenvía `127.0.0.1:3020` a `pxos-twenty:3000`, y el script registra el remote `pxos-tunnel` con tu API key.
+
+1. Guarda la API key (paso 2) como `TWENTY_API_KEY` en `deployments/.env`.
+2. Levanta el stack (`docker compose up -d` en `deployments/`).
+3. Ejecuta desde la raíz del repositorio, en PowerShell:
+
+   ```powershell
+   .\scripts\sync-twenty-app.ps1               # apply
+   .\scripts\sync-twenty-app.ps1 -Action plan  # solo previsualiza los cambios
+   .\scripts\sync-twenty-app.ps1 -Force        # apply --force, tras revisar los borrados con plan
+   ```
+
+El script no modifica `apps/twenty-app/` ni crea `node_modules` en él. Detalles y diagnóstico: [runbook, sección "Sincronizar la Twenty App"](../../docs/runbook-local.md#sincronizar-la-twenty-app).
+
 ### Despliegue en otros entornos
 
 Para otro servidor, repite los pasos 2–4 con su URL y un nombre de remote distinto (`--as production`). En CI, configura `TWENTY_DEPLOY_URL` y `TWENTY_DEPLOY_API_KEY` como secretos. Los workflows de `.github/workflows/` son los de la plantilla oficial y solo se ejecutan si esta carpeta se convierte en la raíz de un repositorio.

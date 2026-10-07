@@ -31,6 +31,11 @@ x-twenty-env: &twenty-env
   FALLBACK_ENCRYPTION_KEY: ${FALLBACK_ENCRYPTION_KEY:-}
   APP_SECRET: ${APP_SECRET:-}
 
+  # Twenty bloquea por defecto los webhooks hacia IPs privadas (anti-SSRF).
+  # Allowlist mínima para que entregue al runtime (misma red pxos-net) y, en
+  # desarrollo, al host. Revisar antes de cualquier despliegue no local.
+  OUTBOUND_HTTP_ALLOWED_INTERNAL_HOSTS: ${OUTBOUND_HTTP_ALLOWED_INTERNAL_HOSTS:-pxos-runtime,host.docker.internal}
+
 services:
   # ---------------------------------------------------------------- Twenty
   pxos-twenty:

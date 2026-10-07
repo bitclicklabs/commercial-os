@@ -9,8 +9,9 @@ Principio rector: **el CRM es el system of record; el Agent OS es el system of i
 | Componente | Ruta | Descripción |
 |---|---|---|
 | Twenty App | `apps/twenty-app/` | Extensión CRM: objetos comerciales, vistas y UI |
-| Agent Runtime | `runtime/` | Ejecución de agentes: harness, memoria, tools, traces |
-| Servicios | `services/` | Catalog Service (catálogo publiexpe), Inbound Manager y [`renderer/`](services/renderer/README.md) (render JavaScript con Playwright para el scout de ferias) |
+| Agent Runtime | `runtime/` | Ejecución de agentes: scheduler, tools, skills versionadas, event bus, trazas y métricas. Harness y memoria aún no existen |
+| Servicios | `services/` | [`renderer/`](services/renderer/README.md): render JavaScript con Playwright para el scout de ferias. El Catalog Service y el Inbound Manager aún no existen como servicios (el lector de bajas vive en el runtime) |
+| Integraciones | `integrations/` | Ejemplo importable para n8n del [puente de eventos](docs/n8n-integracion.md) |
 | Despliegue | `deployments/` | Docker Compose local |
 | Scripts | `scripts/` | Utilidades de operación, como `sync-twenty-app.ps1` |
 | Documentación | `docs/` | LLD y guías |
@@ -25,6 +26,7 @@ Reservados para no colisionar con otras instancias Docker del host. Consulta [do
 | PostgreSQL (Agent OS) | 5440 |
 | Redis (Agent OS) | 6391 |
 | Agent Runtime API | 4020 |
+| Renderer (solo desarrollo; interno sin él) | 4030 |
 
 ## Inicio rápido
 
@@ -52,11 +54,13 @@ Detalles en el [runbook](docs/runbook-local.md#windows-workaround-del-cli-de-twe
 
 - [LLD v0.1 — arquitectura](docs/LLD-0.1-publiexpe-commercial-os.md)
 - [LLD v0.2 — especificación del MVP-0](docs/LLD-0.2-especificacion.md)
-- [LLD v0.3 — estado real: decisiones y mapa del diseño frente a lo construido](docs/LLD-0.3-estado-real.md)
+- [LLD v0.3 — estado real: 31 decisiones (ADR) y mapa del diseño frente a lo construido](docs/LLD-0.3-estado-real.md)
 - [Guía de contribución](docs/CONTRIBUTING.md)
 - [Guía del equipo comercial](docs/guia-comercial.md)
 - [Runbook de operación local](docs/runbook-local.md)
 - [Plan de warm-up del canal de email](docs/email-warmup.md)
+- [Enviar los borradores desde Twenty](docs/twenty-envio-email.md)
+- [Integración de eventos con n8n](docs/n8n-integracion.md)
 - [Estado del proyecto por tandas](docs/ESTADO.md)
 - [Registro de cambios](docs/CHANGELOG.md)
 - [Script de sincronización de la Twenty App (Windows)](scripts/sync-twenty-app.ps1)

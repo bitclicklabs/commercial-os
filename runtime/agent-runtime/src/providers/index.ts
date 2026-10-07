@@ -6,7 +6,8 @@ import { StubProvider } from './stub-provider.js';
 export * from './model-provider.js';
 export { StubProvider } from './stub-provider.js';
 export { AnthropicProvider, ANTHROPIC_PRICING, DEFAULT_ANTHROPIC_MODEL } from './anthropic-provider.js';
-export { GeminiProvider, GeminiApiError, DEFAULT_GEMINI_MODEL, geminiUsage } from './gemini-provider.js';
+export { GeminiProvider, GeminiApiError, DEFAULT_GEMINI_MODEL, geminiUsage, parseGroundingMetadata } from './gemini-provider.js';
+export { type StubResponse } from './stub-provider.js';
 export * from './gemini-pricing.js';
 
 export const MODEL_PROVIDERS = ['stub', 'anthropic', 'gemini'] as const;

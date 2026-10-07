@@ -2,11 +2,13 @@ import {
   type CompletionRequest,
   type CompletionResult,
   type CostBreakdown,
+  type GroundingResult,
+  type GroundingSource,
   type ModelProvider,
   type StreamChunk,
   type TokenUsage,
 } from './model-provider.js';
-import { priceGeminiUsage } from './gemini-pricing.js';
+import { priceGeminiUsage, priceGrounding } from './gemini-pricing.js';
 
 export const DEFAULT_GEMINI_MODEL = 'gemini-flash-latest';
 export const GEMINI_API_BASE_URL = 'https://generativelanguage.googleapis.com/v1beta';
@@ -37,6 +39,11 @@ export interface GeminiProviderOptions {
  * - `responseMimeType`: e.g. `application/json` without a schema.
  * - `temperature`, `topP`.
  * - `thinkingLevel` (`minimal` | `low` | `medium` | `high`, Gemini 3.x) or `thinkingBudget` (tokens, Gemini 2.5).
+ * - `grounding: true`: enables the native `google_search` tool (Grounding with Google
+ *   Search). The result carries `grounding` (executed queries + web sources) and the
+ *   search cost is added to `cost.modelCost` (see `GEMINI_GROUNDING_PRICING`). Off by
+ *   default: it is billed per search query, so callers opt in per call. Combining it
+ *   with `responseSchema` is only supported by Gemini 3.x models.
  */
 export interface GeminiRequestOptions {
   responseSchema?: Record<string, unknown>;
@@ -45,6 +52,7 @@ export interface GeminiRequestOptions {
   topP?: number;
   thinkingLevel?: string;
   thinkingBudget?: number;
+  grounding?: boolean;
 }
 
 export type GeminiErrorCode =
@@ -73,10 +81,18 @@ export class GeminiApiError extends Error {
 interface GeminiPart {
   text?: string;
   thought?: boolean;
+  /** Server-side tool invocation (returned with `toolConfig.includeServerSideToolInvocations`). */
+  toolCall?: { id?: string; toolType?: string; toolName?: string; args?: Record<string, unknown> };
+  toolResponse?: { id?: string; toolType?: string; response?: unknown };
+}
+
+interface GeminiGroundingMetadata {
+  webSearchQueries?: string[];
+  groundingChunks?: Array<{ web?: { uri?: string; title?: string; domain?: string } }>;
 }
 
 interface GeminiResponse {
-  candidates?: Array<{ content?: { parts?: GeminiPart[] }; finishReason?: string }>;
+  candidates?: Array<{ content?: { parts?: GeminiPart[] }; finishReason?: string; groundingMetadata?: GeminiGroundingMetadata }>;
   promptFeedback?: { blockReason?: string };
   usageMetadata?: {
     promptTokenCount?: number;
@@ -86,6 +102,75 @@ interface GeminiResponse {
     toolUsePromptTokenCount?: number;
   };
   modelVersion?: string;
+}
+
+const DOMAIN_LIKE = /^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/i;
+
+function hostOfUrl(uri: string): string | null {
+  try {
+    return new URL(uri).hostname.toLowerCase().replace(/^www\./, '') || null;
+  } catch {
+    return null;
+  }
+}
+
+const isSearchTool = (t: string | undefined) => !t || t === 'GOOGLE_SEARCH_WEB';
+
+/** Collects `{url|uri|link, title?}` objects anywhere inside a server-side tool response (shape not documented). */
+function collectWebResults(value: unknown, out: Array<{ uri: string; title: string | null }>, depth = 0): void {
+  if (depth > 6 || out.length >= 50 || value === null || typeof value !== 'object') return;
+  if (Array.isArray(value)) {
+    for (const v of value) collectWebResults(v, out, depth + 1);
+    return;
+  }
+  const o = value as Record<string, unknown>;
+  const uri = [o.url, o.uri, o.link].find((v): v is string => typeof v === 'string' && /^https?:\/\//i.test(v));
+  if (uri) out.push({ uri, title: typeof o.title === 'string' && o.title.trim() ? o.title.trim() : null });
+  for (const v of Object.values(o)) if (v && typeof v === 'object') collectWebResults(v, out, depth + 1);
+}
+
+/**
+ * Normalises grounding data into queries + deduplicated web sources. Two places are read:
+ * `candidate.groundingMetadata` (webSearchQueries, groundingChunks[].web) and the
+ * server-side tool parts (`toolCall` / `toolResponse` of type GOOGLE_SEARCH_WEB), which
+ * the API returns when `toolConfig.includeServerSideToolInvocations` is true. Observed
+ * on 2026-10-07: gemini-3.8-flash ran the search (prompt tokens grew) but returned no
+ * groundingMetadata, hence both sources.
+ */
+export function parseGroundingMetadata(meta: GeminiGroundingMetadata | undefined, parts: GeminiPart[] = []): GroundingResult {
+  const queries = (meta?.webSearchQueries ?? []).filter((q): q is string => typeof q === 'string' && q.trim().length > 0);
+  const seen = new Set<string>();
+  const sources: GroundingSource[] = [];
+  const add = (uri: string, title: string | null, domain: string | null) => {
+    if (!/^https?:\/\//i.test(uri) || seen.has(uri)) return;
+    seen.add(uri);
+    sources.push({ uri, title, domain: domain ? domain.toLowerCase().replace(/^www\./, '') : null });
+  };
+  for (const chunk of meta?.groundingChunks ?? []) {
+    const uri = chunk.web?.uri;
+    if (typeof uri !== 'string') continue;
+    const title = typeof chunk.web?.title === 'string' && chunk.web.title.trim() ? chunk.web.title.trim() : null;
+    const domain = typeof chunk.web?.domain === 'string' && chunk.web.domain.trim() ? chunk.web.domain.trim() : title && DOMAIN_LIKE.test(title) ? title : null;
+    add(uri, title, domain);
+  }
+  let toolCalls = 0;
+  let toolResponses = 0;
+  for (const part of parts) {
+    if (part.toolCall && isSearchTool(part.toolCall.toolType)) {
+      toolCalls += 1;
+      const args = part.toolCall.args ?? {};
+      const qs = [args.queries, args.query, args.q].flat().filter((q): q is string => typeof q === 'string' && q.trim().length > 0);
+      for (const q of qs) if (!queries.includes(q)) queries.push(q);
+    }
+    if (part.toolResponse && isSearchTool(part.toolResponse.toolType)) {
+      toolResponses += 1;
+      const found: Array<{ uri: string; title: string | null }> = [];
+      collectWebResults(part.toolResponse.response, found);
+      // These are the real result URLs (not redirects): the domain is the URL's host.
+      for (const f of found) add(f.uri, f.title, hostOfUrl(f.uri));
+    }
+  }
+  return { queries, sources, diagnostics: { metadata: meta !== undefined, toolCalls, toolResponses } };
 }
 
 const defaultSleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
@@ -192,6 +277,7 @@ export class GeminiProvider implements ModelProvider {
     return {
       ...(request.system ? { systemInstruction: { parts: [{ text: request.system }] } } : {}),
       contents: request.messages.map((m) => ({ role: m.role === 'assistant' ? 'model' : 'user', parts: [{ text: m.content }] })),
+      ...(o.grounding === true ? { tools: [{ google_search: {} }], toolConfig: { includeServerSideToolInvocations: true } } : {}),
       generationConfig,
     };
   }
@@ -210,14 +296,26 @@ export class GeminiProvider implements ModelProvider {
     const usage = geminiUsage(json.usageMetadata);
     const servedBy = json.modelVersion ? json.modelVersion.replace(/^models\//, '') : model;
     const blocked = json.promptFeedback?.blockReason;
+    const cost = this.estimateCost(servedBy, usage);
+    let grounding: GroundingResult | undefined;
+    if ((request.options as GeminiRequestOptions | undefined)?.grounding === true) {
+      grounding = parseGroundingMetadata(candidate?.groundingMetadata, candidate?.content?.parts ?? []);
+      // Billable searches: the reported queries, or at least one per search tool call when queries are not reported.
+      const searches = Math.max(grounding.queries.length, grounding.diagnostics?.toolCalls ?? 0);
+      const g = priceGrounding(servedBy, { queries: searches, sources: grounding.sources.length }, this.now());
+      cost.groundingCost = g.cost;
+      cost.groundingUnits = g.units;
+      cost.modelCost = Math.round((cost.modelCost + g.cost) * 1_000_000) / 1_000_000;
+    }
     return {
       text,
       model: servedBy,
       provider: this.name,
       stopReason: blocked ? `BLOCKED:${blocked}` : (candidate?.finishReason ?? null),
       usage,
-      cost: this.estimateCost(servedBy, usage),
+      cost,
       latencyMs: Date.now() - startedAt,
+      ...(grounding ? { grounding } : {}),
     };
   }
 

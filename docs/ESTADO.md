@@ -40,14 +40,14 @@ Contexto del fix de arranque: el 2026-10-07 el catch-up disparó el slot de las 
 
 Fuera de esta tanda: Catalog Service (a la espera del contrato del conector con el equipo del backend de publiexpe).
 
-## Tanda 4 — Catálogos legibles, borradores de email y métricas 🔄 (en curso, 2026-10-07)
+## Tanda 4 — Catálogos legibles, borradores de email y métricas ✅ (PR #4, 2026-10-07)
 
 | Pieza | Rama | Agente | Estado |
 |---|---|---|---|
-| Lector de catálogos: extracción de PDF y render de JavaScript (servicio pxos-renderer interno) para el scout | `feat/catalog-reader` | Opus | 🔄 en curso |
+| Lector de catálogos: extracción de PDF y render de JavaScript (servicio pxos-renderer interno) para el scout | `feat/catalog-reader` | Opus | ✅ fusionado (+ afinado de hidratación; e2e Docker: 20/20 expositores del catálogo JS real, SUCCESS) |
 | Borradores de email HITL: hipótesis VALIDATED → evento → borrador personalizado como nota en Twenty. NUNCA envía | `feat/email-drafts` | Opus | ✅ fusionado (e2e en vivo: nota con borrador de 150 palabras, 0,0018 €; línea de baja garantizada por código) |
 | Métricas: tasa de aceptación por versión de agente, coste por run y embudo (`GET /metrics` + mini dashboard) | `feat/eval-metrics` | Opus | ✅ fusionado (merge limpio; datos reales: €0.19 acumulado, aceptación 66,7%, AC-15/16 cumplidos) |
 | Plan operativo del warm-up de publiexpe.info + guía del comercial (sección borradores) | `docs/email-warmup` | Sonnet | ✅ fusionado (+ fix PM: LLD §10.1 alineado con la realidad del canal) |
-| Integración, e2e y PR | `feat/tanda4` | PM | ⏸️ |
+| Integración, e2e y PR | `feat/tanda4` | PM | ✅ 342 tests; pxos-renderer desplegado; Prospector v4; e2e scout SUCCESS en Docker (0,06 €) |
 
 Canal de email (recordatorio operativo): warm-up iniciado el 2026-10-06; DMARC pasa a `p=quarantine` hacia el 2026-11-03 si los informes llegan limpios a dmarc@publiexpe.info.

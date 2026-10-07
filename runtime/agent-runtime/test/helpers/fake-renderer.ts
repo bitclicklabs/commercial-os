@@ -11,6 +11,13 @@ export interface FakeRendered {
   /** Defaults to the requested URL. */
   final_url?: string;
   status?: number;
+  /**
+   * Client-side pagination: pages 2+ of a list. Served only when the request asks for
+   * `max_pages` > 1 (like pxos-renderer: appended after a `[Página N del listado]` marker).
+   */
+  nextPages?: Array<{ text: string; links?: Array<{ url: string; text: string }> }>;
+  /** Simulates a renderer without pagination support (no pages_read / page_urls). */
+  legacy?: boolean;
 }
 
 type Entry = { kind: 'page'; page: FakeRendered } | { kind: 'raw'; status: number; body: unknown };
@@ -52,7 +59,20 @@ export class FakeRenderer {
       if (!entry) return json(502, { error: { code: 'NAVIGATION_FAILED', message: `no fake page for ${String(body.url)}` } });
       if (entry.kind === 'raw') return json(entry.status, entry.body);
       const p = entry.page;
-      return json(200, { text: p.text, title: p.title ?? null, links: p.links ?? [], final_url: p.final_url ?? body.url, status: p.status ?? 200, render_ms: 1500 });
+      const finalUrl = p.final_url ?? String(body.url);
+      const maxPages = typeof body.max_pages === 'number' ? body.max_pages : 1;
+      const extra = p.legacy ? [] : (p.nextPages ?? []).slice(0, Math.max(0, maxPages - 1));
+      const text = [p.text, ...extra.map((x, i) => `[Página ${i + 2} del listado]\n${x.text}`)].join('\n\n');
+      const links = [...(p.links ?? []), ...extra.flatMap((x) => x.links ?? [])];
+      return json(200, {
+        text,
+        title: p.title ?? null,
+        links,
+        final_url: finalUrl,
+        status: p.status ?? 200,
+        render_ms: 1500,
+        ...(p.legacy ? {} : { pages_read: 1 + extra.length, page_urls: Array(1 + extra.length).fill(finalUrl) }),
+      });
     };
     return {
       endpoint: 'http://pxos-renderer.test:3000',

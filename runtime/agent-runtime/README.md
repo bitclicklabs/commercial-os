@@ -28,6 +28,7 @@ runtime/agent-runtime/
 │   ├── events/               Event bus: sobre event.envelope.v1, EventBus, payloads, triggers EVENT y GET /events
 │   ├── domain/               Estados, máquina de estados e idempotency keys
 │   ├── evaluations/          Evaluador HUMAN: mapeo de feedback, vínculo con la ejecución de origen y webhook de Twenty
+│   ├── metrics/              Consultas SQL de métricas (solo lectura) y HTML del dashboard
 │   ├── providers/            ModelProvider, StubProvider, AnthropicProvider, GeminiProvider y tabla de precios
 │   ├── queue/                RunQueue (BullMQ y en memoria)
 │   ├── scheduler/            TaskScheduler sobre BullMQ, parseo de schedules y rutas
@@ -200,6 +201,11 @@ Cabecera opcional `x-tenant-id` en todas las rutas. Las respuestas usan `snake_c
 | `POST /webhooks/twenty` | Webhook de Twenty firmado. Convierte cambios de `commercialHypothesis` en evaluaciones HUMAN |
 | `POST /evaluations/human` | Registra un veredicto manual: `201` nuevo, `200` duplicado |
 | `GET /evaluations` | Lista evaluaciones. Filtros: `subject_id`, `subject_type`, `feedback`, `agent_execution_id`, `since`, `limit` |
+| `GET /metrics/summary` | Runs por estado, tarea y outcome; coste, tokens, latencia, embudo comercial y feedback. Filtros `since`, `until` |
+| `GET /metrics/agents` | Por agente y versión: runs, coste medio, outcome y tasa de aceptación humana. Filtros `since`, `until` |
+| `GET /metrics/evaluations` | Veredictos por día y por sujeto. Filtros `since`, `until`, `tz`, `subject_limit` |
+| `GET /metrics/runs` | Últimos `TaskRun` (`limit`, 10 por defecto) con coste, duración y enlace al trace |
+| `GET /dashboard` | Mini dashboard HTML. Solo para peticiones locales |
 
 ### Idempotencia
 
@@ -846,6 +852,72 @@ Si no envías `agent_execution_id` (o `agentExecutionId`), el runtime resuelve e
 
 Índices: `(tenant_id, subject_type, subject_id, occurred_at)`, `(tenant_id, agent_execution_id)` y único `(tenant_id, idempotency_key)`. La tabla es solo de inserción.
 
+## Métricas y dashboard
+
+Primeras métricas del sistema (LLD v0.1 secciones 17.2 y 17.3, criterios AC-15 a AC-20 del LLD v0.2). Son consultas SQL de solo lectura sobre las tablas del runtime (`src/metrics/queries.ts`): no hay almacén nuevo ni escrituras. Todas filtran por el tenant de `x-tenant-id`.
+
+### Endpoints
+
+`since` y `until` son fechas ISO 8601 con zona (`2026-10-07T00:00:00+02:00`). `since` es inclusivo y `until` exclusivo. Cada respuesta indica en `window.field` la columna que filtra.
+
+- **`GET /metrics/summary`** filtra por `task_runs.created_at` y devuelve:
+  - `runs`: total, `by_status`, `by_outcome` (`SUCCESS`, `PARTIAL`, `FAILED` del `output.outcome` del agente, o `NONE`) y `by_task`.
+  - `cost`: total, medio y máximo por run en EUR, y `cost_model_currency` (la suma de `total_cost` en la moneda del proveedor).
+  - `tokens` y `latency_ms` (media, p95 y máximo de `finished_at - started_at`).
+  - `funnel`: suma de los `output.counters` de los resúmenes de ejecución (`exhibitors`, `evaluated`, `relevant`, `hypotheses_created`, `hypotheses_existing`...). `counters` incluye todas las claves numéricas.
+  - `human_feedback`: veredictos del periodo (por `evaluations.occurred_at`), con `acceptance_rate` y `useful_rate`.
+  - `acceptance`: AC-15 (coste por run, umbral 3,00 EUR), AC-16 (duración, umbral 30 min) y AC-17 (coste por hipótesis nueva).
+  - `direct_executions` (ejecuciones sin `TaskRun`) y `last_run`.
+- **`GET /metrics/agents`** filtra por `agent_executions.created_at` y agrupa por agente y versión (`version_label` `v1`, `v2`...): runs, estados, `completion_rate`, outcome y `success_rate`, coste medio, tokens, latencia y `human_feedback` de los sujetos que produjeron esas ejecuciones (cruce por `evaluations.agent_execution_id`). Es la métrica para comparar versiones: «¿el agente mejora?».
+- **`GET /metrics/evaluations`** filtra por `evaluations.occurred_at`: `totals`, `by_day` (serie diaria en la zona `tz`, `Europe/Madrid` por defecto), `by_subject_type` y `subjects` (último veredicto, historial y ejecución vinculada de cada sujeto, hasta `subject_limit`).
+- **`GET /metrics/runs`** devuelve los últimos `TaskRun` con tarea, agente, versión, estado, outcome, coste, duración y `trace_url` (`/task-runs/:id`).
+
+Ejemplo:
+
+```sh
+curl -s "http://127.0.0.1:4020/metrics/agents?since=2026-10-01T00:00:00%2B02:00" -H 'x-tenant-id: publiexpe'
+```
+
+### Definiciones
+
+| Métrica | Cálculo |
+|---|---|
+| Coste de una ejecución en EUR | `output.cost.eur` si el agente lo informa; si no, `total_cost × output.cost.usd_to_eur` o `× 0.86` (`DEFAULT_USD_TO_EUR`). Si `output.cost.currency` es `EUR`, `total_cost` tal cual |
+| Coste de un `TaskRun` | Suma de sus `agent_executions`, todos los intentos incluidos (AC-15). La columna `task_runs.cost` solo guarda el último intento correcto |
+| Duración de un `TaskRun` | `finished_at - started_at` (AC-16) |
+| `acceptance_rate` | `ACCEPTED / (ACCEPTED + EDITED + DISCARDED)` |
+| `useful_rate` | `(ACCEPTED + EDITED) / revisadas` (AC-20) |
+| `avg_score` | Media del `score` (1.0, 0.5, 0.0) |
+
+Las tasas usan el **último veredicto de cada sujeto** (`subject_type`, `subject_id`): una hipótesis editada y después descartada cuenta una vez, como `DISCARDED`. `verdicts` cuenta todas las filas. En `/metrics/agents` solo cuentan los veredictos vinculados a una ejecución; en `/metrics/summary` cuentan todos.
+
+### Dashboard
+
+Abre `http://127.0.0.1:4020/dashboard`. Para otro tenant, añade `?tenant=<id>`. Muestra:
+
+- Tarjetas: runs de hoy y de los últimos 7 días (desde la medianoche local del navegador), coste acumulado en EUR, tasa de aceptación y última ejecución.
+- Tabla por agente y versión: runs, éxito, coste medio, latencia, veredictos, aceptación, utilidad (AC-20) y score medio.
+- Últimos 10 runs, con enlace a su trace JSON (`GET /task-runs/:id`).
+
+La página es HTML, CSS y JavaScript inline, sin frameworks ni CDN. Todas sus llamadas usan rutas relativas (`metrics/...`, `task-runs/...`). Sigue el tema claro u oscuro del sistema (`prefers-color-scheme`).
+
+Solo se sirve a peticiones locales: la IP del cliente es loopback o privada (el puerto que Docker publica en `127.0.0.1` llega desde la pasarela del bridge) **y** la cabecera `Host` es `localhost`, `127.0.0.1`, `[::1]` o `*.localhost`, para cortar el DNS rebinding. Si no, responde `403`. No añade autenticación: el runtime sigue escuchando solo en `127.0.0.1`.
+
+> **Nota:** el enlace al trace es un enlace normal y no envía `x-tenant-id`, así que con `?tenant=` distinto del tenant por defecto devuelve `404`.
+
+### Índices
+
+No hace falta migración. Con `EXPLAIN ANALYZE` sobre la BD de desarrollo (219 `task_runs`, 280 `agent_executions`, 16 `evaluations`) todas las consultas tardan menos de 1 ms. El coste por run usa `agent_executions_task_run_idx`, el filtro por tenant usa `agent_executions_tenant_status_idx` y el último veredicto por sujeto usa `evaluations_tenant_subject_idx`. `task_runs` se recorre entero (seq scan) porque es pequeña. Con una ejecución diaria por tarea, el volumen tardará en importar. Cuando `task_runs` o `agent_executions` superen unas decenas de miles de filas por tenant, añade `(tenant_id, created_at)` a ambas.
+
+### Tests
+
+`test/integration/metrics.test.ts` siembra dos tenants (versiones `v1` y `v2` de un mismo agente, un run con reintento y veredictos encadenados) y comprueba la tasa de aceptación por versión, el coste medio, la serie diaria por zona horaria, el aislamiento entre tenants y el HTML del dashboard. Usa por defecto su propia base `agentos_wt4_metrics`:
+
+```sh
+docker exec pxos-postgres psql -U agentos -d postgres -c "create database agentos_wt4_metrics"   # una vez
+pnpm vitest run test/integration/metrics.test.ts test/unit/metrics-local.test.ts
+```
+
 ## Pendiente
 
 - Triggers `DEPENDENCY` y `CONDITION` (hoy no registran nada).
@@ -859,3 +931,4 @@ Si no envías `agent_execution_id` (o `agentExecutionId`), el runtime resuelve e
 - Eventos aún no emitidos: `task.failed` cuando el reconciliador cierra un huérfano, cancelaciones, `signal.detected` y `evaluation.completed`. Entrada de eventos externos (Twenty, n8n) por HTTP y entrega a n8n por webhook.
 - Harness, skills, memoria y verificador reales; promote, rollback y evaluate.
 - Export de los contratos zod a JSON Schema versionado en `schemas/`.
+- Métricas: AC-17 y AC-18 piden hipótesis `HOT`, pero el resumen de ejecución solo cuenta hipótesis creadas; falta el desglose por prioridad (en Twenty o en `output.counters`). El dashboard no filtra los agentes de prueba (`[TEST] …`) del tenant.

@@ -52,12 +52,12 @@ Fuera de esta tanda: Catalog Service (a la espera del contrato del conector con 
 
 Canal de email (recordatorio operativo): warm-up iniciado el 2026-10-06; DMARC pasa a `p=quarantine` hacia el 2026-11-03 si los informes llegan limpios a dmarc@publiexpe.info.
 
-## Tanda 5 — Dominios de expositores y afinado 🔄 (en curso, 2026-10-07)
+## Tanda 5 — Dominios de expositores y afinado ✅ (PR #5, 2026-10-07)
 
 | Pieza | Rama | Agente | Estado |
 |---|---|---|---|
-| Dominios de expositores: paginación del catálogo (91) + fichas individuales → empresas reales con dominio en Twenty | `feat/exhibitor-domains` | Opus | 🔄 en curso |
+| Dominios de expositores: paginación del catálogo (91) + fichas individuales → empresas reales con dominio en Twenty | `feat/exhibitor-domains` | Opus | ✅ fusionado (run real: 60 evaluados, 6 empresas con dominio + señal + hipótesis, 0,14 €) |
 | Triggers EVENT con OR (EDITED también genera borrador) + archivo de agentes [TEST] y filtro en métricas | `feat/event-or-archive` | Opus | ✅ fusionado (filtro {in:[...]} + guarda toStatus; 22 agentes [TEST] archivados en real; dashboard limpio) |
 | Sandbox seccomp de Chromium en pxos-renderer | `feat/tanda5` | PM | ✅ activo (perfil Playwright + cap_add SYS_CHROOT; render real verificado con sandbox) |
 | SNDS, procedimiento de lista de supresión y actualización de guía/changelog | `docs/email-ops` | Sonnet | ✅ fusionado (SNDS no aplica con IP compartida de IONOS: documentada la alternativa; lista de supresión decidida como nota en Twenty) |
-| Integración, e2e y PR | `feat/tanda5` | PM | ⏸️ |
+| Integración, e2e y PR | `feat/tanda5` | PM | ✅ 364 tests×2; desplegado; seed v5 (lookups 20); ciclo real con el usuario: 5 validaciones → 5 borradores; tenant limpio (solo Prospector y EmailDrafter) |

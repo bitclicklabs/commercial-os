@@ -27,6 +27,14 @@ Cambios notables de PubliEXPE Commercial OS, agrupados por tanda de trabajo. For
 - Plan operativo del warm-up (`docs/email-warmup.md`) con calendario hasta el hito DMARC del 2026-11-03, y sección de borradores en la guía del comercial.
 - Infra: servicio pxos-renderer en el compose (sin puerto público; 127.0.0.1:4030 solo desarrollo), `RENDERER_URL` al runtime. Prospector v4 (render_url) y agente EmailDrafter sembrados.
 
+## 2026-10-07 — Tanda 5 (PR #5)
+
+- Dominios de expositores: paginación de catálogos (también la de solo-cliente, pulsando el paginador dentro del renderer) + apertura de fichas de los relevantes para extraer y validar su web. Run real: 60 expositores evaluados, 6 empresas reales creadas en Twenty con señal e hipótesis (0,14 €). `max_profile_lookups` por defecto: 20.
+- Triggers EVENT con operador `{in: [...]}` y guarda `toStatus`: una hipótesis editada y validada también genera borrador, con los datos corregidos.
+- Limpieza: script `pnpm cleanup:archive-test-agents`; 30+ agentes/tareas de test archivados (nunca borrados); métricas y dashboard ocultan archivados (`include_archived=true` para verlos).
+- Sandbox de Chromium activo en pxos-renderer (perfil seccomp de Playwright + `cap_add SYS_CHROOT`).
+- Email: documentado que SNDS no aplica con IP compartida de IONOS (alternativa manual para Outlook) y procedimiento de la lista de supresión (nota en Twenty, ya creada).
+
 ## Sin publicar
 
 ### Documentación y herramientas

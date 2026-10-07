@@ -619,6 +619,40 @@ export const eventSubscriptions = pgTable(
   ],
 );
 
+// ---------------------------------------------------------------------------
+// 10.1 Email outbound (LLD v0.1): sends observed from Twenty (email-ops)
+// ---------------------------------------------------------------------------
+/**
+ * One row per email sent from Twenty with the manual workflow "Enviar borrador de email",
+ * recorded when the Twenty webhook reports `commercialHypothesis.emailStatus -> SENT`.
+ * The runtime never sends: this table only OBSERVES. Append-only (trigger anti-DELETE).
+ * Dedupe: one row per (tenant, hypothesis, sent_at) where `sent_at` is the `updatedAt` of
+ * the record in the webhook, so a redelivered webhook adds nothing.
+ * `to_email` keeps the recipients (CRM data, already in Twenty); events only carry the domain.
+ */
+export const emailSends = pgTable(
+  'email_sends',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    tenantId: tenantId(),
+    hypothesisId: text('hypothesis_id').notNull(),
+    companyId: text('company_id'),
+    /** Normalised recipients, comma separated ('' if the record had none). */
+    toEmail: text('to_email').notNull(),
+    /** Domain of the first recipient. */
+    toDomain: text('to_domain'),
+    subject: text('subject'),
+    sentAt: timestamp('sent_at', { withTimezone: true }).notNull(),
+    /** Workspace member of the change in Twenty, when the webhook names one. */
+    workspaceMemberId: text('workspace_member_id'),
+    createdAt: createdAt(),
+  },
+  (t) => [
+    uniqueIndex('email_sends_dedupe_uq').on(t.tenantId, t.hypothesisId, t.sentAt),
+    index('email_sends_tenant_sent_idx').on(t.tenantId, t.sentAt),
+  ],
+);
+
 export type Agent = typeof agents.$inferSelect;
 export type AgentVersion = typeof agentVersions.$inferSelect;
 export type TaskDefinition = typeof taskDefinitions.$inferSelect;
@@ -634,3 +668,4 @@ export type InboundState = typeof inboundState.$inferSelect;
 export type Skill = typeof skills.$inferSelect;
 export type SkillVersion = typeof skillVersions.$inferSelect;
 export type EventSubscription = typeof eventSubscriptions.$inferSelect;
+export type EmailSend = typeof emailSends.$inferSelect;

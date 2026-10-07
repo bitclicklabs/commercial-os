@@ -23,6 +23,11 @@ const ConfigSchema = z.object({
   concurrencyDeferMs: z.coerce.number().int().positive().default(2_000),
   stalledIntervalMs: z.coerce.number().int().positive().default(30_000),
   maxStalledCount: z.coerce.number().int().nonnegative().default(1),
+  // Event bus (src/events/)
+  eventChainMaxDepth: z.coerce.number().int().min(1).max(50).default(5),
+  eventRepublishIntervalMs: z.coerce.number().int().positive().default(30_000),
+  eventRepublishGraceMs: z.coerce.number().int().nonnegative().default(15_000),
+  eventConsumerConcurrency: z.coerce.number().int().positive().default(4),
 });
 
 export type Config = z.infer<typeof ConfigSchema>;
@@ -54,5 +59,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env, argv: string[] 
     concurrencyDeferMs: emptyToUndefined(env.CONCURRENCY_DEFER_MS),
     stalledIntervalMs: emptyToUndefined(env.STALLED_INTERVAL_MS),
     maxStalledCount: emptyToUndefined(env.MAX_STALLED_COUNT),
+    eventChainMaxDepth: emptyToUndefined(env.EVENT_CHAIN_MAX_DEPTH),
+    eventRepublishIntervalMs: emptyToUndefined(env.EVENT_REPUBLISH_INTERVAL_MS),
+    eventRepublishGraceMs: emptyToUndefined(env.EVENT_REPUBLISH_GRACE_MS),
+    eventConsumerConcurrency: emptyToUndefined(env.EVENT_CONSUMER_CONCURRENCY),
   });
 }

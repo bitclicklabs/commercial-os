@@ -14,12 +14,17 @@
  * differ. The API calls it after create/patch/pause/resume/archive; the scheduler process
  * also runs `syncAll` at boot and periodically, which heals missed syncs (Redis down during
  * a PATCH) and removes schedulers of tasks that no longer exist or no longer qualify.
+ *
+ * EVENT schedules follow the same sync path when `eventsQueueName` is set: they are
+ * registered in the trigger registry consumed by `EventTriggerConsumer` (event-triggers.ts).
  */
 import { Queue, Worker, type ConnectionOptions, type Job, type JobSchedulerJson, type JobsOptions } from 'bullmq';
 import { and, eq, sql } from 'drizzle-orm';
 import type { Db } from '../db/client.js';
 import { agents, taskDefinitions, taskRuns, type TaskDefinition } from '../db/schema.js';
 import { taskRunIdempotencyKey } from '../domain/idempotency.js';
+import type { EventPublisher } from '../events/event-bus.js';
+import { desiredEventTrigger, type EventTrigger } from '../events/triggers.js';
 import { redisConnectionFromUrl, type RunQueue } from '../queue/run-queue.js';
 import { requestTaskRun } from '../services/task-runs.js';
 import type { ProcessorLogger } from '../worker/processor.js';
@@ -36,6 +41,7 @@ import {
   TIME_SCHEDULE_TYPES,
   type NormalizedSchedule,
 } from './schedule.js';
+import { EventTriggerRegistry, sameTrigger, triggerRegistryKey, type RegisteredTrigger } from './event-triggers.js';
 
 export interface ScheduleTickJob {
   kind: 'schedule_tick';
@@ -51,11 +57,13 @@ export interface SyncResult {
   taskId: string;
   action: SyncAction;
   desired: NormalizedSchedule | null;
+  /** EVENT schedules: the trigger that should be registered (null when none). */
+  trigger?: EventTrigger | null;
   error?: string;
 }
 
 export interface RegisteredSchedule {
-  kind: 'job_scheduler' | 'once';
+  kind: 'job_scheduler' | 'once' | 'event';
   id: string;
   task_id: string | null;
   tenant_id: string | null;
@@ -63,6 +71,9 @@ export interface RegisteredSchedule {
   every_ms: number | null;
   tz: string | null;
   next_run_at: string | null;
+  /** Only for kind = event. */
+  event_type?: string | null;
+  filter?: Record<string, unknown> | null;
 }
 
 export interface TaskScheduleState {
@@ -77,6 +88,8 @@ export interface TaskScheduleState {
   /** ONCE whose slot already produced a TaskRun. */
   fired: boolean;
   next_runs: string[];
+  /** EVENT schedules: desired vs registered trigger (absent when triggers are not configured). */
+  event_trigger?: { desired: EventTrigger | null; registered: RegisteredTrigger | null };
 }
 
 export interface SchedulerStatus {
@@ -124,10 +137,16 @@ export interface BullTaskSchedulerOptions {
   logger?: ProcessorLogger;
   /** Restrict syncAll to one tenant (tests); production syncs every tenant. */
   tenantId?: string;
+  /** `{QUEUE_NAME}-events`: enables EVENT trigger registration. */
+  eventsQueueName?: string;
+  /** Emits task.scheduled for runs created by ticks. */
+  events?: EventPublisher;
 }
 
 export class BullTaskScheduler implements SchedulerControl {
   readonly queue: Queue<ScheduleTickJob>;
+  /** EVENT trigger registry (only with `eventsQueueName`). */
+  readonly triggers?: EventTriggerRegistry;
   private readonly logger: ProcessorLogger;
   private worker: Worker<ScheduleTickJob> | undefined;
   private syncTimer: NodeJS.Timeout | undefined;
@@ -146,6 +165,7 @@ export class BullTaskScheduler implements SchedulerControl {
     this.queue.on('error', () => {
       /* surfaced on calls */
     });
+    if (opts.eventsQueueName) this.triggers = new EventTriggerRegistry(this.queue, triggerRegistryKey(opts.eventsQueueName));
   }
 
   // -------------------------------------------------------------------------
@@ -168,8 +188,34 @@ export class BullTaskScheduler implements SchedulerControl {
     return Boolean(run);
   }
 
-  /** Brings BullMQ in line with the task's desired schedule. Idempotent. */
+  /** Brings BullMQ (and the EVENT trigger registry) in line with the task's desired schedule. Idempotent. */
   async syncTask(task: TaskDefinition, pending?: Job<ScheduleTickJob>[]): Promise<SyncResult> {
+    const time = await this.syncTimeSchedule(task, pending);
+    if (!this.triggers) return time;
+    const event = await this.syncEventTrigger(task, this.triggers);
+    const action = event.trigger ? event.action : time.action === 'none' ? event.action : time.action;
+    return { ...time, action, trigger: event.trigger };
+  }
+
+  private async syncEventTrigger(
+    task: TaskDefinition,
+    registry: EventTriggerRegistry,
+  ): Promise<{ action: SyncAction; trigger: EventTrigger | null }> {
+    const trigger = desiredEventTrigger(task);
+    const existing = await registry.get(task.id);
+    if (!trigger) return { action: existing && (await registry.remove(task.id)) ? 'removed' : 'none', trigger };
+    if (sameTrigger(existing, task, trigger)) return { action: 'unchanged', trigger };
+    await registry.set({
+      task_id: task.id,
+      tenant_id: task.tenantId,
+      event_type: trigger.eventType,
+      filter: trigger.filter,
+      registered_at: new Date().toISOString(),
+    });
+    return { action: existing ? 'updated' : 'registered', trigger };
+  }
+
+  private async syncTimeSchedule(task: TaskDefinition, pending?: Job<ScheduleTickJob>[]): Promise<SyncResult> {
     const desired = desiredSchedule(task);
     const schedId = schedulerIdFor(task.id);
     const existing = await this.queue.getJobScheduler(schedId);
@@ -231,7 +277,8 @@ export class BullTaskScheduler implements SchedulerControl {
 
   /** Full reconciliation of every tenant's schedules. */
   async syncAll(): Promise<SyncResult[]> {
-    const types = TIME_SCHEDULE_TYPES.map((t) => sql`${t}`);
+    const scheduleTypes: string[] = [...TIME_SCHEDULE_TYPES, ...(this.triggers ? ['EVENT'] : [])];
+    const types = scheduleTypes.map((t) => sql`${t}`);
     const tasks = await this.db
       .select()
       .from(taskDefinitions)
@@ -269,6 +316,15 @@ export class BullTaskScheduler implements SchedulerControl {
         results.push({ taskId, action: 'removed', desired: null });
       }
     }
+    // EVENT triggers whose task is gone or no longer has an EVENT schedule.
+    if (this.triggers) {
+      for (const t of await this.triggers.list()) {
+        if (!listed.has(t.task_id) && inScope(t.tenant_id)) {
+          await this.triggers.remove(t.task_id);
+          results.push({ taskId: t.task_id, action: 'removed', desired: null, trigger: null });
+        }
+      }
+    }
     return results;
   }
 
@@ -302,6 +358,21 @@ export class BullTaskScheduler implements SchedulerControl {
     };
   }
 
+  private fromTrigger(t: RegisteredTrigger): RegisteredSchedule {
+    return {
+      kind: 'event',
+      id: t.task_id,
+      task_id: t.task_id,
+      tenant_id: t.tenant_id,
+      pattern: null,
+      every_ms: null,
+      tz: null,
+      next_run_at: null,
+      event_type: t.event_type,
+      filter: t.filter,
+    };
+  }
+
   async describeTask(task: TaskDefinition): Promise<TaskScheduleState> {
     let parsed: NormalizedSchedule | null = null;
     let error: string | null = null;
@@ -321,6 +392,14 @@ export class BullTaskScheduler implements SchedulerControl {
     else if (desired.type === 'ONCE') inSync = once.some((j) => j.id === onceJobIdFor(task.id, desired.runAt)) || (fired && !registered);
     else inSync = sameRepeat(existing, desired) && once.length === 0;
 
+    let eventTrigger: TaskScheduleState['event_trigger'];
+    if (this.triggers) {
+      const desiredTrigger = desiredEventTrigger(task);
+      const registeredTrigger = await this.triggers.get(task.id);
+      eventTrigger = { desired: desiredTrigger, registered: registeredTrigger };
+      inSync &&= desiredTrigger ? sameTrigger(registeredTrigger, task, desiredTrigger) : registeredTrigger === null;
+    }
+
     return {
       task_id: task.id,
       task_status: task.status,
@@ -332,19 +411,23 @@ export class BullTaskScheduler implements SchedulerControl {
       in_sync: inSync,
       fired,
       next_runs: desired && !(desired.type === 'ONCE' && fired) ? nextRuns(desired, 5) : [],
+      ...(eventTrigger ? { event_trigger: eventTrigger } : {}),
     };
   }
 
   async status(tenantId?: string): Promise<SchedulerStatus> {
     const schedulers = await this.queue.getJobSchedulers(0, -1, true);
     const once = await this.pendingOnceJobs();
-    const items = [...schedulers.map((s) => this.fromScheduler(s)), ...once.map((j) => this.fromOnceJob(j))].filter(
-      (i) => !tenantId || i.tenant_id === tenantId,
-    );
+    const triggers = this.triggers ? await this.triggers.list() : [];
+    const items = [
+      ...schedulers.map((s) => this.fromScheduler(s)),
+      ...once.map((j) => this.fromOnceJob(j)),
+      ...triggers.map((t) => this.fromTrigger(t)),
+    ].filter((i) => !tenantId || i.tenant_id === tenantId);
     const counts = await this.queue.getJobCounts('delayed', 'waiting', 'active', 'completed', 'failed');
     return {
       queue: this.opts.queueName,
-      counts: { ...counts, job_schedulers: schedulers.length, once_jobs: once.length },
+      counts: { ...counts, job_schedulers: schedulers.length, once_jobs: once.length, event_triggers: triggers.length },
       items,
     };
   }
@@ -373,7 +456,13 @@ export class BullTaskScheduler implements SchedulerControl {
     }
     // QueueUnavailableError propagates: BullMQ retries the tick, and the reconciler would
     // enqueue the persisted QUEUED TaskRun anyway.
-    const result = await requestTaskRun(this.db, this.runQueue, task, { scheduledAt });
+    const result = await requestTaskRun(
+      this.db,
+      this.runQueue,
+      task,
+      { scheduledAt, trigger: 'SCHEDULE' },
+      { ...(this.opts.events ? { events: this.opts.events } : {}), producer: 'scheduler' },
+    );
     return { outcome: result.deduplicated ? 'deduplicated' : 'created', taskRunId: result.taskRun.id, scheduledAt };
   }
 

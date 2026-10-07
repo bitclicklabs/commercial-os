@@ -255,10 +255,17 @@ export async function taskRoutes(app: FastifyInstance, ctx: ApiContext): Promise
     }
 
     try {
-      const result = await requestTaskRun(db, ctx.queue, task, {
-        ...(body.scheduled_at ? { scheduledAt: body.scheduled_at } : {}),
-        ...(body.input ? { input: body.input } : {}),
-      });
+      const result = await requestTaskRun(
+        db,
+        ctx.queue,
+        task,
+        {
+          ...(body.scheduled_at ? { scheduledAt: body.scheduled_at } : {}),
+          ...(body.input ? { input: body.input } : {}),
+          trigger: 'MANUAL',
+        },
+        ctx.events ? { events: ctx.events } : {},
+      );
       return reply.status(result.deduplicated ? 200 : 202).send({
         task_run: serialize(result.taskRun),
         deduplicated: result.deduplicated,

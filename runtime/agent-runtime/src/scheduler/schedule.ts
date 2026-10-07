@@ -9,11 +9,13 @@
  *   INTERVAL  { every_seconds | interval_seconds }  fixed interval, aligned to epoch
  *
  * MANUAL, EVENT, DEPENDENCY and CONDITION are not time-triggered: they normalise to `null`
- * and never register anything in the scheduler.
+ * and never register a job scheduler. EVENT is still validated here (event_type, filter) and
+ * is registered as an event trigger (src/scheduler/event-triggers.ts).
  */
 import { CronExpressionParser } from 'cron-parser';
 import type { ScheduleSpec, TaskDefinition } from '../db/schema.js';
 import { normalizeScheduledAt } from '../domain/idempotency.js';
+import { EventTriggerValidationError, parseEventTrigger } from '../events/triggers.js';
 
 export const DEFAULT_TIMEZONE = 'Europe/Madrid';
 export const TIME_SCHEDULE_TYPES = ['ONCE', 'CRON', 'INTERVAL'] as const;
@@ -85,6 +87,14 @@ export function parseSchedule(
       }
       return { type: 'INTERVAL', everySeconds: every };
     }
+    case 'EVENT':
+      try {
+        parseEventTrigger(spec);
+      } catch (err) {
+        if (err instanceof EventTriggerValidationError) throw new ScheduleValidationError(err.message);
+        throw err;
+      }
+      return null;
     default:
       return null;
   }

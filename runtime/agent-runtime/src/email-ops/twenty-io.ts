@@ -12,6 +12,20 @@ const eq = (field: string, value: string) => `${field}[eq]:${filterValue(value)}
 export interface LoadedSuppressionList {
   list: SuppressionList;
   noteIds: string[];
+  /** True when the note was accepted by id with a damaged title (U+FFFD characters). */
+  titleDamaged: boolean;
+}
+
+/**
+ * Title equality that tolerates an encoding-damaged title: every U+FFFD (replacement
+ * character, what a non-UTF-8 client leaves behind) stands for exactly one character. The
+ * real note in the local Twenty is stored as "Lista de supresi�n � NO contactar".
+ * Only used for the note found BY ID; the search by title stays exact.
+ */
+export function titleMatches(actual: string, expected: string): boolean {
+  const a = [...noteTitle(actual)];
+  const e = [...noteTitle(expected)];
+  return a.length === e.length && a.every((c, i) => c === e[i] || c === '�');
 }
 
 /**
@@ -28,7 +42,11 @@ export async function loadSuppressionList(
   const signal = opts.signal ? { signal: opts.signal } : {};
   const notes = new Map<string, TwentyNote>();
   const byId = await twenty.get<TwentyNote>(TWENTY_OBJECTS.note, opts.noteId ?? SUPPRESSION_NOTE_ID, signal);
-  if (byId && noteTitle(byId.title ?? '') === title) notes.set(byId.id, byId);
+  let titleDamaged = false;
+  if (byId && titleMatches(byId.title ?? '', title)) {
+    notes.set(byId.id, byId);
+    titleDamaged = noteTitle(byId.title ?? '') !== title;
+  }
   const { records } = await twenty.list<TwentyNote>(TWENTY_OBJECTS.note, { filter: eq('title', title), limit: 20, ...signal });
   for (const n of records) if (noteTitle(n.title ?? '') === title) notes.set(n.id, n);
   if (notes.size === 0) return null;
@@ -38,7 +56,7 @@ export async function loadSuppressionList(
     for (const e of parsed.emails) list.emails.add(e);
     for (const d of parsed.domains) list.domains.add(d);
   }
-  return { list, noteIds: [...notes.keys()] };
+  return { list, noteIds: [...notes.keys()], titleDamaged };
 }
 
 export interface AlertNoteInput {

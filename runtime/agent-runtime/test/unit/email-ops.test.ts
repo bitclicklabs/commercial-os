@@ -7,7 +7,7 @@ import { randomUUID } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 import { checkRecipients, parseRecipients, recipientDomains, suppressionMatch } from '../../src/email-ops/recipients.js';
 import { BLOCK_NOTE_TITLES, emailTransitionOf, localDateTime, processEmailStatusChange } from '../../src/email-ops/service.js';
-import { loadSuppressionList, upsertAlertNote } from '../../src/email-ops/twenty-io.js';
+import { loadSuppressionList, titleMatches, upsertAlertNote } from '../../src/email-ops/twenty-io.js';
 import { daysBetween, exceedsTarget, ionosHourlyLimit, WARMUP_PHASES, warmupDay, weekdayOf } from '../../src/email-ops/warmup.js';
 import type { EventPublisher, PublishEventInput } from '../../src/events/event-bus.js';
 import { EMAIL_EVENT_TYPES, EventEnvelopeSchema, schemaVersionFor } from '../../src/events/envelope.js';
@@ -248,6 +248,19 @@ describe('loadSuppressionList / upsertAlertNote', () => {
     expect([...loaded!.list.domains].sort()).toEqual(['empresa-dos.example', 'ventas.grupo.example']);
     fake.tables.notes[0]!.title = 'Otra nota';
     expect(await loadSuppressionList(fake.client())).toBeNull();
+  });
+
+  it('accepts the note BY ID when its title was stored with U+FFFD (as in the real Twenty), never a different title', async () => {
+    const damaged = 'Lista de supresi�n � NO contactar';
+    expect(titleMatches(damaged, SUPPRESSION_NOTE_TITLE)).toBe(true);
+    expect(titleMatches(SUPPRESSION_NOTE_TITLE, SUPPRESSION_NOTE_TITLE)).toBe(true);
+    expect(titleMatches('Lista de supresi�n � NO contactarX', SUPPRESSION_NOTE_TITLE)).toBe(false);
+    expect(titleMatches('Lista de supresion - NO contactar', SUPPRESSION_NOTE_TITLE)).toBe(false);
+    const { fake } = world('x@y.example');
+    fake.tables.notes[0]!.title = damaged;
+    const loaded = await loadSuppressionList(fake.client());
+    expect(loaded).toMatchObject({ noteIds: [SUPPRESSION_NOTE_ID], titleDamaged: true });
+    expect(loaded!.list.domains.has('empresa-dos.example')).toBe(true);
   });
 
   it('a copy of the note with the exact title also counts', async () => {

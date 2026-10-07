@@ -202,6 +202,7 @@ async function handleReady(payload: TwentyWebhookPayload, tenantId: string, opts
 
   const pre = checkRecipients(fresh.emailTo, { emails: new Set(), domains: new Set() });
   const loaded = pre.ok ? await loadSuppressionList(twenty) : null;
+  if (loaded?.titleDamaged) opts.logger?.warn({ noteIds: loaded.noteIds }, 'email-ops: suppression note accepted by id, its title has damaged characters (U+FFFD)');
   const check = pre.ok ? checkRecipients(fresh.emailTo, loaded?.list ?? null) : pre;
   const toDomains = recipientDomains(check.recipients);
   if (check.ok) return { check: 'ready', status: 'passed', recipients: check.recipients.length, toDomains };

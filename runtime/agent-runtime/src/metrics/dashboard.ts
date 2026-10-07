@@ -9,6 +9,8 @@
  * The "Email" block (email-ops) reads `email` of /metrics/summary: sends from Twenty today,
  * this week and in total, the warm-up target of the day (amber when exceeded) and the
  * informative IONOS hourly limit.
+ * "Por versión de skill" reads `by_skill_version` of /metrics/agents: per agent and exact skill
+ * version (from the traces), executions, hypotheses created and human acceptance.
  */
 export const DASHBOARD_HTML = `<!doctype html>
 <html lang="es">
@@ -93,6 +95,16 @@ a:hover { text-decoration: underline; }
     </tr></thead>
     <tbody id="agents"><tr><td colspan="10" class="muted">Cargando…</td></tr></tbody>
   </table></div>
+
+  <h2>Por versión de skill</h2>
+  <div class="table-wrap"><table>
+    <thead><tr>
+      <th>Agente</th><th>Skill</th><th>Versión</th><th>Versiones del agente</th><th class="num">Ejecuciones</th>
+      <th class="num">Hipótesis creadas</th><th class="num">Veredictos</th><th class="num">Aceptación</th><th class="num">Útil (AC-20)</th>
+    </tr></thead>
+    <tbody id="skills"><tr><td colspan="9" class="muted">Cargando…</td></tr></tbody>
+  </table></div>
+  <p class="muted note">Versiones exactas registradas en las trazas. Solo veredictos humanos.</p>
 
   <h2>Últimos 10 runs</h2>
   <div class="table-wrap"><table>
@@ -193,6 +205,28 @@ a:hover { text-decoration: underline; }
       tr.appendChild(el('td', pct(h.useful_rate), 'num'));
       tr.appendChild(el('td', h.avg_score === null ? '–' : h.avg_score.toFixed(2), 'num'));
       tb.appendChild(tr);
+    });
+
+    var sb = document.getElementById('skills');
+    sb.textContent = '';
+    var skillRows = agents.by_skill_version || [];
+    if (!skillRows.length) sb.appendChild(rowMsg('Sin trazas con skills', 9));
+    skillRows.forEach(function (k) {
+      var tr = document.createElement('tr');
+      var h = k.human_feedback;
+      var label = k.source === 'db' ? (k.skill_version_label || '–')
+        : k.source === 'code' ? 'código' + (k.skill_version_label ? ' ' + k.skill_version_label : '')
+        : 'sin resolver';
+      tr.appendChild(el('td', k.agent_name));
+      tr.appendChild(el('td', k.skill));
+      tr.appendChild(el('td', label));
+      tr.appendChild(el('td', k.agent_versions.length ? k.agent_versions.map(function (v) { return 'v' + v; }).join(', ') : '–'));
+      tr.appendChild(el('td', k.executions, 'num'));
+      tr.appendChild(el('td', k.hypotheses_created, 'num'));
+      tr.appendChild(el('td', h.verdicts, 'num'));
+      tr.appendChild(el('td', pct(h.acceptance_rate), 'num'));
+      tr.appendChild(el('td', pct(h.useful_rate), 'num'));
+      sb.appendChild(tr);
     });
 
     var rb = document.getElementById('runs');

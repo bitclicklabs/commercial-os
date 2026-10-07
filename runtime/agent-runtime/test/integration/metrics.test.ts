@@ -11,7 +11,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { buildServer } from '../../src/api/server.js';
 import { createDb, type DbHandle } from '../../src/db/client.js';
 import { runMigrations } from '../../src/db/migrate.js';
-import { agentExecutions, agents, agentVersions, evaluations, taskDefinitions, taskRuns } from '../../src/db/schema.js';
+import { agentExecutions, agents, agentVersions, evaluations, taskDefinitions, taskRuns, traces, type SkillVersionUsed } from '../../src/db/schema.js';
 import { MemoryRunQueue } from '../../src/queue/run-queue.js';
 
 const DATABASE_URL = process.env.DATABASE_URL ?? 'postgres://agentos:agentos_dev@127.0.0.1:5440/agentos_wt4_metrics';
@@ -42,6 +42,8 @@ describe.skipIf(!dbAvailable)('metrics (PostgreSQL, seeded)', () => {
   let app: FastifyInstance;
   let v1Id = '';
   let v2Id = '';
+  const SKILL_V1 = randomUUID();
+  const SKILL_V2 = randomUUID();
 
   const get = (url: string, tenant: string) => app.inject({ method: 'GET', url, headers: { 'x-tenant-id': tenant } });
 
@@ -115,6 +117,35 @@ describe.skipIf(!dbAvailable)('metrics (PostgreSQL, seeded)', () => {
     });
   }
 
+  /** An automatic evaluation (RULE / LLM_JUDGE / COMPOSITE) misfiled in the production tenant. */
+  async function autoEvaluation(tenant: string, kind: 'RULE' | 'LLM_JUDGE' | 'COMPOSITE', subjectId: string, executionId: string, feedback: 'PASS' | 'FAIL' | 'SCORED', at: Date) {
+    await handle.db.insert(evaluations).values({
+      tenantId: tenant,
+      kind,
+      evaluatorId: `${kind.toLowerCase()}-test`,
+      subjectType: 'hypothesis',
+      subjectId,
+      agentExecutionId: executionId,
+      feedback,
+      score: feedback === 'PASS' ? 1 : 0.2,
+      source: 'evaluator',
+      occurredAt: at,
+    });
+  }
+
+  const skill = (name: string, version: number, source: 'db' | 'code', id: string | null): SkillVersionUsed => ({
+    name,
+    version,
+    skill_version_id: id,
+    content_hash: `hash-${name}-${version}`,
+    source,
+    requested: { name },
+  });
+
+  async function trace(tenant: string, agentId: string, executionId: string, skillVersions: SkillVersionUsed[]) {
+    await handle.db.insert(traces).values({ tenantId: tenant, executionId, agentId, skillVersions });
+  }
+
   const out = (outcome: string, eur: number, counters: Record<string, number>) => ({ outcome, cost: { eur, currency: 'USD', usd_to_eur: 0.86 }, counters });
 
   beforeAll(async () => {
@@ -143,7 +174,7 @@ describe.skipIf(!dbAvailable)('metrics (PostgreSQL, seeded)', () => {
       createdAt: new Date(now - 10 * DAY),
       durationMs: 10_000,
       output: out('SUCCESS', 0.01, { evaluated: 3, relevant: 2, hypotheses_created: 1 }),
-      executions: [{ status: 'COMPLETED', output: out('SUCCESS', 0.01, {}), totalCost: 0.0116 }],
+      executions: [{ status: 'COMPLETED', output: out('SUCCESS', 0.01, { hypotheses_created: 1 }), totalCost: 0.0116 }],
     });
     // run2 (v1): attempt 1 FAILED (0.005 USD -> 0.0043 EUR), attempt 2 PARTIAL 0.02 EUR; 20 s
     const [, e3] = await seedRun(tenantA, agent!.id, task!.id, V1, {
@@ -153,7 +184,7 @@ describe.skipIf(!dbAvailable)('metrics (PostgreSQL, seeded)', () => {
       output: out('PARTIAL', 0.02, { evaluated: 2, relevant: 1, hypotheses_created: 0 }),
       executions: [
         { status: 'FAILED', output: null, totalCost: 0.005 },
-        { status: 'COMPLETED', output: out('PARTIAL', 0.02, {}), totalCost: 0.0233 },
+        { status: 'COMPLETED', output: out('PARTIAL', 0.02, { hypotheses_created: 0 }), totalCost: 0.0233 },
       ],
     });
     // run3 (v2): 0.03 EUR, 30 s
@@ -162,7 +193,7 @@ describe.skipIf(!dbAvailable)('metrics (PostgreSQL, seeded)', () => {
       createdAt: new Date(now - 2 * HOUR),
       durationMs: 30_000,
       output: out('SUCCESS', 0.03, { evaluated: 4, relevant: 3, hypotheses_created: 2 }),
-      executions: [{ status: 'COMPLETED', output: out('SUCCESS', 0.03, {}), totalCost: 0.0349 }],
+      executions: [{ status: 'COMPLETED', output: out('SUCCESS', 0.03, { hypotheses_created: 2 }), totalCost: 0.0349 }],
     });
     // run4 (v2): FAILED, no output, 5 s
     await seedRun(tenantA, agent!.id, task!.id, V2, {
@@ -181,6 +212,18 @@ describe.skipIf(!dbAvailable)('metrics (PostgreSQL, seeded)', () => {
     await verdict(tenantA, 'h4', e4!, 'ACCEPTED', new Date('2026-10-02T12:00:00Z'));
     await verdict(tenantA, 'h5', e4!, 'EDITED', new Date('2026-10-02T23:30:00Z')); // 2026-10-03 in Madrid
     await verdict(tenantA, 'h6', null, 'ACCEPTED', new Date('2026-10-03T08:00:00Z')); // unlinked
+    // Automatic evaluations in the same tenant must not count anywhere: a later RULE FAIL on h3
+    // (would become its "latest verdict") and an LLM_JUDGE on a subject without human verdict.
+    await autoEvaluation(tenantA, 'RULE', 'h3', e4!, 'FAIL', new Date('2026-10-04T09:00:00Z'));
+    await autoEvaluation(tenantA, 'LLM_JUDGE', 'h7', e1!, 'SCORED', new Date('2026-10-04T10:00:00Z'));
+    await autoEvaluation(tenantA, 'COMPOSITE', 'h1', e1!, 'PASS', new Date('2026-10-04T11:00:00Z'));
+
+    // Exact skill versions of each execution (traces.skill_versions). The failed attempt of run2
+    // and run4 have no trace. Skill "prospector-event-exhibitors" v1 -> v2 while the agent was
+    // still v1; agent v2 also used a code skill.
+    await trace(tenantA, agent!.id, e1!, [skill('prospector-event-exhibitors', 1, 'db', SKILL_V1)]);
+    await trace(tenantA, agent!.id, e3!, [skill('prospector-event-exhibitors', 2, 'db', SKILL_V2)]);
+    await trace(tenantA, agent!.id, e4!, [skill('prospector-event-exhibitors', 2, 'db', SKILL_V2), skill('research-brief', 1, 'code', null)]);
 
     // ---- tenant B: same agent name, expensive and all discarded. Must never leak into A.
     const [agentB] = await handle.db.insert(agents).values({ tenantId: tenantB, name: 'Prospector', status: 'ACTIVE' }).returning();
@@ -262,10 +305,32 @@ describe.skipIf(!dbAvailable)('metrics (PostgreSQL, seeded)', () => {
     expect(a2!.human_feedback.avg_score).toBeCloseTo(2.5 / 3, 4);
   });
 
+  it('agents: breakdown per exact skill version (from the traces), human verdicts only', async () => {
+    const body = (await get('/metrics/agents', tenantA)).json();
+    const rows = body.by_skill_version as Array<Record<string, any>>;
+    expect(rows.map((r) => [r.skill, r.skill_version_label, r.source])).toEqual([
+      ['prospector-event-exhibitors', 'v1', 'db'],
+      ['prospector-event-exhibitors', 'v2', 'db'],
+      ['research-brief', 'v1', 'code'],
+    ]);
+    const [s1, s2, code] = rows;
+    // e1 only; h1 ACCEPTED (its COMPOSITE PASS and the LLM_JUDGE on h7 are ignored).
+    expect(s1).toMatchObject({ agent_name: 'Prospector', skill_version: 1, skill_version_id: SKILL_V1, agent_versions: [1], executions: 1, completed: 1, hypotheses_created: 1 });
+    expect(s1!.human_feedback).toMatchObject({ verdicts: 1, subjects_reviewed: 1, accepted: 1, acceptance_rate: 1 });
+    // e3 (agent v1) + e4 (agent v2): h2 EDITED -> DISCARDED, h3 A (RULE FAIL ignored), h4 A, h5 E.
+    expect(s2).toMatchObject({ skill_version_id: SKILL_V2, agent_versions: [1, 2], executions: 2, completed: 2, hypotheses_created: 2 });
+    expect(s2!.human_feedback).toMatchObject({ verdicts: 5, subjects_reviewed: 4, accepted: 2, edited: 1, discarded: 1, acceptance_rate: 0.5, useful_rate: 0.75 });
+    expect(code).toMatchObject({ skill_version_id: null, agent_versions: [2], executions: 1, hypotheses_created: 2 });
+    expect(code!.human_feedback).toMatchObject({ verdicts: 3, accepted: 2, edited: 1, discarded: 0 });
+    expect(code!.last_run_at).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+  });
+
   it('evaluations: series per day (time zone aware) and per subject', async () => {
     const res = await get('/metrics/evaluations?tz=Europe/Madrid', tenantA);
     expect(res.statusCode).toBe(200);
     const e = res.json();
+    expect(e.evaluation_kind).toBe('HUMAN');
+    expect(e.subjects.map((s: { subject_id: string }) => s.subject_id)).not.toContain('h7');
     expect(e.totals).toMatchObject({ verdicts: 7, subjects: 6, linked_to_execution: 6, by_feedback: { ACCEPTED: 4, EDITED: 2, DISCARDED: 1 } });
     expect(e.by_day).toEqual([
       { day: '2026-10-01', verdicts: 2, ACCEPTED: 1, EDITED: 1, DISCARDED: 0, avg_score: 0.75 },
@@ -294,6 +359,7 @@ describe.skipIf(!dbAvailable)('metrics (PostgreSQL, seeded)', () => {
     const agentsB = (await get('/metrics/agents', tenantB)).json().items;
     expect(agentsB).toHaveLength(1);
     expect(agentsB[0].human_feedback.verdicts).toBe(2);
+    expect((await get('/metrics/agents', tenantB)).json().by_skill_version).toEqual([]);
     const agentsA = (await get('/metrics/agents', tenantA)).json().items;
     expect(agentsA.reduce((n: number, i: { human_feedback: { verdicts: number } }) => n + i.human_feedback.verdicts, 0)).toBe(6);
 

@@ -7,6 +7,7 @@ import {
   TWENTY_OBJECTS,
   currencyToEur,
   type TwentyCommercialHypothesis,
+  type TwentyClient,
   type TwentyCommercialHypothesisExpanded,
   type TwentyPerson,
 } from '../../integrations/twenty/index.js';
@@ -224,6 +225,80 @@ export function createSetHypothesisDraftTool(deps: TwentyToolDeps) {
         );
         ctx.logger.info('hypothesis draft fields written', { hypothesisId: input.hypothesisId });
         return { status: 'ok', output: { written: true, reason: 'written', emailStatus: 'DRAFT' } };
+      }),
+  });
+}
+
+// ---------------------------------------------------------------------------
+// revert_hypothesis_draft_status (LOW_WRITE)
+// ---------------------------------------------------------------------------
+
+export const RevertHypothesisDraftStatusInput = z.object({
+  hypothesisId: RecordId,
+  /** Only reverts when the draft is still in this status (compare-and-set). */
+  expectedStatus: z.enum(['READY']).default('READY'),
+});
+
+export const RevertHypothesisDraftStatusOutput = z.object({
+  reverted: z.boolean(),
+  reason: z.enum(['reverted', 'status_changed', 'not_found']),
+  /** emailStatus read just before the write (or the current one when nothing was written). */
+  previousStatus: z.string().nullable(),
+});
+export type RevertHypothesisDraftStatusResult = z.infer<typeof RevertHypothesisDraftStatusOutput>;
+
+/**
+ * Puts `emailStatus` back to DRAFT if it is still `expectedStatus` (READY). Surgical: the
+ * PATCH carries ONLY `emailStatus`; recipient, subject and body stay as the person left
+ * them. Re-reads the record right before writing, so a draft that already moved on
+ * (SENDING / SENT: the send workflow won the race, or a person changed it) is not touched.
+ * Twenty has no conditional update, so a change between the read and the PATCH is still
+ * possible; the window is one REST round trip.
+ */
+export async function revertHypothesisDraftStatus(
+  twenty: TwentyClient,
+  hypothesisId: string,
+  opts: { expectedStatus?: 'READY'; signal?: AbortSignal } = {},
+): Promise<RevertHypothesisDraftStatusResult> {
+  const expected = opts.expectedStatus ?? 'READY';
+  const h = await twenty.get<TwentyCommercialHypothesis>(TWENTY_OBJECTS.commercialHypothesis, hypothesisId, {
+    depth: 0,
+    ...(opts.signal ? { signal: opts.signal } : {}),
+  });
+  if (!h) return { reverted: false, reason: 'not_found', previousStatus: null };
+  const current = typeof h.emailStatus === 'string' && h.emailStatus.length > 0 ? h.emailStatus : null;
+  if (current !== expected) return { reverted: false, reason: 'status_changed', previousStatus: current };
+  await twenty.update(TWENTY_OBJECTS.commercialHypothesis, hypothesisId, { emailStatus: 'DRAFT' }, opts.signal ? { signal: opts.signal } : {});
+  return { reverted: true, reason: 'reverted', previousStatus: current };
+}
+
+/**
+ * revert_hypothesis_draft_status (LOW_WRITE): the email-ops guard of the send-from-Twenty
+ * flow. Returns a reviewed draft (READY) to DRAFT so the manual send workflow stops at its
+ * filter. It can only make sending LESS likely: it never sets READY, SENDING or SENT and
+ * never touches the draft text.
+ */
+export function createRevertHypothesisDraftStatusTool(deps: TwentyToolDeps) {
+  return defineTool({
+    id: 'revert_hypothesis_draft_status',
+    name: 'Revert hypothesis draft status',
+    version: '1.0.0',
+    description:
+      'Set the draft status of a commercial hypothesis back from READY to DRAFT (only that field, only if it is still READY), so the draft cannot be sent until a person reviews it again.',
+    inputSchema: RevertHypothesisDraftStatusInput,
+    outputSchema: RevertHypothesisDraftStatusOutput,
+    riskLevel: 'LOW_WRITE',
+    sideEffects: true,
+    approvalPolicy: { mode: 'NONE' },
+    permissions: ['twenty:hypotheses:read', 'twenty:hypotheses:write'],
+    timeoutMs: 15_000,
+    outputTrust: 'trusted',
+    enabled: true,
+    execute: (input, ctx) =>
+      withTwenty(deps, async () => {
+        const out = await revertHypothesisDraftStatus(deps.twenty, input.hypothesisId, { expectedStatus: input.expectedStatus, signal: ctx.signal });
+        if (out.reverted) ctx.logger.info('hypothesis draft status reverted to DRAFT', { hypothesisId: input.hypothesisId });
+        return { status: 'ok', output: out };
       }),
   });
 }

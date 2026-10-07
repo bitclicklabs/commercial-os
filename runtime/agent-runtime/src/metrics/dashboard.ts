@@ -6,6 +6,9 @@
  * All DB text is inserted with textContent (never innerHTML).
  * ARCHIVED agents (test agents) are hidden from the agent table and the latest runs; open
  * the page with `?include_archived=true` to see them. The summary cards count every run.
+ * The "Email" block (email-ops) reads `email` of /metrics/summary: sends from Twenty today,
+ * this week and in total, the warm-up target of the day (amber when exceeded) and the
+ * informative IONOS hourly limit.
  */
 export const DASHBOARD_HTML = `<!doctype html>
 <html lang="es">
@@ -49,6 +52,11 @@ td.num, th.num { text-align: right; }
 .o-PARTIAL, .s-RUNNING, .s-QUEUED { color: var(--warn); }
 a { color: var(--accent); text-decoration: none; }
 a:hover { text-decoration: underline; }
+.card.warn { border-color: var(--warn); box-shadow: inset 4px 0 0 var(--warn); }
+.card.warn .value { color: var(--warn); }
+.card.bad { border-color: var(--bad); box-shadow: inset 4px 0 0 var(--bad); }
+.card.bad .value { color: var(--bad); }
+.note { margin: 8px 0 0; font-size: 12px; }
 #error { display: none; margin: 12px 0; padding: 10px 12px; border-radius: 8px; border: 1px solid var(--bad); color: var(--bad); }
 </style>
 </head>
@@ -66,6 +74,16 @@ a:hover { text-decoration: underline; }
     <div class="card"><div class="label">Tasa de aceptación</div><div class="value" id="c-accept">–</div><div class="sub" id="c-accept-sub"></div></div>
     <div class="card"><div class="label">Última ejecución</div><div class="value" id="c-last">–</div><div class="sub" id="c-last-sub"></div></div>
   </section>
+
+  <h2>Email</h2>
+  <section class="cards" aria-label="Email">
+    <div class="card" id="e-today-card"><div class="label">Envíos hoy</div><div class="value" id="e-today">–</div><div class="sub" id="e-today-sub"></div></div>
+    <div class="card"><div class="label">Envíos esta semana</div><div class="value" id="e-week">–</div><div class="sub">lunes a domingo</div></div>
+    <div class="card"><div class="label">Envíos total</div><div class="value" id="e-total">–</div><div class="sub" id="e-total-sub"></div></div>
+    <div class="card"><div class="label">Warm-up</div><div class="value" id="e-phase">–</div><div class="sub" id="e-phase-sub"></div></div>
+    <div class="card" id="e-hour-card"><div class="label">Límite IONOS</div><div class="value" id="e-hour">–</div><div class="sub" id="e-hour-sub"></div></div>
+  </section>
+  <p class="muted note" id="e-note"></p>
 
   <h2>Por agente y versión</h2>
   <div class="table-wrap"><table>
@@ -156,6 +174,8 @@ a:hover { text-decoration: underline; }
       set('c-last-sub', 'sin runs');
     }
 
+    renderEmail(all.email);
+
     var tb = document.getElementById('agents');
     tb.textContent = '';
     if (!agents.items.length) tb.appendChild(rowMsg('Sin ejecuciones', 10));
@@ -200,6 +220,36 @@ a:hover { text-decoration: underline; }
     box.textContent = 'No se pudieron cargar las métricas: ' + err.message;
     set('meta', 'Error');
   });
+
+  function renderEmail(em) {
+    if (!em) { set('e-note', 'Sin datos de email en este runtime.'); return; }
+    var w = em.warmup, s = em.sends, h = em.ionos_limit;
+    set('e-today', w.target_today === null ? String(s.today) : s.today + ' / ' + w.target_today);
+    var sub;
+    if (w.exceeded) sub = 'Supera el objetivo del día' + (w.exceeded_event_emitted ? ' · aviso emitido' : '');
+    else if (w.target_today === null) sub = w.stage === 'post_warmup' ? 'post warm-up: sin tope blando' : 'antes del warm-up';
+    else if (w.rest_day) sub = 'día de descanso (objetivo 0)';
+    else sub = 'objetivo del día (ambos buzones) · ' + w.target_per_mailbox + ' por buzón';
+    set('e-today-sub', sub);
+    document.getElementById('e-today-card').className = 'card' + (w.exceeded ? ' warn' : '');
+    set('e-week', s.week);
+    set('e-total', s.total);
+    set('e-total-sub', s.last_sent_at ? 'último ' + when(s.last_sent_at) : 'sin envíos');
+    if (w.stage === 'warmup' && w.phase) {
+      set('e-phase', w.phase.label);
+      set('e-phase-sub', w.phase.from + ' a ' + w.phase.to + ' · ' + w.phase.plan);
+    } else if (w.stage === 'post_warmup') {
+      set('e-phase', 'Post warm-up');
+      set('e-phase-sub', 'desde ' + w.end + ' · sin tope blando; sube de forma gradual');
+    } else {
+      set('e-phase', 'Antes del warm-up');
+      set('e-phase-sub', 'empieza el ' + w.start);
+    }
+    set('e-hour', h.last_hour + ' / ' + h.per_hour + ' por hora');
+    set('e-hour-sub', 'informativo · ' + h.basis + ' · buzón día ' + h.mailbox_age_days);
+    document.getElementById('e-hour-card').className = 'card' + (h.status === 'reached' ? ' bad' : '');
+    set('e-note', em.note + ' Día ' + w.date + ' (' + em.timezone + ').');
+  }
 
   function rowMsg(text, cols) {
     var tr = document.createElement('tr');

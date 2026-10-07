@@ -50,6 +50,13 @@
       "when": 1791371200000,
       "tag": "0006_event_subscriptions",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1791375681363,
+      "tag": "0007_email_sends",
+      "breakpoints": true
     }
   ]
 }

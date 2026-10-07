@@ -12,6 +12,7 @@ import { HUMAN_EVALUATOR_ID, HUMAN_FEEDBACK_VALUES, passedOf, scoreOf } from '..
 import { linkDetails, resolveHypothesisOrigin } from '../../evaluations/link-resolver.js';
 import { recordHumanEvaluation } from '../../evaluations/service.js';
 import { authenticateTwentyWebhook, isHypothesisPayload, processTwentyWebhook } from '../../evaluations/twenty-webhook.js';
+import { processEmailStatusChange, type EmailOpsOutcome } from '../../email-ops/service.js';
 import type { ApiContext } from '../context.js';
 import { HttpError, notFound, parse, serialize, tenantOf } from '../http.js';
 
@@ -130,9 +131,23 @@ export async function evaluationRoutes(app: FastifyInstance, ctx: ApiContext): P
         throw new HttpError(401, 'unauthorized', 'invalid webhook credentials');
       }
       if (!isHypothesisPayload(req.body)) throw new HttpError(400, 'invalid_payload', 'not a Twenty record webhook payload');
+      // Email-ops first: the READY check races the manual send workflow (src/email-ops/service.ts).
+      let email: EmailOpsOutcome | { status: 'error'; message: string } | null;
+      try {
+        email = await processEmailStatusChange(db, req.body, {
+          defaultTenantId: ctx.config.defaultTenantId,
+          twenty: ctx.twenty,
+          events: ctx.events,
+          logger: req.log,
+        });
+      } catch (err) {
+        req.log.error({ err: (err as Error).message, event: req.body.eventName }, 'email-ops failed');
+        email = { status: 'error', message: (err as Error).message.slice(0, 300) };
+      }
       const outcome = await processTwentyWebhook(db, req.body, { defaultTenantId: ctx.config.defaultTenantId, dedupeWindowMs, events: ctx.events });
-      req.log.info({ event: req.body.eventName, outcome, auth: auth.method }, 'twenty webhook processed');
-      return reply.status(outcome.status === 'recorded' ? 201 : 200).send(outcome);
+      req.log.info({ event: req.body.eventName, outcome, email, auth: auth.method }, 'twenty webhook processed');
+      const code = email?.status === 'error' ? 502 : outcome.status === 'recorded' ? 201 : 200;
+      return reply.status(code).send(email ? { ...outcome, email } : outcome);
     });
   });
 

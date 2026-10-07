@@ -66,10 +66,10 @@ export function desiredProspectorVersion() {
       tool_policy: {
         allow: [...PROSPECTOR_TOOLS],
         max_risk_level: 'LOW_WRITE',
-        // Direct: 50 exhibitors x (upsert + signal + hypothesis, or find) + summary.
-        // Scout: 3 fairs x 100 exhibitors x 3 writes + fetches + renders + profiles + event signals + summary.
+        // Direct: 50 exhibitors x (upsert + signal + research + hypothesis, or find) + summary.
+        // Scout: 3 fairs x 100 exhibitors x 4 writes + fetches + renders + profiles + event signals + summary.
         // The real limit of a scout run is its time budget (scout.time_budget_ms).
-        max_calls_per_execution: 1_500,
+        max_calls_per_execution: 1_800,
         // fetch_url: 18 pages/PDFs + 3 grounding redirects (+1) + 100 profiles + 100 domain checks;
         // render_url: 4 catalog renders (+1 retry, +1 older-renderer retry each) + 100 profiles.
         max_calls_per_tool: { fetch_url: 230, render_url: 115 },
@@ -105,7 +105,7 @@ export function desiredProspectorVersion() {
 export function desiredTask(defaultInput: Record<string, unknown>) {
   return {
     description:
-      'Prospección diaria a partir de los expositores de un evento: el Prospector evalúa cada expositor con el LLM y registra en Twenty empresa, señal e hipótesis (PROPOSED) de los relevantes.',
+      'Prospección diaria a partir de los expositores de un evento: el Prospector evalúa cada expositor con el LLM y registra en Twenty empresa, señal, research e hipótesis (PROPOSED) de los relevantes.',
     defaultInput,
     schedule: { type: 'CRON', expression: '0 8 * * *' },
     timezone: 'Europe/Madrid',
@@ -123,7 +123,7 @@ export const SCOUT_DEFAULT_INPUT = { sector: 'alimentación y bebidas', region: 
 export function desiredScoutTask() {
   return {
     description:
-      'Exploración semanal de ferias reales: el Prospector (modo scout) busca con Google (grounding de Gemini) ferias próximas del sector, descarga su página de expositores, extrae los expositores del texto y registra en Twenty empresa, señal e hipótesis (PROPOSED) de los relevantes; sin lista de expositores, registra la feria como señal FAIR.',
+      'Exploración semanal de ferias reales: el Prospector (modo scout) busca con Google (grounding de Gemini) ferias próximas del sector, descarga su página de expositores, extrae los expositores del texto y registra en Twenty empresa, señal, research e hipótesis (PROPOSED) de los relevantes; sin lista de expositores, registra la feria como señal FAIR.',
     defaultInput: { ...SCOUT_DEFAULT_INPUT },
     schedule: { type: 'CRON', expression: '30 7 * * 1' },
     timezone: 'Europe/Madrid',

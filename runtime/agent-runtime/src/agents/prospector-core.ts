@@ -11,6 +11,7 @@ import type { ChatMessage, CompletionResult, GroundingResult, TokenUsage } from 
 import type { AgentToolbox, ToolCallOutcome } from '../tools/executor.js';
 import type { AgentContext, AgentStep } from './agent.js';
 import { buildExhibitorPrompt, buildRepairPrompt } from './prospector-prompt.js';
+import { buildExhibitorResearch, type ExhibitorResearchArgs } from './exhibitor-research.js';
 import { scrubUnknownUrls, type SourceLedger } from './source-ledger.js';
 
 // ---------------------------------------------------------------------------
@@ -190,7 +191,16 @@ export function parseExhibitorDecision(text: string): Parsed<ExhibitorDecision> 
 // ---------------------------------------------------------------------------
 
 /** Tools the Prospector may use (both modes). `fetch_url` and `render_url` are READ and only used by the scout mode. */
-export const PROSPECTOR_TOOLS = ['find_company', 'upsert_company', 'create_signal', 'create_hypothesis', 'create_agent_run_summary', 'fetch_url', 'render_url'] as const;
+export const PROSPECTOR_TOOLS = [
+  'find_company',
+  'upsert_company',
+  'create_signal',
+  'create_research',
+  'create_hypothesis',
+  'create_agent_run_summary',
+  'fetch_url',
+  'render_url',
+] as const;
 
 export interface ScoutConfig {
   taskName: string;
@@ -503,6 +513,11 @@ export interface ExhibitorResult {
   company_id?: string;
   company_created?: boolean;
   signal_id?: string;
+  /** Research record (LLD 5.2) of the exhibitor, composed from the data already read (no LLM call). */
+  research_id?: string;
+  research_created?: boolean;
+  /** create_research failed or had no source: the exhibitor goes on (hypothesis is still written). */
+  research_error?: { code: string; message: string };
   hypothesis_id?: string;
   hypothesis?: z.infer<typeof ExhibitorHypothesis>;
   error?: { code: string; message: string };
@@ -655,6 +670,18 @@ export async function writeExhibitor(
   const signalId = (sig.result.output as { record: { id: string } }).record.id;
   result.signal_id = signalId;
 
+  // 4b. Research (LLD 5.2): what was observed about the exhibitor, from data already read. Not fatal.
+  await writeResearch(run, event, exhibitor, result, {
+    companyId,
+    signalId,
+    companyName,
+    companyDomain,
+    domainSource: domain ? (result.profile?.status === 'domain_resolved' && result.profile.domain === domain ? 'profile' : 'input') : companyDomain ? 'crm' : null,
+    signalTitle: clean(`${event.name} — ${companyName}`).slice(0, 255),
+    ledger,
+    extraSources: extraEvidence.map((e) => e.sourceUrl).filter((u): u is string => typeof u === 'string'),
+  });
+
   // 5. Hypothesis. Name = company + event, so a re-run of the same event does not duplicate it.
   const h = decision.hypothesis;
   const evidence: Array<{ claim: string; sourceUrl?: string }> = [
@@ -689,6 +716,71 @@ export async function writeExhibitor(
   return result;
 }
 
+async function writeResearch(
+  run: ProspectorRun,
+  event: ProspectorEvent,
+  exhibitor: ExhibitorInput,
+  result: ExhibitorResult,
+  w: {
+    companyId: string;
+    signalId: string;
+    companyName: string;
+    companyDomain: string | null;
+    domainSource: ExhibitorResearchArgs['domainSource'];
+    signalTitle: string;
+    ledger: SourceLedger | undefined;
+    extraSources: string[];
+  },
+): Promise<void> {
+  const { ledger } = w;
+  const clean = (text: string) => (ledger ? scrubUnknownUrls(text, ledger) : text);
+  // Scout: only URLs the run really visited (or grounding returned). Direct: the event URL, else the company site.
+  const candidates = [
+    event.source_url,
+    ...w.extraSources,
+    result.profile?.url ?? undefined,
+    w.companyDomain && (!ledger || result.profile?.status === 'domain_resolved') ? `https://${w.companyDomain}/` : undefined,
+  ].filter((u): u is string => typeof u === 'string' && u.length > 0);
+  const sources = ledger ? candidates.filter((u) => ledger.isKnownSource(u)) : candidates.slice(0, event.source_url ? 1 : 2);
+  const research = buildExhibitorResearch({
+    mode: ledger ? 'scout' : 'direct',
+    event,
+    // Catalog text is untrusted web data: no URL foreign to the run's sources reaches Twenty (summary or JSON).
+    exhibitor: {
+      ...exhibitor,
+      ...(exhibitor.description ? { description: clean(exhibitor.description) } : {}),
+      ...(exhibitor.sector ? { sector: clean(exhibitor.sector) } : {}),
+    },
+    companyName: clean(w.companyName),
+    companyDomain: w.companyDomain,
+    domainSource: w.domainSource,
+    profile: result.profile,
+    sources,
+    signalTitle: w.signalTitle,
+  });
+  if (!research) {
+    result.research_error = { code: 'NO_SOURCE', message: 'no visited source URL to cite' };
+    return;
+  }
+  const r = await run.callTool('create_research', {
+    companyId: w.companyId,
+    signalId: w.signalId,
+    researchType: research.researchType,
+    query: clean(research.query),
+    summary: clean(research.summary),
+    structuredResult: research.structuredResult,
+    sources: research.sources,
+    confidence: research.confidence,
+  });
+  if (r.result.status !== 'ok') {
+    result.research_error = toolError(r);
+    return;
+  }
+  const out = r.result.output as { created: boolean; record: { id: string } };
+  result.research_id = out.record.id;
+  result.research_created = out.created;
+}
+
 export function exhibitorCounters(results: ExhibitorResult[]) {
   const count = (...s: ExhibitorStatus[]) => results.filter((r) => s.includes(r.status)).length;
   return {
@@ -701,6 +793,9 @@ export function exhibitorCounters(results: ExhibitorResult[]) {
     discarded_low_confidence: count('discarded_low_confidence'),
     skipped_no_domain: count('skipped_no_domain'),
     companies_created: results.filter((r) => r.company_created === true).length,
+    research_created: results.filter((r) => r.research_created === true).length,
+    research_existing: results.filter((r) => r.research_created === false).length,
+    research_errors: results.filter((r) => r.research_error !== undefined).length,
     errors: count(...ERROR_STATUSES),
   };
 }

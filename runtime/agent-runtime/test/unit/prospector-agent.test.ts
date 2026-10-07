@@ -102,10 +102,11 @@ describe('ProspectorAgent', () => {
     expect(resolveAgentImplementation({ implementation: 'prospector' }).kind).toBe('prospector');
   });
 
-  it('seed tool policy: exactly the 7 Prospector tools (fetch_url and render_url included), LOW_WRITE ceiling', () => {
+  it('seed tool policy: exactly the 8 Prospector tools (create_research, fetch_url and render_url included), LOW_WRITE ceiling', () => {
     const policy = parseToolPolicy(desiredProspectorVersion().configuration);
     expect([...policy.allow].sort()).toEqual([...PROSPECTOR_TOOLS].sort());
-    expect(policy.allow).toHaveLength(7);
+    expect(policy.allow).toHaveLength(8);
+    expect(policy.allow).toContain('create_research');
     expect(policy.allow).toContain('fetch_url');
     expect(policy.allow).toContain('render_url');
     expect(policy.maxRiskLevel).toBe('LOW_WRITE');
@@ -127,7 +128,7 @@ describe('ProspectorAgent', () => {
 
     // Tool flow.
     const toolSteps = result.steps.filter((s) => s.type === 'TOOL').map((s) => s.tool);
-    expect(toolSteps).toEqual(['upsert_company', 'create_signal', 'create_hypothesis', 'create_agent_run_summary']);
+    expect(toolSteps).toEqual(['upsert_company', 'create_signal', 'create_research', 'create_hypothesis', 'create_agent_run_summary']);
     expect(result.steps.filter((s) => s.type === 'MODEL')).toHaveLength(4);
     expect(result.steps[0]!.type).toBe('THINK');
     expect(result.steps.at(-1)!.type).toBe('FINAL');
@@ -144,6 +145,25 @@ describe('ProspectorAgent', () => {
       sourceDomain: 'expoalimentariaiberica.example',
       tenantId: 'publiexpe',
     });
+    // Research (LLD 5.2): composed from the input data, linked to company and signal, no extra LLM call.
+    expect(fake.tables.researches).toHaveLength(1);
+    const research = fake.tables.researches[0]!;
+    expect(research).toMatchObject({
+      researchType: 'EVENT_EXHIBITORS',
+      companyId: fake.tables.companies[0]!.id,
+      commercialSignalId: fake.tables.commercialSignals[0]!.id,
+      agentExecutionId: expect.stringMatching(/^exec-/),
+      tenantId: 'publiexpe',
+      sources: [fixture.event && (fixture.event as { source_url: string }).source_url],
+    });
+    expect(String(research.summary)).toContain('Conservas Marineras del Cantábrico figura como expositor en Expo Alimentaria Ibérica 2026');
+    expect(String(research.summary)).toContain('Web: conservasdelcantabrico.example (indicada en la lista de expositores)');
+    expect(String(research.summary)).not.toContain('Valoración');
+    expect(research.structuredResult).toMatchObject({
+      profile: { legalName: 'Conservas Marineras del Cantábrico', website: 'https://conservasdelcantabrico.example' },
+      signals: [{ type: 'FAIR', eventDate: '2026-11-24' }],
+    });
+    expect(research.confidence).toBeGreaterThanOrEqual(0.7);
     expect(fake.tables.commercialHypotheses).toHaveLength(1);
     expect(fake.tables.commercialHypotheses[0]).toMatchObject({
       name: 'Conservas Marineras del Cantábrico — Expo Alimentaria Ibérica 2026',
@@ -181,6 +201,8 @@ describe('ProspectorAgent', () => {
         discarded_irrelevant: 1,
         discarded_low_confidence: 1,
         companies_created: 1,
+        research_created: 1,
+        research_errors: 0,
         errors: 0,
         llm_calls: 4,
       },
@@ -198,6 +220,9 @@ describe('ProspectorAgent', () => {
     expect(fake.tables.commercialSignals).toHaveLength(1);
     expect(fake.tables.commercialHypotheses).toHaveLength(1);
     expect(fake.tables.agentRunSummaries).toHaveLength(2); // one per execution
+    // A new research is a new record (LLD 5.2): one per execution, never overwritten.
+    expect(fake.tables.researches).toHaveLength(2);
+    expect(new Set(fake.tables.researches.map((r) => r.agentExecutionId)).size).toBe(2);
     expect(second.output).toMatchObject({ counters: { hypotheses_created: 0, hypotheses_existing: 1 } });
   });
 
@@ -236,10 +261,14 @@ describe('ProspectorAgent', () => {
     expect(result.steps.filter((s) => s.type === 'TOOL').map((s) => s.tool)).toEqual([
       'find_company',
       'create_signal',
+      'create_research',
       'create_hypothesis',
       'find_company',
       'create_agent_run_summary',
     ]);
+    expect(fake.tables.researches).toHaveLength(1);
+    expect(fake.tables.researches[0]).toMatchObject({ sources: ['https://congreso.example'], researchType: 'EVENT_EXHIBITORS' });
+    expect(String(fake.tables.researches[0]!.summary)).toContain('Web: existente.example (la de la empresa que ya estaba en el CRM)');
   });
 
   it('invalid input: no LLM call, FAILED summary still published', async () => {

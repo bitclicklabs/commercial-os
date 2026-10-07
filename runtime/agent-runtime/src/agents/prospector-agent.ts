@@ -105,7 +105,7 @@ export class ProspectorAgent implements AgentImplementation {
       input: { input_keys: Object.keys(ctx.input) },
       output: parsedInput.success
         ? {
-            plan: 'evaluate each exhibitor with the LLM; write relevant ones to Twenty; publish the run summary',
+            plan: 'evaluate each exhibitor with the LLM; write relevant ones to Twenty (company, signal, research, hypothesis); publish the run summary',
             event: parsedInput.data.event.name,
             exhibitors: parsedInput.data.exhibitors.length,
             min_confidence: cfg.minConfidence,
@@ -135,7 +135,7 @@ export class ProspectorAgent implements AgentImplementation {
     const outcome: RunOutcome = counters.errors === 0 ? 'SUCCESS' : counters.errors === counters.exhibitors ? 'FAILED' : 'PARTIAL';
     const lines = [
       `Evento: ${event.name}${event.date ? ` (${event.date})` : ''}.`,
-      `Expositores: ${counters.exhibitors} · evaluados: ${counters.evaluated} · relevantes: ${counters.relevant} · hipótesis nuevas: ${counters.hypotheses_created} · ya existentes: ${counters.hypotheses_existing}.`,
+      `Expositores: ${counters.exhibitors} · evaluados: ${counters.evaluated} · relevantes: ${counters.relevant} · hipótesis nuevas: ${counters.hypotheses_created} · ya existentes: ${counters.hypotheses_existing} · research: ${counters.research_created}${counters.research_errors > 0 ? ` (${counters.research_errors} sin registrar)` : ''}.`,
       `Descartados: ${counters.discarded_irrelevant} sin encaje, ${counters.discarded_low_confidence} por confianza < ${cfg.minConfidence}, ${counters.skipped_no_domain} sin dominio verificado. Errores: ${counters.errors}.`,
       `Coste del modelo: ${formatEur(run.costEur())} (${run.llmCalls} llamadas, ${run.usage.inputTokens} tokens de entrada y ${run.usage.outputTokens} de salida).`,
       ...results.map(resultLine),

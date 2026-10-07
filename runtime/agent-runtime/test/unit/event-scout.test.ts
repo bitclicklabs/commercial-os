@@ -225,7 +225,21 @@ describe('ProspectorAgent scout mode', () => {
     const signal = fake.tables.commercialSignals[0]!;
     expect(signal).toMatchObject({ signalType: 'FAIR', eventDate: '2027-02-10', sourceDomain: 'gourmets.net', sourceUrl: { primaryLinkUrl: 'https://www.gourmets.net/salon/expositores' } });
     const hyp = fake.tables.commercialHypotheses[0]!;
-    const crmText = JSON.stringify([signal, hyp]);
+    // Research (LLD 5.2): one per relevant exhibitor written, citing only visited URLs, no extra LLM call.
+    expect(fake.tables.researches).toHaveLength(1);
+    const research = fake.tables.researches[0]!;
+    expect(research).toMatchObject({
+      researchType: 'COMPANY_PROFILE',
+      companyId: fake.tables.companies[0]!.id,
+      commercialSignalId: signal.id,
+      sources: ['https://www.gourmets.net/salon/expositores'],
+    });
+    expect(String(research.summary)).toContain('Conservas Ortiz figura como expositor en Salón de Gourmets 2027 (2027-02-10, Madrid) según el catálogo publicado en gourmets.net.');
+    expect(String(research.summary)).toContain('Sector indicado: Alimentación.');
+    expect(String(research.summary)).toContain('Web: conservasortiz.com (indicada en el catálogo).');
+    expect(research.structuredResult).toMatchObject({ profile: { legalName: 'Conservas Ortiz', sector: 'Alimentación', website: 'https://conservasortiz.com' } });
+    expect(out.counters).toMatchObject({ research_created: 1, research_errors: 0 });
+    const crmText = JSON.stringify([signal, hyp, research]);
     expect(crmText).not.toContain('evil.example');
     expect(crmText).toContain('[enlace omitido]');
 

@@ -2033,7 +2033,7 @@
             },
             "quantity_ratio_mean": 3.6857,
             "quantity_ratio_over_2_5": 14,
-            "need_with_quantities": 3,
+            "need_with_quantities": 0,
             "unit_price_in_band": 14,
             "name_only_flagged_inference": {
               "n": 12,

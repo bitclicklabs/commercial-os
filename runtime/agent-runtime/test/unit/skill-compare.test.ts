@@ -36,7 +36,7 @@ const hyp = (q: [number, number], b: [number, number], need = 'Regalo para el st
 const decision = (relevant: boolean, confidence: number, h: unknown = null, reason = 'Razón.') => JSON.stringify({ relevant, confidence, reason, hypothesis: h });
 
 // Fixture order: Conservas (rich), Envases Garrido (rich, partial competitor), Instituto (public body).
-const V1_ANSWERS = [decision(true, 0.9, hyp([500, 2000], [1200, 4500])), decision(true, 0.55, hyp([150, 500], [450, 1800])), decision(false, 0.05)];
+const V1_ANSWERS = [decision(true, 0.9, hyp([500, 2000], [1200, 4500], 'Regalo para el stand de la feria de 2026 (un año no es una cantidad).')), decision(true, 0.55, hyp([150, 500], [450, 1800])), decision(false, 0.05)];
 const V2_ANSWERS = [
   decision(true, 0.85, hyp([600, 1200], [1500, 3200], 'Unas 800 bolsas tote y 20 polos para el equipo.')),
   decision(true, 0.4, hyp([100, 200], [300, 600], 'Unas 150 libretas.'), 'Por el nombre, parece competidor parcial.'),

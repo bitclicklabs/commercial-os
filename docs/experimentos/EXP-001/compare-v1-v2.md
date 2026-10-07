@@ -79,7 +79,7 @@ Fixture: `test/fixtures/gastronoma-holdout.json`
 | Rango más repetido | 250-800 u / 600-2200 € (×2) | 920-1500 u / 1250-2500 € (×1) |
 | Amplitud media cantidad (máx./mín.) | 3,69 | 1,80 |
 | Hipótesis con amplitud > 2,5 | 14 | 0 |
-| «need» con cantidades | 3/14 | 14/14 |
+| «need» con cantidades | 0/14 | 14/14 |
 | Precio unitario implícito en 0,50-15 € | 14/14 | 14/14 |
 | Solo nombre: la razón marca la suposición | 2/12 | 8/12 |
 | Tokens de entrada / salida | 25996 / 4749 | 29874 / 4885 |

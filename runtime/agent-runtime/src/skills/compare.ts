@@ -222,6 +222,9 @@ export function dataLevel(ex: { description?: string | undefined; domain?: strin
   return 'name_only';
 }
 
+/** A number in free text that is not a year ("Gastrónoma 2026" is not a quantity). */
+export const QUANTITY_IN_TEXT = /\b(?!(?:19|20)\d\d\b)\d+\b/;
+
 /** Words that mark a statement as an inference (reason of a name-only case). */
 export const INFERENCE_MARKERS = /\b(parece|pareceria|parecer|por el nombre|por su nombre|supone|suponemos|suposici[oó]n|asum|previsiblemente|probablemente|posiblemente|podr[ií]a|presumiblemente|sin confirmar|no consta|deducimos|se deduce|intuye)/i;
 
@@ -349,7 +352,7 @@ export function versionMetrics(version: number, runs: VersionRun[]): VersionMetr
     top_range: top ? { range: top[0], count: top[1] } : null,
     quantity_ratio_mean: mean(ratios),
     quantity_ratio_over_2_5: ratios.filter((r) => r > 2.5).length,
-    need_with_quantities: hyps.filter((h) => /\d/.test(h.need)).length,
+    need_with_quantities: hyps.filter((h) => QUANTITY_IN_TEXT.test(h.need)).length,
     unit_price_in_band: unitOk,
     name_only_flagged_inference: { n: nameOnly.length, flagged: nameOnly.filter((d) => INFERENCE_MARKERS.test(d.reason!)).length },
     input_tokens: usage.inputTokens,

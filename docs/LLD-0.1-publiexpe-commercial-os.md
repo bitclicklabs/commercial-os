@@ -510,8 +510,8 @@ MX             los de IONOS (automáticos al activar el correo)
 ```
 
   DMARC pasa de `p=none` a `p=quarantine` tras 3-4 semanas sin fallos de alineamiento.
-- **Warm-up manual** (IONOS no trae herramienta de warm-up): semanas 1-2, 10-20 correos/día a contactos que responden (internos, clientes cercanos); semanas 3-4, subir a 30-40/día por buzón. Monitorizar con Google Postmaster Tools y Microsoft SNDS.
-- **Cumplimiento (España):** la LSSI (art. 21) exige consentimiento previo para comunicaciones comerciales electrónicas salvo relación contractual previa. Para prospección B2B en frío: dirigirse a direcciones corporativas de rol bajo interés legítimo (RGPD), identificación clara del remitente, enlace de baja en cada correo y lista de supresión global que el Inbound Manager alimenta automáticamente.
+- **Warm-up manual** (IONOS no trae herramienta de warm-up): semanas 1-2, 10-20 correos/día a contactos que responden (internos, clientes cercanos); semanas 3-4, subir a 30-40/día por buzón. Monitorizar con Google Postmaster Tools. Microsoft SNDS no aplica con las IP compartidas de IONOS (el alta es por IP); para Outlook, prueba de colocación manual y seguimiento de rebotes 5.7.1 (consulta docs/email-warmup.md).
+- **Cumplimiento (España):** la LSSI (art. 21) exige consentimiento previo para comunicaciones comerciales electrónicas salvo relación contractual previa. Para prospección B2B en frío: dirigirse a direcciones corporativas de rol bajo interés legítimo (RGPD), identificación clara del remitente, enlace de baja en cada correo y lista de supresión global (hasta el Inbound Manager de MVP-1, es manual: nota "Lista de supresión — NO contactar" en Twenty, procedimiento en docs/email-warmup.md).
 
 ### 10.2 Inbound y conversaciones
 

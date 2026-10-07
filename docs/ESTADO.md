@@ -59,5 +59,5 @@ Canal de email (recordatorio operativo): warm-up iniciado el 2026-10-06; DMARC p
 | Dominios de expositores: paginación del catálogo (91) + fichas individuales → empresas reales con dominio en Twenty | `feat/exhibitor-domains` | Opus | 🔄 en curso |
 | Triggers EVENT con OR (EDITED también genera borrador) + archivo de agentes [TEST] y filtro en métricas | `feat/event-or-archive` | Opus | 🔄 en curso |
 | Sandbox seccomp de Chromium en pxos-renderer | `feat/tanda5` | PM | ✅ activo (perfil Playwright + cap_add SYS_CHROOT; render real verificado con sandbox) |
-| SNDS, procedimiento de lista de supresión y actualización de guía/changelog | `docs/email-ops` | Sonnet | 🔄 en curso |
+| SNDS, procedimiento de lista de supresión y actualización de guía/changelog | `docs/email-ops` | Sonnet | ✅ fusionado (SNDS no aplica con IP compartida de IONOS: documentada la alternativa; lista de supresión decidida como nota en Twenty) |
 | Integración, e2e y PR | `feat/tanda5` | PM | ⏸️ |

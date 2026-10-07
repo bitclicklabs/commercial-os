@@ -3,10 +3,23 @@ import type { Db } from '../db/client.js';
 import { taskRuns, type TaskDefinition, type TaskRun } from '../db/schema.js';
 import { normalizeScheduledAt, taskRunIdempotencyKey } from '../domain/idempotency.js';
 import type { EnqueueResult, RunQueue } from '../queue/run-queue.js';
+import type { EventProducer } from '../events/envelope.js';
+import type { EventPublisher } from '../events/event-bus.js';
+import { taskScheduledEvent } from '../events/runtime-events.js';
 
 export interface RequestTaskRunInput {
   scheduledAt?: string | Date;
   input?: Record<string, unknown>;
+  /** Overrides `taskrun:{task_id}:{scheduled_at}` (EVENT triggers: `taskrun:{task_id}:event:{event_id}`). */
+  idempotencyKey?: string;
+  /** Origin recorded in the task.scheduled event (SCHEDULE, MANUAL, EVENT, API). */
+  trigger?: string;
+}
+
+/** Optional collaborators: with `events`, a newly created TaskRun emits `task.scheduled`. */
+export interface RequestTaskRunDeps {
+  events?: EventPublisher;
+  producer?: EventProducer;
 }
 
 export interface RequestTaskRunResult {
@@ -39,9 +52,10 @@ export async function requestTaskRun(
   queue: RunQueue,
   task: TaskDefinition,
   req: RequestTaskRunInput,
+  deps: RequestTaskRunDeps = {},
 ): Promise<RequestTaskRunResult> {
   const scheduledAt = normalizeScheduledAt(req.scheduledAt ?? new Date());
-  const idempotencyKey = taskRunIdempotencyKey(task.id, scheduledAt);
+  const idempotencyKey = req.idempotencyKey ?? taskRunIdempotencyKey(task.id, scheduledAt);
 
   const [inserted] = await db
     .insert(taskRuns)
@@ -65,6 +79,12 @@ export async function requestTaskRun(
   if (!taskRun) throw new Error(`task run ${idempotencyKey} vanished`);
 
   const deduplicated = !inserted;
+  // Before the enqueue so task.scheduled precedes task.started. Best-effort: never throws.
+  if (inserted && deps.events) {
+    await deps.events.emit(
+      taskScheduledEvent(inserted, { ...(req.trigger ? { trigger: req.trigger } : {}), ...(deps.producer ? { producer: deps.producer } : {}) }),
+    );
+  }
   if (taskRun.status !== 'QUEUED') return { taskRun, deduplicated, enqueue: null };
 
   try {

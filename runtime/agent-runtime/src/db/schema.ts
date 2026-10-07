@@ -8,8 +8,10 @@
  * - Entities not yet modelled (harness, router, skills, policies, environments) are
  *   referenced by opaque text ids until their tables exist.
  */
+import { sql } from 'drizzle-orm';
 import {
   boolean,
+  check,
   index,
   integer,
   jsonb,
@@ -62,6 +64,10 @@ export interface ScheduleSpec {
   every_seconds?: number;
   /** Overrides the task timezone for CRON schedules. */
   timezone?: string;
+  /** EVENT: event type that fires the task (alias: `event`). */
+  event_type?: string;
+  /** EVENT: equality filter on the event `data`, keyed by dot path (e.g. `{"status":"COMPLETED"}`). */
+  filter?: Record<string, unknown>;
 }
 
 export interface RetryPolicy {
@@ -354,6 +360,48 @@ export const entityLocks = pgTable(
   ],
 );
 
+// ---------------------------------------------------------------------------
+// 21 Event bus (LLD v0.2 section 7): domain events, minimal outbox
+// ---------------------------------------------------------------------------
+export const EVENT_SOURCES = ['runtime', 'twenty', 'n8n'] as const;
+export type EventSource = (typeof EVENT_SOURCES)[number];
+
+/**
+ * Append-only log of domain events (`event.envelope.v1`). The row is written first and the
+ * BullMQ job second; `dispatched_at` stays null until the job is in Redis, and the
+ * re-publisher retries rows still null. A trigger forbids DELETE (section 22).
+ */
+export const events = pgTable(
+  'events',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    tenantId: tenantId(),
+    type: text('type').notNull(),
+    schemaVersion: text('schema_version').notNull(),
+    occurredAt: timestamp('occurred_at', { withTimezone: true }).notNull(),
+    payload: jsonb('payload').$type<Record<string, unknown>>().notNull().default({}),
+    source: text('source').$type<EventSource>().notNull(),
+    /** Envelope `producer` (agent-runtime, scheduler, twenty-app, n8n). */
+    producer: text('producer').notNull(),
+    /** Root id the event belongs to: task_run id or execution id. */
+    correlationId: text('correlation_id').notNull(),
+    /** Optional dedup key: a second publish with the same key returns the existing row. */
+    idempotencyKey: text('idempotency_key'),
+    dispatchedAt: timestamp('dispatched_at', { withTimezone: true }),
+    dispatchAttempts: integer('dispatch_attempts').notNull().default(0),
+    createdAt: createdAt(),
+  },
+  (t) => [
+    index('events_tenant_type_occurred_idx').on(t.tenantId, t.type, t.occurredAt),
+    index('events_tenant_occurred_idx').on(t.tenantId, t.occurredAt),
+    index('events_correlation_idx').on(t.tenantId, t.correlationId),
+    uniqueIndex('events_idem_uq').on(t.tenantId, t.idempotencyKey),
+    // Re-publisher scan: only rows not yet in the queue.
+    index('events_undispatched_idx').on(t.createdAt).where(sql`${t.dispatchedAt} is null`),
+    check('events_source_ck', sql`${t.source} in ('runtime', 'twenty', 'n8n')`),
+  ],
+);
+
 export type Agent = typeof agents.$inferSelect;
 export type AgentVersion = typeof agentVersions.$inferSelect;
 export type TaskDefinition = typeof taskDefinitions.$inferSelect;
@@ -363,3 +411,4 @@ export type AgentExecution = typeof agentExecutions.$inferSelect;
 export type Trace = typeof traces.$inferSelect;
 export type TraceStep = typeof traceSteps.$inferSelect;
 export type EntityLock = typeof entityLocks.$inferSelect;
+export type EventRow = typeof events.$inferSelect;

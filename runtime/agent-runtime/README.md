@@ -98,6 +98,7 @@ Requisitos: Node.js 22, pnpm, y los contenedores `pxos-postgres` (127.0.0.1:5440
 | `TWENTY_BASE_URL` | `http://localhost:3020` | API REST de Twenty. En el contenedor: `http://pxos-twenty:3000` |
 | `TWENTY_API_KEY` | vacío | API key de Twenty. Sin ella, las tools de Twenty responden `TWENTY_NOT_CONFIGURED` |
 | `TWENTY_TIMEOUT_MS` | `10000` | Timeout por petición a Twenty |
+| `TWENTY_WAIT_MAX_MS` | `600000` | Tiempo máximo que el worker retiene un run que usa tools de Twenty mientras Twenty no responde a `/healthz`. `0` desactiva la espera |
 
 ## Migraciones
 
@@ -259,6 +260,16 @@ La ejecución (`AgentExecution`) del intento muerto pasa a `FAILED` con `error.n
 
 Los jobs `active` de un worker caído los gestiona el chequeo de stalled de BullMQ (`STALLED_INTERVAL_MS`, `MAX_STALLED_COUNT`): los devuelve a `wait`. Cuando el processor recibe un job cuyo run sigue `RUNNING`, sabe que el intento anterior murió y aplica la misma recuperación antes de continuar. Si BullMQ lo marca `failed` por superar `MAX_STALLED_COUNT`, lo recoge el reconciliador.
 
+### Espera a Twenty al arrancar
+
+Al encender el host, Docker arranca todos los contenedores a la vez y el catch-up del scheduler puede encolar el slot pendiente mientras `pxos-twenty` aún está en `health: starting`. Para que ese run no gaste sus tools en `TWENTY_NETWORK_ERROR`, el worker aplica una espera antes de pasar un `TaskRun` de `QUEUED` a `RUNNING`:
+
+1. Si la `tool_policy` de la versión del agente permite alguna tool de Twenty (las que declaran permisos `twenty:*`), el worker llama a `TwentyClient.health()`: un `GET /healthz` sin API key, con timeout de 3 s y sin reintentos. El resultado se cachea 5 s y se comparte entre jobs concurrentes del mismo proceso.
+1. Si Twenty no responde, el run sigue `QUEUED` y el job pasa a `delayed` con `moveToDelayed` + `DelayedError`, igual que con `max_concurrency`. No consume intentos. Las esperas crecen: 5 s, 15 s, 30 s y luego 60 s. Cada aplazamiento queda en el log (`Twenty not healthy; deferring task run`) y la ventana de espera viaja en los datos del job (`twentyWait`), así que sobrevive a un reinicio del worker.
+1. Si pasa `TWENTY_WAIT_MAX_MS` (10 min por defecto) y Twenty sigue sin responder, el run arranca igualmente con un aviso en el log. Las tools fallan y el agente reporta `PARTIAL`, que es el resultado honesto.
+
+Los agentes sin tools de Twenty y las instalaciones sin `TWENTY_API_KEY` no esperan. Las ejecuciones directas (`POST /executions`) tampoco pasan por esta espera.
+
 ## Ejemplo end-to-end con curl
 
 Necesitas `jq` y el runtime arrancado (`pnpm dev`).
@@ -378,7 +389,7 @@ El `ToolExecutor` (uno por ejecución) aplica, en orden: allowlist, registro, `e
 
 ### TwentyClient
 
-`src/integrations/twenty/client.ts` es un cliente REST tipado sobre `/rest/{objeto}` con `list`, `get`, `create`, `update` y `ping`. **No tiene método de borrado.**
+`src/integrations/twenty/client.ts` es un cliente REST tipado sobre `/rest/{objeto}` con `list`, `get`, `create`, `update`, `ping` y `health` (`GET /healthz`, sin API key, para la espera al arrancar). **No tiene método de borrado.**
 
 - Timeout por petición (`TWENTY_TIMEOUT_MS`) combinado con la cancelación de la ejecución.
 - Reintentos con backoff exponencial para `429` y `5xx`; respeta `Retry-After`.

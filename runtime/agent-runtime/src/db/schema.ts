@@ -66,7 +66,10 @@ export interface ScheduleSpec {
   timezone?: string;
   /** EVENT: event type that fires the task (alias: `event`). */
   event_type?: string;
-  /** EVENT: equality filter on the event `data`, keyed by dot path (e.g. `{"status":"COMPLETED"}`). */
+  /**
+   * EVENT: filter on the event `data`, keyed by dot path. Each value is a literal (equality,
+   * e.g. `{"status":"COMPLETED"}`) or `{"in": [v1, v2]}` (any of them). See src/events/triggers.ts.
+   */
   filter?: Record<string, unknown>;
 }
 

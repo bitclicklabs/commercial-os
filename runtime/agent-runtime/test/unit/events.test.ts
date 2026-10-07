@@ -18,6 +18,7 @@ import {
   eventTriggeredInput,
   getPath,
   matchesFilter,
+  MAX_IN_VALUES,
   parseEventTrigger,
 } from '../../src/events/triggers.js';
 import { parseSchedule, ScheduleValidationError } from '../../src/scheduler/schedule.js';
@@ -110,6 +111,40 @@ describe('filter matching', () => {
     expect(matchesFilter(data, { missing: null })).toBe(false);
     expect(matchesFilter(data, { funnel: { out: 1 } })).toBe(false);
     expect(matchesFilter(data, { tags: ['a'] })).toBe(false);
+  });
+
+  it('{in: [...]} matches any listed value (OR), combined with equality keys (AND)', () => {
+    const ev = { feedback: 'EDITED', subjectType: 'hypothesis', score: 0.5, toStatus: null };
+    const filter = { feedback: { in: ['ACCEPTED', 'EDITED'] }, subjectType: 'hypothesis' };
+    expect(matchesFilter(ev, filter)).toBe(true);
+    expect(matchesFilter({ ...ev, feedback: 'ACCEPTED' }, filter)).toBe(true);
+    expect(matchesFilter({ ...ev, feedback: 'DISCARDED' }, filter)).toBe(false);
+    expect(matchesFilter({ ...ev, subjectType: 'research' }, filter)).toBe(false);
+    // Strict per value: no type coercion, missing paths never match, null can be listed.
+    expect(matchesFilter(ev, { score: { in: ['0.5', 1] } })).toBe(false);
+    expect(matchesFilter(ev, { score: { in: [0.5, 1] } })).toBe(true);
+    expect(matchesFilter(ev, { missing: { in: ['x'] } })).toBe(false);
+    expect(matchesFilter(ev, { toStatus: { in: ['VALIDATED', null] } })).toBe(true);
+    // Dot paths and deep-equal candidates.
+    expect(matchesFilter(data, { 'funnel.out': { in: [0, 1] }, tags: { in: [['a', 'b'], ['c']] } })).toBe(true);
+    // An object with other keys besides "in" keeps the literal (deep-equal) meaning.
+    expect(matchesFilter(data, { funnel: { in: 3, out: 1 } })).toBe(true);
+    // The literal object {in: 3} is reachable through the "funnel.in" path.
+    expect(matchesFilter(data, { 'funnel.in': 3 })).toBe(true);
+  });
+
+  it('validates the {in} operator: array, non-empty, bounded (400 invalid_schedule at the API)', () => {
+    const spec = (filter: Record<string, unknown>) => ({ type: 'EVENT', event_type: 'evaluation.recorded', filter });
+    expect(parseEventTrigger(spec({ feedback: { in: ['ACCEPTED', 'EDITED'] }, subjectType: 'hypothesis' }))).toEqual({
+      eventType: 'evaluation.recorded',
+      filter: { feedback: { in: ['ACCEPTED', 'EDITED'] }, subjectType: 'hypothesis' },
+    });
+    expect(() => parseEventTrigger(spec({ feedback: { in: 'ACCEPTED' } }))).toThrow(/"in" must be an array/);
+    expect(() => parseEventTrigger(spec({ feedback: { in: [] } }))).toThrow(/at least one value/);
+    expect(() => parseEventTrigger(spec({ feedback: { in: Array.from({ length: MAX_IN_VALUES + 1 }, (_, i) => i) } }))).toThrow(/at most/);
+    expect(() => parseSchedule(spec({ feedback: { in: null } }))).toThrow(ScheduleValidationError);
+    // A malformed operator that slipped in (legacy row) never matches.
+    expect(matchesFilter({ feedback: 'ACCEPTED' }, { feedback: { in: 'ACCEPTED' } })).toBe(false);
   });
 });
 

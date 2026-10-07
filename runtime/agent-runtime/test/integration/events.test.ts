@@ -249,6 +249,66 @@ describe.skipIf(!available)('event bus + EVENT triggers (PostgreSQL + Redis)', (
     });
     expect(res.statusCode).toBe(400);
     expect(res.json().error).toBe('invalid_schedule');
+
+    for (const filter of [{ feedback: { in: 'ACCEPTED' } }, { feedback: { in: [] } }, { feedback: { in: null } }]) {
+      const bad = await app.inject({
+        method: 'POST',
+        url: '/tasks',
+        headers,
+        payload: { name: 'bad in filter', agent_id: agentId, schedule: { type: 'EVENT', event_type: 'evaluation.recorded', filter } },
+      });
+      expect(bad.statusCode).toBe(400);
+      expect(bad.json()).toMatchObject({ error: 'invalid_schedule', message: expect.stringContaining('"in"') });
+    }
+  });
+
+  it('PATCH of an EVENT task re-registers the new filter ({in} operator) and a bad one is rejected with 400', async () => {
+    const task = await createTask({
+      name: 'patched trigger',
+      schedule: { type: 'EVENT', event_type: 'evaluation.recorded', filter: { feedback: 'ACCEPTED', subjectType: 'hypothesis' } },
+    });
+    const before = (await app.inject({ method: 'GET', url: `/tasks/${task.id}/schedule`, headers })).json();
+    expect(before.event_trigger.registered).toMatchObject({ filter: { feedback: 'ACCEPTED', subjectType: 'hypothesis' } });
+    const registeredAt = before.event_trigger.registered.registered_at as string;
+
+    const newFilter = { feedback: { in: ['ACCEPTED', 'EDITED'] }, subjectType: 'hypothesis' };
+    const patched = await app.inject({
+      method: 'PATCH',
+      url: `/tasks/${task.id}`,
+      headers,
+      payload: { schedule: { type: 'EVENT', event_type: 'evaluation.recorded', filter: newFilter }, change_reason: 'OR filter' },
+    });
+    expect(patched.statusCode).toBe(200);
+    const after = (await app.inject({ method: 'GET', url: `/tasks/${task.id}/schedule`, headers })).json();
+    expect(after).toMatchObject({ in_sync: true, event_trigger: { desired: { filter: newFilter }, registered: { task_id: task.id, filter: newFilter } } });
+    expect(after.event_trigger.registered.registered_at >= registeredAt).toBe(true);
+
+    // The consumer applies the new filter: EDITED fires, DISCARDED does not.
+    const evaluationEvent = (feedback: string) => ({
+      id: randomUUID(),
+      type: 'evaluation.recorded',
+      schemaVersion: 'evaluation.recorded.v1',
+      tenantId: tenant,
+      occurredAt: new Date().toISOString(),
+      producer: 'agent-runtime',
+      correlationId: randomUUID(),
+      data: { evaluationId: randomUUID(), subjectType: 'hypothesis', subjectId: randomUUID(), feedback, chainDepth: 0 },
+    });
+    expect(await consumer.handleEvent(evaluationEvent('EDITED'))).toContainEqual(expect.objectContaining({ taskId: task.id, outcome: 'created' }));
+    expect(await consumer.handleEvent(evaluationEvent('DISCARDED'))).toContainEqual({ taskId: task.id, outcome: 'filter_mismatch' });
+
+    // A malformed filter in a PATCH is a 400 and leaves the registration (and the task) untouched.
+    const bad = await app.inject({
+      method: 'PATCH',
+      url: `/tasks/${task.id}`,
+      headers,
+      payload: { schedule: { type: 'EVENT', event_type: 'evaluation.recorded', filter: { feedback: { in: [] } } } },
+    });
+    expect(bad.statusCode).toBe(400);
+    expect(bad.json().error).toBe('invalid_schedule');
+    const still = (await app.inject({ method: 'GET', url: `/tasks/${task.id}/schedule`, headers })).json();
+    expect(still.event_trigger.registered.filter).toEqual(newFilter);
+    expect((await app.inject({ method: 'POST', url: `/tasks/${task.id}/archive`, headers })).statusCode).toBe(200);
   });
 
   it('an EVENT task fires once per matching event, never on a republish, and pause unregisters it', async () => {

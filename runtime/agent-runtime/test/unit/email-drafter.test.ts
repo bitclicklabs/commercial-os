@@ -427,16 +427,42 @@ describe('evaluation.recorded + draft-email-on-validated trigger', () => {
     expect(evaluationRecordedEvent(evaluation).data.companyId).toBeNull();
   });
 
-  it('the seed task fires only on ACCEPTED verdicts about hypotheses', () => {
+  it('the seed task fires on ACCEPTED or EDITED verdicts that validate a hypothesis', () => {
     const spec = desiredEmailDraftTask();
     const trigger = parseEventTrigger(spec.schedule)!;
-    expect(trigger).toEqual({ eventType: 'evaluation.recorded', filter: { feedback: 'ACCEPTED', subjectType: 'hypothesis' } });
+    expect(trigger).toEqual({
+      eventType: 'evaluation.recorded',
+      filter: { feedback: { in: ['ACCEPTED', 'EDITED'] }, subjectType: 'hypothesis', toStatus: 'VALIDATED' },
+    });
     const task = { id: randomUUID(), tenantId: 'publiexpe' };
-    const fire = (data: Record<string, unknown>) => evaluateTrigger(task, trigger, envelope(data));
+    const fire = (data: Record<string, unknown>) => evaluateTrigger(task, trigger, envelope({ toStatus: 'VALIDATED', ...data }));
     expect(fire({ subjectId: 'h' })).toEqual({ fire: true, depth: 1 });
-    expect(fire({ subjectId: 'h', feedback: 'EDITED' })).toMatchObject({ fire: false, reason: 'filter_mismatch' });
-    expect(fire({ subjectId: 'h', feedback: 'DISCARDED' })).toMatchObject({ fire: false, reason: 'filter_mismatch' });
+    expect(fire({ subjectId: 'h', feedback: 'EDITED' })).toEqual({ fire: true, depth: 1 });
+    // An in-place edit while PROPOSED is EDITED too, but not a validation: no draft yet.
+    expect(fire({ subjectId: 'h', feedback: 'EDITED', toStatus: 'PROPOSED' })).toMatchObject({ fire: false, reason: 'filter_mismatch' });
+    expect(fire({ subjectId: 'h', feedback: 'DISCARDED', toStatus: 'REJECTED' })).toMatchObject({ fire: false, reason: 'filter_mismatch' });
     expect(fire({ subjectId: 'h', subjectType: 'research' })).toMatchObject({ fire: false, reason: 'filter_mismatch' });
-    expect(evaluateTrigger(task, trigger, { ...envelope({ subjectId: 'h' }), type: 'task.completed' })).toMatchObject({ fire: false, reason: 'type_mismatch' });
+    expect(evaluateTrigger(task, trigger, { ...envelope({ subjectId: 'h', toStatus: 'VALIDATED' }), type: 'task.completed' })).toMatchObject({ fire: false, reason: 'type_mismatch' });
+  });
+
+  it('an EDITED verdict drafts with the hypothesis as it is NOW in Twenty (the corrected data)', async () => {
+    const { fake, company, hyp } = world();
+    // The commercial corrected the proposal before validating it.
+    Object.assign(hyp as Record<string, unknown>, {
+      status: 'VALIDATED',
+      need: 'Lanyards y acreditaciones corregidos por el comercial',
+      whyNow: 'Feria adelantada al 10/11',
+      recommendedProducts: ['Lanyards personalizados'],
+    });
+    const provider = new StubProvider({ responses: [JSON.stringify(ANSWER)] });
+    const ev = envelope({ subjectId: hyp.id, companyId: company.id, feedback: 'EDITED', score: 0.5, toStatus: 'VALIDATED' });
+    const { output } = await new EmailDrafterAgent().run(ctxFor(fake, eventTriggeredInput(ev), provider));
+    expect(output).toMatchObject({ outcome: 'SUCCESS', note_created: true });
+    const prompt = JSON.stringify(provider.requests[0]!.messages);
+    expect(prompt).toContain('Lanyards y acreditaciones corregidos por el comercial');
+    expect(prompt).toContain('Feria adelantada al 10/11');
+    expect(prompt).toContain('Lanyards personalizados');
+    expect(prompt).not.toContain('Material promocional');
+    expect(prompt).not.toContain('Bolsas tote');
   });
 });

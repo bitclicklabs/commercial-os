@@ -496,14 +496,14 @@ Proveedor: IONOS. Sus límites de envío por buzón ([50-500 correos/hora según
 **Decidido (2026-10-06):** dominio aparte para el frío: **`publiexpe.info`**.
 
 - **Nunca prospección en frío desde `@publiexpe.com`.** La reputación del dominio principal sostiene el correo corporativo y transaccional; un bloqueo o listado en una blacklist afectaría a toda la empresa.
-- **`publiexpe.info`** es el dominio de envío en frío. Gmail y Microsoft agregan reputación a nivel de dominio organizativo, así que un subdominio (`contacto.publiexpe.com`) aísla menos que un dominio aparte. `publiexpe.info` redirige 301 a `publiexpe.com` y lleva web mínima propia (los filtros comprueban que el dominio remitente tiene web real).
+- **`publiexpe.info`** es el dominio de envío en frío. Gmail y Microsoft agregan reputación a nivel de dominio organizativo, así que un subdominio (`contacto.publiexpe.com`) aísla menos que un dominio aparte. `publiexpe.info` sirve una web mínima propia con aviso legal y privacidad, publicada el 2026-10-06, con enlaces a `publiexpe.com` (los filtros comprueban que el dominio remitente tiene web real).
 - **Subdominio** (`mail.publiexpe.com`) reservado para contactos ya conocidos y seguimiento de clientes, donde el riesgo reputacional es bajo.
 - **Buzones (decidido):** `jesus.abril@publiexpe.info` y `j.abril@publiexpe.info` (segunda identidad del mismo remitente real, para repartir el volumen de warm-up y envío). Remitente siempre una persona real; sin píxel de apertura en frío: penaliza entregabilidad y la métrica útil es la respuesta, no la apertura. Redirecciones gratuitas: `dmarc@` y `baja@` → `jesus.abril@`.
 - **DKIM (decidido, 2026-10-06):** activado a nivel de dominio en IONOS, sin coste; firma todos los buzones, incluidos los basic. Los buzones de envío son basic (sin copago). Verificación obligatoria antes del warm-up: enviar un correo de prueba a una cuenta de Gmail y comprobar en "Mostrar original" que SPF, DKIM (`d=publiexpe.info`) y DMARC dan `PASS`.
 - **Registros DNS** en `publiexpe.info`:
 
 ```
-TXT  @        v=spf1 include:_spf-eu.ionos.com ~all     (confirmar include exacto en el panel)
+TXT  @        SPF creado con el asistente "IONOS SPF" del panel (mantiene el include al día)
 TXT  _dmarc   v=DMARC1; p=none; rua=mailto:dmarc@publiexpe.info
 DKIM           se activa desde el panel de IONOS (crea él los registros)
 MX             los de IONOS (automáticos al activar el correo)

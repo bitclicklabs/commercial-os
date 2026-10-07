@@ -1772,25 +1772,7 @@ Sin migración: la tabla de la sección anterior, tal cual.
 
 ### Integración con métricas
 
-`src/metrics/queries.ts` no filtra `evaluations` por `kind`. Si se guardaran evaluaciones automáticas en el tenant de producción, contaminarían `verdicts`, `avg_score` y la lista de sujetos de `/metrics` y del dashboard de Twenty (los recuentos `ACCEPTED`/`EDITED`/`DISCARDED` no, porque las automáticas usan `PASS`/`FAIL`/`SCORED`). Por eso `pnpm evaluate` escribe en `experiments` por defecto. Parche propuesto para quien sea dueño de `queries.ts` (pendiente; no se ha aplicado):
-
-```ts
-// metricsSummary (CTE latest y recuento verdicts, líneas 197 y 200): las dos apariciones de
-//   from evaluations ev where ${windowWhere('ev', 'occurred_at', w)}
-// pasan a
-//   from evaluations ev where ${windowWhere('ev', 'occurred_at', w)} and ev.kind = 'HUMAN'
-
-// metricsAgents (CTE linked, líneas 390-391):
-//   from evaluations ev join ex on ex.id = ev.agent_execution_id
-//   where ev.tenant_id = ${w.tenantId}
-// pasa a
-//   where ev.tenant_id = ${w.tenantId} and ev.kind = 'HUMAN'
-
-// metricsEvaluations (línea 460), que alimenta days, bySubjectType, subjects y totals:
-//   const where = windowWhere('ev', 'occurred_at', o);
-// pasa a
-//   const where = sql`${windowWhere('ev', 'occurred_at', o)} and ev.kind = 'HUMAN'`;
-```
+`src/metrics/queries.ts` filtra `evaluations` por `kind = 'HUMAN'` en `metricsSummary` (CTE `latest` y recuento `verdicts`), `metricsAgents` (CTE `linked` y el desglose `by_skill_version`) y `metricsEvaluations` (`days`, `bySubjectType`, `subjects` y `totals`). Así, aunque se guardaran evaluaciones automáticas en el tenant de producción, no contaminarían `verdicts`, `avg_score`, las tasas ni la lista de sujetos de `/metrics` y del dashboard de Twenty. `pnpm evaluate` sigue escribiendo en `experiments` por defecto: son dos blindajes independientes.
 
 ### Tests
 
@@ -1813,7 +1795,8 @@ Primeras métricas del sistema (LLD v0.1 secciones 17.2 y 17.3, criterios AC-15 
   - `acceptance`: AC-15 (coste por run, umbral 3,00 EUR), AC-16 (duración, umbral 30 min) y AC-17 (coste por hipótesis nueva).
   - `direct_executions` (ejecuciones sin `TaskRun`) y `last_run`.
 - **`GET /metrics/agents`** filtra por `agent_executions.created_at` y agrupa por agente y versión (`version_label` `v1`, `v2`...): runs, estados, `completion_rate`, outcome y `success_rate`, coste medio, tokens, latencia y `human_feedback` de los sujetos que produjeron esas ejecuciones (cruce por `evaluations.agent_execution_id`). Es la métrica para comparar versiones: «¿el agente mejora?».
-- **`GET /metrics/evaluations`** filtra por `evaluations.occurred_at`: `totals`, `by_day` (serie diaria en la zona `tz`, `Europe/Madrid` por defecto), `by_subject_type` y `subjects` (último veredicto, historial y ejecución vinculada de cada sujeto, hasta `subject_limit`).
+  - `by_skill_version`: desglose por agente y **versión exacta de skill**, leída de `traces.skill_versions` (lo que cada ejecución inyectó de verdad, LLD P4). Por fila: `skill`, `skill_version` / `skill_version_label`, `skill_version_id`, `source` (`db`, `code` o `none`), `agent_versions` (versiones del agente que la usaron), `executions`, `completed`, `hypotheses_created` (suma de `output.counters.hypotheses_created` de esas ejecuciones), `last_run_at` y `human_feedback` (último veredicto humano de los sujetos vinculados a esas ejecuciones). Una ejecución que usó N skills cuenta en sus N filas. Las ejecuciones sin traza (intentos muertos) no aparecen.
+- **`GET /metrics/evaluations`** filtra por `evaluations.occurred_at` y solo cuenta veredictos humanos (`evaluation_kind: "HUMAN"`): `totals`, `by_day` (serie diaria en la zona `tz`, `Europe/Madrid` por defecto), `by_subject_type` y `subjects` (último veredicto, historial y ejecución vinculada de cada sujeto, hasta `subject_limit`).
 - **`GET /metrics/runs`** devuelve los últimos `TaskRun` con tarea, agente, versión, estado, outcome, coste, duración y `trace_url` (`/task-runs/:id`).
 
 Ejemplo:
@@ -1833,7 +1816,7 @@ curl -s "http://127.0.0.1:4020/metrics/agents?since=2026-10-01T00:00:00%2B02:00"
 | `useful_rate` | `(ACCEPTED + EDITED) / revisadas` (AC-20) |
 | `avg_score` | Media del `score` (1.0, 0.5, 0.0) |
 
-Las tasas usan el **último veredicto de cada sujeto** (`subject_type`, `subject_id`): una hipótesis editada y después descartada cuenta una vez, como `DISCARDED`. `verdicts` cuenta todas las filas. En `/metrics/agents` solo cuentan los veredictos vinculados a una ejecución; en `/metrics/summary` cuentan todos.
+Las tasas usan el **último veredicto de cada sujeto** (`subject_type`, `subject_id`): una hipótesis editada y después descartada cuenta una vez, como `DISCARDED`. `verdicts` cuenta todas las filas. En `/metrics/agents` solo cuentan los veredictos vinculados a una ejecución; en `/metrics/summary` cuentan todos. En los tres endpoints solo cuentan las filas `evaluations.kind = 'HUMAN'`: las evaluaciones automáticas (`RULE`, `LLM_JUDGE`, `COMPOSITE`) no entran en ninguna tasa, aunque alguien las guarde en el tenant de producción.
 
 ### Dashboard
 
@@ -1841,6 +1824,7 @@ Abre `http://127.0.0.1:4020/dashboard`. Para otro tenant, añade `?tenant=<id>`.
 
 - Tarjetas: runs de hoy y de los últimos 7 días (desde la medianoche local del navegador), coste acumulado en EUR, tasa de aceptación y última ejecución.
 - Tabla por agente y versión: runs, éxito, coste medio, latencia, veredictos, aceptación, utilidad (AC-20) y score medio.
+- Tabla por versión de skill (`by_skill_version` de `/metrics/agents`): agente, skill, versión exacta (`código` si vino del fallback en código), versiones del agente, ejecuciones, hipótesis creadas, veredictos, aceptación y utilidad.
 - Últimos 10 runs, con enlace a su trace JSON (`GET /task-runs/:id`).
 
 La página es HTML, CSS y JavaScript inline, sin frameworks ni CDN. Todas sus llamadas usan rutas relativas (`metrics/...`, `task-runs/...`). Sigue el tema claro u oscuro del sistema (`prefers-color-scheme`).

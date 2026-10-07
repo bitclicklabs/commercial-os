@@ -11,7 +11,10 @@
  * - Latency of a TaskRun = `finished_at - started_at` (AC-16).
  * - Human acceptance uses the LATEST verdict per subject (subject_type, subject_id): a
  *   hypothesis edited and later discarded counts once, as DISCARDED. `verdicts` counts
- *   every row.
+ *   every row. Only `evaluations.kind = 'HUMAN'` rows count (summary, agents, evaluations).
+ * - /metrics/agents `by_skill_version`: per agent and exact skill version, read from
+ *   `traces.skill_versions` (what each execution really injected, LLD P4). Executions without
+ *   a trace (dead attempts) are not in it.
  * - ARCHIVED agents (e.g. the "[TEST] ..." agents of the live tests, archived by
  *   `pnpm cleanup:archive-test-agents`) are hidden from the per-agent table
  *   (/metrics/agents) and the recent runs list (/metrics/runs) unless `includeArchived`.
@@ -74,6 +77,13 @@ function execCostEur(alias: string): SQL {
     else ${e}.total_cost::float8 * ${DEFAULT_USD_TO_EUR}::float8
   end)`;
 }
+
+/**
+ * Human verdicts only (`evaluations ev`). Automatic evaluations (RULE / LLM_JUDGE / COMPOSITE,
+ * `pnpm evaluate`, experiments) go to the `experiments` tenant; this filter is the second
+ * shield so they never reach acceptance rates, `verdicts`, `avg_score` or the subjects list.
+ */
+const HUMAN_ONLY = sql` and ev.kind = 'HUMAN'`;
 
 /** `tenant_id = ... and column >= since and column < until` for the given alias/column. */
 function windowWhere(alias: string, column: string, w: Window): SQL {
@@ -194,10 +204,10 @@ export async function metricsSummary(db: Db, w: Window, clock: { now?: Date; tim
     db,
     sql`with latest as (
       select distinct on (ev.subject_type, ev.subject_id) ev.feedback, ev.score
-      from evaluations ev where ${windowWhere('ev', 'occurred_at', w)}
+      from evaluations ev where ${windowWhere('ev', 'occurred_at', w)}${HUMAN_ONLY}
       order by ev.subject_type, ev.subject_id, ev.occurred_at desc, ev.created_at desc
     )
-    select (select count(*) from evaluations ev where ${windowWhere('ev', 'occurred_at', w)}) as verdicts,
+    select (select count(*) from evaluations ev where ${windowWhere('ev', 'occurred_at', w)}${HUMAN_ONLY}) as verdicts,
            count(*) filter (where feedback = 'ACCEPTED') as accepted,
            count(*) filter (where feedback = 'EDITED') as edited,
            count(*) filter (where feedback = 'DISCARDED') as discarded,
@@ -388,7 +398,7 @@ export async function metricsAgents(db: Db, w: Window & AgentFilter) {
     linked as (
       select ev.*, ex.agent_id, ex.agent_version_id
       from evaluations ev join ex on ex.id = ev.agent_execution_id
-      where ev.tenant_id = ${w.tenantId}
+      where ev.tenant_id = ${w.tenantId}${HUMAN_ONLY}
     ),
     latest as (
       select distinct on (subject_type, subject_id) agent_id, agent_version_id, feedback, score
@@ -445,7 +455,93 @@ export async function metricsAgents(db: Db, w: Window & AgentFilter) {
     window: { since: w.since?.toISOString() ?? null, until: w.until?.toISOString() ?? null, field: 'agent_executions.created_at' },
     include_archived: includeArchived,
     items,
+    by_skill_version: await skillVersionBreakdown(db, w),
   };
+}
+
+/**
+ * /metrics/agents `by_skill_version`: one row per agent and exact skill version used, from
+ * `traces.skill_versions` of the executions of the window. An execution that used N skills
+ * counts once in each of its N rows. Hypotheses = `output.counters.hypotheses_created` of the
+ * execution; human feedback = latest HUMAN verdict per subject linked to those executions.
+ */
+async function skillVersionBreakdown(db: Db, w: Window & AgentFilter) {
+  const usedCte = sql`ex as (
+      select e.id, e.agent_id, a.name as agent_name, v.version as agent_version, e.status, e.output, e.created_at
+      from agent_executions e
+      join agents a on a.id = e.agent_id
+      left join agent_versions v on v.id = e.agent_version_id
+      where ${windowWhere('e', 'created_at', w)}${archivedAgentsWhere('a', w)}
+    ),
+    used as (
+      select distinct ex.id as execution_id, ex.agent_id, ex.agent_name, ex.agent_version, ex.status, ex.output, ex.created_at,
+             coalesce(s->>'name', s->>'skill_id', '?') as skill,
+             case when jsonb_typeof(s->'version') = 'number' then (s->>'version')::int end as skill_version,
+             s->>'skill_version_id' as skill_version_id,
+             coalesce(s->>'source', 'unknown') as source
+      from ex
+      join traces t on t.execution_id = ex.id and t.tenant_id = ${w.tenantId}
+      cross join lateral jsonb_array_elements(case when jsonb_typeof(t.skill_versions) = 'array' then t.skill_versions else '[]'::jsonb end) s
+    ),
+    keyed as (
+      select u.*, concat_ws('|', u.agent_id::text, u.skill, coalesce(u.skill_version::text, ''), coalesce(u.skill_version_id, ''), u.source) as k
+      from used u
+    )`;
+  const usage = await rows(
+    db,
+    sql`with ${usedCte}
+    select k, agent_id, agent_name, skill, skill_version, skill_version_id, source,
+           count(*) as executions,
+           count(*) filter (where status = 'COMPLETED') as completed,
+           sum(case when jsonb_typeof(output->'counters'->'hypotheses_created') = 'number'
+                    then (output->'counters'->>'hypotheses_created')::float8 else 0 end) as hypotheses_created,
+           array_agg(distinct agent_version order by agent_version) filter (where agent_version is not null) as agent_versions,
+           max(created_at) as last_run_at
+    from keyed
+    group by k, agent_id, agent_name, skill, skill_version, skill_version_id, source
+    order by agent_name, skill, skill_version nulls first, source`,
+  );
+  const verdicts = await rows(
+    db,
+    sql`with ${usedCte},
+    linked as (
+      select kd.k, ev.subject_type, ev.subject_id, ev.feedback, ev.score, ev.occurred_at, ev.created_at
+      from evaluations ev join keyed kd on kd.execution_id = ev.agent_execution_id
+      where ev.tenant_id = ${w.tenantId}${HUMAN_ONLY}
+    ),
+    latest as (
+      select distinct on (k, subject_type, subject_id) k, feedback, score
+      from linked order by k, subject_type, subject_id, occurred_at desc, created_at desc
+    ),
+    totals as (select k, count(*) as verdicts from linked group by k)
+    select l.k,
+           count(*) filter (where l.feedback = 'ACCEPTED') as accepted,
+           count(*) filter (where l.feedback = 'EDITED') as edited,
+           count(*) filter (where l.feedback = 'DISCARDED') as discarded,
+           avg(l.score::float8) as avg_score,
+           max(t.verdicts) as verdicts
+    from latest l join totals t on t.k = l.k
+    group by l.k`,
+  );
+  const byK = new Map(verdicts.map((v) => [String(v.k), v]));
+  return usage.map((u) => {
+    const version = nOrNull(u.skill_version);
+    return {
+      agent_id: u.agent_id,
+      agent_name: u.agent_name,
+      skill: u.skill,
+      skill_version: version,
+      skill_version_label: version === null ? null : `v${version}`,
+      skill_version_id: u.skill_version_id ?? null,
+      source: u.source,
+      agent_versions: Array.isArray(u.agent_versions) ? u.agent_versions.map((x) => Number(x)) : [],
+      executions: n(u.executions),
+      completed: n(u.completed),
+      hypotheses_created: n(u.hypotheses_created),
+      last_run_at: iso(u.last_run_at),
+      human_feedback: feedbackCounts(byK.get(String(u.k))),
+    };
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -457,7 +553,7 @@ export interface EvaluationsOptions extends Window {
 }
 
 export async function metricsEvaluations(db: Db, o: EvaluationsOptions) {
-  const where = windowWhere('ev', 'occurred_at', o);
+  const where = sql`${windowWhere('ev', 'occurred_at', o)}${HUMAN_ONLY}`;
   const days = await rows(
     db,
     sql`select to_char(date_trunc('day', ev.occurred_at at time zone ${o.timezone}), 'YYYY-MM-DD') as day,
@@ -506,6 +602,7 @@ export async function metricsEvaluations(db: Db, o: EvaluationsOptions) {
   return {
     tenant_id: o.tenantId,
     window: { since: o.since?.toISOString() ?? null, until: o.until?.toISOString() ?? null, field: 'evaluations.occurred_at' },
+    evaluation_kind: 'HUMAN',
     timezone: o.timezone,
     totals: {
       verdicts: n(totals?.verdicts),

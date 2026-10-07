@@ -151,6 +151,7 @@ El esquema vive en `src/db/schema.ts`. Todas las tablas llevan `tenant_id` (C6).
 | `0006_event_subscriptions` | Tabla `event_subscriptions` (webhooks salientes del event bus, trigger anti-`DELETE`). SQL idempotente. La `0005` la reclama otra rama: el journal salta del idx 4 al 6 hasta la fusión, y la `0006` debe quedar con fecha (`when`) posterior a la `0005` |
 | `0007_email_sends` | Tabla `email_sends` (envíos observados desde Twenty, append-only con trigger anti-`DELETE`, dedupe `(tenant_id, hypothesis_id, sent_at)`). SQL idempotente |
 | `0008_harness` | Tablas `harnesses` y `harness_versions` (triggers anti-`DELETE` y de contenido inmutable) y columnas `agent_versions.harness_ref` y `traces.harness`. SQL idempotente. La `0009` la reclama otra rama: la `0008` lleva `when` = `1791375700000`, entre la `0007` y la `0009` ([ADR-31](../../docs/LLD-0.3-estado-real.md#adr-31)) |
+| `0009_knowledge` | Tabla `knowledge_entries` (memoria semántica, LLD §6.4): triggers anti-`DELETE`, de transiciones válidas y de contenido inmutable fuera de `PROPOSED`/`VALIDATED`; CHECK que impide `ACTIVE` sin evidencia. SQL idempotente. La `0008` es de `feat/harness-v1` (`when` 1791375700000); la `0009` lleva `when` 1791375800000 e idx 9 (ADR-31) |
 
 Importante: el migrador de Drizzle aplica solo las migraciones con fecha posterior a la última aplicada. Si dos ramas generan migraciones en paralelo contra la misma BD de desarrollo, aplica primero la más antigua o regenera la nueva tras el merge.
 
@@ -733,6 +734,95 @@ Las transiciones son idempotentes: repetir `activate` o `deprecate` devuelve `20
   docker exec pxos-postgres psql -U agentos -d postgres -c "create database agentos_wt9_harness"   # una vez
   pnpm vitest run test/unit/harness.test.ts test/integration/harness.test.ts
   ```
+## Knowledge (memoria semántica)
+
+La capa de conocimiento es la memoria SEMANTIC del LLD v0.1 §16: lo que PubliEXPE ha aprendido, en frases cortas y accionables respaldadas por evidencia. Sigue la separación del §6.4: **RAW EXPERIENCE → KNOWLEDGE → SKILL**. Un trace nunca pasa directo a un prompt: un agente solo ve entradas `ACTIVE`, y una entrada solo se activa con evidencia.
+
+### Tabla `knowledge_entries`
+
+`id`, `tenant_id`, `domain` (minúsculas, p. ej. `prospeccion`, `email`), `topic`, `statement` (máx. 400 caracteres; va tal cual al prompt), `evidence` (jsonb, array de `{ type, ref, note?, doc? }` con `type` `execution`, `evaluation`, `experiment`, `feedback`, `skill_version` o `document`), `confidence` (0-1), `source` (`human`, `experiment`, `agent_proposal`), `status`, `status_reason`, `superseded_by`, `valid_from`, `valid_until`, `activated_at`, `metadata`, `created_at`, `created_by`, `updated_at`.
+
+| Estado | Puede pasar a | Contenido |
+|---|---|---|
+| `PROPOSED` | `VALIDATED`, `ACTIVE`, `REJECTED` | Editable |
+| `VALIDATED` | `ACTIVE`, `REJECTED` | Editable |
+| `ACTIVE` | `SUPERSEDED` | Inmutable |
+| `SUPERSEDED`, `REJECTED` | (final) | Inmutable |
+
+Reglas que aplica la BD (migración `0009_knowledge`): sin `DELETE` físico, solo las transiciones de la tabla, contenido inmutable fuera de `PROPOSED`/`VALIDATED` y un CHECK que impide `ACTIVE` con `evidence` vacía. Cambiar un conocimiento activo es proponer una entrada nueva y sustituir la anterior.
+
+### API (sin DELETE)
+
+| Método y ruta | Qué hace |
+|---|---|
+| `GET /knowledge?domain=&status=&topic=&limit=` | Lista (más recientes primero) |
+| `GET /knowledge/:id` | Una entrada |
+| `POST /knowledge` | Propuesta nueva, siempre `PROPOSED`. Campos: `domain`, `topic`, `statement`, `confidence`, `source`, `evidence?`, `valid_from?`, `valid_until?`, `metadata?`, `created_by?` |
+| `PATCH /knowledge/:id` | Edita una entrada `PROPOSED` o `VALIDATED` (`409` si ya no lo es) |
+| `POST /knowledge/:id/validate` | `PROPOSED` → `VALIDATED` |
+| `POST /knowledge/:id/activate` | → `ACTIVE`. `400` sin evidencia. `valid_from` = ahora si no tenía. Idempotente |
+| `POST /knowledge/:id/supersede` | `ACTIVE` → `SUPERSEDED` (`valid_until` = ahora). Con `{ "superseded_by": "<id>" }` activa la sustituta en la misma transacción |
+| `POST /knowledge/:id/reject` | `PROPOSED`/`VALIDATED` → `REJECTED`. `{ "reason" }` obligatorio |
+
+```sh
+# Proponer, añadir evidencia y activar
+curl -s -X POST http://127.0.0.1:4020/knowledge -H 'content-type: application/json' -H 'x-tenant-id: publiexpe' \
+  -d '{"domain":"prospeccion","topic":"contacto-marketing","statement":"En industriales de 50-200 empleados que exponen, contacta primero con marketing, no con compras.","confidence":0.6,"source":"agent_proposal"}'
+curl -s -X PATCH http://127.0.0.1:4020/knowledge/<id> -H 'content-type: application/json' -H 'x-tenant-id: publiexpe' \
+  -d '{"evidence":[{"type":"evaluation","ref":"<evaluation_id>","note":"aceptada por el comercial"}]}'
+curl -s -X POST http://127.0.0.1:4020/knowledge/<id>/activate -H 'x-tenant-id: publiexpe'
+```
+
+### Inyección en el prompt
+
+1. La versión del agente declara sus dominios en `configuration.knowledge_domains` (seed: Prospector `["prospeccion"]`, EmailDrafter `["email"]`). Sin la clave no se lee nada y el run es idéntico al de antes.
+1. Al empezar cada ejecución, el runtime (`RunProcessor.runAgent`) lee las entradas `ACTIVE` de esos dominios vigentes ahora (`valid_from <= now < valid_until`), **las más recientes primero**, con dos límites: **10 entradas y 2.000 caracteres** de bloque. Una entrada que no cabe se omite y se prueba la siguiente.
+1. El agente añade el bloque a su system prompt con `useKnowledge(ctx, system)`, detrás de la skill:
+
+   ```text
+   ## Conocimiento validado de PubliEXPE
+   Aprendizajes de PubliEXPE respaldados por evidencia (experimentos y feedback). Aplícalos; si alguno contradice las reglas anteriores, mandan las reglas.
+   - [prospeccion · cantidades-y-presupuesto] Deriva cantidades y presupuesto de un desglose por producto…
+   ```
+
+   El Prospector lo usa solo en la decisión por expositor (modo directo y scout), no en la búsqueda ni en la extracción. El EmailDrafter, en la redacción.
+1. El trace guarda un paso `MEMORY_READ` (el primero) con `knowledge_entry_ids`, `entries` (`id`, `domain`, `topic`, `confidence`), `omitted_ids`, `block_chars`, `block_hash`, `injected` y `resolution` (`ok`, `empty`, `db_error`).
+
+**Fallback:** si la BD falla (o falta la tabla), el agente corre sin conocimiento, se registra un aviso y el paso `MEMORY_READ` queda con `resolution: "db_error"`. Nada falla por el conocimiento.
+
+> **Importante:** cambiar `knowledge_domains` en el seed crea una versión nueva del agente al ejecutar `pnpm seed`. Activar o sustituir una entrada no toca los agentes en marcha: las ejecuciones nuevas la leen al arrancar.
+
+### Seed
+
+`pnpm seed` crea, si faltan (clave natural `tenant + domain + topic`; una entrada existente no se toca nunca), estas entradas `ACTIVE`:
+
+| Dominio · tema | Statement (resumen) | Evidencia |
+|---|---|---|
+| `prospeccion` · `cantidades-y-presupuesto` | Cantidades y presupuesto a partir de un desglose por producto, nunca horquillas de plantilla | EXP-001, patrón F1 (0/57 `need` con cantidades; con desglose, 14/14) y las 3 ejecuciones de diseño |
+| `prospeccion` · `suposiciones-por-nombre` | Lo deducido del nombre se escribe como suposición, no como hecho | EXP-001, patrón F3 (suposiciones marcadas 2/12 → 8/12) y las 3 ejecuciones |
+| `email` · `presentacion-primer-contacto` | Presenta siempre a PubliEXPE como expertos en merchandising para empresas al nombrarla | Feedback del usuario del 2026-10-07 (CHANGELOG, tanda 6) y LLD v0.3 (`company_descriptor`) |
+
+No se siembra el techo de confianza de EXP-001 (OP1): provocó la regresión de semántica de la confianza y el gate decidió iterar.
+
+## Research
+
+Cada expositor relevante que el Prospector escribe en Twenty (llega al paso de la señal) recibe además un registro `research` (LLD v0.1 §5.2; `research.result.v1` del LLD v0.2 §7.4) con la tool `create_research`, vinculado a la empresa y a la señal y con el `agentExecutionId`. Una investigación no se sobrescribe: cada ejecución crea la suya; dentro de una ejecución, la tool deduplica por ejecución + empresa + tipo.
+
+- **Sin llamadas extra al LLM.** El research se compone con lo que el run ya tiene (`src/agents/exhibitor-research.ts`): datos del catálogo, ficha del expositor, dominio verificado y URLs visitadas.
+- **El `summary` dice lo observado**, nunca la valoración del modelo (esa está en la hipótesis): en qué feria figura y según qué catálogo, el sector indicado, la web y de dónde sale, y la descripción del catálogo si la hay. El texto del catálogo pasa por `scrubUnknownUrls`.
+
+| Campo | Modo scout | Modo directo |
+|---|---|---|
+| `researchType` | `COMPANY_PROFILE` (perfil del expositor) | `EVENT_EXHIBITORS` (expositor de la lista recibida) |
+| `query` | `Ficha del expositor «X» en el catálogo de {feria} ({URL}) y su página de expositor.` | `Expositor «X» de {feria} en la lista recibida (modo directo).` |
+| `sources` | Solo fuentes conocidas del `SourceLedger`: página del catálogo, ficha del expositor y portada de la web si se descargó | `event.source_url` o, sin ella, la web de la empresa |
+| `structuredResult` | `profile` (`legalName`, `sector`, `website`), `signals[]` (la feria) y `dataQuality.missingFields` | Igual |
+
+`confidence` mide cuántos datos del perfil están verificados, no el encaje comercial: 0,5 por figurar como expositor en una fuente, +0,2 con web, +0,1 con sector y +0,1 con descripción (máx. 0,9; en modo directo sin `source_url`, 0,1 menos).
+
+Contadores en `output.counters`: `research_created`, `research_existing` y `research_errors`. Un fallo de `create_research` no detiene el expositor ni cuenta en `errors`. El `agentRunSummary` los resume. La política de tools del Prospector incluye `create_research` (8 tools) y `max_calls_per_execution` sube a 1.800.
+
+Prueba en vivo opcional (`RESEARCH_LIVE=1`, ~0,013 €, en tu propia BD): `test/integration/research-live.test.ts` ejecuta el scout sobre `RESEARCH_LIVE_EVENT_URL` (por defecto `https://www.gastronoma.es`) con 3 expositores y comprueba en Twenty cada research, su empresa, su señal y que sus fuentes son URLs visitadas.
 
 ## Tools
 
@@ -882,6 +972,7 @@ El modo scout es un modo del mismo agente, no un agente hermano: el LLD v0.2 asi
 1. Si `relevant` y `confidence >= min_confidence` (por defecto `0.5`):
    - `upsert_company` por dominio. Sin dominio, solo reutiliza una empresa con el mismo nombre exacto (`find_company`); nunca crea una empresa sin dominio verificado.
    - `create_signal`: el evento, con su `signalType`, `status = NEW` y la confianza.
+   - `create_research`: lo observado del expositor, sin llamada extra al LLM (ver [Research](#research)). Si falla, el expositor sigue (`research_error`).
    - `create_hypothesis` con `status = PROPOSED` y nombre `{empresa} — {evento}`, para que repetir el mismo evento no duplique la hipótesis.
 1. Al final, **siempre**, `create_agent_run_summary` con `outcome` (`SUCCESS`, `PARTIAL` si algún expositor falló, `FAILED` si fallaron todos o la entrada no es válida), un `resultSummary` en español con contadores y el coste real del modelo en EUR.
 

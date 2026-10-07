@@ -782,6 +782,64 @@ export const emailSends = pgTable(
   ],
 );
 
+// ---------------------------------------------------------------------------
+// 6.4 / 16 Knowledge layer: semantic memory (MVP-1, migration 0009_knowledge)
+// ---------------------------------------------------------------------------
+export const KNOWLEDGE_STATUSES = ['PROPOSED', 'VALIDATED', 'ACTIVE', 'SUPERSEDED', 'REJECTED'] as const;
+export type KnowledgeStatus = (typeof KNOWLEDGE_STATUSES)[number];
+export const KNOWLEDGE_SOURCES = ['human', 'experiment', 'agent_proposal'] as const;
+export type KnowledgeSource = (typeof KNOWLEDGE_SOURCES)[number];
+
+/** One piece of evidence of a knowledge entry: what it points to (execution, evaluation, experiment...). */
+export interface KnowledgeEvidence {
+  type: 'execution' | 'evaluation' | 'experiment' | 'feedback' | 'skill_version' | 'document';
+  /** Id of the referenced object (uuid of an execution/evaluation, `EXP-001`, a date...). */
+  ref: string;
+  note?: string;
+  /** Repository path or URL of the document that records it. */
+  doc?: string;
+}
+
+/**
+ * A KnowledgeEntry (LLD v0.1 section 6.4): RAW EXPERIENCE -> KNOWLEDGE -> SKILL. A short,
+ * actionable `statement` backed by `evidence`. Lifecycle PROPOSED -> VALIDATED -> ACTIVE ->
+ * SUPERSEDED (or REJECTED); only ACTIVE entries of the agent's `knowledge_domains` are
+ * injected in its prompt. Triggers: no DELETE, valid transitions only, content immutable
+ * once it leaves PROPOSED/VALIDATED. A CHECK forbids ACTIVE without evidence.
+ */
+export const knowledgeEntries = pgTable(
+  'knowledge_entries',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    tenantId: tenantId(),
+    domain: text('domain').notNull(),
+    topic: text('topic').notNull(),
+    statement: text('statement').notNull(),
+    evidence: jsonb('evidence').$type<KnowledgeEvidence[]>().notNull().default([]),
+    confidence: numeric('confidence', { precision: 3, scale: 2, mode: 'number' }).notNull(),
+    source: text('source').$type<KnowledgeSource>().notNull(),
+    status: text('status').$type<KnowledgeStatus>().notNull().default('PROPOSED'),
+    statusReason: text('status_reason'),
+    /** Entry that replaces this one (set when it is SUPERSEDED by a newer entry). */
+    supersededBy: uuid('superseded_by').references((): AnyPgColumn => knowledgeEntries.id),
+    validFrom: timestamp('valid_from', { withTimezone: true }),
+    validUntil: timestamp('valid_until', { withTimezone: true }),
+    activatedAt: timestamp('activated_at', { withTimezone: true }),
+    metadata: jsonb('metadata').$type<Record<string, unknown>>().notNull().default({}),
+    createdAt: createdAt(),
+    createdBy: text('created_by'),
+    updatedAt: updatedAt(),
+  },
+  (t) => [
+    index('knowledge_entries_active_idx').on(t.tenantId, t.status, t.domain),
+    check('knowledge_entries_status_ck', sql`${t.status} in ('PROPOSED', 'VALIDATED', 'ACTIVE', 'SUPERSEDED', 'REJECTED')`),
+    check('knowledge_entries_source_ck', sql`${t.source} in ('human', 'experiment', 'agent_proposal')`),
+    check('knowledge_entries_confidence_ck', sql`${t.confidence} >= 0 and ${t.confidence} <= 1`),
+    check('knowledge_entries_evidence_ck', sql`jsonb_typeof(${t.evidence}) = 'array'`),
+    check('knowledge_entries_active_evidence_ck', sql`${t.status} <> 'ACTIVE' or jsonb_array_length(${t.evidence}) > 0`),
+  ],
+);
+
 export type Agent = typeof agents.$inferSelect;
 export type AgentVersion = typeof agentVersions.$inferSelect;
 export type TaskDefinition = typeof taskDefinitions.$inferSelect;
@@ -800,3 +858,4 @@ export type EventSubscription = typeof eventSubscriptions.$inferSelect;
 export type EmailSend = typeof emailSends.$inferSelect;
 export type Harness = typeof harnesses.$inferSelect;
 export type HarnessVersion = typeof harnessVersions.$inferSelect;
+export type KnowledgeEntry = typeof knowledgeEntries.$inferSelect;

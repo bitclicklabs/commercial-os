@@ -64,6 +64,13 @@
       "when": 1791375700000,
       "tag": "0008_harness",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1791375800000,
+      "tag": "0009_knowledge",
+      "breakpoints": true
     }
   ]
 }

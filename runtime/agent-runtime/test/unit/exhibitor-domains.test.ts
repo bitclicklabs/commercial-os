@@ -313,6 +313,13 @@ describe('scout: client-side paginated catalog + exhibitor profiles', () => {
       ['FAIR', CATALOG],
     ]);
     expect(fake.tables.commercialHypotheses.map((h) => h.status)).toEqual(['PROPOSED', 'PROPOSED']);
+    // Research per written exhibitor: catalog page and its profile (the home page counts only if it was downloaded).
+    expect(fake.tables.researches).toHaveLength(2);
+    const arce = fake.tables.researches.find((r) => String(r.summary).startsWith('ARCECARNE'))!;
+    expect(arce).toMatchObject({ researchType: 'COMPANY_PROFILE', sources: [CATALOG, PROFILE(1)] });
+    expect(String(arce.summary)).toContain('Web: arcecarne.es (tomada de su ficha en el catálogo de la feria).');
+    expect(String(arce.query)).toContain('y su página de expositor');
+    expect(out.counters).toMatchObject({ research_created: 2 });
     const evidence = JSON.stringify(fake.tables.commercialHypotheses.map((h) => h.evidence));
     expect(evidence).toContain(PROFILE(1));
     expect(evidence).toContain('tomada de la ficha del expositor');

@@ -1,5 +1,6 @@
 import type { TraceStepType } from '../domain/statuses.js';
 import type { ModelProvider, TokenUsage } from '../providers/model-provider.js';
+import type { KnowledgeSet } from '../knowledge/resolver.js';
 import type { SkillSet } from '../skills/resolver.js';
 import type { AgentToolbox } from '../tools/executor.js';
 
@@ -30,6 +31,12 @@ export interface AgentContext {
    * the agent keeps its MVP-0 prompt. The set records what was injected for the trace.
    */
   skills?: SkillSet;
+  /**
+   * ACTIVE knowledge entries of the version's `knowledge_domains`, resolved when the run
+   * started (LLD 6.4, semantic memory). Append them to a system prompt with
+   * `useKnowledge(ctx, system)`; without them the agent runs as before.
+   */
+  knowledge?: KnowledgeSet;
 }
 
 /** Operational event recorded in the trace (no private model reasoning, section 17.1). */

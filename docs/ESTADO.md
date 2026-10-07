@@ -106,3 +106,15 @@ En paralelo, en sesiones aparte del usuario: desglose por versión de skill en m
 | Memoria semántica (KnowledgeEntry) + el Prospector escribe Research | `feat/knowledge-research` | Opus | ✅ fusionado (3 entries ACTIVE con evidencia del EXP-001 y tu feedback; MEMORY_READ en el trace; research real de ARCECARNE en Twenty; 597 tests) |
 | Dashboard dentro de Twenty (estudio de viabilidad + implementación si procede) | `feat/twenty-dashboard` | Opus | ✅ fusionado (viable y NATIVO: objeto agentOsDailyMetric + página de KPIs/gráficos + sync cada 15 min; sin CORS ni aperturas; Front Components descartados con evidencia) |
 | Integración, e2e y PR | `feat/tanda9` (worktree wt9-integracion) | PM | ✅ 615 tests; migraciones 0008+0009; seed (harness v1, 3 knowledge, Prospector v8/EmailDrafter v4); skill v3 ACTIVADA tras EXP-002; e2e: run con harness@1 + MEMORY_READ + research ✦ PENDIENTE DEL USUARIO: sync de la App (necesita rol Admin temporal en la key) y backfill de métricas |
+
+## Tanda 10 — MVP-2: evaluación formal 🔄 (en curso, 2026-10-07)
+
+Secuenciada: datasets y evaluadores primero; Experiments + Release Gate cuando aterricen. Siguen en curso las 2 sesiones paralelas del usuario (métricas por versión de skill; fix del reconciliador) — `src/metrics/queries.ts` y `src/worker/recovery.ts` siguen vetados.
+
+| Pieza | Rama | Agente | Estado |
+|---|---|---|---|
+| Datasets de evaluación desde trazas y veredictos reales (train/val/test sin contaminación, P5) | `feat/eval-datasets` | Opus | 🔄 en curso |
+| Evaluadores RULE + LLM_JUDGE (juez con modelo distinto al ejecutor) + score COMPOSITE con restricciones duras (§11.3) | `feat/evaluators` | Opus | 🔄 en curso |
+| Experiments + Release Gate automático (§11.5-11.6, seesaw) integrado con la activación de skills | `feat/experiments-gate` | Opus | ⏸️ espera a datasets+evaluadores |
+| Docs de cierre (ADRs, guía, runbook) | — | Sonnet (al final) | ⏸️ |
+| Integración, e2e y PR | `feat/tanda10` (worktree wt10-integracion) | PM | ⏸️ |

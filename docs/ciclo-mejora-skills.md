@@ -1,6 +1,8 @@
 # Ciclo de mejora de skills
 
-Este procedimiento explica cómo mejorar una skill del Agent OS con datos reales y sin poner en riesgo producción: del análisis de trazas a una versión candidata, su comparación offline, la decisión humana, la activación, la medición y el rollback. Es la versión manual del ciclo del LLD v0.1 §6.3 (el optimizador automático llega en MVP-3) y respeta P5: nunca se evalúa sobre los datos que generaron el cambio.
+> **Nota:** desde la tanda 11 existe un **modo automático**, el [Skill Optimizer](skill-optimizer.md) (`pnpm optimize:run --skill <nombre>`), que recorre por ti la cosecha de fallos, su agrupación, la candidata, el experimento y el gate, y deja una propuesta de promoción en Twenty. Este procedimiento manual **sigue siendo válido como alternativa**: úsalo cuando el optimizador termine en `BLOCKED_NO_DATA`, cuando quieras escribir las operaciones tú o cuando una candidata necesite iterar con criterio humano. Consulta [Modo automático](#modo-automático-skill-optimizer).
+
+Este procedimiento explica cómo mejorar una skill del Agent OS con datos reales y sin poner en riesgo producción: del análisis de trazas a una versión candidata, su comparación offline, la decisión humana, la activación, la medición y el rollback. Es la versión manual del ciclo del LLD v0.1 §6.3 (la versión automática es el [Skill Optimizer](skill-optimizer.md), MVP-3) y respeta P5: nunca se evalúa sobre los datos que generaron el cambio.
 
 El ejemplo completo de una vuelta es [EXP-001 · Prospector v2](experimentos/EXP-001-prospector-v2.md), que terminó en «iterar»; su iteración, con datos de validación nuevos, es [EXP-002 · Prospector v3](experimentos/EXP-002-prospector-v3.md). Desde EXP-003 la comparación, la evaluación y la decisión del gate las hace `pnpm experiment:run` ([EXP-003 · Prospector v4](experimentos/EXP-003-auto/informe.md), el primero automático).
 
@@ -169,9 +171,12 @@ curl -s -X POST "http://127.0.0.1:4020/skills/<skill>/versions/<v>/activate" -H 
 
 La versión activa anterior pasa a `DEPRECATED` en la misma transacción. Las ejecuciones en curso no cambian; la siguiente resuelve la nueva versión al arrancar. Anota la fecha y hora de activación en el experimento.
 
+> **Nota:** si el gate dio `PASS_FORM` o prefieres no pasar de 0 a 100 %, puedes poner la candidata en **canario** (`POST /skills/<skill>/versions/<v>/canary`) y decidir tras comparar con la activa. Consulta [Canario](skill-optimizer.md#canario-despliegue-gradual-tras-el-gate).
+
 ## 7. Mide la aceptación por versión
 
 - `GET /metrics/agents` agrupa por versión de **agente**. Activar una versión de skill no crea una versión de agente, así que esa vista mezcla las dos versiones de la skill. Úsala para volumen y coste y separa por la hora de activación.
+- Desde la tanda 11, `GET /metrics/agents` también desglosa por versión de **skill** y las métricas comerciales cuentan solo evaluaciones `kind='HUMAN'`, de modo que las evaluaciones automáticas de los experimentos no las contaminan. Si tu runtime es anterior, usa la consulta siguiente.
 - La aceptación por versión de **skill** sale de cruzar `evaluations` con `traces.skill_versions` (solo lectura):
 
   ```sql
@@ -198,7 +203,22 @@ Si la versión activa empeora:
 curl -s -X POST "http://127.0.0.1:4020/skills/<skill>/versions/<v>/deprecate" -H 'x-tenant-id: publiexpe'
 ```
 
-El rollback no pasa por el Release Gate: deprecar la activa, o activar una versión que ya estuvo `ACTIVE`, no necesita experimento (`gate.mode: rollback`). Si no hay una versión anterior que restaurar, la API responde `409`; en ese caso activa explícitamente la versión que quieras. Comprueba en `traces.skill_versions` de la siguiente ejecución qué versión se inyectó. No se borra nada: las versiones descartadas quedan en `DEPRECATED` con su historial.
+El rollback no pasa por el Release Gate: deprecar la activa, o activar una versión que ya estuvo `ACTIVE`, no necesita experimento (`gate.mode: rollback`). Si no hay una versión anterior que restaurar, la API responde `409`; en ese caso activa explícitamente la versión que quieras. Comprueba en `traces.skill_versions` de la siguiente ejecución qué versión se inyectó. No se borra nada: las versiones descartadas quedan en `DEPRECATED` con su historial. Si la versión estaba en canario, el rollback del canario la retira sin tocar la activa (consulta [Skill Optimizer](skill-optimizer.md#canario-despliegue-gradual-tras-el-gate)).
+
+## Modo automático: Skill Optimizer
+
+`pnpm optimize:run --skill <nombre>` (o `POST /optimizer/skills/:name/run`) encadena los pasos 2 a 4 sin intervención y se detiene antes de la decisión. Es solo manual: nada lo programa. El detalle, los estados y la revisión de la propuesta están en [Skill Optimizer](skill-optimizer.md).
+
+| Paso manual | Qué hace el optimizador |
+|---|---|
+| 1. Fija el reparto de datos | Respeta P5 por construcción: el dataset y `used_by` marcan lo quemado; sin casos etiquetados frescos termina en `BLOCKED_NO_DATA` |
+| 2. Analiza trazas y evaluaciones | Fase `HARVEST` (evaluaciones humanas negativas y fallos duros de las reglas) y `CLUSTERED` (agrupación con LLM) |
+| 3. Escribe la candidata | Fase `CANDIDATE_CREATED`: el LLM propone operaciones `ADD`/`REMOVE`/`REPLACE`/`MOVE`/`REORDER` con los mismos topes del 35 % y el 50 %; crea la `DRAFT` con un changelog que cita los clusters |
+| 4. Ejecuta el experimento | Fase `EXPERIMENT_RUNNING`: el mismo runner de `pnpm experiment:run` |
+| 5. Decide | **Humana**, a partir de la nota «Propuesta de promoción» en Twenty (solo si el gate da `GATE_PASS`) |
+| 6-8. Activa, mide, rollback | Iguales a los de este documento; el canario es opcional |
+
+El optimizador no sustituye al criterio humano: la lectura cualitativa del paso 5 sigue siendo imprescindible (EXP-003 lo demostró).
 
 ## Lista de comprobación
 

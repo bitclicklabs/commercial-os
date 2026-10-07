@@ -118,3 +118,15 @@ Secuenciada: datasets y evaluadores primero; Experiments + Release Gate cuando a
 | Experiments + Release Gate automático (§11.5-11.6, seesaw) integrado con la activación de skills | `feat/experiments-gate` | Opus | ✅ fusionado (EXP-003 automático: FAIL justificado de la v4, Δ 0,007 < 0,02 + riesgo cualitativo nuevo; candado verificado en vivo con 409) |
 | Docs de cierre (ADRs, guía, runbook) | — | Sonnet (al final) | ⏸️ |
 | Integración, e2e y PR | `feat/tanda10` (worktree wt10-integracion) | PM | ✅ 686 tests; migraciones 0010+0011; desplegado con el candado activo. INCIDENTE PM sin impacto: una verificación contra el runtime viejo (compose sin .env falló y no lo vi) activó la v2 ~3 min; v3 restaurada; 0 trazas afectadas. Lección: comprobar la salida del deploy antes de verificar |
+
+## Tanda 11 — MVP-3: Skill Optimizer automático 🔄 (en curso, 2026-10-07)
+
+Nota: las 2 sesiones paralelas del usuario (métricas por versión; fix del reconciliador) se cancelaron sin dejar PR → ese trabajo se recupera aquí y `src/metrics/queries.ts` / `src/worker/recovery.ts` dejan de estar vetados. Migraciones asignadas: 0012 optimizer, 0013 harness/canary.
+
+| Pieza | Rama | Agente | Estado |
+|---|---|---|---|
+| Skill Optimizer (§18): harvest de fallos → clustering → candidata por edit-ops → experimento → gate; propuesta de promoción en Twenty, humano activa; BLOCKED_NO_DATA si no hay etiquetas frescas (P5) | `feat/skill-optimizer` | Opus | 🔄 |
+| Experimentos de harness (activación con gate, adiós al force) + canario post-gate (% determinista, promote/rollback humanos) | `feat/harness-experiments` | Opus | 🔄 |
+| Recuperación del trabajo huérfano: métricas solo con veredictos HUMAN + desglose por versión de skill en /metrics/agents + fix del reconciliador que marcaba FAILED scouts terminados | `feat/metrics-recovery` | Opus | 🔄 |
+| Docs: skill-optimizer.md, ciclo-mejora-skills.md (modo automático), ROADMAP al día (MVP-2 ✅, MVP-3 🔄) | `docs/tanda11` | Sonnet | 🔄 |
+| Integración, e2e y PR | `feat/tanda11` (worktree wt11-integracion) | PM | 🔄 worktree creado con .env copiado (lección tanda 10) |

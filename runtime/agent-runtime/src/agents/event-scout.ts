@@ -323,8 +323,12 @@ type PageAttempt = {
 
 /** render_url answers that switch rendering off for the rest of the run. */
 const RENDER_OFF_CODES = new Set(['RENDERER_NOT_CONFIGURED', 'TOOL_NOT_ALLOWED', 'TOOL_NOT_FOUND', 'TOOL_DISABLED', 'TOOL_CALL_LIMIT']);
-/** Below this many characters a JS-app shell is not worth an LLM extraction call. */
+/** Below this many characters a JS-app shell (or an empty render) is not worth an LLM extraction call. */
 const EMPTY_SHELL_CHARS = 200;
+/** First render: wait until the app shows some text and it stops growing (renderer hydration wait). */
+const RENDER_FIRST = { minTextChars: 300 } as const;
+/** Retry of an empty render: longer extra wait, after network idle. */
+const RENDER_RETRY = { waitMs: 8_000, waitUntil: 'networkidle', minTextChars: 400 } as const;
 
 export interface ScoutEventResult {
   name: string;
@@ -401,6 +405,7 @@ export async function runScout(run: ProspectorRun, rawInput: Record<string, unkn
   let redirectResolutions = 0;
   let renders = 0;
   let rendersOk = 0;
+  let renderRetries = 0;
   let pdfsRead = 0;
   let renderOff: string | null = cfg.maxRenders === 0 ? 'RENDER_DISABLED_BY_CONFIG' : null;
   const renderCache = new Map<string, ScoutPage>();
@@ -424,22 +429,38 @@ export async function runScout(run: ProspectorRun, rawInput: Record<string, unkn
     return { ok: true, page };
   };
 
-  /** render_url with a per-run budget; switched off for the run when the renderer is unavailable. */
-  const renderPage = async (url: string): Promise<PageRead> => {
-    const key = normalizeUrl(url);
-    const cached = key ? renderCache.get(key) : undefined;
-    if (cached) return { ok: true, page: cached };
-    if (renderOff) return { ok: false, code: 'RENDER_DISABLED', message: renderOff };
-    if (renders >= cfg.maxRenders) return { ok: false, code: 'RENDER_BUDGET_EXHAUSTED', message: `max_renders (${cfg.maxRenders}) reached` };
+  /** One render_url call (counted in the budget). */
+  const callRender = async (url: string, opts: Record<string, unknown>): Promise<{ ok: true; out: RenderUrlOutput } | { ok: false; code: string; message: string }> => {
     renders += 1;
-    const out = await run.callTool('render_url', { url });
+    const out = await run.callTool('render_url', { url, ...opts });
     if (out.result.status !== 'ok') {
       const e = toolError(out);
       if (RENDER_OFF_CODES.has(e.code)) renderOff = e.code;
       return { ok: false, ...e };
     }
     rendersOk += 1;
-    const r = out.result.output as RenderUrlOutput;
+    return { ok: true, out: out.result.output as RenderUrlOutput };
+  };
+
+  /**
+   * render_url with a per-run budget; switched off for the run when the renderer is
+   * unavailable. A render that comes back (almost) empty, i.e. the app had not hydrated
+   * yet, is retried ONCE with a longer, network-idle wait if the budget allows it.
+   */
+  const renderPage = async (url: string): Promise<PageRead> => {
+    const key = normalizeUrl(url);
+    const cached = key ? renderCache.get(key) : undefined;
+    if (cached) return { ok: true, page: cached };
+    if (renderOff) return { ok: false, code: 'RENDER_DISABLED', message: renderOff };
+    if (renders >= cfg.maxRenders) return { ok: false, code: 'RENDER_BUDGET_EXHAUSTED', message: `max_renders (${cfg.maxRenders}) reached` };
+    const first = await callRender(url, RENDER_FIRST);
+    if (!first.ok) return first;
+    let r = first.out;
+    if (r.text.trim().length < EMPTY_SHELL_CHARS && renders < cfg.maxRenders && !renderOff) {
+      renderRetries += 1;
+      const second = await callRender(url, RENDER_RETRY);
+      if (second.ok && second.out.text.trim().length > r.text.trim().length) r = second.out;
+    }
     const page: ScoutPage = { url: r.url, finalUrl: r.finalUrl, title: r.title, text: r.text, truncated: r.truncated, links: r.links, redirects: r.redirects, content_kind: 'rendered', js_app_likely: false };
     ledger.addVisited(url, r.finalUrl);
     for (const u of [url, r.finalUrl]) {
@@ -683,8 +704,15 @@ export async function runScout(run: ProspectorRun, rawInput: Record<string, unkn
         if (rr.ok) {
           rendered = rr.page;
           lastPage = rendered;
-          const r2 = await extractFrom(rendered, okAttempt(url, 'render', rendered));
-          next ??= r2.next;
+          const renderAttempt = okAttempt(url, 'render', rendered);
+          if (rendered.text.trim().length < EMPTY_SHELL_CHARS) {
+            // Still empty after the retry: nothing to extract (and no LLM call to pay for).
+            renderAttempt.code = 'RENDER_EMPTY';
+            renderBlocked ??= 'RENDER_EMPTY';
+          } else {
+            const r2 = await extractFrom(rendered, renderAttempt);
+            next ??= r2.next;
+          }
         } else {
           renderBlocked ??= rr.code === 'RENDER_DISABLED' ? rr.message : rr.code;
           if (rr.code !== 'RENDER_DISABLED') ev.pages.push({ url, via: 'render', status: 'error', code: rr.code });
@@ -753,7 +781,11 @@ export async function runScout(run: ProspectorRun, rawInput: Record<string, unkn
     const notes = lastNotes as string | null;
     const why = lastPage
       ? `sin lista de expositores legible en ${okPages} página(s) leída(s)${notes ? ` (${notes.slice(0, 200)})` : ''}${
-          renderBlocked ? `; render JavaScript no disponible (${renderBlocked})` : ''
+          renderBlocked === 'RENDER_EMPTY'
+            ? '; la página renderizada llegó vacía (la aplicación JavaScript no cargó su contenido a tiempo)'
+            : renderBlocked
+              ? `; render JavaScript no disponible (${renderBlocked})`
+              : ''
         }`
       : `ninguna página de la feria se pudo descargar (${ev.pages.map((p) => p.code).join(', ') || 'sin URL'})`;
     ev.reason = scrubUnknownUrls(why, ledger);
@@ -808,6 +840,7 @@ export async function runScout(run: ProspectorRun, rawInput: Record<string, unkn
     fetches,
     renders,
     renders_ok: rendersOk,
+    render_retries: renderRetries,
     pdfs_read: pdfsRead,
     llm_calls: run.llmCalls,
     grounding_calls: run.groundingCalls,
@@ -860,7 +893,7 @@ export async function runScout(run: ProspectorRun, rawInput: Record<string, unkn
       results,
       partial_reasons: partialReasons,
       sources: ledger.snapshot(),
-      render: { calls: renders, ok: rendersOk, max: cfg.maxRenders, disabled: renderOff },
+      render: { calls: renders, ok: rendersOk, retries: renderRetries, max: cfg.maxRenders, disabled: renderOff },
       errors_by_status: ERROR_STATUSES.reduce<Record<string, number>>((acc, s) => ({ ...acc, [s]: results.filter((r) => r.status === s).length }), {}),
     },
   };

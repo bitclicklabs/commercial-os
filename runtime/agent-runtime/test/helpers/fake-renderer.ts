@@ -16,22 +16,28 @@ export interface FakeRendered {
 type Entry = { kind: 'page'; page: FakeRendered } | { kind: 'raw'; status: number; body: unknown };
 
 export class FakeRenderer {
-  readonly entries = new Map<string, Entry>();
+  readonly entries = new Map<string, Entry[]>();
   /** Bodies POSTed to /render. */
   readonly requests: Array<Record<string, unknown>> = [];
 
   page(url: string, page: FakeRendered): this {
-    this.entries.set(url, { kind: 'page', page });
+    this.entries.set(url, [{ kind: 'page', page }]);
+    return this;
+  }
+
+  /** Successive answers for the same URL (the last one repeats): e.g. an empty render, then a hydrated one. */
+  sequence(url: string, ...pages: FakeRendered[]): this {
+    this.entries.set(url, pages.map((page): Entry => ({ kind: 'page', page })));
     return this;
   }
 
   error(url: string, status: number, code: string, message = code): this {
-    this.entries.set(url, { kind: 'raw', status, body: { error: { code, message } } });
+    this.entries.set(url, [{ kind: 'raw', status, body: { error: { code, message } } }]);
     return this;
   }
 
   raw(url: string, status: number, body: unknown): this {
-    this.entries.set(url, { kind: 'raw', status, body });
+    this.entries.set(url, [{ kind: 'raw', status, body }]);
     return this;
   }
 
@@ -39,7 +45,8 @@ export class FakeRenderer {
     const fakeFetch = async (_input: unknown, init?: RequestInit): Promise<Response> => {
       const body = JSON.parse(String(init?.body ?? '{}')) as Record<string, unknown>;
       this.requests.push(body);
-      const entry = this.entries.get(String(body.url));
+      const list = this.entries.get(String(body.url));
+      const entry = list && list.length > 1 ? list.shift() : list?.[0];
       const json = (status: number, payload: unknown) =>
         new Response(typeof payload === 'string' ? payload : JSON.stringify(payload), { status, headers: { 'content-type': 'application/json' } });
       if (!entry) return json(502, { error: { code: 'NAVIGATION_FAILED', message: `no fake page for ${String(body.url)}` } });

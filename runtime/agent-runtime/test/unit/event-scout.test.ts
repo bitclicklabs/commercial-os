@@ -480,7 +480,7 @@ describe('scout: JavaScript catalogs (render_url) and PDF catalogs', () => {
     expect(out.outcome).toBe('SUCCESS');
     // The empty shell is not sent to the LLM: one extraction (rendered) + one evaluation.
     expect(provider.requests).toHaveLength(2);
-    expect(renderer.requests).toEqual([{ url: 'https://catalogo.feria.example/', max_chars: 40_000 }]);
+    expect(renderer.requests).toEqual([{ url: 'https://catalogo.feria.example/', max_chars: 40_000, min_text_chars: 300 }]);
     const ev = out.events[0]! as unknown as Record<string, unknown> & { pages: Array<Record<string, unknown>>; results: Array<{ name: string; status: string }> };
     expect(ev.pages).toEqual([
       expect.objectContaining({ via: 'fetch', status: 'ok', code: 'JS_APP_SHELL', content_kind: 'html', js_app_likely: true }),
@@ -624,12 +624,13 @@ describe('scout: the real Gastrónoma chain (static home -> JS catalog home -> J
     const renderer = new FakeRenderer()
       .page('https://apps.feriavalencia.com/catalog/gastronoma/home', {
         title: 'Inicio | GASTRÕNOMA 2026',
-        text: 'Catálogo de expositores\nMarketplace de productos\nInicio',
+        // Real render (2026-10-07): 366 characters of menu, footer and cookie notice.
+        text: 'Catálogo de expositores\nMarketplace de productos\nLogin\nES\nInicio\nCatálogo de expositores\nMarketplace de productos\nMi cuenta\n2026 Feria Valencia todos los derechos reservados\nPolítica de cookies\nPolítica de privacidad\nAviso legal\nEsta web utiliza cookies. Al continuar con la navegación, acepta nuestra política de cookies.\nDe acuerdo',
         links: [{ url: 'https://apps.feriavalencia.com/catalog/gastronoma/exhibitors', text: 'Catálogo de expositores' }],
       })
       .page('https://apps.feriavalencia.com/catalog/gastronoma/exhibitors', {
         title: 'Catálogo de expositores | GASTRÕNOMA 2026',
-        text: 'Catálogo de expositores\nNombre Sectores País\nALBONS CHOCOLATES\nEspaña\nARCECARNE\nAlimentación / Food\nEspaña\n1 - 20 de 91',
+        text: 'Catálogo de expositores\nNombre Sectores País\nALBONS CHOCOLATES\nEspaña\nARCECARNE\nAlimentación / Food\nEspaña\n1 - 20 de 91\n2026 Feria Valencia todos los derechos reservados\nPolítica de cookies\nPolítica de privacidad\nAviso legal\nEsta web utiliza cookies.',
         links: [{ url: 'https://apps.feriavalencia.com/catalog/gastronoma/exhibitors/36157', text: '' }],
       });
     const { ctx, agent, provider } = setup(
@@ -665,5 +666,64 @@ describe('scout: the real Gastrónoma chain (static home -> JS catalog home -> J
     ]);
     expect(provider.requests).toHaveLength(5);
     expect(out.counters).toMatchObject({ renders: 2, renders_ok: 2, fetches: 3 });
+  });
+});
+
+describe('scout: renders that come back empty (app not hydrated yet)', () => {
+  const SPA = '<!doctype html><html><head><title>es.prodevelop.feriavalencia.catalog</title><script src="/catalog/js/app.js"></script></head><body><div id="app"></div></body></html>';
+  const LIST =
+    'Catálogo de expositores\nNombre Sectores País\nALBONS CHOCOLATES\nEspaña\nARCECARNE\nAlimentación / Food\nEspaña\nCORVINA REX\nEspaña\nCOTEPA, S.L.\nEspaña\n1 - 20 de 91\n2026 Feria Valencia todos los derechos reservados\nPolítica de cookies\nPolítica de privacidad\nAviso legal';
+
+  it('an empty render is retried once with a longer network-idle wait, and the retry is used', async () => {
+    const web = new FakeWeb().page('https://apps.feriavalencia.com/catalog/gastronoma/exhibitors', SPA);
+    const renderer = new FakeRenderer().sequence('https://apps.feriavalencia.com/catalog/gastronoma/exhibitors', { text: '' }, { text: LIST });
+    const { ctx, agent, provider } = setup(
+      [
+        extract({
+          exhibitors: [
+            { name: 'ALBONS CHOCOLATES', domain: null, description: null, sector: null },
+            { name: 'CORVINA REX', domain: null, description: null, sector: null },
+          ],
+        }),
+        IRRELEVANT,
+        IRRELEVANT,
+      ],
+      { web, renderer, input: { event_url: 'https://apps.feriavalencia.com/catalog/gastronoma/exhibitors' } },
+    );
+    const out = (await agent.run(ctx)).output as unknown as Out & { render: Record<string, unknown> };
+    expect(renderer.requests).toEqual([
+      { url: 'https://apps.feriavalencia.com/catalog/gastronoma/exhibitors', max_chars: 40_000, min_text_chars: 300 },
+      { url: 'https://apps.feriavalencia.com/catalog/gastronoma/exhibitors', max_chars: 40_000, wait_ms: 8_000, wait_until: 'networkidle', min_text_chars: 400 },
+    ]);
+    expect(out.render).toMatchObject({ calls: 2, ok: 2, retries: 1 });
+    expect(out.events[0]).toMatchObject({ status: 'exhibitors_processed', exhibitors_extracted: 2 });
+    expect(out.counters).toMatchObject({ renders: 2, render_retries: 1 });
+    expect(provider.requests).toHaveLength(3);
+  });
+
+  it('still empty after the retry: no LLM call on it, and the reason says so', async () => {
+    const web = new FakeWeb().page('https://apps.feriavalencia.com/catalog/gastronoma/home', SPA);
+    const renderer = new FakeRenderer().page('https://apps.feriavalencia.com/catalog/gastronoma/home', { text: 'Login' });
+    const { ctx, agent, provider } = setup([], { web, renderer, input: { event_url: 'https://apps.feriavalencia.com/catalog/gastronoma/home' } });
+    const out = (await agent.run(ctx)).output as unknown as Out;
+    expect(provider.requests).toHaveLength(0);
+    expect(renderer.requests).toHaveLength(2);
+    const ev = out.events[0]! as unknown as { status: string; reason: string; pages: Array<{ via: string; code?: string }> };
+    expect(ev.pages.map((p) => [p.via, p.code])).toEqual([
+      ['fetch', 'JS_APP_SHELL'],
+      ['render', 'RENDER_EMPTY'],
+    ]);
+    expect(ev.status).toBe('event_signal');
+    expect(ev.reason).toContain('la página renderizada llegó vacía');
+  });
+
+  it('no retry when the render budget is spent', async () => {
+    const web = new FakeWeb().page('https://apps.feriavalencia.com/catalog/gastronoma/home', SPA);
+    const renderer = new FakeRenderer().page('https://apps.feriavalencia.com/catalog/gastronoma/home', { text: '' });
+    const scout = { ...(desiredProspectorVersion().configuration.scout as object), max_renders: 1 };
+    const { ctx, agent } = setup([], { web, renderer, configuration: { scout }, input: { event_url: 'https://apps.feriavalencia.com/catalog/gastronoma/home' } });
+    const out = (await agent.run(ctx)).output as unknown as Out & { render: Record<string, unknown> };
+    expect(renderer.requests).toHaveLength(1);
+    expect(out.render).toMatchObject({ calls: 1, retries: 0 });
   });
 });

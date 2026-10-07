@@ -18,7 +18,7 @@ El navegador vive en este servicio, no en el runtime: la imagen del runtime no c
 Cuerpo:
 
 ```json
-{ "url": "https://apps.feriavalencia.com/catalog/gastronoma/exhibitors", "wait_ms": 2500, "max_chars": 40000 }
+{ "url": "https://apps.feriavalencia.com/catalog/gastronoma/exhibitors", "wait_ms": 2500, "max_chars": 40000, "min_text_chars": 200, "wait_until": "domcontentloaded" }
 ```
 
 | Campo | Tipo | Por defecto | Descripción |
@@ -26,6 +26,8 @@ Cuerpo:
 | `url` | string | — | URL pública `http` o `https` |
 | `wait_ms` | entero, 0-10 000 | `2500` | Espera extra después de cargar, para catálogos que piden sus datos tarde |
 | `max_chars` | entero, 500-40 000 | `40000` | Límite del texto devuelto |
+| `min_text_chars` | entero, 0-5 000 | `200` | Espera de hidratación: después de `wait_ms`, el renderer mide el texto visible cada 700 ms y sigue esperando (dentro de los 25 s) hasta que alcanza esta longitud **y** deja de crecer entre dos muestras. `0` = solo `wait_ms` |
+| `wait_until` | `domcontentloaded` \| `load` \| `networkidle` | `domcontentloaded` | Estado de carga que se espera tras navegar. Con `networkidle`, la espera de red inactiva sube de 8 s a 15 s |
 
 Respuesta `200`:
 
@@ -38,11 +40,14 @@ Respuesta `200`:
   "status": 200,
   "truncated": false,
   "render_ms": 9073,
-  "blocked_requests": 0
+  "blocked_requests": 0,
+  "hydration_ms": 710,
+  "hydrated": true
 }
 ```
 
-- `text`: `innerText` de la página y de hasta 5 iframes, sin `script`, `style`, `noscript`, `template` ni elementos con `hidden` o `aria-hidden="true"`. Los elementos con `display:none` no aparecen en `innerText`.
+- `text`: `innerText` de la página y de hasta 5 iframes, sin `script`, `style`, `noscript`, `template` ni elementos con `hidden`. Los elementos con `aria-hidden="true"` se eliminan si son fragmentos (menos del 30 % del texto de la página), pero no si envuelven buena parte de ella: Vue, Vuetify o MUI marcan así la aplicación entera mientras hay un diálogo abierto. Lo que no se ve (`display:none`, `visibility:hidden`) no aparece en `innerText`.
+- `hydrated` / `hydration_ms`: si el texto alcanzó `min_text_chars` y se estabilizó antes de agotar el presupuesto, y cuánto se esperó. El arranque de Chromium no cuenta en los 25 s.
 - `links`: hasta 300 enlaces `http(s)` absolutos y las URL de los iframes.
 - `final_url`: URL final después de las redirecciones.
 - `blocked_requests`: peticiones de la página rechazadas por la guarda de egreso.
@@ -134,7 +139,7 @@ pnpm vitest run test/integration/live.test.ts      # contra `pnpm dev` y la web 
 
 - `test/unit/egress.test.ts`: guarda de URL y DNS con `FakeWeb` (`data:`, `file:`, `localhost`, nombres internos, IP privadas, metadata, IPv6 incrustada, DNS mixto, puertos, credenciales, allow/denylist), cabeceras reenviadas, validación **antes** de lanzar Chromium y comprobación de que `ip-guard.ts` es idéntico al del runtime.
 - `test/unit/server.test.ts`: contrato HTTP con Fastify `inject`, mapeo de errores y semáforo de concurrencia.
-- `test/integration/browser-guard.test.ts`: Chromium real con `FakeWeb` como internet y un servidor HTTP/WebSocket real en `127.0.0.1` que hace de servicio interno. La página intenta llegar a él por `fetch` (IP literal, `localhost`, DNS privado, DNS mixto), WebSocket, `sendBeacon`, WebRTC, metadata, `file:`, un iframe y redirecciones; el servidor interno no recibe **ninguna** conexión. También: contenido oculto eliminado, redirecciones públicas seguidas, descargas rechazadas y bucle infinito de JavaScript cortado por tiempo. Se salta si Chromium no está instalado o con `SKIP_BROWSER_TESTS=1`.
+- `test/integration/browser-guard.test.ts`: Chromium real con `FakeWeb` como internet y un servidor HTTP/WebSocket real en `127.0.0.1` que hace de servicio interno. La página intenta llegar a él por `fetch` (IP literal, `localhost`, DNS privado, DNS mixto), WebSocket, `sendBeacon`, WebRTC, metadata, `file:`, un iframe y redirecciones; el servidor interno no recibe **ninguna** conexión. También: contenido oculto eliminado (sin perder una aplicación entera marcada `aria-hidden` por un diálogo), espera de hidratación de una lista que aparece 4 s tarde, redirecciones públicas seguidas, descargas rechazadas y bucle infinito de JavaScript cortado por tiempo. Se salta si Chromium no está instalado o con `SKIP_BROWSER_TESTS=1`.
 - `test/integration/live.test.ts`: **en vivo**, contra el servicio arrancado con `pnpm dev` (`RENDERER_TEST_URL`, por defecto `http://127.0.0.1:4030`). Renderiza `gastronoma.es` y el catálogo JavaScript de Gastrónoma en Feria Valencia, y comprueba que `data:`, `localhost`, loopback, IP privadas, metadata y nombres internos se rechazan con `400`. Se salta si el servicio no responde o con `SKIP_LIVE_TESTS=1`.
 
 ## Docker

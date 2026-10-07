@@ -77,6 +77,11 @@ describe.skipIf(skip)('renderer with a real browser: egress guard', () => {
       .redirect('http://public.example:8080/old', 'http://www.public.example:8080/nuevo/', 301)
       .page('http://www.public.example:8080/nuevo/', '<title>Nuevo</title><p>Página tras redirección</p><a href="lista">Lista</a><iframe src="http://public.example:8080/to-internal"></iframe><script>fetch("http://public.example:8080/to-internal").then(r => r.text()).then(t => document.body.append("LEAK:" + t)).catch(() => document.body.append("sub_redirect=bloqueado"));</script>')
       .page('http://public.example:8080/jsnav', `<p>antes</p><script>setTimeout(() => { location.href = 'http://127.0.0.1:${port}/admin'; }, 50);</script>`)
+      // Catalog that paints its header at once and its list 4 s later (anonymous login + list call).
+      .page('http://public.example:8080/late', `<title>Catálogo tardío</title><div id="app"><h1>Catálogo de expositores</h1><p>Filtros</p></div>
+        <script>setTimeout(() => { const ul = document.createElement('ul'); for (let i = 0; i < 20; i++) { const li = document.createElement('li'); li.textContent = 'EXPOSITOR TARDIO ' + i + ' S.L. - España'; ul.appendChild(li); } document.getElementById('app').appendChild(ul); }, 4000);</script>`)
+      // Framework that hides the whole app from screen readers while a cookie dialog is open.
+      .page('http://public.example:8080/modal', `<title>Modal</title><div id="app" aria-hidden="true"><h1>Lista</h1><ul>${Array.from({ length: 20 }, (_, i) => `<li>EMPRESA VISIBLE ${i}</li>`).join('')}</ul><span aria-hidden="true">INYECCION_PEQUENA</span></div><div role="dialog">Esta web utiliza cookies. De acuerdo</div>`)
       .page('http://public.example:8080/loop', '<title>Bucle</title><script>while (true) {}</script>')
       .page('http://public.example:8080/doc.pdf', { headers: { 'content-type': 'application/pdf', 'content-disposition': 'attachment; filename="doc.pdf"' }, body: '%PDF-1.4' });
     renderer = new Renderer({ egress: web.deps(), jsTimeoutMs: 8_000 });
@@ -103,6 +108,23 @@ describe.skipIf(skip)('renderer with a real browser: egress guard', () => {
     expect(hits).toEqual([]);
     // Every request that did go out went through the guard to public.example.
     expect(new Set(web.requests.map((q) => q.url.hostname))).toEqual(new Set(['public.example']));
+  }, 40_000);
+
+  it('waits for late hydration (visible text below min_text_chars, then until it stops growing)', async () => {
+    const r = await renderer.render({ url: 'http://public.example:8080/late', waitMs: 0, minTextChars: 300 });
+    expect(r.text).toContain('EXPOSITOR TARDIO 19 S.L.');
+    expect(r.hydrated).toBe(true);
+    expect(r.hydration_ms).toBeGreaterThan(2_000);
+    // Without the hydration wait, the list is not there yet.
+    const early = await renderer.render({ url: 'http://public.example:8080/late', waitMs: 0, minTextChars: 0 });
+    expect(early.text).not.toContain('EXPOSITOR TARDIO');
+    expect(early.hydration_ms).toBe(0);
+  }, 40_000);
+
+  it('keeps an app container marked aria-hidden by a modal, drops small aria-hidden snippets', async () => {
+    const r = await renderer.render({ url: 'http://public.example:8080/modal', waitMs: 0 });
+    expect(r.text).toContain('EMPRESA VISIBLE 19');
+    expect(r.text).not.toContain('INYECCION_PEQUENA');
   }, 40_000);
 
   it('a redirect to an internal address blocks the navigation', async () => {

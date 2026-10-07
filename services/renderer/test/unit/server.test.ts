@@ -14,7 +14,7 @@ function fakeService(impl: (req: RenderRequest) => Promise<RenderResult>): Rende
   };
 }
 
-const OK: RenderResult = { text: 'Conservas Ortiz', title: 'Expositores', links: [], final_url: 'https://feria.example/', status: 200, truncated: false, render_ms: 10, blocked_requests: 0 };
+const OK: RenderResult = { text: 'Conservas Ortiz', title: 'Expositores', links: [], final_url: 'https://feria.example/', status: 200, truncated: false, render_ms: 10, blocked_requests: 0, hydration_ms: 700, hydrated: true };
 
 describe('POST /render', () => {
   it('validates the body and passes wait_ms / max_chars', async () => {
@@ -23,13 +23,23 @@ describe('POST /render', () => {
     const ok = await app.inject({ method: 'POST', url: '/render', payload: { url: 'https://feria.example/', wait_ms: 1000, max_chars: 5000 } });
     expect(ok.statusCode).toBe(200);
     expect(ok.json()).toEqual(OK);
-    expect(svc.calls[0]).toEqual({ url: 'https://feria.example/', waitMs: 1000, maxChars: 5000 });
-    for (const payload of [{}, { url: '' }, { url: 'https://x.example/', wait_ms: 60_000 }, { url: 'https://x.example/', max_chars: 1_000_000 }]) {
+    expect(svc.calls[0]).toEqual({ url: 'https://feria.example/', waitMs: 1000, maxChars: 5000, minTextChars: undefined, waitUntil: undefined });
+    const tuned = await app.inject({ method: 'POST', url: '/render', payload: { url: 'https://feria.example/', min_text_chars: 800, wait_until: 'networkidle' } });
+    expect(tuned.statusCode).toBe(200);
+    expect(svc.calls[1]).toMatchObject({ minTextChars: 800, waitUntil: 'networkidle' });
+    for (const payload of [
+      {},
+      { url: '' },
+      { url: 'https://x.example/', wait_ms: 60_000 },
+      { url: 'https://x.example/', max_chars: 1_000_000 },
+      { url: 'https://x.example/', min_text_chars: 100_000 },
+      { url: 'https://x.example/', wait_until: 'commit' },
+    ]) {
       const bad = await app.inject({ method: 'POST', url: '/render', payload });
       expect(bad.statusCode).toBe(400);
       expect(bad.json()).toMatchObject({ error: { code: 'INVALID_INPUT' } });
     }
-    expect(svc.calls).toHaveLength(1);
+    expect(svc.calls).toHaveLength(2);
   });
 
   it('maps RenderError to its HTTP status and code; hides unexpected errors', async () => {

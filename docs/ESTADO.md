@@ -107,7 +107,7 @@ En paralelo, en sesiones aparte del usuario: desglose por versión de skill en m
 | Dashboard dentro de Twenty (estudio de viabilidad + implementación si procede) | `feat/twenty-dashboard` | Opus | ✅ fusionado (viable y NATIVO: objeto agentOsDailyMetric + página de KPIs/gráficos + sync cada 15 min; sin CORS ni aperturas; Front Components descartados con evidencia) |
 | Integración, e2e y PR | `feat/tanda9` (worktree wt9-integracion) | PM | ✅ 615 tests; migraciones 0008+0009; seed (harness v1, 3 knowledge, Prospector v8/EmailDrafter v4); skill v3 ACTIVADA tras EXP-002; e2e: run con harness@1 + MEMORY_READ + research ✦ PENDIENTE DEL USUARIO: sync de la App (necesita rol Admin temporal en la key) y backfill de métricas |
 
-## Tanda 10 — MVP-2: evaluación formal 🔄 (en curso, 2026-10-07)
+## Tanda 10 — MVP-2: evaluación formal ✅ (PR #10, 2026-10-07)
 
 Secuenciada: datasets y evaluadores primero; Experiments + Release Gate cuando aterricen. Siguen en curso las 2 sesiones paralelas del usuario (métricas por versión de skill; fix del reconciliador) — `src/metrics/queries.ts` y `src/worker/recovery.ts` siguen vetados.
 
@@ -115,6 +115,6 @@ Secuenciada: datasets y evaluadores primero; Experiments + Release Gate cuando a
 |---|---|---|---|
 | Datasets de evaluación desde trazas y veredictos reales (train/val/test sin contaminación, P5) | `feat/eval-datasets` | Opus | ✅ fusionado (prospeccion-v1: 94 casos, P5 operativo con markUsed; hallazgo honesto: 0 etiquetados limpios en VAL/TEST — los 5 veredictos reales están quemados como diseño del EXP-001) |
 | Evaluadores RULE + LLM_JUDGE (juez con modelo distinto al ejecutor) + score COMPOSITE con restricciones duras (§11.3) | `feat/evaluators` | Opus | ✅ fusionado (11 evaluadores; composite reproduce el EXP-002: v1 0,706 / v3 0,978; juez ciego a versiones; 0,08 € de juez; 643 tests) |
-| Experiments + Release Gate automático (§11.5-11.6, seesaw) integrado con la activación de skills | `feat/experiments-gate` | Opus | 🔄 en curso (sobre la integración, con los contratos reales) |
+| Experiments + Release Gate automático (§11.5-11.6, seesaw) integrado con la activación de skills | `feat/experiments-gate` | Opus | ✅ fusionado (EXP-003 automático: FAIL justificado de la v4, Δ 0,007 < 0,02 + riesgo cualitativo nuevo; candado verificado en vivo con 409) |
 | Docs de cierre (ADRs, guía, runbook) | — | Sonnet (al final) | ⏸️ |
-| Integración, e2e y PR | `feat/tanda10` (worktree wt10-integracion) | PM | ⏸️ |
+| Integración, e2e y PR | `feat/tanda10` (worktree wt10-integracion) | PM | ✅ 686 tests; migraciones 0010+0011; desplegado con el candado activo. INCIDENTE PM sin impacto: una verificación contra el runtime viejo (compose sin .env falló y no lo vi) activó la v2 ~3 min; v3 restaurada; 0 trazas afectadas. Lección: comprobar la salida del deploy antes de verificar |

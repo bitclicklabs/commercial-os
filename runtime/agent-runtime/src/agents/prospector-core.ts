@@ -259,7 +259,7 @@ export function readConfig(configuration: Record<string, unknown>): ProspectorCo
       maxRenders: int(s.max_renders, 4, 6),
       maxPdfsPerEvent: int(s.max_pdfs_per_event, 2, 2),
       maxCatalogPages: Math.max(1, int(s.max_catalog_pages, 3, 5)),
-      maxProfileLookups: int(s.max_profile_lookups, 10, 30),
+      maxProfileLookups: int(s.max_profile_lookups, 20, 30),
       maxRedirectResolutions: int(s.max_redirect_resolutions, 3, 5),
       eventSignalConfidence: Math.min(1, Math.max(0, num(s.event_signal_confidence, 0.5))),
       verifyUnsourcedByFetch: s.verify_unsourced_by_fetch !== false,

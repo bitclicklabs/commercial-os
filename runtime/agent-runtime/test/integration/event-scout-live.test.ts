@@ -67,8 +67,10 @@ if (!live) console.warn(`[integration] Scout live test skipped: ${reasons.join('
 
 const TENANT = 'publiexpe';
 // Overridable: an archived agent is immutable, so a new pair of names gives a fresh agent + MANUAL task.
-const AGENT_NAME = process.env.SCOUT_LIVE_AGENT_NAME ?? 'Prospector Scout (live test)';
-const TASK_NAME = process.env.SCOUT_LIVE_TASK_NAME ?? 'event-scouting-live-test';
+// Sufijo único: el script de limpieza archiva los agentes "(live test)" y un agente
+// archivado es inmutable, así que cada ejecución del test en vivo crea el suyo.
+const AGENT_NAME = process.env.SCOUT_LIVE_AGENT_NAME ?? `Prospector Scout (live test ${Date.now().toString(36)})`;
+const TASK_NAME = process.env.SCOUT_LIVE_TASK_NAME ?? `event-scouting-live-test-${Date.now().toString(36)}`;
 
 describe.skipIf(!live)('Prospector scout live (Gemini grounding + web + Twenty + PostgreSQL)', () => {
   let handle: DbHandle;

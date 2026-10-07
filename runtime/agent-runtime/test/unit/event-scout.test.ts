@@ -425,9 +425,9 @@ describe('seed: weekly-event-scouting', () => {
     const cfg = desiredProspectorVersion().configuration as { scout: Record<string, unknown>; tool_policy: { max_calls_per_tool: Record<string, number> } };
     expect(cfg.scout).toMatchObject({ task_name: 'weekly-event-scouting', max_events: 3 });
     expect(cfg.tool_policy.max_calls_per_tool).toEqual({ fetch_url: 42, render_url: 15 });
-    expect(cfg.scout).toMatchObject({ max_fetches: 18, max_pages_per_event: 3, max_renders: 4, max_pdfs_per_event: 2, max_exhibitors_per_event: 60, max_catalog_pages: 3, max_profile_lookups: 10 });
-    expect(readConfig(cfg).scout).toMatchObject({ maxExhibitorsPerEvent: 60, maxCatalogPages: 3, maxProfileLookups: 10 });
-    expect(readConfig({}).scout).toMatchObject({ maxExhibitorsPerEvent: 60, maxCatalogPages: 3, maxProfileLookups: 10 });
+    expect(cfg.scout).toMatchObject({ max_fetches: 18, max_pages_per_event: 3, max_renders: 4, max_pdfs_per_event: 2, max_exhibitors_per_event: 60, max_catalog_pages: 3, max_profile_lookups: 20 });
+    expect(readConfig(cfg).scout).toMatchObject({ maxExhibitorsPerEvent: 60, maxCatalogPages: 3, maxProfileLookups: 20 });
+    expect(readConfig({}).scout).toMatchObject({ maxExhibitorsPerEvent: 60, maxCatalogPages: 3, maxProfileLookups: 20 });
     expect(readConfig({ scout: { max_catalog_pages: 0, max_profile_lookups: 99, max_exhibitors_per_event: 500 } }).scout).toMatchObject({ maxCatalogPages: 1, maxProfileLookups: 30, maxExhibitorsPerEvent: 100 });
     expect(desiredProspectorVersion().skillRefs.find((s) => s.skill_id === 'event-source-discovery')?.version).toBe(3);
     expect(desiredProspectorVersion().skillRefs.map((s) => s.skill_id)).toEqual(['prospector-event-exhibitors', 'event-source-discovery']);

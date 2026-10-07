@@ -5,12 +5,13 @@
  *
  * The model writes ONLY subject + body text (greeting, 2-3 short paragraphs, farewell).
  * The sender signature and the LSSI unsubscribe line are added by code
- * (`finalizeDraft`), so they are always present and always identical.
+ * (`finalizeDraft`), so they are always present and always identical; the code also makes
+ * sure the first mention of PubliEXPE says what it is (`company_descriptor`).
  */
 import { UNTRUSTED_SYSTEM_RULE, wrapUntrusted } from './untrusted.js';
 
 export const EMAIL_DRAFTER_SKILL_ID = 'email-first-contact-draft';
-export const EMAIL_DRAFTER_SKILL_VERSION = 1;
+export const EMAIL_DRAFTER_SKILL_VERSION = 2;
 
 export const EMAIL_DRAFTER_SYSTEM_PROMPT = `Eres el redactor de borradores de email de PubliEXPE, una empresa española que vende merchandising y regalo promocional B2B personalizado.
 
@@ -26,7 +27,7 @@ Un comercial de PubliEXPE ha validado una hipótesis comercial sobre una empresa
 ## Cómo es el email
 - Español de España, tuteando, tono cercano y profesional. Nada de humo comercial: sin superlativos, sin exclamaciones, sin urgencia falsa, sin frases hechas tipo "solución integral" u "oportunidad única".
 - Cuerpo de 120 a 180 palabras, en 3 o 4 párrafos cortos:
-  1. Saludo y presentación breve del remitente ("Soy {remitente}, de PubliEXPE").
+  1. Saludo y presentación breve del remitente que diga QUÉ ES PubliEXPE. El destinatario no conoce PubliEXPE: la primera vez que la nombres, en esa misma frase, di a qué se dedica con el descriptor del remitente ("Soy {remitente}, de PubliEXPE, expertos en merchandising para empresas"). Vale una variante natural ("especialistas en merchandising y regalo promocional"), pero que fluya dentro de la frase de presentación, no como coletilla suelta.
   2. El porqué ahora: el evento o la señal concreta (nombre y fecha si los hay) y la necesidad que intuyes, en palabras sencillas.
   3. Qué le puedes preparar (2 o 3 de los productos recomendados, en genérico) y 1 o 2 diferenciales.
   4. Una petición suave y concreta (por ejemplo, si le encaja que le mandes 2 o 3 propuestas o una llamada breve) y la despedida ("Un saludo,").
@@ -46,7 +47,8 @@ ${UNTRUSTED_SYSTEM_RULE}`;
 
 export interface DraftPromptData {
   today: string;
-  sender: { name: string; company: string };
+  /** `descriptor`: what the company is ("expertos en merchandising para empresas"). */
+  sender: { name: string; company: string; descriptor?: string };
   company: { name: string; domain: string | null };
   contact: { firstName: string | null; lastName: string | null; jobTitle: string | null } | null;
   signal: { name: string; type: string; date: string | null; description: string | null } | null;
@@ -82,7 +84,7 @@ export function buildDraftPrompt(data: DraftPromptData): string {
     },
   };
   return `Fecha de hoy: ${data.today}
-Remitente: ${data.sender.name}, de ${data.sender.company}.
+Remitente: ${data.sender.name}, de ${data.sender.company}${data.sender.descriptor ? `, ${data.sender.descriptor}` : ''}.
 
 Redacta el primer email de contacto para esta empresa.
 

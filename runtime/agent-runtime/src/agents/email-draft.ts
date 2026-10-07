@@ -55,6 +55,12 @@ export function unsubscribeLine(sender: Pick<SenderConfig, 'unsubscribeEmail'>):
 
 export const WORD_RANGE = { min: 120, max: 180 } as const;
 
+/**
+ * What PubliEXPE is, in a few words (brand manual: "merchandising para empresas"). A cold
+ * reader does not know the company, so its first mention in the body must say what it does.
+ */
+export const DEFAULT_COMPANY_DESCRIPTOR = 'expertos en merchandising para empresas';
+
 // ---------------------------------------------------------------------------
 // Post-processing
 // ---------------------------------------------------------------------------
@@ -65,6 +71,8 @@ export interface FinalizeOptions {
   /** Known contact (decision maker of the hypothesis), or null. */
   contact: { firstName: string | null; lastName: string | null } | null;
   wordRange?: { min: number; max: number };
+  /** Inserted after the first mention of the company when that sentence does not say what it is. */
+  companyDescriptor?: string;
 }
 
 export interface FinalDraft {
@@ -74,7 +82,15 @@ export interface FinalDraft {
   /** Words of the text written by the model (without signature and unsubscribe line). */
   wordCount: number;
   /** What the code fixed or added. */
-  fixes: Array<'unsubscribe_line_added' | 'unsubscribe_line_replaced' | 'signature_added' | 'farewell_added' | 'greeting_name_removed' | 'markdown_removed'>;
+  fixes: Array<
+    | 'unsubscribe_line_added'
+    | 'unsubscribe_line_replaced'
+    | 'signature_added'
+    | 'farewell_added'
+    | 'greeting_name_removed'
+    | 'markdown_removed'
+    | 'company_descriptor_added'
+  >;
   warnings: string[];
 }
 
@@ -123,13 +139,57 @@ function fixGreeting(lines: string[], opts: FinalizeOptions): boolean {
   return true;
 }
 
-/** A signature line is the sender name on its own (optionally followed by a short tail), near the end. */
-function hasSignature(lines: string[], sender: SenderConfig): boolean {
+/** Index of the signature line (the sender name on its own, optionally with a short tail) among the last lines, or -1. */
+function signatureIndex(lines: string[], sender: SenderConfig): number {
   const name = sender.name.toLowerCase();
-  return lines
-    .slice(-6)
-    .map((l) => l.trim().toLowerCase())
-    .some((l) => l.startsWith(name) && l.length <= name.length + 20 && !/[.?!]$/.test(l));
+  for (let i = Math.max(0, lines.length - 6); i < lines.length; i++) {
+    const l = lines[i]!.trim().toLowerCase();
+    if (l.startsWith(name) && l.length <= name.length + 20 && !/[.?!]$/.test(l)) return i;
+  }
+  return -1;
+}
+
+function hasSignature(lines: string[], sender: SenderConfig): boolean {
+  return signatureIndex(lines, sender) >= 0;
+}
+
+/** Words that already say what the company does: the brand descriptor or a natural variant. */
+const DESCRIPTOR_RE = /(merchandising|regalos?\s+(promocional|publicitari|corporativ|de empresa)|art[ií]culos?\s+(promocional|publicitari)|productos?\s+promocional)/i;
+
+function escapeRegExp(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/**
+ * The receiver of a cold email does not know the company: its FIRST mention in the body
+ * (before any signature the model wrote) must say what it is, in the same sentence. When it
+ * does not, `", {descriptor}"` is inserted right after that mention
+ * ("Soy Jesús Abril, de PubliEXPE." -> "Soy Jesús Abril, de PubliEXPE, expertos en
+ * merchandising para empresas."). A body that never names the company is left alone (the
+ * signature identifies it). Domains and addresses (www.publiexpe.com) are not mentions.
+ */
+function ensureCompanyDescriptor(lines: string[], company: string, descriptor: string, sender: SenderConfig): boolean {
+  if (company.trim().length === 0 || descriptor.trim().length === 0) return false;
+  const mention = new RegExp(`(?<![\\w.@/-])${escapeRegExp(company.trim())}(?![\\w@-]|\\.\\w)`, 'i');
+  const sig = signatureIndex(lines, sender);
+  const end = sig >= 0 ? sig : lines.length;
+  for (let i = 0; i < end; i++) {
+    const line = lines[i]!;
+    const m = mention.exec(line);
+    if (!m) continue;
+    const at = m.index;
+    const after = at + m[0].length;
+    // The sentence that holds the mention: from the previous terminator to the next one.
+    const start = Math.max(line.lastIndexOf('.', at - 1), line.lastIndexOf('!', at - 1), line.lastIndexOf('?', at - 1)) + 1;
+    const rest = line.slice(after).search(/[.!?](\s|$)/);
+    const sentence = line.slice(start, rest < 0 ? line.length : after + rest);
+    if (DESCRIPTOR_RE.test(sentence) || sentence.toLowerCase().includes(descriptor.trim().toLowerCase())) return false;
+    const next = line.charAt(after);
+    const insert = next === '' || /[.,;:!?)]/.test(next) ? `, ${descriptor.trim()}` : `, ${descriptor.trim()},`;
+    lines[i] = line.slice(0, after) + insert + line.slice(after);
+    return true;
+  }
+  return false;
 }
 
 /**
@@ -137,6 +197,7 @@ function hasSignature(lines: string[], sender: SenderConfig): boolean {
  * - the last line is exactly `unsubscribeLine(sender)` (any opt-out line the model wrote is
  *   removed first, so it appears once and with the canonical wording);
  * - the sender is identified: signature with name, company and web before that line;
+ * - the first mention of the company in the body says what it is (`companyDescriptor`);
  * - without a known contact, no invented person name in the greeting.
  */
 export function finalizeDraft(answer: EmailDraftAnswer, opts: FinalizeOptions): FinalDraft {
@@ -160,6 +221,10 @@ export function finalizeDraft(answer: EmailDraftAnswer, opts: FinalizeOptions): 
   if (fixGreeting(lines, opts)) {
     fixes.push('greeting_name_removed');
     warnings.push('el saludo nombraba a una persona que no consta en la hipótesis; se ha sustituido por un saludo genérico');
+  }
+
+  if (ensureCompanyDescriptor(lines, opts.sender.company, opts.companyDescriptor ?? DEFAULT_COMPANY_DESCRIPTOR, opts.sender)) {
+    fixes.push('company_descriptor_added');
   }
 
   const wordCount = countWords(lines.join('\n'));

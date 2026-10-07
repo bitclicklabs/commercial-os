@@ -1,8 +1,9 @@
 /**
  * `pnpm seed [--tenant=publiexpe] [--input=path/to/event.json]`
  *
- * Seeds the Prospector agent and the `daily-event-prospecting` task (idempotent).
- * The task default input is the demo fixture `test/fixtures/feria-ejemplo.json`
+ * Seeds the Prospector agent and its tasks `daily-event-prospecting` and
+ * `weekly-event-scouting` (idempotent).
+ * The daily task default input is the demo fixture `test/fixtures/feria-ejemplo.json`
  * unless `--input` points to another file with the same shape.
  */
 import { readFileSync } from 'node:fs';

@@ -102,10 +102,11 @@ describe('ProspectorAgent', () => {
     expect(resolveAgentImplementation({ implementation: 'prospector' }).kind).toBe('prospector');
   });
 
-  it('seed tool policy: exactly the 5 Prospector tools, LOW_WRITE ceiling', () => {
+  it('seed tool policy: exactly the 6 Prospector tools (fetch_url included), LOW_WRITE ceiling', () => {
     const policy = parseToolPolicy(desiredProspectorVersion().configuration);
     expect([...policy.allow].sort()).toEqual([...PROSPECTOR_TOOLS].sort());
-    expect(policy.allow).toHaveLength(5);
+    expect(policy.allow).toHaveLength(6);
+    expect(policy.allow).toContain('fetch_url');
     expect(policy.maxRiskLevel).toBe('LOW_WRITE');
   });
 

@@ -1,5 +1,5 @@
 /**
- * `optimization_runs` in the database (migration 0012). No DELETE (trigger). Every status
+ * `optimization_runs` in the database (migration 0013). No DELETE (trigger). Every status
  * change is a guarded UPDATE: `WHERE id = ? AND status IN (<valid sources>)`, so two workers
  * (or a worker and a human close) can never both move a run, and an invalid transition writes
  * nothing. `details` is merged (`||`), never replaced, so a later step cannot lose what an

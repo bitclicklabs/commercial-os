@@ -110,7 +110,7 @@ export class OptimizerWorker {
       const stale = await failStaleRuns(this.db, this.opts.staleAfterMs ?? DEFAULT_STALE_AFTER_MS);
       if (stale.length > 0) this.opts.logger.warn({ runs: stale }, 'optimizer: stale runs closed as ERROR');
     } catch (err) {
-      // Before migration 0012 the table does not exist: the worker still starts.
+      // Before migration 0013 the table does not exist: the worker still starts.
       this.opts.logger.warn({ err: err instanceof Error ? err.message : String(err) }, 'optimizer: could not check stale runs');
     }
     this.worker = new Worker<OptimizerJob>(

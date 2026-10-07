@@ -5,7 +5,7 @@
  * so there is never more than one ACTIVE version (also enforced by a partial unique index).
  * Version content is immutable (trigger): changing a skill means creating a new version.
  *
- * Canary (src/skills/canary.ts, 0013): while a skill has an ACTIVE canary, `activateVersion` is
+ * Canary (src/skills/canary.ts, 0012): while a skill has an ACTIVE canary, `activateVersion` is
  * rejected (409: promote or roll the canary back first) and deprecating the stable or the canary
  * version closes the canary as ROLLED_BACK in the same transaction (rollback is always allowed).
  */

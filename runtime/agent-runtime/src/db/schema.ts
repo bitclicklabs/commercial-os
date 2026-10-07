@@ -87,7 +87,7 @@ export interface SkillVersionUsed {
   /** Exact text, stored in the trace only for source 'code' (constants are not versioned in the db). */
   text?: string;
   /**
-   * The skill had a canary (0013_skill_canaries) when the run started and the ref follows the
+   * The skill had a canary (0012_skill_canaries) when the run started and the ref follows the
    * ACTIVE version: which arm this run got and why (deterministic hash of `routing_key`).
    */
   canary?: SkillCanaryRouting;
@@ -1019,7 +1019,7 @@ export const experiments = pgTable(
 );
 
 // ---------------------------------------------------------------------------
-// Skill canary (post Release Gate; migration 0013_skill_canaries)
+// Skill canary (post Release Gate; migration 0012_skill_canaries)
 // ---------------------------------------------------------------------------
 export const SKILL_CANARY_STATUSES = ['ACTIVE', 'PROMOTED', 'ROLLED_BACK'] as const;
 export type SkillCanaryStatus = (typeof SKILL_CANARY_STATUSES)[number];
@@ -1100,7 +1100,7 @@ export type Experiment = typeof experiments.$inferSelect;
 export type SkillCanary = typeof skillCanaries.$inferSelect;
 
 // ---------------------------------------------------------------------------
-// Skill Optimizer (MVP-3, LLD v0.1 section 18). Migration 0012.
+// Skill Optimizer (MVP-3, LLD v0.1 section 18). Migration 0013.
 // ---------------------------------------------------------------------------
 
 /**

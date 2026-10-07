@@ -1,5 +1,5 @@
 /**
- * Skill canary (minimal deployment after the Release Gate, migration 0013_skill_canaries).
+ * Skill canary (minimal deployment after the Release Gate, migration 0012_skill_canaries).
  *
  * - Start: `POST /skills/:id/versions/:v/canary { percent }`. Needs the SAME gate as the
  *   activation (a COMPLETED experiment PASS or PASS_FORM of that version against the current

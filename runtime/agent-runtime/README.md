@@ -159,7 +159,8 @@ El esquema vive en `src/db/schema.ts`. Todas las tablas llevan `tenant_id` (C6).
 | `0009_knowledge` | Tabla `knowledge_entries` (memoria semántica, LLD §6.4): triggers anti-`DELETE`, de transiciones válidas y de contenido inmutable fuera de `PROPOSED`/`VALIDATED`; CHECK que impide `ACTIVE` sin evidencia. SQL idempotente. La `0008` es de `feat/harness-v1` (`when` 1791375700000); la `0009` lleva `when` 1791375800000 e idx 9 (ADR-31) |
 | `0010_eval_datasets` | Tablas `evaluation_datasets` y `evaluation_cases` (LLD §11.4 y P5): triggers anti-`DELETE`, versión de dataset inmutable salvo el estado, caso inmutable salvo `used_by` (solo crece) y casos solo en datasets `DRAFT`. SQL idempotente. `when` 1791375900000 e idx 10; la `0011` la reserva la rama de experiments (ADR-31). Consulta [Datasets de evaluación](#datasets-de-evaluación) |
 | `0011_experiments` | Tabla `experiments` (LLD §11.5-11.6): triggers anti-`DELETE`, un experimento nace `DRAFT` o `RUNNING`, identidad y `config` inmutables, transiciones válidas y un experimento terminado (`COMPLETED`, `FAILED`, `CANCELLED`) inmutable entero. SQL idempotente. `when` 1791376000000 e idx 11. Consulta [Experiments y Release Gate](#experiments-y-release-gate) |
-| `0012_optimization_runs` | Tabla `optimization_runs` del Skill Optimizer (LLD §18): trigger anti-`DELETE`, CHECK de estados y veredicto, e índice único parcial que permite un solo run abierto por skill. Las transiciones son `UPDATE` guardados por estado en el código (sin trigger de inmutabilidad). SQL idempotente. `when` 1791376100000 e idx 12; la `0013` la reserva la rama de experiments (ADR-31). Consulta [Skill Optimizer](#skill-optimizer) |
+| `0012_skill_canaries` | Tabla `skill_canaries` del canario post-gate: un solo canario `ACTIVE` por skill (índice único parcial); triggers sin `DELETE`, identidad/versiones/porcentaje/experimento inmutables, solo `ACTIVE → PROMOTED | ROLLED_BACK` y un canario terminado es inmutable. SQL idempotente. `when` 1791376200000 e idx 12. Consulta [Canario](#canario-de-skills) |
+| `0013_optimization_runs` | Tabla `optimization_runs` del Skill Optimizer (LLD §18): trigger anti-`DELETE`, CHECK de estados y veredicto, e índice único parcial que permite un solo run abierto por skill. Las transiciones son `UPDATE` guardados por estado en el código (sin trigger de inmutabilidad). SQL idempotente. `when` 1791376300000 e idx 13, detrás de `0012_skill_canaries` (ADR-31: la 0012 del canario se aplicó antes a la BD compartida y el migrador solo avanza por `when`). Consulta [Skill Optimizer](#skill-optimizer) |
 
 Importante: el migrador de Drizzle aplica solo las migraciones con fecha posterior a la última aplicada. Si dos ramas generan migraciones en paralelo contra la misma BD de desarrollo, aplica primero la más antigua o regenera la nueva tras el merge.
 
@@ -1018,7 +1019,7 @@ El humano puede forzar; el sistema no: ningún código del runtime llama a `acti
 
 ### Canario de skills
 
-Tras un `PASS` o `PASS_FORM`, en vez de activar la candidata para todas las ejecuciones, un humano puede enviarle un porcentaje (`src/skills/canary.ts`, migración `0013_skill_canaries`). Solo hay canario para skills: el de harness quedaría mezclado con los reintentos que BullMQ fija al encolar.
+Tras un `PASS` o `PASS_FORM`, en vez de activar la candidata para todas las ejecuciones, un humano puede enviarle un porcentaje (`src/skills/canary.ts`, migración `0012_skill_canaries`). Solo hay canario para skills: el de harness quedaría mezclado con los reintentos que BullMQ fija al encolar.
 
 | Método y ruta | Qué hace |
 |---|---|
@@ -1041,7 +1042,7 @@ curl -s -X POST localhost:4020/skills/prospector-event-exhibitors/canary/promote
 curl -s -X POST localhost:4020/skills/prospector-event-exhibitors/canary/rollback -H 'content-type: application/json' -d '{"by": "jesus", "reason": "más descartes que la estable"}'
 ```
 
-> **Importante:** el código necesita la migración `0013_skill_canaries` (el resolver lee `skill_canaries`). Con `RUN_MIGRATIONS=true` se aplica al arrancar; a mano, aplícala antes de desplegar.
+> **Importante:** el código necesita la migración `0012_skill_canaries` (el resolver lee `skill_canaries`). Con `RUN_MIGRATIONS=true` se aplica al arrancar; a mano, aplícala antes de desplegar.
 
 ### Tests
 

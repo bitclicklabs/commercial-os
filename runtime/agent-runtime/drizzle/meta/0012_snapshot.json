@@ -1,5 +1,5 @@
 {
-  "id": "0f3f4cbd-cc42-413a-99b7-df4638b24b2f",
+  "id": "ad2afa2f-c88f-43a8-9b23-0c8ebe0860bc",
   "prevId": "3f757a51-03bc-41da-ac0e-45a93eb29b02",
   "version": "7",
   "dialect": "postgresql",
@@ -2535,8 +2535,8 @@
       },
       "isRLSEnabled": false
     },
-    "public.optimization_runs": {
-      "name": "optimization_runs",
+    "public.skill_canaries": {
+      "name": "skill_canaries",
       "schema": "",
       "columns": {
         "id": {
@@ -2552,14 +2552,38 @@
           "primaryKey": false,
           "notNull": true
         },
-        "skill_name": {
-          "name": "skill_name",
-          "type": "text",
+        "skill_id": {
+          "name": "skill_id",
+          "type": "uuid",
           "primaryKey": false,
           "notNull": true
         },
-        "base_version": {
-          "name": "base_version",
+        "canary_version_id": {
+          "name": "canary_version_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "canary_version": {
+          "name": "canary_version",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "stable_version_id": {
+          "name": "stable_version_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "stable_version": {
+          "name": "stable_version",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "percent": {
+          "name": "percent",
           "type": "integer",
           "primaryKey": false,
           "notNull": true
@@ -2569,91 +2593,78 @@
           "type": "text",
           "primaryKey": false,
           "notNull": true,
-          "default": "'PENDING'"
-        },
-        "config": {
-          "name": "config",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'{}'::jsonb"
-        },
-        "failure_clusters": {
-          "name": "failure_clusters",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'[]'::jsonb"
-        },
-        "proposed_ops": {
-          "name": "proposed_ops",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'[]'::jsonb"
-        },
-        "candidate_version": {
-          "name": "candidate_version",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": false
+          "default": "'ACTIVE'"
         },
         "experiment_id": {
           "name": "experiment_id",
           "type": "uuid",
           "primaryKey": false,
-          "notNull": false
+          "notNull": true
         },
-        "verdict": {
-          "name": "verdict",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "cost_eur": {
-          "name": "cost_eur",
-          "type": "numeric(14, 6)",
-          "primaryKey": false,
-          "notNull": true,
-          "default": 0
-        },
-        "details": {
-          "name": "details",
+        "gate": {
+          "name": "gate",
           "type": "jsonb",
           "primaryKey": false,
           "notNull": true,
           "default": "'{}'::jsonb"
         },
-        "error": {
-          "name": "error",
+        "started_at": {
+          "name": "started_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "started_by": {
+          "name": "started_by",
           "type": "text",
           "primaryKey": false,
           "notNull": false
         },
-        "created_at": {
-          "name": "created_at",
+        "finished_at": {
+          "name": "finished_at",
           "type": "timestamp with time zone",
           "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
+          "notNull": false
         },
-        "updated_at": {
-          "name": "updated_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        },
-        "created_by": {
-          "name": "created_by",
+        "finished_by": {
+          "name": "finished_by",
           "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "finish_reason": {
+          "name": "finish_reason",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "finish_gate": {
+          "name": "finish_gate",
+          "type": "jsonb",
           "primaryKey": false,
           "notNull": false
         }
       },
       "indexes": {
-        "optimization_runs_skill_idx": {
-          "name": "optimization_runs_skill_idx",
+        "skill_canaries_one_active_uq": {
+          "name": "skill_canaries_one_active_uq",
+          "columns": [
+            {
+              "expression": "skill_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "\"skill_canaries\".\"status\" = 'ACTIVE'",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "skill_canaries_tenant_skill_idx": {
+          "name": "skill_canaries_tenant_skill_idx",
           "columns": [
             {
               "expression": "tenant_id",
@@ -2662,13 +2673,13 @@
               "nulls": "last"
             },
             {
-              "expression": "skill_name",
+              "expression": "skill_id",
               "isExpression": false,
               "asc": true,
               "nulls": "last"
             },
             {
-              "expression": "created_at",
+              "expression": "started_at",
               "isExpression": false,
               "asc": true,
               "nulls": "last"
@@ -2678,34 +2689,51 @@
           "concurrently": false,
           "method": "btree",
           "with": {}
-        },
-        "optimization_runs_open_uq": {
-          "name": "optimization_runs_open_uq",
-          "columns": [
-            {
-              "expression": "tenant_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "skill_name",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": true,
-          "where": "\"optimization_runs\".\"status\" in ('PENDING', 'HARVESTING', 'CLUSTERED', 'CANDIDATE_CREATED', 'EXPERIMENT_RUNNING')",
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
         }
       },
       "foreignKeys": {
-        "optimization_runs_experiment_id_experiments_id_fk": {
-          "name": "optimization_runs_experiment_id_experiments_id_fk",
-          "tableFrom": "optimization_runs",
+        "skill_canaries_skill_id_skills_id_fk": {
+          "name": "skill_canaries_skill_id_skills_id_fk",
+          "tableFrom": "skill_canaries",
+          "tableTo": "skills",
+          "columnsFrom": [
+            "skill_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "skill_canaries_canary_version_id_skill_versions_id_fk": {
+          "name": "skill_canaries_canary_version_id_skill_versions_id_fk",
+          "tableFrom": "skill_canaries",
+          "tableTo": "skill_versions",
+          "columnsFrom": [
+            "canary_version_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "skill_canaries_stable_version_id_skill_versions_id_fk": {
+          "name": "skill_canaries_stable_version_id_skill_versions_id_fk",
+          "tableFrom": "skill_canaries",
+          "tableTo": "skill_versions",
+          "columnsFrom": [
+            "stable_version_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "skill_canaries_experiment_id_experiments_id_fk": {
+          "name": "skill_canaries_experiment_id_experiments_id_fk",
+          "tableFrom": "skill_canaries",
           "tableTo": "experiments",
           "columnsFrom": [
             "experiment_id"
@@ -2721,17 +2749,21 @@
       "uniqueConstraints": {},
       "policies": {},
       "checkConstraints": {
-        "optimization_runs_status_ck": {
-          "name": "optimization_runs_status_ck",
-          "value": "\"optimization_runs\".\"status\" in ('PENDING', 'HARVESTING', 'CLUSTERED', 'CANDIDATE_CREATED', 'EXPERIMENT_RUNNING', 'GATE_PASS', 'GATE_FAIL', 'BLOCKED_NO_DATA', 'ERROR', 'PROMOTED', 'DISCARDED')"
+        "skill_canaries_status_ck": {
+          "name": "skill_canaries_status_ck",
+          "value": "\"skill_canaries\".\"status\" in ('ACTIVE', 'PROMOTED', 'ROLLED_BACK')"
         },
-        "optimization_runs_verdict_ck": {
-          "name": "optimization_runs_verdict_ck",
-          "value": "\"optimization_runs\".\"verdict\" is null or \"optimization_runs\".\"verdict\" in ('PASS', 'PASS_FORM', 'FAIL', 'INCONCLUSIVE')"
+        "skill_canaries_percent_ck": {
+          "name": "skill_canaries_percent_ck",
+          "value": "\"skill_canaries\".\"percent\" between 1 and 99"
         },
-        "optimization_runs_versions_ck": {
-          "name": "optimization_runs_versions_ck",
-          "value": "\"optimization_runs\".\"base_version\" >= 1 and (\"optimization_runs\".\"candidate_version\" is null or (\"optimization_runs\".\"candidate_version\" >= 1 and \"optimization_runs\".\"candidate_version\" <> \"optimization_runs\".\"base_version\"))"
+        "skill_canaries_versions_ck": {
+          "name": "skill_canaries_versions_ck",
+          "value": "\"skill_canaries\".\"canary_version_id\" <> \"skill_canaries\".\"stable_version_id\""
+        },
+        "skill_canaries_finished_ck": {
+          "name": "skill_canaries_finished_ck",
+          "value": "(\"skill_canaries\".\"status\" = 'ACTIVE') = (\"skill_canaries\".\"finished_at\" is null)"
         }
       },
       "isRLSEnabled": false

@@ -59,7 +59,7 @@ Por qué este diseño:
 - **No envía dos veces.** El workflow relee la hipótesis (no se fía de la copia que tiene tu navegador) y pone *Sending* antes de enviar: un segundo clic se detiene en el filtro.
 - **El runtime sigue sin poder enviar.** Solo rellena cuatro campos. Su política de tools no tiene ninguna tool de correo, y el [paso 1](#paso-1-restringir-la-api-key-del-runtime) le quita también el acceso a las tools de correo de Twenty.
 
-> **Nota:** mientras no conectes el buzón, todo sigue como hoy. La nota «Borrador email — …» se crea siempre, y es el borrador de referencia si el envío desde Twenty no está disponible.
+> **Nota:** mientras no esté conectado el buzón, todo sigue como hoy. La nota «Borrador email — …» se crea siempre, y es el borrador de referencia si el envío desde Twenty no está disponible.
 
 ## Qué permite Twenty 2.45
 
@@ -212,7 +212,7 @@ Alternativa sin script: crea el workflow a mano en **Workflows** con la misma de
 
 ### 3.3. Activar la escritura del borrador en los campos
 
-La EmailDrafter escribe en los campos solo si su versión tiene `send_from_twenty.enabled = true` (hoy `false`). Cambia el valor en `desiredEmailDrafterVersion()` de `src/seed/email-drafter-seed.ts` y ejecuta `pnpm seed`: se crea una versión nueva del agente. No hace falta ninguna variable de entorno nueva ni tocar `deployments/`.
+La EmailDrafter escribe en los campos solo si su versión tiene `send_from_twenty.enabled = true` (`true` desde la tanda 7). Cambia el valor en `desiredEmailDrafterVersion()` de `src/seed/email-drafter-seed.ts` y ejecuta `pnpm seed`: se crea una versión nueva del agente. No hace falta ninguna variable de entorno nueva ni tocar `deployments/`.
 
 Si activas la marca sin el paso 3.1, el runtime no falla: crea la nota como siempre y anota en la ejecución que no pudo guardar los campos.
 

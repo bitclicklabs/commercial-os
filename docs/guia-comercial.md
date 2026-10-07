@@ -10,6 +10,7 @@ El sistema propone; tú decides. El sistema nunca contacta con nadie.
 1. [Dónde mirar en Twenty](#dónde-mirar-en-twenty)
 1. [Cómo leer una hipótesis](#cómo-leer-una-hipótesis)
 1. [Tu rutina diaria de 10 minutos](#tu-rutina-diaria-de-10-minutos)
+1. [Borradores de email](#borradores-de-email)
 1. [Estados: cuándo usar cada uno](#estados-cuándo-usar-cada-uno)
 1. [Por qué tu feedback importa](#por-qué-tu-feedback-importa)
 1. [Preguntas frecuentes](#preguntas-frecuentes)
@@ -45,7 +46,7 @@ Cada lunes, el sistema debería buscar ferias y eventos reales relevantes para P
 - **No cambia etapas de oportunidad ni crea presupuestos.**
 - **No borra nada.**
 
-Cuando en el futuro el sistema prepare borradores de email, está previsto que cada envío requiera tu aprobación.
+El sistema sí prepara **borradores de email** cuando validas una hipótesis, pero nunca los envía: los revisas y los envías tú a mano. Consulta [Borradores de email](#borradores-de-email).
 
 ## Dónde mirar en Twenty
 
@@ -148,6 +149,31 @@ Dos ejemplos:
 
 > **Precaución:** no borres registros de hipótesis, señales ni empresas, ni siquiera los que te parezcan erróneos. Rechaza la hipótesis o descarta la señal. Borrar un registro elimina la información que el sistema necesita para mejorar.
 
+## Borradores de email
+
+Cuando validas una hipótesis, el sistema prepara un borrador del primer email para esa empresa. El borrador es solo una propuesta de texto: **el sistema no envía nada, nunca**. Lo envías tú, a mano, desde tu buzón.
+
+### Dónde aparece el borrador
+
+El borrador aparece como una nota en la empresa en Twenty. Su título empieza por "Borrador email — ". Ábrela desde la ficha de la empresa de la hipótesis que acabas de validar.
+
+### Qué haces
+
+1. Abre la nota "Borrador email — ..." de la empresa.
+1. **Lee el borrador completo.** Revísalo siempre, aunque la hipótesis te parezca buena.
+1. Personaliza lo que haga falta: saludo, nombre de la persona, referencia al evento, cantidades o tono. Comprueba que los datos son correctos.
+1. Copia el texto a un correo nuevo. Envíalo desde `jesus.abril@publiexpe.info` o `j.abril@publiexpe.info`.
+1. Comprueba que el correo lleva tu identificación y la línea de baja con `baja@publiexpe.info`.
+1. Antes de enviar, comprueba que el destinatario no está en la lista de supresión (consulta [Gestión de bajas y lista de supresión](email-warmup.md#gestión-de-bajas-y-lista-de-supresión)).
+
+### Qué no haces
+
+- **No quites la línea de baja.** Es obligatoria en cada correo de prospección.
+- **No envíes sin leer.** El borrador lo ha escrito un modelo de IA y puede contener errores o cifras que no encajan.
+- **No envíes prospección en frío desde una dirección `@publiexpe.com`.** El frío sale solo desde `@publiexpe.info`, para proteger la reputación del dominio principal.
+- **No superes el ritmo de envío del [plan de warm-up](email-warmup.md)** mientras los buzones se están calentando.
+
+> **Importante:** la nota es un borrador. No significa que el correo se haya enviado ni que se vaya a enviar. Si no lo envías tú, no sale.
 ## Estados: cuándo usar cada uno
 
 ### Hipótesis

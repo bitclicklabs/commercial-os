@@ -257,6 +257,8 @@ Tu parte como operador es comprobar que la ejecución ha ocurrido:
 1. Si no la hay o es `Failed` o `Partial`, consulta la run con `curl "http://127.0.0.1:4020/tasks/<TASK_ID>/runs" -H 'x-tenant-id: publiexpe'` y los [logs](#dónde-mirar-los-logs) del runtime. Causas habituales: falta `GEMINI_API_KEY` o `TWENTY_API_KEY`, o el proceso `scheduler` no está en marcha. Consulta [Problemas frecuentes](#problemas-frecuentes).
 1. El coste de cada ejecución aparece en el campo **Cost** del resumen. El valor esperado con la entrada de ejemplo es de unos 0,006 €.
 
+1. El canal de email de prospección en frío (`publiexpe.info`) tiene su propia operación diaria y semanal: checklists, vigilancia de informes DMARC y Postmaster Tools, y el calendario de warm-up. Sigue el [plan de warm-up del canal de email](email-warmup.md). El sistema solo deja borradores en Twenty; los envíos los hace una persona a mano.
+
 > **Nota:** la tarea usa por defecto la entrada de ejemplo del seed (expositores ficticios con dominio `.example`). Los registros que genera son de demostración. El scouting semanal de ferias reales (lunes 07:30) y la captura del feedback del comercial están en despliegue.
 
 ## Sincronizar la Twenty App
@@ -469,3 +471,4 @@ Guarda los volcados **fuera** del repositorio. `[POR COMPLETAR]` Ubicación y ro
 - [LLD v0.2](LLD-0.2-especificacion.md)
 - [Puertos reservados](PORTS.md)
 - [Guía de contribución](CONTRIBUTING.md)
+- [Plan de warm-up del canal de email](email-warmup.md)

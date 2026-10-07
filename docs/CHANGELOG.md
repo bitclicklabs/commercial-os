@@ -27,6 +27,7 @@ Cambios notables de PubliEXPE Commercial OS, agrupados por tanda de trabajo. For
 - Se añade `scripts/sync-twenty-app.ps1`, que sincroniza la Twenty App desde Windows. Ejecuta `yarn twenty apply` en un contenedor efímero `node:24` conectado a `pxos-net`, con `socat` reenviando `127.0.0.1:3020` a `pxos-twenty:3000`. Evita el error `Resource path must not contain backslashes` y el fallo de subida de archivos por `SERVER_URL`.
 - Se documenta el workaround de Windows en el runbook y en el README de la Twenty App.
 - Se añade la [guía del equipo comercial](guia-comercial.md) y la sección "Operación diaria" del runbook, y se cierra el hueco del seed con `pnpm seed`.
+- Se añade el [plan de warm-up del canal de email](email-warmup.md) (calendario de cuatro semanas desde el 2026-10-06, vigilancia DMARC y Postmaster, hito DMARC `p=quarantine` del 2026-11-03, bajas y checklists), la sección "Borradores de email" de la guía comercial y su enlace desde el runbook y el README.
 
 ## 2026-10-06 — Tanda 1: bootstrap del MVP-0 (PR #1)
 

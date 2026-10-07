@@ -7,6 +7,7 @@ import {
   createCreateResearchTool,
   createCreateSignalTool,
 } from './twenty/record-tools.js';
+import { createFetchUrlTool, type FetchUrlDeps } from './web/fetch-url.js';
 
 export * from './types.js';
 export * from './registry.js';
@@ -14,6 +15,9 @@ export * from './policy.js';
 export * from './executor.js';
 export * from './twenty/company-tools.js';
 export * from './twenty/record-tools.js';
+export * from './web/fetch-url.js';
+export * from './web/ip-guard.js';
+export * from './web/html-text.js';
 
 /** Registers the Twenty-backed MVP-0 tools on `registry`. */
 export function registerTwentyTools(registry: ToolRegistry, twenty: TwentyClient): ToolRegistry {
@@ -28,11 +32,18 @@ export function registerTwentyTools(registry: ToolRegistry, twenty: TwentyClient
   return registry;
 }
 
+/** Registers the web tools (`fetch_url`). Host allow/deny lists come from FETCH_URL_* env vars. */
+export function registerWebTools(registry: ToolRegistry, deps: FetchUrlDeps = {}): ToolRegistry {
+  registry.register(createFetchUrlTool(deps));
+  return registry;
+}
+
 /**
  * Registry with every MVP-0 tool implemented so far. The Twenty client is read from
  * TWENTY_BASE_URL / TWENTY_API_KEY; without a key the tools are still registered
- * and answer `TWENTY_NOT_CONFIGURED`.
+ * and answer `TWENTY_NOT_CONFIGURED`. Agents only get the tools their `tool_policy`
+ * allows (fetch_url is in no policy unless listed explicitly).
  */
-export function createDefaultToolRegistry(opts: { twenty?: TwentyClient } = {}): ToolRegistry {
-  return registerTwentyTools(new ToolRegistry(), opts.twenty ?? twentyClientFromEnv());
+export function createDefaultToolRegistry(opts: { twenty?: TwentyClient; web?: FetchUrlDeps } = {}): ToolRegistry {
+  return registerWebTools(registerTwentyTools(new ToolRegistry(), opts.twenty ?? twentyClientFromEnv()), opts.web);
 }

@@ -29,8 +29,30 @@ export interface TokenUsage {
 
 /** Costs in EUR-agnostic "currency units"; the pricing table defines the unit (USD for Anthropic list prices). */
 export interface CostBreakdown {
+  /** Total cost of the call (tokens + grounding when used). */
   modelCost: number;
   currency: string;
+  /** Part of `modelCost` billed for search grounding (Gemini `google_search`). */
+  groundingCost?: number;
+  /** Billable grounding units behind `groundingCost` (search queries or grounded prompts). */
+  groundingUnits?: number;
+}
+
+/** A web source returned by search grounding (Gemini `groundingMetadata.groundingChunks[].web`). */
+export interface GroundingSource {
+  /** As returned by the provider; for Gemini usually a `vertexaisearch.cloud.google.com` redirect. */
+  uri: string;
+  title: string | null;
+  /** Domain of the real page when the provider reports it (or the title looks like a domain). */
+  domain: string | null;
+}
+
+export interface GroundingResult {
+  /** Search queries the model executed (Gemini 3.x bills each one). */
+  queries: string[];
+  sources: GroundingSource[];
+  /** Diagnostics: where the data came from (Gemini `groundingMetadata` and/or server-side tool parts). */
+  diagnostics?: { metadata: boolean; toolCalls: number; toolResponses: number };
 }
 
 export interface CompletionResult {
@@ -41,6 +63,8 @@ export interface CompletionResult {
   usage: TokenUsage;
   cost: CostBreakdown;
   latencyMs: number;
+  /** Present only when the request asked for grounding and the provider supports it. */
+  grounding?: GroundingResult;
 }
 
 export type StreamChunk =

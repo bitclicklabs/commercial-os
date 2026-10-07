@@ -149,6 +149,20 @@ describe('create_* tools', () => {
     expect(fake.count('POST', 'commercialSignals')).toBe(1);
   });
 
+  it('create_signal without companyId: event-level signal, deduped among company-less signals only', async () => {
+    const { fake, executor } = setup();
+    const companyId = await company(executor);
+    const input = { title: 'Feria Alimentaria 2027 (feria)', signalType: 'FAIR', sourceUrl: 'https://www.feria.example/', eventDate: '2027-03-15', confidence: 0.5 };
+    // A company signal with the same type/date/domain must not be taken as the event-level one.
+    await ok(executor.call('create_signal', { ...input, companyId }));
+    const first = await ok<{ created: boolean; idempotencyKey: string; record: { id: string; companyId: string | null } }>(executor.call('create_signal', input));
+    expect(first).toMatchObject({ created: true, idempotencyKey: 'publi:signal:create:event:FAIR:2027-03-15:feria.example', record: { companyId: null } });
+    expect(fake.requests.filter((r) => r.method === 'POST').at(-1)!.body).not.toHaveProperty('companyId');
+    const again = await ok<{ created: boolean; record: { id: string } }>(executor.call('create_signal', input));
+    expect(again).toMatchObject({ created: false, record: { id: first.record.id } });
+    expect(fake.count('POST', 'commercialSignals')).toBe(2);
+  });
+
   it('create_signal validates enums and ranges before calling Twenty', async () => {
     const { fake, executor } = setup();
     const base = { companyId: '00000000-0000-4000-8000-000000000000', title: 't', sourceUrl: 'https://a.example', confidence: 0.5 };

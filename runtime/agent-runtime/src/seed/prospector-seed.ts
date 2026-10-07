@@ -1,12 +1,13 @@
 /**
- * Idempotent seed of the Prospector agent and the `daily-event-prospecting` task.
+ * Idempotent seed of the Prospector agent and its tasks `daily-event-prospecting`
+ * (direct mode, fixture input) and `weekly-event-scouting` (scout mode: real fairs).
  *
  * - Agent "Prospector": created with version 1 if missing. If it exists and its
  *   ACTIVE version differs from the desired one (model, provider, prompt,
  *   configuration, skills), a NEW version is added and activated; the previous
  *   ACTIVE version becomes DEPRECATED (versions are immutable, nothing is deleted).
- * - TaskDefinition "daily-event-prospecting": created with version 1 if missing; if
- *   it differs, it is updated and a new TaskDefinitionVersion snapshot is written.
+ * - Each TaskDefinition: created with version 1 if missing; if it differs, it is
+ *   updated and a new TaskDefinitionVersion snapshot is written.
  * Running it twice in a row changes nothing the second time.
  */
 import { and, desc, eq, ne } from 'drizzle-orm';
@@ -14,10 +15,12 @@ import type { Db } from '../db/client.js';
 import { agents, agentVersions, taskDefinitions, taskDefinitionVersions, type SkillRef, type TaskDefinition } from '../db/schema.js';
 import { PROSPECTOR_TOOLS } from '../agents/prospector-agent.js';
 import { PROSPECTOR_SKILL_ID, PROSPECTOR_SKILL_VERSION, PROSPECTOR_SYSTEM_PROMPT } from '../agents/prospector-prompt.js';
+import { SCOUT_SKILL_ID, SCOUT_SKILL_VERSION } from '../agents/event-scout-prompt.js';
 import { DEFAULT_USD_TO_EUR } from '../providers/gemini-pricing.js';
 
 export const PROSPECTOR_AGENT_NAME = 'Prospector';
 export const PROSPECTOR_TASK_NAME = 'daily-event-prospecting';
+export const SCOUT_TASK_NAME = 'weekly-event-scouting';
 
 export interface SeedOptions {
   tenantId: string;
@@ -35,6 +38,9 @@ export interface SeedResult {
   taskId: string;
   taskVersion: number;
   taskAction: 'created' | 'updated' | 'unchanged';
+  scoutTaskId: string;
+  scoutTaskVersion: number;
+  scoutTaskAction: 'created' | 'updated' | 'unchanged';
 }
 
 export function desiredProspectorVersion() {
@@ -49,15 +55,30 @@ export function desiredProspectorVersion() {
       tool_policy: {
         allow: [...PROSPECTOR_TOOLS],
         max_risk_level: 'LOW_WRITE',
-        // 50 exhibitors x (upsert + signal + hypothesis, or find) + summary.
-        max_calls_per_execution: 210,
+        // Direct: 50 exhibitors x (upsert + signal + hypothesis, or find) + summary.
+        // Scout: 3 fairs x 20 exhibitors x 3 + fetches + event signals + summary.
+        max_calls_per_execution: 240,
+        max_calls_per_tool: { fetch_url: 15 },
       },
       min_confidence: 0.5,
       usd_to_eur: DEFAULT_USD_TO_EUR,
       max_output_tokens: 4096,
       model_options: { thinking_level: 'low' },
+      scout: {
+        task_name: SCOUT_TASK_NAME,
+        max_events: 3,
+        max_exhibitors_per_event: 20,
+        max_fetches: 12,
+        max_pages_per_event: 2,
+        max_redirect_resolutions: 3,
+        event_signal_confidence: 0.5,
+        verify_unsourced_by_fetch: true,
+      },
     } as Record<string, unknown>,
-    skillRefs: [{ skill_id: PROSPECTOR_SKILL_ID, version: PROSPECTOR_SKILL_VERSION }] as SkillRef[],
+    skillRefs: [
+      { skill_id: PROSPECTOR_SKILL_ID, version: PROSPECTOR_SKILL_VERSION },
+      { skill_id: SCOUT_SKILL_ID, version: SCOUT_SKILL_VERSION },
+    ] as SkillRef[],
   };
 }
 
@@ -73,6 +94,24 @@ export function desiredTask(defaultInput: Record<string, unknown>) {
     maxConcurrency: 1,
     retryPolicy: { max_attempts: 1, backoff_ms: 0 },
     timeoutMs: 900_000,
+  };
+}
+
+/** Default input of the weekly scouting task (PubliEXPE's main sector). */
+export const SCOUT_DEFAULT_INPUT = { sector: 'alimentación y bebidas', region: 'España', horizon_months: 6 };
+
+export function desiredScoutTask() {
+  return {
+    description:
+      'Exploración semanal de ferias reales: el Prospector (modo scout) busca con Google (grounding de Gemini) ferias próximas del sector, descarga su página de expositores, extrae los expositores del texto y registra en Twenty empresa, señal e hipótesis (PROPOSED) de los relevantes; sin lista de expositores, registra la feria como señal FAIR.',
+    defaultInput: { ...SCOUT_DEFAULT_INPUT },
+    schedule: { type: 'CRON', expression: '30 7 * * 1' },
+    timezone: 'Europe/Madrid',
+    enabled: true,
+    priority: 0,
+    maxConcurrency: 1,
+    retryPolicy: { max_attempts: 1, backoff_ms: 0 },
+    timeoutMs: 1_800_000,
   };
 }
 
@@ -186,16 +225,42 @@ export async function seedProspector(db: Db, opts: SeedOptions): Promise<SeedRes
   });
   log(`agent ${PROSPECTOR_AGENT_NAME}: ${agentState.action} (id ${agentState.agentId}, version ${agentState.version})`);
 
-  // ----------------------------------------------------------------- task
-  const wantTask = desiredTask(opts.defaultInput);
-  const taskState = await db.transaction(async (tx) => {
+  // ---------------------------------------------------------------- tasks
+  const daily = await upsertTask(db, { tenantId, createdBy, agentId: agentState.agentId, name: PROSPECTOR_TASK_NAME, want: desiredTask(opts.defaultInput) });
+  log(`task ${PROSPECTOR_TASK_NAME}: ${daily.action} (id ${daily.taskId}, version ${daily.version})`);
+  const scout = await upsertTask(db, { tenantId, createdBy, agentId: agentState.agentId, name: SCOUT_TASK_NAME, want: desiredScoutTask() });
+  log(`task ${SCOUT_TASK_NAME}: ${scout.action} (id ${scout.taskId}, version ${scout.version})`);
+
+  return {
+    agentId: agentState.agentId,
+    agentVersionId: agentState.versionId,
+    agentVersion: agentState.version,
+    agentAction: agentState.action,
+    taskId: daily.taskId,
+    taskVersion: daily.version,
+    taskAction: daily.action,
+    scoutTaskId: scout.taskId,
+    scoutTaskVersion: scout.version,
+    scoutTaskAction: scout.action,
+  };
+}
+
+type TaskSpec = ReturnType<typeof desiredTask>;
+
+/** Creates or updates one TaskDefinition (with a TaskDefinitionVersion snapshot per change). */
+async function upsertTask(
+  db: Db,
+  args: { tenantId: string; createdBy: string; agentId: string; name: string; want: TaskSpec },
+): Promise<{ taskId: string; version: number; action: 'created' | 'updated' | 'unchanged' }> {
+  const { tenantId, createdBy, agentId, name, want } = args;
+  return db.transaction(async (tx) => {
     const existing = await tx.query.taskDefinitions.findFirst({
-      where: and(eq(taskDefinitions.tenantId, tenantId), eq(taskDefinitions.name, PROSPECTOR_TASK_NAME), ne(taskDefinitions.status, 'ARCHIVED')),
+      where: and(eq(taskDefinitions.tenantId, tenantId), eq(taskDefinitions.name, name), ne(taskDefinitions.status, 'ARCHIVED')),
     });
     if (!existing) {
       const [created] = await tx
         .insert(taskDefinitions)
-        .values({ tenantId, name: PROSPECTOR_TASK_NAME, agentId: agentState.agentId, ...wantTask, currentVersion: 1, createdBy, updatedBy: createdBy })
+        .values({ tenantId, name, agentId, ...want, currentVersion: 1, createdBy, updatedBy: createdBy })
         .returning();
       if (!created) throw new Error('insert task failed');
       const [version] = await tx
@@ -218,13 +283,13 @@ export async function seedProspector(db: Db, opts: SeedOptions): Promise<SeedRes
       retryPolicy: existing.retryPolicy,
       timeoutMs: existing.timeoutMs,
     };
-    if (existing.agentId === agentState.agentId && same(current, wantTask)) {
+    if (existing.agentId === agentId && same(current, want)) {
       return { taskId: existing.id, version: existing.currentVersion, action: 'unchanged' as const };
     }
     const nextVersion = existing.currentVersion + 1;
     const [updated] = await tx
       .update(taskDefinitions)
-      .set({ ...wantTask, agentId: agentState.agentId, currentVersion: nextVersion, updatedBy: createdBy, updatedAt: new Date() })
+      .set({ ...want, agentId, currentVersion: nextVersion, updatedBy: createdBy, updatedAt: new Date() })
       .where(eq(taskDefinitions.id, existing.id))
       .returning();
     if (!updated) throw new Error('update task failed');
@@ -236,15 +301,4 @@ export async function seedProspector(db: Db, opts: SeedOptions): Promise<SeedRes
     await tx.update(taskDefinitions).set({ currentVersionId: version.id }).where(eq(taskDefinitions.id, updated.id));
     return { taskId: updated.id, version: nextVersion, action: 'updated' as const };
   });
-  log(`task ${PROSPECTOR_TASK_NAME}: ${taskState.action} (id ${taskState.taskId}, version ${taskState.version})`);
-
-  return {
-    agentId: agentState.agentId,
-    agentVersionId: agentState.versionId,
-    agentVersion: agentState.version,
-    agentAction: agentState.action,
-    taskId: taskState.taskId,
-    taskVersion: taskState.version,
-    taskAction: taskState.action,
-  };
 }

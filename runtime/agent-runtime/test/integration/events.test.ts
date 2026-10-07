@@ -194,7 +194,18 @@ describe.skipIf(!available)('event bus + EVENT triggers (PostgreSQL + Redis)', (
   it('a completed run publishes task.scheduled/started/completed and agent.execution.started/completed', async () => {
     const task = await createTask({ name: 'emits events' });
     const run = await runTask(task.id);
-    const completed = await completedEventOf(run.id);
+    await completedEventOf(run.id);
+    // Outbox order (see the "outbox order" test below): the row is visible from its INSERT,
+    // and `dispatched_at` is set only AFTER the job is in Redis. Under a loaded Redis the
+    // read above can land in between, so wait (briefly) for the mark instead of reading once.
+    const completed = await waitFor(
+      async () => {
+        const e = (await listEvents(`type=task.completed&correlation_id=${run.id}`))[0];
+        return e?.dispatched_at ? e : undefined;
+      },
+      2_000,
+      `dispatched_at of task.completed of ${run.id}`,
+    );
 
     const { source, dispatched_at, dispatch_attempts, ...envelope } = completed;
     expect(EventEnvelopeSchema.parse(envelope)).toBeTruthy();
@@ -425,6 +436,30 @@ describe.skipIf(!available)('event bus + EVENT triggers (PostgreSQL + Redis)', (
     const scheduled = (await listEvents(`type=task.scheduled&correlation_id=${run!.id}`))[0]!;
     expect(scheduled.data.chainDepth).toBe(5);
     await app.inject({ method: 'POST', url: `/tasks/${catchAll.id}/archive`, headers });
+  });
+
+  it('outbox order: the row is visible from the INSERT and dispatched_at is set only once the job is in the queue', async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    let seenDuringAdd: { dispatchedAt: Date | null } | undefined;
+    const slow = new MemoryEventQueue();
+    const realAdd = slow.add.bind(slow);
+    slow.add = async (envelope) => {
+      seenDuringAdd = await handle.db.query.events.findFirst({ where: eq(events.id, envelope.id) });
+      await gate; // a slow Redis round trip
+      await realAdd(envelope);
+    };
+    const slowBus = new EventBus(handle.db, slow, { tenantId: tenant });
+    const pending = slowBus.publish({ tenantId: tenant, type: 'signal.detected', correlationId: randomUUID(), producer: 'twenty-app', data: { signalId: 's-slow' } });
+    const during = await waitFor(async () => seenDuringAdd, 2_000, 'queue add');
+    // A reader in this window sees the event without the mark: by design, not a lost event.
+    expect(during.dispatchedAt).toBeNull();
+    release();
+    const res = await pending;
+    expect(res).toMatchObject({ created: true, dispatched: true });
+    const row = await handle.db.query.events.findFirst({ where: eq(events.id, res.event.id) });
+    expect(row?.dispatchedAt).not.toBeNull();
+    expect(row?.dispatchAttempts).toBe(1);
   });
 
   it('publish is best-effort: with Redis down the row stays and the re-publisher dispatches it', async () => {

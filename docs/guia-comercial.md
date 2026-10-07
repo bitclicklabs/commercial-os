@@ -30,11 +30,11 @@ Al terminar, deja un **resumen de la ejecución** (*Agent run*) con lo que ha he
 
 El sistema solo registra hipótesis con una confianza igual o superior a 0,50. Los expositores dudosos o sin encaje no llegan a Twenty.
 
-> **Nota:** el Prospector no busca por su cuenta en internet. Trabaja con la lista de expositores que recibe. Mientras el scouting de ferias esté en despliegue (consulta [el apartado siguiente](#los-lunes-a-las-0730)), esa lista puede ser de demostración. Los registros de demostración se reconocen porque el dominio de la empresa termina en `.example`. Ignóralos o recházalos.
+> **Nota:** el Prospector no busca por su cuenta en internet. Trabaja con la lista de expositores que recibe. El scouting de los lunes (consulta [el apartado siguiente](#los-lunes-a-las-0730)) busca las ferias por su cuenta; la tarea diaria trabaja con la lista configurada, que hoy incluye datos de demostración. Los registros de demostración se reconocen porque el dominio de la empresa termina en `.example`. Ignóralos o recházalos.
 
 ### Los lunes a las 07:30
 
-> **En despliegue.** Esta parte todavía no está activa. Lo que sigue describe lo que se espera de ella.
+> **Activo desde el 2026-10-07.** La primera ejecución automática es el lunes siguiente a las 07:30.
 
 Cada lunes, el sistema debería buscar ferias y eventos reales relevantes para PubliEXPE y dejarlos en Twenty para que el Prospector los analice durante la semana. Cuando esté activo, lo verás reflejado en **Commercial OS → Signals** y en **Commercial OS → Agent runs**. Esta guía se actualizará con los detalles.
 
@@ -141,9 +141,9 @@ Dos ejemplos:
 
 | Acción | Qué ocurre en Twenty | Qué ocurre además |
 |---|---|---|
-| **Validar** | La hipótesis pasa a `Validated`. | Cuenta como una hipótesis **aceptada** para el sistema (*en despliegue*, consulta [Por qué tu feedback importa](#por-qué-tu-feedback-importa)). No se envía nada. |
-| **Editar y validar** | Se guardan tus cambios y la hipótesis pasa a `Validated`. | Cuenta como **editada**: el sistema aprende de lo que corriges (*en despliegue*). No se envía nada. |
-| **Rechazar** | La hipótesis pasa a `Rejected` y sale de tu cola. | Cuenta como **descartada** (*en despliegue*). No se borra ni se avisa a nadie. |
+| **Validar** | La hipótesis pasa a `Validated`. | Cuenta como una hipótesis **aceptada** para el sistema (consulta [Por qué tu feedback importa](#por-qué-tu-feedback-importa)). No se envía nada. |
+| **Editar y validar** | Se guardan tus cambios y la hipótesis pasa a `Validated`. | Cuenta como **editada**: el sistema aprende de lo que corriges. No se envía nada. |
+| **Rechazar** | La hipótesis pasa a `Rejected` y sale de tu cola. | Cuenta como **descartada**. No se borra ni se avisa a nadie. |
 | **No hacer nada** | La hipótesis sigue en `Proposed`. | El sistema no aprende nada de ella. |
 
 > **Precaución:** no borres registros de hipótesis, señales ni empresas, ni siquiera los que te parezcan erróneos. Rechaza la hipótesis o descarta la señal. Borrar un registro elimina la información que el sistema necesita para mejorar.
@@ -177,7 +177,7 @@ El sistema crea todas las señales en `NEW`. A partir de ahí, las clasificas t�
 
 ## Por qué tu feedback importa
 
-> **En despliegue.** La captura automática de tu feedback se está activando. Esta sección describe cómo funcionará.
+> **Activo desde el 2026-10-07.** Tu feedback se captura automáticamente al cambiar el estado de una hipótesis.
 
 El sistema no sabe de verdad si una hipótesis es buena: lo sabes tú. Cada decisión que tomas es una lección para él:
 

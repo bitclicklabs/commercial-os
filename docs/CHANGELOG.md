@@ -10,6 +10,15 @@ Cambios notables de PubliEXPE Commercial OS, agrupados por tanda de trabajo. For
 - Prospector v1: clasifica expositores de un evento y escribe en Twenty empresa + señal (NEW) + hipótesis (PROPOSED) + resumen de ejecución, con coste real por paso (~0,005 €/run). Seed de agente y tarea `daily-event-prospecting` (CRON 08:00).
 - Runbook completo, `scripts/sync-twenty-app.ps1` (workaround Windows del CLI de Twenty) y fixes de `deployments/`.
 
+## 2026-10-07 — Tanda 3 (PR #3)
+
+- Fix de arranque: el worker espera a que Twenty esté sano antes de ejecutar runs con sus tools (sin gastar reintentos, tope configurable).
+- Modo scout del Prospector: grounding de Google Search vía Gemini + tool `fetch_url` con guardias SSRF; contenido web tratado como no confiable (LLD §76) y URLs validadas contra fuentes reales. Tarea `weekly-event-scouting` (lunes 07:30). Limitaciones conocidas: Gemini 3.8 no devuelve metadatos de fuentes del grounding (fallback por descarga) y los catálogos JS/PDF no se leen (señal a nivel de feria).
+- Event bus: tabla `events` append-only, publicación de `task.*` y `agent.execution.*`, trigger `EVENT` del scheduler con guardia anti-bucle y `GET /events`.
+- Evaluador HUMAN: webhook de Twenty firmado (HMAC) → tabla `evaluations` (ACCEPTED 1.0 / EDITED 0.5 con diff / DISCARDED 0.0), vinculado a la ejecución de origen; `pnpm register:webhook` y `POST/GET /evaluations`.
+- Guía del equipo comercial (`docs/guia-comercial.md`) y runbook actualizado.
+- Infra: allowlist de webhooks internos de Twenty (`OUTBOUND_HTTP_ALLOWED_INTERNAL_HOSTS`), `TWENTY_WEBHOOK_SECRET`, `TWENTY_WAIT_MAX_MS` y claves de Gemini en el compose.
+
 ## Sin publicar
 
 ### Documentación y herramientas

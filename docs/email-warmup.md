@@ -11,6 +11,7 @@ El warm-up es manual: IONOS no incluye ninguna herramienta que lo haga por ti. E
 1. [Calendario de 4 semanas](#calendario-de-4-semanas)
 1. [Cómo hacer el warm-up](#cómo-hacer-el-warm-up)
 1. [Qué vigilar](#qué-vigilar)
+1. [Alta en Microsoft SNDS](#alta-en-microsoft-snds)
 1. [Hito del 2026-11-03: pasar DMARC a quarantine](#hito-del-2026-11-03-pasar-dmarc-a-quarantine)
 1. [Gestión de bajas y lista de supresión](#gestión-de-bajas-y-lista-de-supresión)
 1. [Checklist diaria de 5 minutos](#checklist-diaria-de-5-minutos)
@@ -135,7 +136,7 @@ Qué considerar limpio: todos tus envíos aparecen con `dkim` o `spf` en `pass` 
 1. Mira la **Reputación del dominio**. El objetivo es `Alta` o `Media`. `Baja` o `Mala` exige parar y analizar.
 1. Mira la **Tasa de spam** y los **Errores de entrega**. Deben ser cero o muy bajos.
 
-> **Nota:** Postmaster Tools no muestra datos hasta que el dominio alcanza un volumen mínimo diario hacia Gmail. Durante las primeras semanas es normal que aparezca vacío. El LLD v0.1 también menciona Microsoft SNDS como fuente de monitorización.
+> **Nota:** Postmaster Tools no muestra datos hasta que el dominio alcanza un volumen mínimo diario hacia Gmail. Durante las primeras semanas es normal que aparezca vacío. El LLD v0.1 también menciona Microsoft SNDS como fuente de monitorización, pero con IONOS compartido no puedes usarlo: consulta [Alta en Microsoft SNDS](#alta-en-microsoft-snds) para ver qué haces en su lugar.
 
 ### Señales de problema
 
@@ -155,6 +156,85 @@ Para y avisa al operador si ocurre cualquiera de estas situaciones:
 1. Envía un correo desde cada buzón a una cuenta de Gmail y a una de Outlook que controles.
 1. Comprueba si llega a la bandeja principal o a spam.
 1. En Gmail, abre el menú del mensaje y elige **Mostrar original**. Verifica que SPF, DKIM (`d=publiexpe.info`) y DMARC muestran `PASS`.
+
+## Alta en Microsoft SNDS
+
+Microsoft ofrece [Smart Network Data Services (SNDS)](https://sendersupport.olc.protection.outlook.com/snds/) para ver la reputación de tus IP de envío en Outlook.com y Hotmail. El LLD v0.1 lo propone como fuente de monitorización. Esta sección explica cómo se da de alta y, sobre todo, qué puedes hacer de verdad con IONOS correo compartido.
+
+### Qué es SNDS y por qué no encaja con IONOS compartido
+
+SNDS funciona **por IP, no por dominio**. Para ver los datos de una IP tienes que demostrar que eres responsable de ella:
+
+1. Entras en SNDS con una cuenta Microsoft.
+1. Solicitas acceso a una IP o a un rango de IP.
+1. Microsoft envía un correo de autorización a contactos vinculados al registro de esa IP (los datos de propiedad del rango, no los del dominio de tu correo).
+1. Aprobada la solicitud, el acceso caduca a los 10 meses y hay que volver a confirmarlo.
+
+Con IONOS correo compartido, tus correos salen por servidores de IONOS (por ejemplo, `mout.kundenserver.de`) cuyas IP son de IONOS y las usan muchos clientes a la vez ([IP de los servidores de correo de IONOS](https://www.ionos.com/help/email/postmaster/ip-addresses-of-the-11-ionos-mail-servers/)). Tú no controlas esas IP ni su registro, así que **no puedes completar el paso 3**: el correo de autorización iría a contactos de IONOS, no a ti.
+
+> **Importante:** no hemos encontrado ninguna página oficial de Microsoft que diga de forma expresa "SNDS no admite IP compartidas". La página de SNDS solo describe la autorización por IP. Las fuentes de terceros sobre deliverability coinciden en que, sin control de la IP, no hay acceso ([Suped](https://www.suped.com/knowledge/email-deliverability/tools/how-to-get-microsoft-snds-access-when-using-an-email-service-provider), [Trulyinbox](https://www.trulyinbox.com/blog/microsoft-snds/)). Trátalo como "no disponible para nosotros" y no inviertas más tiempo.
+
+Esto tiene dos consecuencias:
+
+- **No hay datos de reputación de IP** en SNDS para tus envíos. Los datos de las IP de IONOS, si alguien los ve, son de IONOS.
+- **No hay feedback de quejas.** El programa de quejas de Microsoft (JMRP) forma parte de SNDS y también se vincula a IP. No recibirás aviso cuando un usuario de Outlook marque tu correo como spam.
+
+SNDS tampoco ofrece datos por dominio. Por eso, aunque IONOS te diera acceso, no sustituiría a Google Postmaster Tools. No hemos encontrado una herramienta de Microsoft equivalente a Postmaster Tools que muestre la reputación de un dominio propio.
+
+### Cuándo sí aplicaría SNDS
+
+Solo si en el futuro envías desde IP que controlas: una IP dedicada contratada a IONOS u otro proveedor que te delegue la IP, o un servicio de envío con IP dedicada que te dé acceso. En ese caso:
+
+1. Abre [SNDS](https://sendersupport.olc.protection.outlook.com/snds/) e inicia sesión con una cuenta Microsoft.
+1. Solicita acceso a tu IP o rango.
+1. Confirma la autorización en el correo que Microsoft envía a los contactos del registro de la IP.
+1. Anota en el calendario la reconfirmación a los 10 meses.
+
+Hasta entonces, no te des de alta: no vas a conseguir datos.
+
+### Qué haces en su lugar
+
+Sin SNDS, vigilas Outlook de forma manual con estas cuatro acciones. Son más pobres que SNDS: dan señales, no métricas.
+
+#### 1. Prueba de colocación casera con cuentas propias de Outlook
+
+1. Crea o reutiliza al menos dos cuentas que controles: una de Outlook.com o Hotmail y, si puedes, otra de Microsoft 365 empresarial.
+1. Cada semana (consulta la [checklist semanal](#checklist-semanal)), envía un correo desde cada buzón de `publiexpe.info` a esas cuentas. Usa asuntos y textos distintos, como en el warm-up.
+1. Comprueba si el correo llega a **Recibidos**, a **Otros** o a **Correo no deseado**. Anótalo en una tabla simple con fecha, buzón de origen, cuenta de destino y carpeta.
+1. Si cae en correo no deseado, márcalo como **No es correo no deseado**, responde al mensaje y añade el remitente a contactos seguros. Esa interacción ayuda a la reputación.
+1. Si cae en correo no deseado dos pruebas seguidas, aplica la fila correspondiente de [Señales de problema](#señales-de-problema).
+
+> **Nota:** esta prueba no sustituye a un servicio de *seed testing* profesional. Con dos o tres cuentas es solo un termómetro: un resultado aislado no es concluyente.
+
+#### 2. Lee las cabeceras del correo recibido en Outlook
+
+1. En la cuenta de Outlook de prueba, abre el mensaje y elige **Ver origen del mensaje** (o equivalente).
+1. Busca `Authentication-Results` y comprueba que `spf`, `dkim` y `dmarc` valen `pass`.
+1. Busca las cabeceras `X-Forefront-Antispam-Report` y `X-Microsoft-Antispam`. Contienen, entre otros, `SCL` (probabilidad de spam), `BCL` (reputación del remitente masivo), `SFV` (resultado del filtro) y `CAT` (categoría). Un `SFV:SPM` o un `SCL` alto indica que Microsoft considera el correo spam.
+
+> **Nota:** estas cabeceras son una ayuda de diagnóstico y su significado exacto lo define Microsoft. Úsalas para comparar un día con otro, no para fijar umbrales.
+
+#### 3. Sigue rebotes y bloqueos a mano
+
+1. Revisa a diario los avisos de rechazo (*bounce*) que llegan a los buzones de envío. Fíjate en los que vienen de `*.protection.outlook.com`.
+1. Anota el código completo (por ejemplo, `550 5.7.1`) y el texto exacto del mensaje.
+1. Un rechazo con código `5.7.1` y mención a "block list" indica que Microsoft bloquea la **IP de IONOS**, no tu dominio. Pausa el envío a destinos de Microsoft (Outlook, Hotmail, Live y Microsoft 365).
+1. Abre un ticket con el soporte de IONOS con el texto del rechazo. La IP es suya y solo ellos pueden gestionarla.
+1. Puedes presentar además una solicitud de mitigación en el [portal de soporte para remitentes de Outlook.com](https://olcsupport.office.com/), indicando tu dominio y la IP que aparece en el rechazo. Puede que Microsoft responda que no gestiona esa IP o que no está bloqueada.
+
+> **Nota:** hay casos documentados de IP de IONOS en listas de bloqueo de Microsoft ([BornCity](https://borncity.com/blog/2024/01/04/e-mails-von-ionos-und-strato-abgelehnt-deren-ip-adressen-sind-auf-black-lists-gelandet/)) y de bloqueos que persisten semanas aunque Microsoft confirme el desbloqueo. Es un riesgo propio de la infraestructura compartida: no depende de tu comportamiento.
+
+#### 4. Usa las señales indirectas
+
+Sin feedback de quejas, estas señales sustituyen al informe de spam de Microsoft:
+
+- **Respuestas.** Una proporción de respuestas sostenida desde destinatarios de Outlook indica que llegas a la bandeja.
+- **Silencio selectivo.** Si recibes respuestas de Gmail y de dominios corporativos, pero ninguna de Outlook, sospecha de la colocación en Microsoft y repite la prueba.
+- **Informes DMARC.** Revisa en los informes diarios las filas de los receptores de Microsoft, si llegan, y comprueba que `spf` y `dkim` siguen en `pass`.
+
+### Requisitos de Microsoft que sí te afectan
+
+Desde el 2025-05-05, Outlook.com exige SPF, DKIM y DMARC (al menos `p=none`) a los dominios que envían más de 5.000 correos al día; los incumplidores van a correo no deseado ([documentación de remitentes de Outlook](https://sendersupport.olc.protection.outlook.com/)). Tus volúmenes están muy por debajo de ese umbral y tu autenticación ya cumple, así que no es un riesgo hoy. Sí ilustra la dirección de Microsoft: revisa estos requisitos si algún día el volumen se acerca a esa cifra.
 
 ## Hito del 2026-11-03: pasar DMARC a quarantine
 
@@ -207,20 +287,57 @@ Si falla alguna, mantén `p=none`, corrige la causa y repite la revisión una se
 Una persona se da de baja escribiendo a `baja@publiexpe.info` o respondiendo a un correo con una petición de baja. Ambas llegan a `jesus.abril@publiexpe.info`.
 
 1. Lee la petición el mismo día laborable en que llega.
-1. Añade la dirección (y, si procede, su dominio) a la **lista de supresión**.
+1. Añade la dirección (y, si procede, su dominio) a la **lista de supresión** siguiendo el procedimiento de más abajo.
 1. Responde con una confirmación breve si lo ves oportuno. No insistas ni intentes retener.
 1. Avisa al resto del equipo comercial de que no debe volver a escribir a esa persona.
 
-La lista de supresión es, de momento, una nota o lista compartida: `[POR COMPLETAR]` ubicación exacta, que decide el equipo. El Inbound Manager, que procesará las bajas de forma automática, llegará más adelante ([sección 10.2 del LLD v0.1](LLD-0.1-publiexpe-commercial-os.md#102-inbound-y-conversaciones)). Hasta entonces la gestión es manual.
+### Dónde vive la lista
 
-> **Importante:** antes de enviar cualquier correo de prospección, comprueba que el destinatario no está en la lista de supresión. Escribir a alguien que se ha dado de baja incumple la normativa (LSSI y RGPD) y daña la reputación del dominio.
+La lista de supresión vive en Twenty, en una **nota** (*Note*) titulada exactamente `Lista de supresión — NO contactar`. Para encontrarla, busca "supresión" en Twenty. Hay una sola nota: no crees copias.
+
+Cada baja es una línea con este formato:
+
+```
+email — fecha — motivo
+```
+
+Por ejemplo:
+
+```
+compras@empresa-uno.example — 2026-10-14 — respuesta al primer correo: "no nos interesa, no escribáis más"
+info@empresa-dos.example — 2026-10-15 — correo a baja@publiexpe.info
+```
+
+Usa la fecha en formato `AAAA-MM-DD` y un motivo breve (por ejemplo, la vía por la que llegó la baja).
+
+### Cómo añadir una baja
+
+1. Abre la nota `Lista de supresión — NO contactar`.
+1. Añade una línea nueva **al final** con el formato `email — fecha — motivo`. Si la persona pide la baja de toda su empresa, añade también una línea con el dominio precedido de arroba (por ejemplo, `@empresa-uno.example`).
+1. Guarda la nota.
+1. Hazlo **el mismo día** en que llega la petición, sea una respuesta a un correo o un mensaje a `baja@publiexpe.info`.
+
+> **Precaución:** no borres ni edites líneas existentes de la nota, ni siquiera si la persona vuelve a escribir más tarde. Una baja no se revierte desde esta lista. Si alguien pide que le vuelvas a escribir, consúltalo antes con el operador.
+
+### Cómo comprobar la lista antes de enviar
+
+1. Abre la nota `Lista de supresión — NO contactar`.
+1. Busca en ella la dirección del destinatario (con `Ctrl+F`) y también su dominio.
+1. Si aparece, **no envíes el correo** y no vuelvas a contactar con esa persona nunca.
+1. Si no aparece, continúa con el envío.
+
+Haz esta comprobación **antes de enviar cualquier correo en frío**, sin excepciones.
+
+> **Importante:** escribir a alguien que se ha dado de baja incumple la normativa (LSSI y RGPD) y daña la reputación del dominio.
+
+El Inbound Manager, que procesará las bajas de forma automática, llegará más adelante ([sección 10.2 del LLD v0.1](LLD-0.1-publiexpe-commercial-os.md#102-inbound-y-conversaciones)). Hasta entonces la gestión es manual y la nota de Twenty es la única fuente de verdad.
 
 ## Checklist diaria de 5 minutos
 
 Hazla al empezar el día y antes de cerrar.
 
 1. Revisa la bandeja de `jesus.abril@publiexpe.info` y `j.abril@publiexpe.info`: respuestas, rebotes y avisos del proveedor.
-1. Procesa las bajas recibidas en `baja@`: lista de supresión actualizada.
+1. Procesa las bajas recibidas en `baja@` y en las respuestas: añade cada una a la nota `Lista de supresión — NO contactar` de Twenty.
 1. Comprueba el volumen de ayer frente al calendario de la semana: no superes el rango.
 1. Reparte los envíos de hoy entre los dos buzones y varía horas y destinatarios.
 1. Responde a las conversaciones abiertas. Una respuesta tuya a una respuesta ajena refuerza la reputación.
@@ -234,7 +351,8 @@ Hazla el último día laborable de cada semana de warm-up (2026-10-12, 2026-10-1
 1. Abre Google Postmaster Tools y anota la reputación del dominio y la tasa de spam.
 1. Haz una prueba de colocación desde cada buzón a Gmail y Outlook propios. Anota si llega a bandeja o a spam.
 1. Cuenta rebotes y respuestas de la semana. Anota la proporción de respuestas.
-1. Revisa que la lista de supresión recoge todas las bajas.
+1. Revisa que la nota `Lista de supresión — NO contactar` recoge todas las bajas de la semana.
+1. Haz la comprobación de Outlook de la sección [Alta en Microsoft SNDS](#alta-en-microsoft-snds) (prueba de colocación y cabeceras).
 1. Decide el volumen de la semana siguiente: sube, mantén o baja según las señales.
 1. El 2026-11-02, prepara la decisión del [hito del 2026-11-03](#hito-del-2026-11-03-pasar-dmarc-a-quarantine).
 

@@ -52,6 +52,8 @@ export function desiredEmailDrafterVersion(): AgentVersionSpec {
       },
       unsubscribe_email: DEFAULT_SENDER.unsubscribeEmail,
       company_descriptor: DEFAULT_COMPANY_DESCRIPTOR,
+      // Knowledge layer (LLD 6.4): ACTIVE entries of these domains go into the drafting prompt.
+      knowledge_domains: ['email'],
       word_range: { min: WORD_RANGE.min, max: WORD_RANGE.max },
       usd_to_eur: DEFAULT_USD_TO_EUR,
       max_output_tokens: 4096,

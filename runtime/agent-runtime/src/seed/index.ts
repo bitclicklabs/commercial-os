@@ -2,7 +2,8 @@
  * `pnpm seed [--tenant=publiexpe] [--input=path/to/event.json]`
  *
  * Seeds first the skills migrated from the code constants (v1 ACTIVE if missing; existing
- * skills are never touched), then the Prospector agent and its tasks `daily-event-prospecting` and
+ * skills are never touched), then the first knowledge entries (ACTIVE, with evidence; existing
+ * domain/topic pairs are never touched), then the Prospector agent and its tasks `daily-event-prospecting` and
  * `weekly-event-scouting`, and the EmailDrafter agent with its task
  * `draft-email-on-validated`, and the BajasAgent with its task `process-unsubscribes`
  * (CRON every 2 hours; all idempotent).
@@ -17,6 +18,7 @@ import { loadConfig } from '../config.js';
 import { createDb } from '../db/client.js';
 import { seedBajas } from './bajas-seed.js';
 import { seedEmailDrafter } from './email-drafter-seed.js';
+import { seedKnowledge } from './knowledge-seed.js';
 import { seedProspector } from './prospector-seed.js';
 import { seedSkills } from './skills-seed.js';
 
@@ -41,7 +43,8 @@ if (isMain) {
   const log = (m: string) => console.log(`[seed] ${m}`);
   const defaultInput = loadSeedInput(input ? path.resolve(input) : DEFAULT_FIXTURE);
   seedSkills(handle.db, { tenantId, log })
-    .then(async (skills) => ({ skills, prospector: await seedProspector(handle.db, { tenantId, defaultInput, log }) }))
+    .then(async (skills) => ({ skills, knowledge: await seedKnowledge(handle.db, { tenantId, log }) }))
+    .then(async (r) => ({ ...r, prospector: await seedProspector(handle.db, { tenantId, defaultInput, log }) }))
     .then(async (r) => ({ ...r, emailDrafter: await seedEmailDrafter(handle.db, { tenantId, log }) }))
     .then(async (r) => ({ ...r, bajas: await seedBajas(handle.db, { tenantId, log }) }))
     .then((r) => console.log(JSON.stringify({ tenant: tenantId, ...r }, null, 2)))

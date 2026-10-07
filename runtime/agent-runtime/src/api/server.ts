@@ -11,6 +11,7 @@ import { externalEventRoutes } from '../events/external-routes.js';
 import { evaluationRoutes } from './routes/evaluations.js';
 import { metricsRoutes } from './routes/metrics.js';
 import { skillRoutes } from './routes/skills.js';
+import { knowledgeRoutes } from './routes/knowledge.js';
 
 export async function buildServer(
   ctx: ApiContext,
@@ -37,5 +38,6 @@ export async function buildServer(
   await evaluationRoutes(app, ctx);
   await metricsRoutes(app, ctx);
   await skillRoutes(app, ctx);
+  await knowledgeRoutes(app, ctx);
   return app;
 }

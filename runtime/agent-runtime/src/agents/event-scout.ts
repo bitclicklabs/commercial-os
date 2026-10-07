@@ -96,6 +96,7 @@ import {
 } from './event-scout-prompt.js';
 import { PROSPECTOR_SKILL_ID, PROSPECTOR_SYSTEM_PROMPT } from './prospector-prompt.js';
 import { useSkill } from '../skills/resolver.js';
+import { useKnowledge } from '../knowledge/resolver.js';
 import { hostOf, normalizeUrl, scrubUnknownUrls, SourceLedger } from './source-ledger.js';
 
 // ---------------------------------------------------------------------------
@@ -524,7 +525,8 @@ export async function runScout(run: ProspectorRun, rawInput: Record<string, unkn
   const maxEvents = Math.max(1, Math.min(input.max_events ?? cfg.maxEvents, cfg.maxEvents));
   const maxExhibitors = Math.max(1, Math.min(input.max_exhibitors ?? cfg.maxExhibitorsPerEvent, cfg.maxExhibitorsPerEvent));
   const until = addMonths(today, input.horizon_months);
-  const system = useSkill(run.ctx, PROSPECTOR_SKILL_ID, run.ctx.version.systemPrompt.trim().length > 0 ? run.ctx.version.systemPrompt : PROSPECTOR_SYSTEM_PROMPT);
+  // Validated knowledge (LLD 6.4) only in the per-exhibitor decision, not in search/extraction.
+  const system = useKnowledge(run.ctx, useSkill(run.ctx, PROSPECTOR_SKILL_ID, run.ctx.version.systemPrompt.trim().length > 0 ? run.ctx.version.systemPrompt : PROSPECTOR_SYSTEM_PROMPT));
   const ledger = new SourceLedger();
   const pageCache = new Map<string, FetchUrlOutput>();
   const partialReasons: string[] = [];

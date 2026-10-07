@@ -15,6 +15,7 @@ import {
 } from './prospector-core.js';
 import { PROSPECTOR_SKILL_ID, PROSPECTOR_SYSTEM_PROMPT } from './prospector-prompt.js';
 import { useSkill } from '../skills/resolver.js';
+import { useKnowledge } from '../knowledge/resolver.js';
 
 export {
   DIFFERENTIATORS,
@@ -123,7 +124,7 @@ export class ProspectorAgent implements AgentImplementation {
     }
 
     const { event, exhibitors } = parsedInput.data;
-    const system = useSkill(ctx, PROSPECTOR_SKILL_ID, ctx.version.systemPrompt.trim().length > 0 ? ctx.version.systemPrompt : PROSPECTOR_SYSTEM_PROMPT);
+    const system = useKnowledge(ctx, useSkill(ctx, PROSPECTOR_SKILL_ID, ctx.version.systemPrompt.trim().length > 0 ? ctx.version.systemPrompt : PROSPECTOR_SYSTEM_PROMPT));
     const results: ExhibitorResult[] = [];
     for (const exhibitor of exhibitors) {
       ctx.signal.throwIfAborted();

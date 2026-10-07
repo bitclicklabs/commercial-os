@@ -28,6 +28,7 @@ import type { RunStatus } from '../domain/statuses.js';
 import type { ProviderFactory } from '../providers/index.js';
 import type { RunJob } from '../queue/run-queue.js';
 import { resolveSkillRefs, type SkillSet } from '../skills/resolver.js';
+import { resolveKnowledge } from '../knowledge/resolver.js';
 import { createDefaultToolRegistry, parseToolPolicy, ToolExecutor, type ToolRegistry } from '../tools/index.js';
 import { EntityLocks } from './entity-locks.js';
 import { recoverOrphanRun } from './recovery.js';
@@ -370,6 +371,10 @@ export class RunProcessor {
     try {
       const impl = resolveAgentImplementation(version.configuration, { db: this.db });
       const provider = this.providers(version.modelProvider);
+      // Knowledge layer (LLD 6.4): ACTIVE entries of the version's knowledge_domains. Never throws.
+      const knowledge = await resolveKnowledge(this.db, execution.tenantId, version.configuration, {
+        warn: (obj, msg) => this.logger.warn({ executionId: execution.id, ...obj }, msg),
+      });
       const timeout = new Promise<never>((_, reject) => {
         timer = setTimeout(() => {
           controller.abort();
@@ -411,9 +416,13 @@ export class RunProcessor {
           signal: controller.signal,
           tools,
           skills,
+          knowledge,
         }),
         timeout,
       ]);
+      // The knowledge read goes first in the trace (memory_reads, LLD 17.1): entry ids injected.
+      const memoryRead = knowledge.traceStep(new Date(startedAt));
+      if (memoryRead) result.steps.unshift(memoryRead);
       return { status: 'COMPLETED', result, latencyMs: Date.now() - startedAt };
     } catch (err) {
       const status = err instanceof TimeoutError ? 'TIMED_OUT' : 'FAILED';

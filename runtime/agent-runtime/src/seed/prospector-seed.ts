@@ -74,6 +74,8 @@ export function desiredProspectorVersion() {
         // render_url: 4 catalog renders (+1 retry, +1 older-renderer retry each) + 100 profiles.
         max_calls_per_tool: { fetch_url: 230, render_url: 115 },
       },
+      // Knowledge layer (LLD 6.4): ACTIVE entries of these domains go into the per-exhibitor decision prompt.
+      knowledge_domains: ['prospeccion'],
       min_confidence: 0.5,
       usd_to_eur: DEFAULT_USD_TO_EUR,
       max_output_tokens: 4096,

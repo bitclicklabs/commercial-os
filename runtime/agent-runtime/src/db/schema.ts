@@ -354,6 +354,42 @@ export const entityLocks = pgTable(
   ],
 );
 
+// ---------------------------------------------------------------------------
+// 11 Evaluation (MVP-0: evaluador HUMAN, LLD v0.2 sections 5.5 and 6.4, D14)
+// ---------------------------------------------------------------------------
+/**
+ * One row per human verdict on an agent output (append-only). `subject_id` is the record
+ * id in Twenty (e.g. a commercialHypothesis). `agent_execution_id` / `task_run_id` link the
+ * verdict to the run that produced the subject when it can be resolved; otherwise they
+ * stay null and `details.link.resolved = false`.
+ */
+export const evaluations = pgTable(
+  'evaluations',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    tenantId: tenantId(),
+    kind: text('kind').notNull().default('HUMAN'),
+    evaluatorId: text('evaluator_id').notNull().default('human-v1'),
+    subjectType: text('subject_type').notNull(),
+    subjectId: text('subject_id').notNull(),
+    agentExecutionId: uuid('agent_execution_id').references(() => agentExecutions.id),
+    taskRunId: uuid('task_run_id').references(() => taskRuns.id),
+    feedback: text('feedback').notNull(),
+    score: numeric('score', { precision: 5, scale: 4, mode: 'number' }).notNull(),
+    details: jsonb('details').$type<Record<string, unknown>>().notNull().default({}),
+    source: text('source').notNull().default('api'),
+    idempotencyKey: text('idempotency_key'),
+    evaluatedBy: text('evaluated_by'),
+    occurredAt: timestamp('occurred_at', { withTimezone: true }).notNull().defaultNow(),
+    createdAt: createdAt(),
+  },
+  (t) => [
+    index('evaluations_tenant_subject_idx').on(t.tenantId, t.subjectType, t.subjectId, t.occurredAt),
+    index('evaluations_tenant_execution_idx').on(t.tenantId, t.agentExecutionId),
+    uniqueIndex('evaluations_idem_uq').on(t.tenantId, t.idempotencyKey),
+  ],
+);
+
 export type Agent = typeof agents.$inferSelect;
 export type AgentVersion = typeof agentVersions.$inferSelect;
 export type TaskDefinition = typeof taskDefinitions.$inferSelect;
@@ -363,3 +399,4 @@ export type AgentExecution = typeof agentExecutions.$inferSelect;
 export type Trace = typeof traces.$inferSelect;
 export type TraceStep = typeof traceSteps.$inferSelect;
 export type EntityLock = typeof entityLocks.$inferSelect;
+export type Evaluation = typeof evaluations.$inferSelect;

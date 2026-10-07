@@ -78,7 +78,7 @@ Canal de email (recordatorio operativo): warm-up iniciado el 2026-10-06; DMARC p
 |---|---|---|---|
 | Cuenta de correo conectada en Twenty: envío HITL con un clic + historial en ficha (hallazgo del usuario) | `feat/twenty-email-account` | Opus | 🔄 en curso |
 | Puente de eventos con n8n: ingesta de eventos externos + reenvío saliente por webhook | `feat/n8n-events` | Opus | 🔄 en curso |
-| Skills versionadas en BD (primer paso MVP-1): tablas, loader, seed de las skills actuales, API sin DELETE | `feat/skills-versionadas` | Opus | 🔄 en curso |
+| Skills versionadas en BD (primer paso MVP-1): tablas, loader, seed de las skills actuales, API sin DELETE | `feat/skills-versionadas` | Opus | ✅ fusionado (4 skills migradas byte a byte; versiones inmutables por trigger SQL; rollback por API; 461 tests) |
 | Docs de cierre (guía, runbook, ADRs nuevos en LLD v0.3) | — | Sonnet (al final) | ⏸️ |
 | Integración, e2e y PR | `feat/tanda7` | PM | ⏸️ |
 

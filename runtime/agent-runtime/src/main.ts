@@ -3,8 +3,10 @@ import type { FastifyInstance } from 'fastify';
 import { buildServer } from './api/server.js';
 import { loadConfig } from './config.js';
 import { createDb } from './db/client.js';
+import { BullEventQueue, EventBus, eventsQueueName } from './events/event-bus.js';
 import { createProviderRegistry } from './providers/index.js';
 import { BullRunQueue } from './queue/run-queue.js';
+import { EventTriggerConsumer } from './scheduler/event-triggers.js';
 import { BullTaskScheduler, scheduleQueueName } from './scheduler/task-scheduler.js';
 import { startBullWorker } from './worker/bull-worker.js';
 import { RunProcessor, type ProcessorLogger } from './worker/processor.js';
@@ -20,18 +22,32 @@ async function main(): Promise<void> {
   let worker: Worker | undefined;
   let reconciler: OrphanReconciler | undefined;
   let consoleLogger: ProcessorLogger = console;
+  const lateLogger: ProcessorLogger = { info: (o, m) => consoleLogger.info(o, m), warn: (o, m) => consoleLogger.warn(o, m), error: (o, m) => consoleLogger.error(o, m) };
+
+  // Event bus: every role publishes (api: task.scheduled, worker: task.* / agent.execution.*).
+  const eventsQueue = eventsQueueName(config.queueName);
+  const eventBus = new EventBus(dbHandle.db, new BullEventQueue(eventsQueue, config.redisUrl), {
+    logger: lateLogger,
+    republishGraceMs: config.eventRepublishGraceMs,
+  });
 
   // Registration control (API hooks) and tick processing (scheduler role) share one class.
   const scheduler = has('api', 'scheduler')
     ? new BullTaskScheduler(dbHandle.db, queue, {
         queueName: scheduleQueueName(config.queueName),
         redisUrl: config.redisUrl,
-        logger: { info: (o, m) => consoleLogger.info(o, m), warn: (o, m) => consoleLogger.warn(o, m), error: (o, m) => consoleLogger.error(o, m) },
+        logger: lateLogger,
+        eventsQueueName: eventsQueue,
+        events: eventBus,
       })
     : undefined;
+  let eventConsumer: EventTriggerConsumer | undefined;
 
   if (has('api')) {
-    app = await buildServer({ db: dbHandle.db, queue, config, ...(scheduler ? { scheduler } : {}) }, { logger: { level: config.logLevel } });
+    app = await buildServer(
+      { db: dbHandle.db, queue, config, events: eventBus, ...(scheduler ? { scheduler } : {}) },
+      { logger: { level: config.logLevel } },
+    );
     await app.listen({ host: config.host, port: config.port });
   }
   const log = app?.log ?? console;
@@ -48,6 +64,7 @@ async function main(): Promise<void> {
       }),
       logger,
     );
+    processor.events = eventBus;
     worker = startBullWorker(processor, {
       queueName: config.queueName,
       redisUrl: config.redisUrl,
@@ -66,12 +83,25 @@ async function main(): Promise<void> {
   if (has('scheduler') && scheduler) {
     scheduler.start({ syncIntervalMs: config.schedulerSyncIntervalMs });
     logger.info({ queue: scheduleQueueName(config.queueName) }, 'scheduler started');
+    // EVENT triggers + re-publisher of undispatched events live with the scheduler.
+    eventConsumer = new EventTriggerConsumer(dbHandle.db, queue, scheduler, {
+      queueName: eventsQueue,
+      redisUrl: config.redisUrl,
+      events: eventBus,
+      maxChainDepth: config.eventChainMaxDepth,
+      concurrency: config.eventConsumerConcurrency,
+      logger,
+    });
+    eventConsumer.start();
+    eventBus.startRepublisher(config.eventRepublishIntervalMs);
+    logger.info({ queue: eventsQueue, maxChainDepth: config.eventChainMaxDepth }, 'event consumer started');
   }
 
   const shutdown = async (signal: string) => {
     console.log(`received ${signal}, shutting down`);
     reconciler?.stop();
-    await Promise.allSettled([app?.close(), worker?.close(), scheduler?.close(), queue.close()]);
+    await Promise.allSettled([app?.close(), worker?.close(), eventConsumer?.close()]);
+    await Promise.allSettled([scheduler?.close(), eventBus.close(), queue.close()]);
     await dbHandle.close();
     process.exit(0);
   };

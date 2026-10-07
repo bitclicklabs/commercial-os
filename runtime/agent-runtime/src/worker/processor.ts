@@ -15,6 +15,14 @@ import {
   type AgentVersion,
 } from '../db/schema.js';
 import { allowedSources } from '../domain/run-state.js';
+import { NOOP_EVENT_PUBLISHER, type EventPublisher } from '../events/event-bus.js';
+import {
+  executionFinishedEvent,
+  executionStartedEvent,
+  taskFinishedEvent,
+  taskStartedEvent,
+  type ExecutionEventContext,
+} from '../events/runtime-events.js';
 import type { RunStatus } from '../domain/statuses.js';
 import type { ProviderFactory } from '../providers/index.js';
 import type { RunJob } from '../queue/run-queue.js';
@@ -97,6 +105,8 @@ function errorPayload(err: unknown): Record<string, unknown> {
 
 export class RunProcessor {
   readonly locks: EntityLocks;
+  /** Domain events (task.*, agent.execution.*). Best-effort: emission never fails a run. */
+  events: EventPublisher = NOOP_EVENT_PUBLISHER;
 
   constructor(
     private readonly db: Db,
@@ -204,6 +214,8 @@ export class RunProcessor {
       .returning();
     if (!execution) throw new Error('failed to create agent execution');
     await this.db.update(taskRuns).set({ executionId: execution.id }).where(eq(taskRuns.id, run.id));
+    await this.events.emit(taskStartedEvent(started, execution.id));
+    await this.events.emit(executionStartedEvent(execution, this.eventContext(resolved.agent, resolved.version, run.id, task.id)));
 
     let outcome: Outcome;
     try {
@@ -267,9 +279,13 @@ export class RunProcessor {
       ? await this.db.query.agentVersions.findFirst({ where: eq(agentVersions.id, execution.agentVersionId) })
       : undefined;
     if (!agent || !version) {
-      await this.finishExecution(execution.id, 'FAILED', { error: { message: 'agent or agent version not found' } });
+      const error = { message: 'agent or agent version not found' };
+      await this.finishExecution(execution.id, 'FAILED', { error });
+      const ctx: ExecutionEventContext = { taskRunId: null, taskDefinitionId: null, stage: null, agentVersion: null };
+      await this.events.emit(executionFinishedEvent(execution, ctx, { status: 'FAILED', error }));
       return;
     }
+    await this.events.emit(executionStartedEvent(execution, this.eventContext(agent, version, null, null)));
     try {
       const outcome = await this.runAgent(execution, agent, version, 300_000);
       await this.persistOutcome(execution, agent, version, outcome, {});
@@ -316,6 +332,14 @@ export class RunProcessor {
   // -------------------------------------------------------------------------
   // helpers
   // -------------------------------------------------------------------------
+  private eventContext(agent: Agent, version: AgentVersion, taskRunId: string | null, taskDefinitionId: string | null): ExecutionEventContext {
+    return { taskRunId, taskDefinitionId, stage: this.stageOf(agent, version), agentVersion: version.version };
+  }
+
+  private stageOf(agent: Agent, version: AgentVersion): string | null {
+    return typeof version.configuration.stage === 'string' ? version.configuration.stage : (agent.role?.toUpperCase() ?? null);
+  }
+
   async resolveActiveVersion(tenantId: string, agentId: string): Promise<{ agent: Agent; version: AgentVersion } | null> {
     const agent = await this.db.query.agents.findFirst({
       where: and(eq(agents.tenantId, tenantId), eq(agents.id, agentId)),
@@ -350,7 +374,7 @@ export class RunProcessor {
           tenantId: execution.tenantId,
           executionId: execution.id,
           agentId: agent.id,
-          stage: typeof version.configuration.stage === 'string' ? version.configuration.stage : (agent.role?.toUpperCase() ?? null),
+          stage: this.stageOf(agent, version),
           logger: toolLogger,
         },
         controller.signal,
@@ -396,7 +420,7 @@ export class RunProcessor {
     const r = outcome.result;
     const toolSteps = r?.steps.filter((s) => s.type === 'TOOL') ?? [];
     const totalCost = (r?.modelCost ?? 0) + (r?.toolCost ?? 0);
-    await this.db.transaction(async (tx) => {
+    const closed = await this.db.transaction(async (tx) => {
       const [trace] = await tx
         .insert(traces)
         .values({
@@ -442,7 +466,7 @@ export class RunProcessor {
           })),
         );
       }
-      await tx
+      const [row] = await tx
         .update(agentExecutions)
         .set({
           status: outcome.status,
@@ -460,8 +484,22 @@ export class RunProcessor {
           updatedAt: new Date(),
         })
         // Guarded: a concurrent cancel (RUNNING -> CANCELLED) wins.
-        .where(and(eq(agentExecutions.id, execution.id), eq(agentExecutions.status, 'RUNNING')));
+        .where(and(eq(agentExecutions.id, execution.id), eq(agentExecutions.status, 'RUNNING')))
+        .returning({ id: agentExecutions.id });
+      return Boolean(row);
     });
+    if (!closed) return;
+    await this.events.emit(
+      executionFinishedEvent(execution, this.eventContext(agent, version, link.taskRunId ?? null, link.taskDefinitionId ?? null), {
+        status: outcome.status,
+        output: r?.output ?? null,
+        error: outcome.error ?? null,
+        costEur: totalCost,
+        inputTokens: r?.usage.inputTokens ?? 0,
+        outputTokens: r?.usage.outputTokens ?? 0,
+        latencyMs: outcome.latencyMs,
+      }),
+    );
   }
 
   private async finishExecution(id: string, status: RunStatus, patch: { error?: Record<string, unknown> }) {
@@ -484,9 +522,11 @@ export class RunProcessor {
       latencyMs: number;
     }>,
   ): Promise<void> {
-    await this.db
+    const [row] = await this.db
       .update(taskRuns)
       .set({ ...patch, status, finishedAt: new Date(), updatedAt: new Date() })
-      .where(and(eq(taskRuns.id, id), inArray(taskRuns.status, allowedSources(status))));
+      .where(and(eq(taskRuns.id, id), inArray(taskRuns.status, allowedSources(status))))
+      .returning();
+    if (row) await this.events.emit(taskFinishedEvent(row));
   }
 }

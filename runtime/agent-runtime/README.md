@@ -25,6 +25,7 @@ runtime/agent-runtime/
 │   ├── integrations/twenty/  TwentyClient REST tipado y mapeo de objetos de la App
 │   ├── tools/                Interfaz Tool, registry, tool_policy, executor y tools de Twenty
 │   ├── db/                   Esquema Drizzle, cliente y migrador
+│   ├── events/               Event bus: sobre event.envelope.v1, EventBus, payloads, triggers EVENT y GET /events
 │   ├── domain/               Estados, máquina de estados e idempotency keys
 │   ├── providers/            ModelProvider, StubProvider, AnthropicProvider, GeminiProvider y tabla de precios
 │   ├── queue/                RunQueue (BullMQ y en memoria)
@@ -87,6 +88,10 @@ Requisitos: Node.js 22, pnpm, y los contenedores `pxos-postgres` (127.0.0.1:5440
 | `CONCURRENCY_DEFER_MS` | `2000` | Espera antes de reintentar un job aplazado por `max_concurrency` |
 | `STALLED_INTERVAL_MS` | `30000` | Frecuencia del chequeo de jobs stalled de BullMQ |
 | `MAX_STALLED_COUNT` | `1` | Veces que un job puede quedar stalled antes de que BullMQ lo marque `failed` |
+| `EVENT_CHAIN_MAX_DEPTH` | `5` | Profundidad máxima de una cadena de tareas disparadas por eventos |
+| `EVENT_REPUBLISH_INTERVAL_MS` | `30000` | Cada cuánto el re-publicador encola los eventos sin despachar |
+| `EVENT_REPUBLISH_GRACE_MS` | `15000` | Antigüedad mínima de un evento sin despachar para re-publicarlo |
+| `EVENT_CONSUMER_CONCURRENCY` | `4` | Eventos simultáneos que procesa el consumidor de triggers `EVENT` |
 | `DEFAULT_TENANT_ID` | `publiexpe` | Tenant si la petición no envía `x-tenant-id` |
 | `DEFAULT_MODEL_PROVIDER` | `stub` | Proveedor para agentes creados sin `model_provider`: `stub`, `anthropic` o `gemini` |
 | `ANTHROPIC_API_KEY` | vacío | Solo para agentes con `model_provider=anthropic` |
@@ -117,6 +122,7 @@ El esquema vive en `src/db/schema.ts`. Todas las tablas llevan `tenant_id` (C6).
 |---|---|
 | `0000_init` | Esquema inicial (agentes, tareas, runs, ejecuciones, traces) |
 | `0001_scheduler_locks` | Tabla `entity_locks` e índice `task_runs (status, updated_at)` para el reconciliador |
+| `0002_events` | Tabla `events` (log de eventos de dominio, *append-only* con trigger anti-`DELETE`) |
 
 Importante: el migrador de Drizzle aplica solo las migraciones con fecha posterior a la última aplicada. Si dos ramas generan migraciones en paralelo contra la misma BD de desarrollo, aplica primero la más antigua o regenera la nueva tras el merge.
 
@@ -175,7 +181,8 @@ Cabecera opcional `x-tenant-id` en todas las rutas. Las respuestas usan `snake_c
 | `POST /tasks/:id/run` | Lanza un `TaskRun` idempotente: `202` nuevo, `200` duplicado |
 | `POST /tasks/:id/pause`, `/resume`, `/archive` | Ciclo de vida. No hay `DELETE`. Registran o retiran el schedule |
 | `GET /tasks/:id/schedule` | Schedule deseado frente al registrado en BullMQ y próximos disparos |
-| `GET /scheduler/status` | Job schedulers y jobs `ONCE` registrados del tenant, y contadores de la cola |
+| `GET /scheduler/status` | Job schedulers, jobs `ONCE` y triggers `EVENT` registrados del tenant, y contadores de la cola |
+| `GET /events` | Eventos de dominio del tenant (filtros `type`, `since`, `correlation_id`, `limit`, `order`) |
 | `GET /tasks/:id/runs` | Historial de ejecuciones de la tarea |
 | `GET /task-runs/:id` | `TaskRun` con su ejecución, trace y pasos |
 | `POST /executions` | Ejecuta un agente sin tarea (idempotente con `idempotency_key`) |
@@ -211,7 +218,7 @@ Cada intento crea una `AgentExecution` nueva. `task_runs.execution_id` apunta al
 | `CRON` | `expression` (o `cron`), 5 o 6 campos; `timezone` opcional | `{"type":"CRON","expression":"0 8 * * 1-5"}` |
 | `INTERVAL` | `every_seconds` (o `interval_seconds`) | `{"type":"INTERVAL","every_seconds":900}` |
 
-`MANUAL`, `EVENT`, `DEPENDENCY` y `CONDITION` no registran nada en el scheduler. La zona horaria de `CRON` es `schedule.timezone`, si existe, o `task.timezone` (por defecto `Europe/Madrid`). `POST /tasks` y `PATCH /tasks/:id` devuelven `400 invalid_schedule` si el schedule no es válido.
+`EVENT` se registra como trigger de eventos (consulta [Tareas disparadas por evento](#tareas-disparadas-por-evento)). `MANUAL`, `DEPENDENCY` y `CONDITION` no registran nada en el scheduler. La zona horaria de `CRON` es `schedule.timezone`, si existe, o `task.timezone` (por defecto `Europe/Madrid`). `POST /tasks` y `PATCH /tasks/:id` devuelven `400 invalid_schedule` si el schedule no es válido.
 
 ### Funcionamiento
 
@@ -266,6 +273,90 @@ Al encender el host, Docker arranca todos los contenedores a la vez y el catch-u
 1. Si pasa `TWENTY_WAIT_MAX_MS` (10 min por defecto) y Twenty sigue sin responder, el run arranca igualmente con un aviso en el log. Las tools fallan y el agente reporta `PARTIAL`, que es el resultado honesto.
 
 Los agentes sin tools de Twenty y las instalaciones sin `TWENTY_API_KEY` no esperan. Las ejecuciones directas (`POST /executions`) tampoco pasan por esta espera.
+
+## Eventos
+
+El runtime publica eventos de dominio (LLD v0.1 sección 21, LLD v0.2 sección 7) y permite disparar tareas con ellos. El código vive en `src/events/` (sobre, bus, payloads, matching y ruta) y en `src/scheduler/event-triggers.ts` (registro y consumidor de triggers `EVENT`).
+
+### Sobre `event.envelope.v1`
+
+Todos los eventos viajan con este sobre. Los campos del sobre y de `data` usan `camelCase` (convención del LLD v0.2 para payloads).
+
+```json
+{
+  "id": "2f6c1e9a-8b34-4d0f-b5a1-93d7c0e2a611",
+  "type": "task.completed",
+  "schemaVersion": "task.completed.v1",
+  "tenantId": "publiexpe",
+  "occurredAt": "2026-10-07T08:00:20.512Z",
+  "producer": "agent-runtime",
+  "correlationId": "5d2f9c1e-3b6a-4e8f-a1c7-2f9e0b4d6a33",
+  "idempotencyKey": "evt:task.completed:5d2f9c1e-3b6a-4e8f-a1c7-2f9e0b4d6a33",
+  "data": { "taskRunId": "5d2f9c1e-...", "taskDefinitionId": "a41c7e20-...", "status": "COMPLETED", "costEur": 0.0431, "chainDepth": 0 }
+}
+```
+
+- `producer`: `agent-runtime`, `scheduler`, `twenty-app` o `n8n`. Se guarda también como `source` (`runtime`, `twenty`, `n8n`).
+- `correlationId`: el `TaskRun` raíz, o la ejecución si es directa (`POST /executions`).
+- `schemaVersion`: `{type}.v1`. Los payloads son compactos; nunca incluyen el trace ni la salida completa del agente.
+
+### Catálogo emitido
+
+| Evento | Dónde se emite | `data` |
+|---|---|---|
+| `task.scheduled` | `requestTaskRun`, solo si crea el `TaskRun` (API, ticks del scheduler y triggers `EVENT`) | `taskRunId`, `taskDefinitionId`, `scheduledAt`, `trigger` (`MANUAL`, `SCHEDULE`, `EVENT`), `chainDepth` |
+| `task.started` | Processor, tras `QUEUED -> RUNNING` y crear la ejecución del intento | `taskRunId`, `taskDefinitionId`, `executionId`, `attempt`, `startedAt`, `chainDepth` |
+| `task.completed` | Processor, al cerrar el run en `COMPLETED` | `taskRunId`, `taskDefinitionId`, `executionId`, `status`, `costEur`, `latencyMs`, `attempts`, `finishedAt`, `outcome` y `funnel` si la salida los trae, `chainDepth` |
+| `task.failed` | Processor, al cerrar el run en `FAILED` o `TIMED_OUT` (no en un reintento) | Igual, con `error` (`name`, `code`, `message`) en lugar de coste |
+| `agent.execution.started` | Processor, al arrancar cada intento o ejecución directa | `executionId`, `taskRunId`, `taskDefinitionId`, `agentId`, `agentVersionId`, `agentVersion`, `stage`, `chainDepth` |
+| `agent.execution.completed` / `.failed` | Processor, al persistir el resultado (si no se canceló antes) | Lo anterior más `status`, `costEur`, `inputTokens`, `outputTokens`, `latencyMs` y `outcome` o `error` |
+
+Cada evento del runtime lleva una `idempotencyKey` (`evt:{type}:{task_run_id}`, `evt:task.started:{task_run_id}:{attempt}`, `evt:{type}:{execution_id}`): publicar dos veces el mismo hecho devuelve la fila existente.
+
+### Publicación
+
+`EventBus.publish(event)` hace dos pasos (outbox mínimo):
+
+1. `INSERT` en la tabla `events`.
+1. Añade un job a la cola `{QUEUE_NAME}-events` con `jobId` igual al id del evento y marca `dispatched_at`.
+
+La publicación es *best-effort*: si Redis falla, la fila queda con `dispatched_at = null` y el re-publicador (rol `scheduler` o `all`, cada `EVENT_REPUBLISH_INTERVAL_MS`) la encola cuando han pasado `EVENT_REPUBLISH_GRACE_MS`. Los puntos de emisión usan `emit()`, que nunca lanza: un fallo del bus no rompe un run. Los consumidores deben tolerar duplicados.
+
+Tabla `events` (migración `0002_events`): `id`, `tenant_id`, `type`, `schema_version`, `occurred_at`, `payload` (el `data` del sobre), `source`, `producer`, `correlation_id`, `idempotency_key` (única por tenant), `dispatched_at`, `dispatch_attempts`, `created_at`. Índices por `(tenant_id, type, occurred_at)`, `(tenant_id, occurred_at)`, `(tenant_id, correlation_id)` y parcial sobre las filas sin despachar. Un trigger rechaza `DELETE`: el log es *append-only*.
+
+### Tareas disparadas por evento
+
+```json
+{ "type": "EVENT", "event_type": "task.completed", "filter": { "taskDefinitionId": "a41c7e20-...", "status": "COMPLETED" } }
+```
+
+- `event_type` (alias `event`) debe coincidir con el `type` del evento.
+- `filter` es opcional. Cada clave es una ruta con puntos dentro de `data` (`funnel.out`, `results.0.status`; se acepta el prefijo `$.`) y el valor se compara por igualdad estricta (objetos y arrays, en profundidad). No hay operadores.
+- El registro sigue el mismo camino que `CRON`: la API sincroniza tras `POST /tasks`, `PATCH`, `pause`, `resume` y `archive`, y `syncAll` lo corrige periódicamente. Solo se registran tareas `ACTIVE`, `enabled` y con un `EVENT` válido, en el hash de Redis `pxos:{QUEUE_NAME}-events:triggers`. `GET /tasks/:id/schedule` devuelve `event_trigger` (deseado y registrado) y `GET /scheduler/status` lista los triggers con `kind = "event"`.
+- El consumidor (rol `scheduler` o `all`) recibe cada evento, busca los triggers del mismo tenant y tipo, vuelve a leer la tarea en PostgreSQL (un registro obsoleto se retira), aplica el filtro y la guardia anti-bucle y llama a `requestTaskRun` con la clave `taskrun:{task_id}:event:{event_id}`. El mismo evento entregado dos veces devuelve el `TaskRun` existente.
+- El `input` del run es `default_input` más el sobre completo bajo la clave `event` (`input.event.data` es el payload).
+- `POST /tasks` y `PATCH /tasks/:id` devuelven `400 invalid_schedule` si falta `event_type`, tiene un formato inválido o el filtro no es un objeto.
+
+### Guardia anti-bucle
+
+- Un evento sobre un run de la tarea T (`data.taskDefinitionId = T`) nunca vuelve a disparar T. Aplica a `task.*` y a `agent.execution.*`.
+- Profundidad de cadena: un run que no viene de un evento tiene profundidad 0. Un run disparado por un evento tiene `event.data.chainDepth + 1`, y todos los eventos sobre ese run llevan esa profundidad en `chainDepth`. Un evento con `chainDepth >= EVENT_CHAIN_MAX_DEPTH` (por defecto 5) no dispara nada y deja un aviso en el log. Los eventos externos sin `chainDepth` cuentan como 0.
+
+### Consulta
+
+`GET /events` devuelve los eventos del tenant (`x-tenant-id`) como sobres, más `source`, `dispatched_at` y `dispatch_attempts`.
+
+| Parámetro | Uso |
+|---|---|
+| `type` | Tipo exacto (`task.completed`) o prefijo (`task.*`) |
+| `since` | ISO 8601: `occurred_at >= since` |
+| `correlation_id` | Eventos de un `TaskRun` o de una ejecución |
+| `limit` | 1 a 500, por defecto 50 |
+| `order` | `desc` (por defecto) o `asc`, útil para sondear con `since` |
+
+```sh
+curl -s "http://127.0.0.1:4020/events?type=task.*&limit=10" -H 'x-tenant-id: publiexpe'
+```
 
 ## Ejemplo end-to-end con curl
 
@@ -556,7 +647,7 @@ Para escalar, separa roles: un servicio con `RUNTIME_ROLE=api`, N réplicas con 
 
 ## Pendiente
 
-- Triggers `EVENT`, `DEPENDENCY` y `CONDITION` (hoy no registran nada).
+- Triggers `DEPENDENCY` y `CONDITION` (hoy no registran nada).
 - Columna `trigger` (`SCHEDULE`, `MANUAL`...) en `task_runs` para distinguir el origen de cada run (LLD v0.2, AC-04).
 - Exponer `EntityLocks` a las tools (el helper está listo en `RunProcessor.locks`).
 - Política de catch-up si el scheduler estuvo parado: hoy, al volver, se procesa el slot pendiente (tarde, con su `scheduled_at` original) y los demás slots perdidos se omiten.
@@ -564,5 +655,5 @@ Para escalar, separa roles: un servicio con `RUNTIME_ROLE=api`, N réplicas con 
 - `GeminiProvider.stream()` no es incremental: devuelve la respuesta completa en un solo fragmento.
 - Validación de URL en campos de texto libre contra las fuentes del trace (LLD v0.2 sección 10.4, punto 4).
 - Harness, skills, memoria y verificador reales; promote, rollback y evaluate.
-- Publicación de eventos (`task.started`, `task.completed`...) en el event bus.
+- Eventos aún no emitidos: `task.failed` cuando el reconciliador cierra un huérfano, cancelaciones, `signal.detected` y `evaluation.completed`. Entrada de eventos externos (Twenty, n8n) por HTTP y entrega a n8n por webhook.
 - Export de los contratos zod a JSON Schema versionado en `schemas/`.

@@ -59,6 +59,9 @@ export const ScheduleSchema = z.object({
   run_at: z.iso.datetime({ offset: true }).optional(),
   every_seconds: z.number().int().positive().optional(),
   timezone: z.string().optional(),
+  // EVENT trigger (src/events/triggers.ts): event type plus equality filter on the event data.
+  event_type: z.string().optional(),
+  filter: JsonObject.optional(),
 });
 
 export const RetryPolicySchema = z.object({

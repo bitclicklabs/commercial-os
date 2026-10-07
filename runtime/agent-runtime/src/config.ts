@@ -28,6 +28,10 @@ const ConfigSchema = z.object({
   eventRepublishIntervalMs: z.coerce.number().int().positive().default(30_000),
   eventRepublishGraceMs: z.coerce.number().int().nonnegative().default(15_000),
   eventConsumerConcurrency: z.coerce.number().int().positive().default(4),
+  /** Shared secret of the Twenty webhook (HMAC key and fallback URL/header secret). Unset = webhook disabled. */
+  twentyWebhookSecret: z.string().min(16).optional(),
+  /** Window in which an identical human verdict (subject, feedback, target status) is not recorded twice. */
+  evaluationDedupeWindowMs: z.coerce.number().int().nonnegative().default(600_000),
 });
 
 export type Config = z.infer<typeof ConfigSchema>;
@@ -63,5 +67,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env, argv: string[] 
     eventRepublishIntervalMs: emptyToUndefined(env.EVENT_REPUBLISH_INTERVAL_MS),
     eventRepublishGraceMs: emptyToUndefined(env.EVENT_REPUBLISH_GRACE_MS),
     eventConsumerConcurrency: emptyToUndefined(env.EVENT_CONSUMER_CONCURRENCY),
+    twentyWebhookSecret: emptyToUndefined(env.TWENTY_WEBHOOK_SECRET),
+    evaluationDedupeWindowMs: emptyToUndefined(env.EVALUATION_DEDUPE_WINDOW_MS),
   });
 }

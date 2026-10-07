@@ -26,7 +26,7 @@ runtime/agent-runtime/
 │   ├── integrations/twenty/  TwentyClient REST tipado y mapeo de objetos de la App
 │   ├── tools/                Interfaz Tool, registry, tool_policy, executor, tools de Twenty y web/ (fetch_url con texto de PDF, render_url y guarda SSRF)
 │   ├── db/                   Esquema Drizzle, cliente y migrador
-│   ├── events/               Event bus: sobre event.envelope.v1, EventBus, payloads, triggers EVENT y GET /events
+│   ├── events/               Event bus: sobre event.envelope.v1, EventBus, payloads, triggers EVENT y GET /events; puente externo (POST /events/external, event_subscriptions y webhooks firmados con guarda SSRF)
 │   ├── domain/               Estados, máquina de estados e idempotency keys
 │   ├── evaluations/          Evaluador HUMAN: mapeo de feedback, vínculo con la ejecución de origen, webhook de Twenty y evento evaluation.recorded
 │   ├── metrics/              Consultas SQL de métricas (solo lectura) y HTML del dashboard
@@ -114,6 +114,12 @@ Requisitos: Node.js 22, pnpm, y los contenedores `pxos-postgres` (127.0.0.1:5440
 | `IONOS_IMAP_HOST` / `IONOS_IMAP_PORT` | `imap.ionos.es` / `993` | Servidor IMAP del buzón de bajas (siempre TLS) |
 | `IONOS_IMAP_USER` / `IONOS_IMAP_PASSWORD` | vacío | Buzón que lee el BajasAgent (`jesus.abril@publiexpe.info`). Sin ellas, `process-unsubscribes` termina `SKIPPED` |
 | `IONOS_IMAP_MAILBOX` | `INBOX` | Carpeta que lee el BajasAgent |
+| `EXTERNAL_EVENTS_TOKEN` | vacío | Token Bearer de `POST /events/external` (mínimo 16 caracteres). Sin él, la ruta responde `503` |
+| `EXTERNAL_EVENT_TYPE_PREFIXES` | `ext.` | Prefijos permitidos en el `type` de los eventos externos, separados por comas. Nunca `task.`, `agent.` ni `evaluation.` |
+| `EXTERNAL_WEBHOOK_ALLOW_PRIVATE` | vacío | `host` o `host:puerto` (comas) a los que una suscripción puede apuntar aunque resuelvan a IP privada. Ejemplo para n8n local: `host.docker.internal:5678` |
+| `WEBHOOK_DELIVERY_TIMEOUT_MS` | `10000` | Timeout de cada intento de entrega de un webhook saliente |
+| `WEBHOOK_DELIVERY_BACKOFF_MS` | `5000` | Base del backoff exponencial entre los 3 intentos de entrega |
+| `WEBHOOK_DELIVERY_CONCURRENCY` | `4` | Entregas simultáneas del worker de webhooks (rol `scheduler`) |
 | `RENDERER_URL` | `http://pxos-renderer:3000` | Servicio de render JavaScript de `render_url`. En desarrollo, `http://127.0.0.1:4030` si el renderer está publicado ahí. Vacío u `off` = desactivado (`render_url` devuelve `RENDERER_NOT_CONFIGURED`) |
 
 ## Migraciones
@@ -140,6 +146,7 @@ El esquema vive en `src/db/schema.ts`. Todas las tablas llevan `tenant_id` (C6).
 | `0003_evaluations` | Tabla `evaluations` del evaluador HUMAN. SQL idempotente (`IF NOT EXISTS`) |
 | `0004_inbound` | Tabla `inbound_state` (cursor IMAP del inbound de bajas). SQL idempotente (`IF NOT EXISTS`) |
 | `0005_skills` | Tablas `skills` y `skill_versions` (triggers anti-`DELETE` y de contenido inmutable) y columna `traces.skill_versions`. SQL idempotente |
+| `0006_event_subscriptions` | Tabla `event_subscriptions` (webhooks salientes del event bus, trigger anti-`DELETE`). SQL idempotente. La `0005` la reclama otra rama: el journal salta del idx 4 al 6 hasta la fusión, y la `0006` debe quedar con fecha (`when`) posterior a la `0005` |
 
 Importante: el migrador de Drizzle aplica solo las migraciones con fecha posterior a la última aplicada. Si dos ramas generan migraciones en paralelo contra la misma BD de desarrollo, aplica primero la más antigua o regenera la nueva tras el merge.
 
@@ -200,6 +207,10 @@ Cabecera opcional `x-tenant-id` en todas las rutas. Las respuestas usan `snake_c
 | `GET /tasks/:id/schedule` | Schedule deseado frente al registrado en BullMQ y próximos disparos |
 | `GET /scheduler/status` | Job schedulers, jobs `ONCE` y triggers `EVENT` registrados del tenant, y contadores de la cola |
 | `GET /events` | Eventos de dominio del tenant (filtros `type`, `since`, `correlation_id`, `limit`, `order`) |
+| `POST /events/external` | Ingesta de un evento externo (n8n, Twenty) con token Bearer: `202` nuevo, `200` duplicado. Consulta [Eventos externos](#eventos-externos) |
+| `POST /event-subscriptions` | Crea un webhook saliente (`201`; devuelve el secreto una vez si lo genera el runtime) |
+| `GET /event-subscriptions`, `GET /event-subscriptions/:id` | Lista o detalle con el estado de entrega. Nunca devuelve el secreto |
+| `PATCH /event-subscriptions/:id` | Nombre, URL, tipos, secreto (`rotate_secret`) o `enabled`. No hay `DELETE` |
 | `GET /tasks/:id/runs` | Historial de ejecuciones de la tarea |
 | `GET /task-runs/:id` | `TaskRun` con su ejecución, trace y pasos |
 | `POST /executions` | Ejecuta un agente sin tarea (idempotente con `idempotency_key`) |
@@ -390,6 +401,52 @@ Tabla `events` (migración `0002_events`): `id`, `tenant_id`, `type`, `schema_ve
 ```sh
 curl -s "http://127.0.0.1:4020/events?type=task.*&limit=10" -H 'x-tenant-id: publiexpe'
 ```
+
+## Eventos externos
+
+El event bus habla con el exterior en las dos direcciones, con n8n como primer consumidor y productor (LLD v0.1 sección 20: n8n integra, nunca contiene la inteligencia). El contrato completo, el ejemplo de firma y el workflow de n8n importable están en [docs/n8n-integracion.md](../../docs/n8n-integracion.md) y [integrations/n8n/ejemplo-eventos.json](../../integrations/n8n/ejemplo-eventos.json). El código vive en `src/events/external.ts`, `external-routes.ts`, `subscriptions.ts`, `webhook-target.ts` y `webhook-delivery.ts`.
+
+### Entrada: `POST /events/external`
+
+```sh
+curl -sS -X POST http://127.0.0.1:4020/events/external \
+  -H "Authorization: Bearer $EXTERNAL_EVENTS_TOKEN" -H 'Content-Type: application/json' \
+  -d '{"type":"ext.lead.created","data":{"channel":"web"},"idempotency_key":"form-98765"}'
+```
+
+- Autenticación: `Authorization: Bearer <EXTERNAL_EVENTS_TOKEN>`. Sin token configurado, `503`; sin cabecera o con otro token, `401` (antes de analizar el cuerpo).
+- Cuerpo estricto: `type` y `data` obligatorios; `producer` (`n8n` por defecto, o `twenty`), `occurred_at`, `correlation_id` e `idempotency_key` opcionales. Una clave desconocida da `400`.
+- `type` debe empezar por un prefijo de `EXTERNAL_EVENT_TYPE_PREFIXES` (`ext.` por defecto) y seguir el formato del bus (minúsculas, puntos y guiones bajos, sin dígitos). `data` admite 64 KB como máximo.
+- El runtime completa el sobre, fuerza `data.chainDepth = 0` y lo publica con el `EventBus` normal: `source` es `n8n` o `twenty` según `producer`, la idempotencia funciona (la clave se guarda como `ext:{producer}:{clave}`) y los triggers `EVENT` lo evalúan como a cualquier evento.
+- El contenido es **dato no confiable**: se guarda y se compara, nunca se interpreta como instrucciones.
+
+### Salida: `event_subscriptions`
+
+Cada fila es un webhook: los eventos del tenant cuyo tipo case con `event_types` (exacto, `task.completed`, o prefijo, `task.*`) se envían por `POST` a `target_url`, con el sobre completo como cuerpo y estas cabeceras:
+
+| Cabecera | Valor |
+|---|---|
+| `X-Pxos-Event-Timestamp` | Milisegundos desde epoch |
+| `X-Pxos-Event-Signature` | `hex(HMAC-SHA256(secret, "{timestamp}:{cuerpo}"))`, el mismo esquema que Twenty |
+| `X-Pxos-Event-Id`, `X-Pxos-Event-Type` | Id y tipo del evento (deduplica por el id: la entrega es al menos una vez) |
+| `X-Pxos-Subscription-Id`, `X-Pxos-Delivery-Attempt` | Suscripción e intento (1 a 3) |
+
+- El consumidor de eventos (rol `scheduler` o `all`) pasa cada evento al `WebhookDispatcher`, que encola una entrega por suscripción en `{QUEUE_NAME}-webhooks` (job id `{suscripción}_{evento}`). El `WebhookDeliveryWorker` hace el `POST`.
+- Reintentos: 3 intentos con backoff exponencial (`WEBHOOK_DELIVERY_BACKOFF_MS`). Se reintentan red, timeout, `5xx`, `408` y `429`; cualquier otro código (también `3xx`: no se siguen redirecciones) falla a la primera.
+- Registro por suscripción: `last_delivery_at` (último `2xx`), `last_error` y `last_error_at` (último intento fallido) y `consecutive_failures` (entregas abandonadas desde el último éxito).
+- Guarda SSRF: solo `http(s)`, sin credenciales, y todas las IP del host públicas (mismas reglas que `fetch_url`). Se comprueba al crear o cambiar la URL (`400 invalid_target_url`) y antes de cada entrega, con la conexión fijada a la IP comprobada. Para un destino privado, nómbralo en `EXTERNAL_WEBHOOK_ALLOW_PRIVATE` (`host` o `host:puerto`, coincidencia exacta, sin subdominios). En desarrollo, con el runtime en Docker y n8n en el host: `EXTERNAL_WEBHOOK_ALLOW_PRIVATE=host.docker.internal:5678` y `target_url = http://host.docker.internal:5678/webhook/pxos-eventos`. Con el runtime en el host (`pnpm dev`): `localhost:5678`. Defínela en los procesos `api` (valida la URL) y `scheduler` (entrega).
+- Sin `DELETE` (ni ruta ni en BD: un trigger lo rechaza). Apaga una suscripción con `PATCH {"enabled": false}`.
+
+```sh
+curl -sS -X POST http://127.0.0.1:4020/event-subscriptions -H 'Content-Type: application/json' \
+  -d '{"name":"n8n runs fallidos","target_url":"http://host.docker.internal:5678/webhook/pxos-eventos","event_types":["task.completed"]}'
+```
+
+Tabla `event_subscriptions` (migración `0006_event_subscriptions`): `id`, `tenant_id`, `name` (único por tenant), `target_url`, `secret` (en claro: el runtime firma con él; la API solo devuelve `secret_hint`), `event_types` (`text[]`, no vacío), `enabled`, `last_delivery_at`, `last_error`, `last_error_at`, `consecutive_failures`, `created_at`, `updated_at`.
+
+Precaución: los eventos externos entran con `chainDepth = 0`, así que la guardia anti-bucle no corta una cadena que pase por n8n (`task.completed` → n8n → `ext.*` → la misma tarea). No reinyectes desde n8n eventos que vuelvan a disparar la tarea de origen.
+
+Tests: `test/unit/external-events.test.ts` (sin servicios) y `test/integration/external-events.test.ts` (PostgreSQL, Redis y un receptor HTTP local en `127.0.0.1`).
 
 ## Ejemplo end-to-end con curl
 
@@ -1300,5 +1357,7 @@ Una llamada a Gemini por borrador. En la prueba en vivo: 0,0021 USD (0,0018 €)
 - Eventos aún no emitidos: `task.failed` cuando el reconciliador cierra un huérfano, cancelaciones y `signal.detected`.
 - Borradores de email: disparar también con `EDITED` (necesita una segunda tarea o un operador OR en el filtro), plantillas por sector y registro de si el comercial envió el borrador. Entrada de eventos externos (Twenty, n8n) por HTTP y entrega a n8n por webhook.
 - Harness, memoria y verificador reales; promote, rollback y evaluate. Skills: versionadas en BD (MVP-1), falta el optimizador (operaciones acotadas, experimentos y gate de validación), `workflow` y `optimization_budget` del LLD §6.3 y la comprobación del `content_hash` al cargar.
+- Borradores de email: disparar también con `EDITED` (necesita una segunda tarea o un operador OR en el filtro), plantillas por sector y registro de si el comercial envió el borrador. (Hecho: la entrada de eventos externos por HTTP y la entrega a n8n por webhook, consulta [Eventos externos](#eventos-externos).)
+- Harness, skills, memoria y verificador reales; promote, rollback y evaluate.
 - Export de los contratos zod a JSON Schema versionado en `schemas/`.
 - Métricas: AC-17 y AC-18 piden hipótesis `HOT`, pero el resumen de ejecución solo cuenta hipótesis creadas; falta el desglose por prioridad (en Twenty o en `output.counters`). El dashboard oculta por defecto los agentes `ARCHIVED` (los de prueba se archivan con `pnpm cleanup:archive-test-agents`); `include_archived=true` los muestra.

@@ -71,3 +71,15 @@ Canal de email (recordatorio operativo): warm-up iniciado el 2026-10-06; DMARC p
 | Inbound de bajas: lector IMAP del buzón → alta automática en la lista de supresión (HITL para el resto) | `feat/inbound-bajas` | Opus | ✅ fusionado (solo-lectura verificado a nivel de comandos IMAP; live contra el buzón real OK; task cada 2 h) |
 | LLD v0.3: consolidación de todas las decisiones de implementación | `docs/lld-0.3` | Sonnet | ✅ fusionado (22 ADRs, 34 puntos mapeados, 9 contradicciones de docs — reconciliadas por el PM salvo README del runtime, pendiente del cierre) |
 | Integración, e2e y PR | `feat/tanda6` | PM | ✅ 433 tests×2; desplegado y sembrado (Prospector v6 lookups=100, EmailDrafter v2 con descriptor, BajasAgent cada 2 h — primer run en Docker: 4 revisados, 0 bajas) |
+
+## Tanda 7 — Envío desde Twenty, puente n8n y skills versionadas ✅ (PR #7, 2026-10-07)
+
+| Pieza | Rama | Agente | Estado |
+|---|---|---|---|
+| Cuenta de correo conectada en Twenty: envío HITL con un clic + historial en ficha (hallazgo del usuario) | `feat/twenty-email-account` | Opus | ✅ fusionado (2.45 = solo IMAP/SMTP genérico; workflow manual creado en borrador; campos de email en la hipótesis; HALLAZGO: la API key tenía rol Admin con send_email vía MCP → rol restringido "Agent runtime" creado y asignado, verificado send_email=0) |
+| Puente de eventos con n8n: ingesta de eventos externos + reenvío saliente por webhook | `feat/n8n-events` | Opus | ✅ fusionado (ext.* firmados HMAC; journal 0005/0006 refechado por el PM — evitado salto silencioso de migración) |
+| Skills versionadas en BD (primer paso MVP-1): tablas, loader, seed de las skills actuales, API sin DELETE | `feat/skills-versionadas` | Opus | ✅ fusionado (4 skills migradas byte a byte; versiones inmutables por trigger SQL; rollback por API; 461 tests) |
+| Docs de cierre (guía, runbook, ADRs nuevos en LLD v0.3) | — | — | ↩️ cada rama actualizó sus docs; los ADRs de la tanda 7 en el LLD v0.3 quedan para la próxima pasada de docs |
+| Integración, e2e y PR | `feat/tanda7` | PM | ✅ 510 tests; App sincronizada (script ps1 estrenado OK); workflow en borrador validado; rol restringido; 4 skills v1 ACTIVE en BD; Prospector v7/EmailDrafter v3; e2e: hipótesis Tuawa con borrador en campos (DRAFT) |
+
+Fuera de la tanda: Catalog Service (sigue a la espera del contrato del conector con el backend de publiexpe).

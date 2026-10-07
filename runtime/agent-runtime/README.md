@@ -26,14 +26,15 @@ runtime/agent-runtime/
 │   ├── integrations/twenty/  TwentyClient REST tipado y mapeo de objetos de la App
 │   ├── tools/                Interfaz Tool, registry, tool_policy, executor, tools de Twenty y web/ (fetch_url con texto de PDF, render_url y guarda SSRF)
 │   ├── db/                   Esquema Drizzle, cliente y migrador
-│   ├── events/               Event bus: sobre event.envelope.v1, EventBus, payloads, triggers EVENT y GET /events
+│   ├── events/               Event bus: sobre event.envelope.v1, EventBus, payloads, triggers EVENT y GET /events; puente externo (POST /events/external, event_subscriptions y webhooks firmados con guarda SSRF)
 │   ├── domain/               Estados, máquina de estados e idempotency keys
 │   ├── evaluations/          Evaluador HUMAN: mapeo de feedback, vínculo con la ejecución de origen, webhook de Twenty y evento evaluation.recorded
 │   ├── metrics/              Consultas SQL de métricas (solo lectura) y HTML del dashboard
 │   ├── providers/            ModelProvider, StubProvider, AnthropicProvider, GeminiProvider y tabla de precios
 │   ├── queue/                RunQueue (BullMQ y en memoria)
 │   ├── scheduler/            TaskScheduler sobre BullMQ, parseo de schedules y rutas
-│   ├── seed/                 Seed idempotente del Prospector, el EmailDrafter, el BajasAgent y sus tareas (pnpm seed)
+│   ├── seed/                 Seed idempotente de las skills, el Prospector, el EmailDrafter, el BajasAgent y sus tareas (pnpm seed)
+│   ├── skills/               Skills versionadas (MVP-1): render, resolución desde la BD con fallback a las constantes, ciclo de estados
 │   ├── services/             Lanzamiento idempotente de TaskRuns
 │   └── worker/               RunProcessor, worker BullMQ, locks por entidad y reconciliador
 └── test/
@@ -113,6 +114,12 @@ Requisitos: Node.js 22, pnpm, y los contenedores `pxos-postgres` (127.0.0.1:5440
 | `IONOS_IMAP_HOST` / `IONOS_IMAP_PORT` | `imap.ionos.es` / `993` | Servidor IMAP del buzón de bajas (siempre TLS) |
 | `IONOS_IMAP_USER` / `IONOS_IMAP_PASSWORD` | vacío | Buzón que lee el BajasAgent (`jesus.abril@publiexpe.info`). Sin ellas, `process-unsubscribes` termina `SKIPPED` |
 | `IONOS_IMAP_MAILBOX` | `INBOX` | Carpeta que lee el BajasAgent |
+| `EXTERNAL_EVENTS_TOKEN` | vacío | Token Bearer de `POST /events/external` (mínimo 16 caracteres). Sin él, la ruta responde `503` |
+| `EXTERNAL_EVENT_TYPE_PREFIXES` | `ext.` | Prefijos permitidos en el `type` de los eventos externos, separados por comas. Nunca `task.`, `agent.` ni `evaluation.` |
+| `EXTERNAL_WEBHOOK_ALLOW_PRIVATE` | vacío | `host` o `host:puerto` (comas) a los que una suscripción puede apuntar aunque resuelvan a IP privada. Ejemplo para n8n local: `host.docker.internal:5678` |
+| `WEBHOOK_DELIVERY_TIMEOUT_MS` | `10000` | Timeout de cada intento de entrega de un webhook saliente |
+| `WEBHOOK_DELIVERY_BACKOFF_MS` | `5000` | Base del backoff exponencial entre los 3 intentos de entrega |
+| `WEBHOOK_DELIVERY_CONCURRENCY` | `4` | Entregas simultáneas del worker de webhooks (rol `scheduler`) |
 | `RENDERER_URL` | `http://pxos-renderer:3000` | Servicio de render JavaScript de `render_url`. En desarrollo, `http://127.0.0.1:4030` si el renderer está publicado ahí. Vacío u `off` = desactivado (`render_url` devuelve `RENDERER_NOT_CONFIGURED`) |
 
 ## Migraciones
@@ -138,6 +145,8 @@ El esquema vive en `src/db/schema.ts`. Todas las tablas llevan `tenant_id` (C6).
 | `0002_events` | Tabla `events` (log de eventos de dominio, *append-only* con trigger anti-`DELETE`) |
 | `0003_evaluations` | Tabla `evaluations` del evaluador HUMAN. SQL idempotente (`IF NOT EXISTS`) |
 | `0004_inbound` | Tabla `inbound_state` (cursor IMAP del inbound de bajas). SQL idempotente (`IF NOT EXISTS`) |
+| `0005_skills` | Tablas `skills` y `skill_versions` (triggers anti-`DELETE` y de contenido inmutable) y columna `traces.skill_versions`. SQL idempotente |
+| `0006_event_subscriptions` | Tabla `event_subscriptions` (webhooks salientes del event bus, trigger anti-`DELETE`). SQL idempotente. La `0005` la reclama otra rama: el journal salta del idx 4 al 6 hasta la fusión, y la `0006` debe quedar con fecha (`when`) posterior a la `0005` |
 
 Importante: el migrador de Drizzle aplica solo las migraciones con fecha posterior a la última aplicada. Si dos ramas generan migraciones en paralelo contra la misma BD de desarrollo, aplica primero la más antigua o regenera la nueva tras el merge.
 
@@ -198,6 +207,10 @@ Cabecera opcional `x-tenant-id` en todas las rutas. Las respuestas usan `snake_c
 | `GET /tasks/:id/schedule` | Schedule deseado frente al registrado en BullMQ y próximos disparos |
 | `GET /scheduler/status` | Job schedulers, jobs `ONCE` y triggers `EVENT` registrados del tenant, y contadores de la cola |
 | `GET /events` | Eventos de dominio del tenant (filtros `type`, `since`, `correlation_id`, `limit`, `order`) |
+| `POST /events/external` | Ingesta de un evento externo (n8n, Twenty) con token Bearer: `202` nuevo, `200` duplicado. Consulta [Eventos externos](#eventos-externos) |
+| `POST /event-subscriptions` | Crea un webhook saliente (`201`; devuelve el secreto una vez si lo genera el runtime) |
+| `GET /event-subscriptions`, `GET /event-subscriptions/:id` | Lista o detalle con el estado de entrega. Nunca devuelve el secreto |
+| `PATCH /event-subscriptions/:id` | Nombre, URL, tipos, secreto (`rotate_secret`) o `enabled`. No hay `DELETE` |
 | `GET /tasks/:id/runs` | Historial de ejecuciones de la tarea |
 | `GET /task-runs/:id` | `TaskRun` con su ejecución, trace y pasos |
 | `POST /executions` | Ejecuta un agente sin tarea (idempotente con `idempotency_key`) |
@@ -212,6 +225,11 @@ Cabecera opcional `x-tenant-id` en todas las rutas. Las respuestas usan `snake_c
 | `GET /metrics/evaluations` | Veredictos por día y por sujeto. Filtros `since`, `until`, `tz`, `subject_limit` |
 | `GET /metrics/runs` | Últimos `TaskRun` (`limit`, 10 por defecto) con coste, duración y enlace al trace |
 | `GET /dashboard` | Mini dashboard HTML. Solo para peticiones locales |
+| `GET /skills`, `GET /skills/:id` | Lista de skills o detalle con versiones. `:id` admite el uuid o el nombre |
+| `POST /skills` | Crea la skill y su versión 1 en `DRAFT` |
+| `POST /skills/:id/versions` | Versión nueva en `DRAFT`, desde texto o copiando la activa (`copy_from`) |
+| `POST /skills/:id/versions/:v/activate` | La versión pasa a `ACTIVE` y la anterior a `DEPRECATED`, en una transacción |
+| `POST /skills/:id/versions/:v/deprecate` | `DRAFT` a `DEPRECATED`; sobre la `ACTIVE`, vuelve a la versión activa anterior. No hay `DELETE` |
 
 ### Idempotencia
 
@@ -384,6 +402,52 @@ Tabla `events` (migración `0002_events`): `id`, `tenant_id`, `type`, `schema_ve
 curl -s "http://127.0.0.1:4020/events?type=task.*&limit=10" -H 'x-tenant-id: publiexpe'
 ```
 
+## Eventos externos
+
+El event bus habla con el exterior en las dos direcciones, con n8n como primer consumidor y productor (LLD v0.1 sección 20: n8n integra, nunca contiene la inteligencia). El contrato completo, el ejemplo de firma y el workflow de n8n importable están en [docs/n8n-integracion.md](../../docs/n8n-integracion.md) y [integrations/n8n/ejemplo-eventos.json](../../integrations/n8n/ejemplo-eventos.json). El código vive en `src/events/external.ts`, `external-routes.ts`, `subscriptions.ts`, `webhook-target.ts` y `webhook-delivery.ts`.
+
+### Entrada: `POST /events/external`
+
+```sh
+curl -sS -X POST http://127.0.0.1:4020/events/external \
+  -H "Authorization: Bearer $EXTERNAL_EVENTS_TOKEN" -H 'Content-Type: application/json' \
+  -d '{"type":"ext.lead.created","data":{"channel":"web"},"idempotency_key":"form-98765"}'
+```
+
+- Autenticación: `Authorization: Bearer <EXTERNAL_EVENTS_TOKEN>`. Sin token configurado, `503`; sin cabecera o con otro token, `401` (antes de analizar el cuerpo).
+- Cuerpo estricto: `type` y `data` obligatorios; `producer` (`n8n` por defecto, o `twenty`), `occurred_at`, `correlation_id` e `idempotency_key` opcionales. Una clave desconocida da `400`.
+- `type` debe empezar por un prefijo de `EXTERNAL_EVENT_TYPE_PREFIXES` (`ext.` por defecto) y seguir el formato del bus (minúsculas, puntos y guiones bajos, sin dígitos). `data` admite 64 KB como máximo.
+- El runtime completa el sobre, fuerza `data.chainDepth = 0` y lo publica con el `EventBus` normal: `source` es `n8n` o `twenty` según `producer`, la idempotencia funciona (la clave se guarda como `ext:{producer}:{clave}`) y los triggers `EVENT` lo evalúan como a cualquier evento.
+- El contenido es **dato no confiable**: se guarda y se compara, nunca se interpreta como instrucciones.
+
+### Salida: `event_subscriptions`
+
+Cada fila es un webhook: los eventos del tenant cuyo tipo case con `event_types` (exacto, `task.completed`, o prefijo, `task.*`) se envían por `POST` a `target_url`, con el sobre completo como cuerpo y estas cabeceras:
+
+| Cabecera | Valor |
+|---|---|
+| `X-Pxos-Event-Timestamp` | Milisegundos desde epoch |
+| `X-Pxos-Event-Signature` | `hex(HMAC-SHA256(secret, "{timestamp}:{cuerpo}"))`, el mismo esquema que Twenty |
+| `X-Pxos-Event-Id`, `X-Pxos-Event-Type` | Id y tipo del evento (deduplica por el id: la entrega es al menos una vez) |
+| `X-Pxos-Subscription-Id`, `X-Pxos-Delivery-Attempt` | Suscripción e intento (1 a 3) |
+
+- El consumidor de eventos (rol `scheduler` o `all`) pasa cada evento al `WebhookDispatcher`, que encola una entrega por suscripción en `{QUEUE_NAME}-webhooks` (job id `{suscripción}_{evento}`). El `WebhookDeliveryWorker` hace el `POST`.
+- Reintentos: 3 intentos con backoff exponencial (`WEBHOOK_DELIVERY_BACKOFF_MS`). Se reintentan red, timeout, `5xx`, `408` y `429`; cualquier otro código (también `3xx`: no se siguen redirecciones) falla a la primera.
+- Registro por suscripción: `last_delivery_at` (último `2xx`), `last_error` y `last_error_at` (último intento fallido) y `consecutive_failures` (entregas abandonadas desde el último éxito).
+- Guarda SSRF: solo `http(s)`, sin credenciales, y todas las IP del host públicas (mismas reglas que `fetch_url`). Se comprueba al crear o cambiar la URL (`400 invalid_target_url`) y antes de cada entrega, con la conexión fijada a la IP comprobada. Para un destino privado, nómbralo en `EXTERNAL_WEBHOOK_ALLOW_PRIVATE` (`host` o `host:puerto`, coincidencia exacta, sin subdominios). En desarrollo, con el runtime en Docker y n8n en el host: `EXTERNAL_WEBHOOK_ALLOW_PRIVATE=host.docker.internal:5678` y `target_url = http://host.docker.internal:5678/webhook/pxos-eventos`. Con el runtime en el host (`pnpm dev`): `localhost:5678`. Defínela en los procesos `api` (valida la URL) y `scheduler` (entrega).
+- Sin `DELETE` (ni ruta ni en BD: un trigger lo rechaza). Apaga una suscripción con `PATCH {"enabled": false}`.
+
+```sh
+curl -sS -X POST http://127.0.0.1:4020/event-subscriptions -H 'Content-Type: application/json' \
+  -d '{"name":"n8n runs fallidos","target_url":"http://host.docker.internal:5678/webhook/pxos-eventos","event_types":["task.completed"]}'
+```
+
+Tabla `event_subscriptions` (migración `0006_event_subscriptions`): `id`, `tenant_id`, `name` (único por tenant), `target_url`, `secret` (en claro: el runtime firma con él; la API solo devuelve `secret_hint`), `event_types` (`text[]`, no vacío), `enabled`, `last_delivery_at`, `last_error`, `last_error_at`, `consecutive_failures`, `created_at`, `updated_at`.
+
+Precaución: los eventos externos entran con `chainDepth = 0`, así que la guardia anti-bucle no corta una cadena que pase por n8n (`task.completed` → n8n → `ext.*` → la misma tarea). No reinyectes desde n8n eventos que vuelvan a disparar la tarea de origen.
+
+Tests: `test/unit/external-events.test.ts` (sin servicios) y `test/integration/external-events.test.ts` (PostgreSQL, Redis y un receptor HTTP local en `127.0.0.1`).
+
 ## Ejemplo end-to-end con curl
 
 Necesitas `jq` y el runtime arrancado (`pnpm dev`).
@@ -431,6 +495,86 @@ Salida esperada del paso 4:
 
 Nota: `POST /agents` devuelve `409` si el nombre ya existe en el tenant. Para repetir el ejemplo, cambia el nombre o el valor de `x-tenant-id`.
 
+## Skills
+
+Las skills son objetos versionados en la BD (LLD v0.1 §6.3, MVP-1, sin optimizador). Hasta el MVP-0 eran constantes de TypeScript. Ahora la fuente de verdad es la BD y las constantes quedan como fallback.
+
+| Skill | Agente | Texto de la v1 |
+|---|---|---|
+| `prospector-event-exhibitors` | Prospector (evaluación de cada expositor) | `PROSPECTOR_SYSTEM_PROMPT` |
+| `event-source-discovery` | Prospector, modo scout (búsqueda de ferias) | `SCOUT_SEARCH_SYSTEM_PROMPT` |
+| `exhibitor-list-extraction` | Prospector, modo scout (extracción de expositores) | `SCOUT_EXTRACT_SYSTEM_PROMPT` |
+| `email-first-contact-draft` | EmailDrafter | `EMAIL_DRAFTER_SYSTEM_PROMPT` |
+
+`exhibitor-list-extraction` formaba parte de `event-source-discovery` v4 en el código; en la BD es una skill propia para poder versionarla por separado.
+
+### Tablas
+
+- `skills`: `id`, `tenant_id`, `name` (kebab-case, único por tenant), `description`, `domain`, `status` (`DRAFT` hasta que se activa una versión, `ACTIVE`, `DEPRECATED`), `active_version_id`, `created_at`, `updated_at`.
+- `skill_versions`: `id`, `tenant_id`, `skill_id`, `version` (1, 2, 3… por skill), `status` (`DRAFT`, `ACTIVE`, `DEPRECATED`), `instructions`, `constraints`, `examples` (jsonb), `anti_patterns`, `metadata` (jsonb), `content_hash`, `activated_at`, `deprecated_at`, `created_at`, `created_by`.
+
+Reglas que aplica la BD:
+
+- No hay `DELETE` físico en ninguna de las dos tablas (trigger).
+- El contenido de una versión es inmutable (trigger): solo cambian `status`, `activated_at` y `deprecated_at`. Para cambiar una skill, crea una versión nueva.
+- Como mucho una versión `ACTIVE` por skill (índice único parcial).
+
+El texto que se inyecta es `instructions` tal cual, seguido de `constraints`, `anti_patterns` y `examples` como secciones (`## Restricciones`, `## Antipatrones (no lo hagas)`, `## Ejemplos`) si existen. `content_hash` es el sha256 de ese texto.
+
+### Referencias desde `agent_versions.skill_refs`
+
+| Ref | Resolución |
+|---|---|
+| `{"name": "x"}` | Versión `ACTIVE` de la skill `x`, leída al arrancar cada ejecución |
+| `{"name": "x", "version": 3}` | Exactamente la versión 3, sea cual sea su estado (sirve para probar un `DRAFT`) |
+| `{"skill_id": "x", "version": 2}` | Ref del MVP-0 a una constante de código. No se busca en la BD: su `version` es la del código, no la de `skill_versions` |
+
+Activar una versión no toca los agentes en marcha: las ejecuciones nuevas la recogen al resolver sus skills.
+
+### Fallback
+
+Si una ref no se resuelve (la skill no existe, la versión no existe, no hay versión `ACTIVE` o la BD falla), el agente usa el mismo prompt que en el MVP-0 (su `system_prompt` si no está vacío o la constante) y el runtime registra un aviso (`skill not found in the database; falling back to the code constant`). Una skill que falta no hace fallar ninguna ejecución.
+
+> **Importante:** el código necesita la migración `0005_skills` (añade `traces.skill_versions`). Con `RUN_MIGRATIONS=true` se aplica al arrancar. Si aplicas las migraciones a mano en la BD compartida, aplica la `0005` antes de desplegar.
+
+### Qué guarda la ejecución
+
+`traces.skill_versions` guarda qué se inyectó exactamente (LLD P4). Cada elemento tiene `name`, `version`, `skill_version_id`, `content_hash`, `source` y `requested` (la ref de la versión del agente):
+
+- `source: "db"`: versión de la BD (`skill_version_id` y `content_hash` del texto inyectado).
+- `source: "code"`: fallback. Incluye `fallback_reason` y el texto exacto en `text`, porque las constantes no están versionadas en la BD. `version` es la versión de código de la constante.
+- `source: "none"`: la ref no se resolvió y el agente no la usó.
+
+`task_runs.skill_versions` guarda lo mismo sin `text`.
+
+### Ciclo de vida por API
+
+1. Crea una versión nueva a partir de la activa, cambiando lo que necesites:
+
+   ```sh
+   curl -s -X POST localhost:4020/skills/prospector-event-exhibitors/versions \
+     -H 'content-type: application/json' \
+     -d '{"copy_from": "active", "instructions": "…texto nuevo…", "change_reason": "Prioriza lanzamientos", "created_by": "jesus"}'
+   ```
+
+   La versión se crea en `DRAFT`. La respuesta incluye `warnings` si `instructions` no contiene la regla de contenido web no confiable (`UNTRUSTED_SYSTEM_RULE`).
+
+1. Actívala. La versión anterior pasa a `DEPRECATED` en la misma transacción:
+
+   ```sh
+   curl -s -X POST localhost:4020/skills/prospector-event-exhibitors/versions/2/activate
+   ```
+
+1. Para volver atrás, depreca la versión activa. Se reactiva la versión anterior con número menor que se activó más recientemente:
+
+   ```sh
+   curl -s -X POST localhost:4020/skills/prospector-event-exhibitors/versions/2/deprecate
+   ```
+
+   Si no hay ninguna versión anterior que restaurar, la llamada devuelve `409`. También puedes activar directamente una versión `DEPRECATED`.
+
+Las transiciones son idempotentes: repetir `activate` o `deprecate` devuelve `200` con `changed: false`.
+
 ## Tools
 
 Capa de tools del LLD v0.2 (secciones 5.2, 5.7 y 10). Los agentes no llaman a Twenty directamente: reciben un `AgentToolbox` (`ctx.tools`) que solo ejecuta las tools permitidas por la versión del agente.
@@ -461,6 +605,7 @@ Las de Twenty usan `TWENTY_BASE_URL` y `TWENTY_API_KEY` y tienen `outputTrust = 
 | `create_hypothesis` | `LOW_WRITE` | Sí | Empresa + `name` (por defecto `{empresa} — {need}`) |
 | `create_agent_run_summary` | `LOW_WRITE` | Sí | `agentExecutionId` |
 | `get_hypothesis` | `READ` | No | — (hipótesis con empresa, señal y decision maker, `depth=1`) |
+| `set_hypothesis_draft` | `LOW_WRITE` | Sí | Solo escribe si la hipótesis no tiene borrador (`emailStatus` vacío); nunca toca `DRAFT`, `READY`, `SENDING` ni `SENT`. No envía nada |
 | `create_note` | `LOW_WRITE` | Sí | Empresa + título; adopta una nota huérfana con el mismo título |
 | `get_note` | `READ` | No | — (título y markdown de una nota; salida `untrusted`) |
 | `update_note` | `LOW_WRITE` | Sí | Solo añade líneas al final; las que ya están (coincidencia exacta) se omiten. Nunca edita ni borra contenido |
@@ -767,6 +912,7 @@ pnpm seed -- --tenant=otro --input=evento.json
 
 Es idempotente:
 
+- **Skills** (primero): crea las que faltan con su versión 1 `ACTIVE` y el texto exacto de las constantes de código. No modifica las que ya existen. Consulta [Skills](#skills).
 - **Agente `Prospector`**: si no existe, lo crea con la versión 1 `ACTIVE` (`model_provider = gemini`, `model = gemini-flash-latest`, `thinking_level = low`, la tool policy anterior y el prompt en español con los diferenciales de PubliEXPE: ofertas, trato cercano, taller propio y precio). Si existe y su versión activa es distinta, añade una versión nueva, la activa y pasa la anterior a `DEPRECATED`. Si es igual, no cambia nada.
 - **Tarea `daily-event-prospecting`**: `CRON 0 8 * * *` en `Europe/Madrid`, `timeout_ms = 900000`, sin reintentos, con `test/fixtures/feria-ejemplo.json` como `default_input`. Si cambia, se actualiza y se guarda una `TaskDefinitionVersion` nueva.
 - **Tarea `weekly-event-scouting`** (modo scout): `CRON 30 7 * * 1` (lunes 07:30) en `Europe/Madrid`, `timeout_ms = 1800000`, sin reintentos, `default_input = { "sector": "alimentación y bebidas", "region": "España", "horizon_months": 6 }`.
@@ -781,6 +927,8 @@ La versión de la tanda 5 sube `max_exhibitors_per_event` a 60, añade `max_cata
 La versión de la tanda 6 (catálogo completo) sube `max_catalog_pages` a 10, `max_profile_lookups` a 60 y `max_exhibitors_per_event` a 100, añade `time_budget_ms` (20 min), `profile_concurrency` (2) y `capture_json` (`true`), amplía la tool policy (`fetch_url` 230, `render_url` 115, 1 500 llamadas) y sube la skill `event-source-discovery` a v4. Para el atajo JSON y más de 5 páginas necesita pxos-renderer 0.2 (imagen reconstruida desde esta rama); con uno anterior, el scout lee 5 páginas y extrae el texto.
 
 > **Importante:** ejecuta el seed después de desplegar este código. Un runtime anterior trataría la entrada de `weekly-event-scouting` como entrada directa no válida y cerraría la ejecución del lunes como `FAILED`.
+
+La versión MVP-1 del seed deja `system_prompt` vacío y referencia las skills de la BD por nombre y sin versión (`[{"name": "prospector-event-exhibitors"}, {"name": "event-source-discovery"}, {"name": "exhibitor-list-extraction"}]`; en el EmailDrafter, `[{"name": "email-first-contact-draft"}]`): al ejecutar el seed se crea una versión nueva de los dos agentes. El texto que recibe el modelo no cambia.
 
 La fixture tiene tres expositores ficticios: uno claramente relevante (fabricante de conservas con stand propio), uno dudoso (distribuidor de envases que también imprime bolsas promocionales) y uno irrelevante (organismo público que compra por licitación).
 
@@ -1152,7 +1300,7 @@ veredicto ACCEPTED (webhook de Twenty o POST /evaluations/human)
 ### Tarea y agente
 
 - **Tarea `draft-email-on-validated`**: `{"type": "EVENT", "event_type": "evaluation.recorded", "filter": {"feedback": "ACCEPTED", "subjectType": "hypothesis"}}`, `timeout_ms = 120000`, 2 intentos y `max_concurrency = 2`. Un veredicto `EDITED` (validada con cambios) no dispara la tarea: el filtro no tiene operador OR.
-- **Agente `EmailDrafter`** (`implementation = "email_drafter"`, `gemini-flash-latest`, `thinking_level = low`): tool policy `find_company`, `get_company`, `get_hypothesis` y `create_note`, techo `LOW_WRITE`, máximo 6 llamadas y una sola `create_note` por ejecución.
+- **Agente `EmailDrafter`** (`implementation = "email_drafter"`, `gemini-flash-latest`, `thinking_level = low`): tool policy `find_company`, `get_company`, `get_hypothesis`, `create_note` y `set_hypothesis_draft`, techo `LOW_WRITE`, máximo 6 llamadas y una sola `create_note` y una sola `set_hypothesis_draft` por ejecución.
 - Entrada: el sobre del evento bajo `input.event`, o `{ "hypothesis_id": "<id en Twenty>" }` para lanzarlo a mano con `POST /tasks/:id/run`.
 - `pnpm seed` crea o actualiza el agente y la tarea (idempotente, igual que el Prospector).
 
@@ -1161,7 +1309,12 @@ veredicto ACCEPTED (webhook de Twenty o POST /evaluations/human)
 1. Lee la hipótesis con `get_hypothesis` (empresa, señal y decision maker en una sola petición). Si la hipótesis no existe o está `REJECTED` o `EXPIRED`, si el veredicto no es `ACCEPTED` ni `EDITED` o si el sujeto no es una hipótesis, termina con `outcome = SKIPPED` sin llamar al modelo.
 1. Hace **una** llamada a Gemini con la necesidad, el porqué ahora, el evento, los productos recomendados y los diferenciales que anotó el Prospector. Los datos del CRM entran en un bloque `DATOS_NO_CONFIABLES`. La respuesta se valida con zod (`{asunto, cuerpo}`); si no es válida, el run termina con `outcome = FAILED` y sin nota (no hay ronda de reparación).
 1. Post-procesa el texto por código (`finalizeDraft`).
+1. Solo con `configuration.send_from_twenty.enabled = true` (en el seed, `false`): escribe el mismo borrador en los campos `emailTo`, `emailSubject`, `emailBody` de la hipótesis con `emailStatus = DRAFT` (`set_hypothesis_draft`). Un fallo aquí no falla el run.
 1. Guarda la nota con `create_note`.
+
+### Envío desde Twenty (opcional, lo hace una persona)
+
+Con los campos de borrador en la hipótesis, una persona revisa y edita el texto en Twenty, pone `Email status = Reviewed` y lanza el workflow manual **Commercial OS · Enviar borrador de email**, que envía desde **su** buzón conectado en Twenty. El runtime no envía ni activa nada: `pnpm twenty:send-workflow` solo crea el workflow en borrador (`--apply`) o muestra su definición (por defecto). Definición en `src/integrations/twenty/send-draft-workflow.ts`; pasos, privacidad y la restricción obligatoria de la API key en [docs/twenty-envio-email.md](../../docs/twenty-envio-email.md).
 
 El prompt pide español de España, tuteo, tono cercano y sin humo comercial, de 120 a 180 palabras, 1 o 2 diferenciales (taller propio, ofertas, trato cercano, precios) y nada inventado: sin nombres de contacto si la hipótesis no tiene decision maker, sin presupuestos ni cantidades estimadas y sin mencionar el CRM ni la IA.
 
@@ -1209,6 +1362,8 @@ Una llamada a Gemini por borrador. En la prueba en vivo: 0,0021 USD (0,0018 €)
 - Validación de URL en campos de texto libre contra las fuentes del trace (LLD v0.2 sección 10.4, punto 4) en el modo directo: el modo scout ya la aplica con su `SourceLedger`.
 - Eventos aún no emitidos: `task.failed` cuando el reconciliador cierra un huérfano, cancelaciones y `signal.detected`.
 - Borradores de email: disparar también con `EDITED` (necesita una segunda tarea o un operador OR en el filtro), plantillas por sector y registro de si el comercial envió el borrador. Entrada de eventos externos (Twenty, n8n) por HTTP y entrega a n8n por webhook.
+- Harness, memoria y verificador reales; promote, rollback y evaluate. Skills: versionadas en BD (MVP-1), falta el optimizador (operaciones acotadas, experimentos y gate de validación), `workflow` y `optimization_budget` del LLD §6.3 y la comprobación del `content_hash` al cargar.
+- Borradores de email: disparar también con `EDITED` (necesita una segunda tarea o un operador OR en el filtro), plantillas por sector y registro de si el comercial envió el borrador. (Hecho: la entrada de eventos externos por HTTP y la entrega a n8n por webhook, consulta [Eventos externos](#eventos-externos).)
 - Harness, skills, memoria y verificador reales; promote, rollback y evaluate.
 - Export de los contratos zod a JSON Schema versionado en `schemas/`.
 - Métricas: AC-17 y AC-18 piden hipótesis `HOT`, pero el resumen de ejecución solo cuenta hipótesis creadas; falta el desglose por prioridad (en Twenty o en `output.counters`). El dashboard oculta por defecto los agentes `ARCHIVED` (los de prueba se archivan con `pnpm cleanup:archive-test-agents`); `include_archived=true` los muestra.

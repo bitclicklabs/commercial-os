@@ -6,6 +6,7 @@ import { z } from 'zod';
 import {
   TWENTY_OBJECTS,
   currencyToEur,
+  type TwentyCommercialHypothesis,
   type TwentyCommercialHypothesisExpanded,
   type TwentyPerson,
 } from '../../integrations/twenty/index.js';
@@ -150,6 +151,79 @@ export function createGetHypothesisTool(deps: TwentyToolDeps) {
             decisionMaker: personOf(h.decisionMaker),
           },
         };
+      }),
+  });
+}
+
+// ---------------------------------------------------------------------------
+// set_hypothesis_draft (LOW_WRITE)
+// ---------------------------------------------------------------------------
+
+/**
+ * Statuses of the email draft that belong to a person: the draft was reviewed (READY), is
+ * going out (SENDING) or went out (SENT). The runtime never overwrites them.
+ */
+export const HUMAN_OWNED_DRAFT_STATUSES = ['READY', 'SENDING', 'SENT'] as const;
+
+export const SetHypothesisDraftInput = z.object({
+  hypothesisId: RecordId,
+  /** Recipient(s), comma separated; '' when the CRM has no address (the person adds it). */
+  to: z.string().trim().max(500),
+  subject: z.string().trim().min(1).max(255),
+  /** Plain text, final body (signature and unsubscribe line already added by code). */
+  body: z.string().trim().min(1).max(20_000),
+});
+
+export const SetHypothesisDraftOutput = z.object({
+  written: z.boolean(),
+  /** Why nothing was written: a person owns the draft, or a draft is already there. */
+  reason: z.enum(['written', 'human_owned', 'draft_exists', 'not_found']),
+  emailStatus: z.string().nullable(),
+});
+
+/**
+ * Writes the email draft into the hypothesis fields `emailTo`, `emailSubject`, `emailBody`
+ * and sets `emailStatus = DRAFT`, so a person can review it, edit it in place and send it
+ * from Twenty with the manual workflow "Commercial OS · Enviar borrador de email".
+ *
+ * This tool sends nothing and cannot send: it only PATCHes four fields. It writes only when
+ * there is no draft yet (`emailStatus` empty): a DRAFT already there may carry edits of the
+ * commercial, and READY / SENDING / SENT belong to a person. A redelivered event therefore
+ * changes nothing (same rule as the idempotent `create_note`).
+ */
+export function createSetHypothesisDraftTool(deps: TwentyToolDeps) {
+  return defineTool({
+    id: 'set_hypothesis_draft',
+    name: 'Set hypothesis draft fields',
+    version: '1.0.0',
+    description:
+      'Store the first-contact draft (recipient, subject, plain-text body) in the draft fields of a commercial hypothesis, with draft status DRAFT, only if the hypothesis has no draft yet. Never sends anything: a person reviews and sends it from the CRM.',
+    inputSchema: SetHypothesisDraftInput,
+    outputSchema: SetHypothesisDraftOutput,
+    riskLevel: 'LOW_WRITE',
+    sideEffects: true,
+    approvalPolicy: { mode: 'NONE' },
+    permissions: ['twenty:hypotheses:read', 'twenty:hypotheses:write'],
+    timeoutMs: 15_000,
+    outputTrust: 'trusted',
+    enabled: true,
+    execute: (input, ctx) =>
+      withTwenty(deps, async () => {
+        const h = await deps.twenty.get<TwentyCommercialHypothesis>(TWENTY_OBJECTS.commercialHypothesis, input.hypothesisId, { depth: 0, signal: ctx.signal });
+        if (!h) return { status: 'ok', output: { written: false, reason: 'not_found', emailStatus: null } };
+        const current = typeof h.emailStatus === 'string' && h.emailStatus.length > 0 ? h.emailStatus : null;
+        if (current && (HUMAN_OWNED_DRAFT_STATUSES as readonly string[]).includes(current)) {
+          return { status: 'ok', output: { written: false, reason: 'human_owned', emailStatus: current } };
+        }
+        if (current === 'DRAFT') return { status: 'ok', output: { written: false, reason: 'draft_exists', emailStatus: current } };
+        await deps.twenty.update(
+          TWENTY_OBJECTS.commercialHypothesis,
+          input.hypothesisId,
+          { emailTo: input.to, emailSubject: input.subject, emailBody: input.body, emailStatus: 'DRAFT' },
+          { signal: ctx.signal },
+        );
+        ctx.logger.info('hypothesis draft fields written', { hypothesisId: input.hypothesisId });
+        return { status: 'ok', output: { written: true, reason: 'written', emailStatus: 'DRAFT' } };
       }),
   });
 }

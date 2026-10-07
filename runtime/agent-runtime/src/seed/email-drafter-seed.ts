@@ -9,12 +9,13 @@
  * Same rules as the Prospector seed: a changed agent version is added as a NEW version,
  * a changed task gets a new TaskDefinitionVersion; a second run changes nothing.
  *
- * The agent only writes internal Notes in Twenty: its tool policy has no mail tool
- * (none exists) and its risk ceiling is LOW_WRITE.
+ * The agent only writes internal Notes in Twenty (and, with `send_from_twenty.enabled`, the
+ * draft fields of the hypothesis): its tool policy has no mail tool (none exists) and its
+ * risk ceiling is LOW_WRITE.
  */
 import type { Db } from '../db/client.js';
 import { EMAIL_DRAFTER_TOOLS } from '../agents/email-drafter.js';
-import { EMAIL_DRAFTER_SKILL_ID, EMAIL_DRAFTER_SKILL_VERSION, EMAIL_DRAFTER_SYSTEM_PROMPT } from '../agents/email-drafter-prompt.js';
+import { EMAIL_DRAFTER_SKILL_ID } from '../agents/email-drafter-prompt.js';
 import { DEFAULT_COMPANY_DESCRIPTOR, DEFAULT_SENDER, WORD_RANGE } from '../agents/email-draft.js';
 import { DEFAULT_USD_TO_EUR } from '../providers/gemini-pricing.js';
 import type { SkillRef } from '../db/schema.js';
@@ -27,7 +28,8 @@ export function desiredEmailDrafterVersion(): AgentVersionSpec {
   return {
     model: 'gemini-flash-latest',
     modelProvider: 'gemini',
-    systemPrompt: EMAIL_DRAFTER_SYSTEM_PROMPT,
+    // MVP-1: the prompt is the database skill (skillRefs, ACTIVE version); fallback: the code constant.
+    systemPrompt: '',
     configuration: {
       implementation: 'email_drafter',
       stage: 'EMAIL_DRAFTER',
@@ -35,8 +37,12 @@ export function desiredEmailDrafterVersion(): AgentVersionSpec {
         allow: [...EMAIL_DRAFTER_TOOLS],
         max_risk_level: 'LOW_WRITE',
         max_calls_per_execution: 6,
-        max_calls_per_tool: { create_note: 1 },
+        max_calls_per_tool: { create_note: 1, set_hypothesis_draft: 1 },
       },
+      // Send from Twenty (docs/twenty-envio-email.md): OFF until the Twenty App fields
+      // emailTo / emailSubject / emailBody / emailStatus are synced. Turning it on only adds
+      // the draft to those fields; sending is always a person clicking the Twenty workflow.
+      send_from_twenty: { enabled: true },
       sender: {
         name: DEFAULT_SENDER.name,
         company: DEFAULT_SENDER.company,
@@ -51,7 +57,7 @@ export function desiredEmailDrafterVersion(): AgentVersionSpec {
       max_output_tokens: 4096,
       model_options: { thinking_level: 'low' },
     },
-    skillRefs: [{ skill_id: EMAIL_DRAFTER_SKILL_ID, version: EMAIL_DRAFTER_SKILL_VERSION }] as SkillRef[],
+    skillRefs: [{ name: EMAIL_DRAFTER_SKILL_ID }] as SkillRef[],
   };
 }
 

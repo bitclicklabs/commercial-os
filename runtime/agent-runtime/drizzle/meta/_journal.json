@@ -36,6 +36,20 @@
       "when": 1791367126138,
       "tag": "0004_inbound",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1791371110746,
+      "tag": "0005_skills",
+      "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1791371200000,
+      "tag": "0006_event_subscriptions",
+      "breakpoints": true
     }
   ]
 }

@@ -13,7 +13,8 @@ import {
   type ExhibitorResult,
   type RunOutcome,
 } from './prospector-core.js';
-import { PROSPECTOR_SYSTEM_PROMPT } from './prospector-prompt.js';
+import { PROSPECTOR_SKILL_ID, PROSPECTOR_SYSTEM_PROMPT } from './prospector-prompt.js';
+import { useSkill } from '../skills/resolver.js';
 
 export {
   DIFFERENTIATORS,
@@ -122,7 +123,7 @@ export class ProspectorAgent implements AgentImplementation {
     }
 
     const { event, exhibitors } = parsedInput.data;
-    const system = ctx.version.systemPrompt.trim().length > 0 ? ctx.version.systemPrompt : PROSPECTOR_SYSTEM_PROMPT;
+    const system = useSkill(ctx, PROSPECTOR_SKILL_ID, ctx.version.systemPrompt.trim().length > 0 ? ctx.version.systemPrompt : PROSPECTOR_SYSTEM_PROMPT);
     const results: ExhibitorResult[] = [];
     for (const exhibitor of exhibitors) {
       ctx.signal.throwIfAborted();

@@ -7,8 +7,10 @@ import { executionRoutes } from './routes/executions.js';
 import { taskRoutes } from './routes/tasks.js';
 import { schedulerRoutes } from '../scheduler/routes.js';
 import { eventRoutes } from '../events/routes.js';
+import { externalEventRoutes } from '../events/external-routes.js';
 import { evaluationRoutes } from './routes/evaluations.js';
 import { metricsRoutes } from './routes/metrics.js';
+import { skillRoutes } from './routes/skills.js';
 
 export async function buildServer(
   ctx: ApiContext,
@@ -31,7 +33,9 @@ export async function buildServer(
   await executionRoutes(app, ctx);
   await schedulerRoutes(app, ctx);
   await eventRoutes(app, ctx);
+  await externalEventRoutes(app, ctx);
   await evaluationRoutes(app, ctx);
   await metricsRoutes(app, ctx);
+  await skillRoutes(app, ctx);
   return app;
 }

@@ -7,7 +7,14 @@ import { RUN_STATUSES, SCHEDULE_TYPES, TASK_DEFINITION_STATUSES, AGENT_STATUSES 
 
 const JsonObject = z.record(z.string(), z.unknown());
 
-export const SkillRefSchema = z.object({ skill_id: z.string().min(1), version: z.number().int().positive() });
+/**
+ * `{ name, version? }`: database skill (exact version, or the ACTIVE one without version).
+ * `{ skill_id, version }`: MVP-0 legacy ref to a code constant (kept for compatibility).
+ */
+export const SkillRefSchema = z.union([
+  z.object({ name: z.string().regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/), version: z.number().int().positive().optional() }),
+  z.object({ skill_id: z.string().min(1), version: z.number().int().positive() }),
+]);
 
 export const AgentVersionInput = z.object({
   model: z.string().min(1).optional(),
@@ -151,3 +158,38 @@ export const CONTRACTS = {
   'agent.task.run.v1': RunTaskBody,
   'agent.execution.create.v1': CreateExecutionBody,
 } as const;
+
+// ---------------------------------------------------------------------------
+// Skills (MVP-1, LLD v0.1 section 6.3)
+// ---------------------------------------------------------------------------
+const SkillContentFields = {
+  constraints: z.string().max(50_000).nullable().optional(),
+  examples: z.array(z.unknown()).max(50).nullable().optional(),
+  anti_patterns: z.string().max(50_000).nullable().optional(),
+  metadata: JsonObject.optional(),
+};
+
+export const CreateSkillBody = z.object({
+  name: z.string().min(1).max(100).regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/, 'kebab-case (a-z, 0-9, -)'),
+  description: z.string().max(2_000).optional(),
+  domain: z.string().max(100).optional(),
+  instructions: z.string().min(1).max(100_000),
+  ...SkillContentFields,
+  created_by: z.string().optional(),
+});
+
+export const CreateSkillVersionBody = z
+  .object({
+    /** Copy the ACTIVE version ("active") or a given version number; the fields sent override it. */
+    copy_from: z.union([z.literal('active'), z.number().int().positive()]).optional(),
+    instructions: z.string().min(1).max(100_000).optional(),
+    ...SkillContentFields,
+    change_reason: z.string().max(2_000).optional(),
+    created_by: z.string().optional(),
+  })
+  .refine((b) => b.copy_from !== undefined || b.instructions !== undefined, { message: 'instructions or copy_from is required' });
+
+export const ListSkillsQuery = z.object({ status: z.enum(['DRAFT', 'ACTIVE', 'DEPRECATED']).optional() });
+
+export const SkillParams = z.object({ id: z.string().min(1).max(100) });
+export const SkillVersionParams = z.object({ id: z.string().min(1).max(100), v: z.coerce.number().int().positive() });

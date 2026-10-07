@@ -92,6 +92,12 @@ No se crea ni se edita desde la UI: una investigación nueva es un registro nuev
 | `tenantId` | TEXT | `tenant_id` | |
 | `company` | RELATION → Company (N:1) | `company_id` | Inverso: `Company.commercialHypotheses` |
 | `commercialSignal` | RELATION → CommercialSignal (N:1) | `signal_id` | Inverso: `CommercialSignal.commercialHypotheses` |
+| `emailTo` | TEXT (etiqueta "Email to") | — | Destinatario del primer email, separado por comas. Nuevo: flujo de envío desde Twenty |
+| `emailSubject` | TEXT (etiqueta "Email subject") | — | Asunto del borrador |
+| `emailBody` | TEXT, 12 filas visibles (etiqueta "Email body") | — | Cuerpo del borrador en texto plano, con firma y línea de baja |
+| `emailStatus` | SELECT (etiqueta "Email status") | — | DRAFT (Draft), READY (Reviewed), SENDING (Sending), SENT (Sent); sin valor por defecto |
+
+Los cuatro campos `email*` sirven al flujo «revisar y enviar desde Twenty» ([docs/twenty-envio-email.md](../../docs/twenty-envio-email.md)). El `EmailDrafter` los rellena con `emailStatus = DRAFT` solo si está activo `send_from_twenty.enabled`; la persona pasa a `READY` y lanza el workflow manual «Commercial OS · Enviar borrador de email», que pone `SENDING` y después `SENT`. No cuentan como edición de negocio para el evaluador HUMAN (no están en `HYPOTHESIS_BUSINESS_FIELDS`).
 
 ### AgentRunSummary (`agentRunSummary` / `agentRunSummaries`) — LLD §4 [C1]
 

@@ -3,7 +3,8 @@
  * answer, the post-processing that GUARANTEES the sender identification and the LSSI
  * unsubscribe line, and the markdown of the Twenty note.
  *
- * Nothing here sends email. The draft is text for a human to copy into their mailbox.
+ * Nothing here sends email. The draft is text for a human to copy into their mailbox or, in
+ * the send-from-Twenty flow, to review in the hypothesis fields and send themselves.
  */
 import { z } from 'zod';
 import { parseWith, type Parsed } from './prospector-core.js';
@@ -286,7 +287,13 @@ export interface DraftNoteInput {
   feedback: string | null;
   evaluatedAt: string | null;
   executionId: string;
+  /** The same draft was written into the hypothesis email fields (send-from-Twenty flow). */
+  inHypothesisFields?: boolean;
 }
+
+/** Paragraph added to the note when the draft is also in the hypothesis fields. */
+export const DRAFT_IN_FIELDS_HINT =
+  'También está en los campos Email de la hipótesis. Si tu buzón está conectado en Twenty, revísalo y edítalo allí, cambia Email status a Reviewed y pulsa «Enviar borrador de email» en la hipótesis: lo envías tú, desde tu buzón. Si editas el texto, edítalo en la hipótesis, no en esta nota.';
 
 export function buildDraftNoteMarkdown(input: DraftNoteInput): string {
   const { draft, sender, contact } = input;
@@ -312,5 +319,6 @@ export function buildDraftNoteMarkdown(input: DraftNoteInput): string {
     `_Borrador preparado a partir de la hipótesis «${escapeMarkdown(input.hypothesisName)}» (${verdict}). Lo ha redactado un modelo de lenguaje: comprueba los datos antes de enviarlo. Ejecución ${input.executionId}._`,
   ];
   if (draft.warnings.length > 0) lines.push('', `_Avisos: ${escapeMarkdown(draft.warnings.join('; '))}._`);
+  if (input.inHypothesisFields) lines.push('', `_${escapeMarkdown(DRAFT_IN_FIELDS_HINT)}_`);
   return lines.join('\n');
 }

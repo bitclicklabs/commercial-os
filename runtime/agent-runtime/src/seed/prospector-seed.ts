@@ -23,8 +23,8 @@ import {
   type TaskDefinition,
 } from '../db/schema.js';
 import { PROSPECTOR_TOOLS } from '../agents/prospector-agent.js';
-import { PROSPECTOR_SKILL_ID, PROSPECTOR_SKILL_VERSION, PROSPECTOR_SYSTEM_PROMPT } from '../agents/prospector-prompt.js';
-import { SCOUT_SKILL_ID, SCOUT_SKILL_VERSION } from '../agents/event-scout-prompt.js';
+import { PROSPECTOR_SKILL_ID } from '../agents/prospector-prompt.js';
+import { SCOUT_EXTRACT_SKILL_ID, SCOUT_SKILL_ID } from '../agents/event-scout-prompt.js';
 import { DEFAULT_USD_TO_EUR } from '../providers/gemini-pricing.js';
 
 export const PROSPECTOR_AGENT_NAME = 'Prospector';
@@ -56,7 +56,9 @@ export function desiredProspectorVersion() {
   return {
     model: 'gemini-flash-latest',
     modelProvider: 'gemini',
-    systemPrompt: PROSPECTOR_SYSTEM_PROMPT,
+    // MVP-1: the prompts are database skills (skillRefs, ACTIVE version); empty here so the
+    // version has one source of truth. Fallback without the skills: the code constants.
+    systemPrompt: '',
     configuration: {
       implementation: 'prospector',
       stage: 'PROSPECTOR',
@@ -94,10 +96,7 @@ export function desiredProspectorVersion() {
         verify_unsourced_by_fetch: true,
       },
     } as Record<string, unknown>,
-    skillRefs: [
-      { skill_id: PROSPECTOR_SKILL_ID, version: PROSPECTOR_SKILL_VERSION },
-      { skill_id: SCOUT_SKILL_ID, version: SCOUT_SKILL_VERSION },
-    ] as SkillRef[],
+    skillRefs: [{ name: PROSPECTOR_SKILL_ID }, { name: SCOUT_SKILL_ID }, { name: SCOUT_EXTRACT_SKILL_ID }] as SkillRef[],
   };
 }
 

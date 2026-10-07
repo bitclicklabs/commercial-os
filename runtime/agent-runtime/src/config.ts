@@ -1,4 +1,7 @@
 import { z } from 'zod';
+import { parseEventTypePrefixes } from './events/external.js';
+import { DEFAULT_WEBHOOK_BACKOFF_MS, DEFAULT_WEBHOOK_TIMEOUT_MS } from './events/webhook-delivery.js';
+import { parsePrivateAllowlist } from './events/webhook-target.js';
 
 const RuntimeRole = z.enum(['all', 'api', 'worker', 'scheduler']);
 export type RuntimeRole = z.infer<typeof RuntimeRole>;
@@ -32,6 +35,29 @@ const ConfigSchema = z.object({
   twentyWebhookSecret: z.string().min(16).optional(),
   /** Window in which an identical human verdict (subject, feedback, target status) is not recorded twice. */
   evaluationDedupeWindowMs: z.coerce.number().int().nonnegative().default(600_000),
+  // External events (src/events/external.ts, webhook-delivery.ts; LLD v0.1 section 20)
+  /** Bearer token of POST /events/external. Unset = ingestion disabled (503). */
+  externalEventsToken: z.string().min(16).optional(),
+  /** Allowed prefixes of external event types (comma separated). Default `ext.`. */
+  externalEventTypePrefixes: z
+    .string()
+    .optional()
+    .transform((raw, ctx) => {
+      try {
+        return parseEventTypePrefixes(raw);
+      } catch (err) {
+        ctx.addIssue({ code: 'custom', message: (err as Error).message });
+        return z.NEVER;
+      }
+    }),
+  /** `host[:port]` entries an outbound webhook may target even if they resolve to a private IP. */
+  externalWebhookAllowPrivate: z
+    .string()
+    .optional()
+    .transform((raw) => parsePrivateAllowlist(raw)),
+  webhookDeliveryTimeoutMs: z.coerce.number().int().positive().default(DEFAULT_WEBHOOK_TIMEOUT_MS),
+  webhookDeliveryBackoffMs: z.coerce.number().int().positive().default(DEFAULT_WEBHOOK_BACKOFF_MS),
+  webhookDeliveryConcurrency: z.coerce.number().int().positive().default(4),
 });
 
 export type Config = z.infer<typeof ConfigSchema>;
@@ -69,5 +95,11 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env, argv: string[] 
     eventConsumerConcurrency: emptyToUndefined(env.EVENT_CONSUMER_CONCURRENCY),
     twentyWebhookSecret: emptyToUndefined(env.TWENTY_WEBHOOK_SECRET),
     evaluationDedupeWindowMs: emptyToUndefined(env.EVALUATION_DEDUPE_WINDOW_MS),
+    externalEventsToken: emptyToUndefined(env.EXTERNAL_EVENTS_TOKEN),
+    externalEventTypePrefixes: emptyToUndefined(env.EXTERNAL_EVENT_TYPE_PREFIXES),
+    externalWebhookAllowPrivate: emptyToUndefined(env.EXTERNAL_WEBHOOK_ALLOW_PRIVATE),
+    webhookDeliveryTimeoutMs: emptyToUndefined(env.WEBHOOK_DELIVERY_TIMEOUT_MS),
+    webhookDeliveryBackoffMs: emptyToUndefined(env.WEBHOOK_DELIVERY_BACKOFF_MS),
+    webhookDeliveryConcurrency: emptyToUndefined(env.WEBHOOK_DELIVERY_CONCURRENCY),
   });
 }

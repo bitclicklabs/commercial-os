@@ -46,9 +46,45 @@ const updatedAt = () => timestamp('updated_at', { withTimezone: true }).notNull(
 const money = (name: string) => numeric(name, { precision: 14, scale: 6, mode: 'number' }).notNull().default(0);
 const tokens = (name: string) => integer(name).notNull().default(0);
 
-export interface SkillRef {
+/**
+ * MVP-0 reference to a prompt versioned in code (`src/agents/*-prompt.ts`). `version` is
+ * the code version of the constant, NOT a `skill_versions.version`: these refs always
+ * resolve to the code constant (see src/skills/resolver.ts).
+ */
+export interface LegacySkillRef {
   skill_id: string;
   version: number;
+}
+
+/**
+ * MVP-1 reference to a skill in the database (`skills.name`). With `version` it pins that
+ * exact `skill_versions.version`; without it, the run uses the skill's ACTIVE version.
+ */
+export interface DbSkillRef {
+  name: string;
+  version?: number;
+}
+
+export type SkillRef = LegacySkillRef | DbSkillRef;
+
+/** What a run used for one skill ref (task_runs.skill_versions, traces.skill_versions). */
+export interface SkillVersionUsed {
+  name: string;
+  /** `skill_versions.version` (db) or the code version of the constant (code). */
+  version: number | null;
+  skill_version_id: string | null;
+  /** sha256 of the exact text injected into the prompt (null when nothing was resolved). */
+  content_hash: string | null;
+  source: 'db' | 'code' | 'none';
+  /** The ref of the agent version; null when the agent used a code skill it does not reference. */
+  requested: SkillRef | null;
+  /**
+   * Why the db was not used (only when source != 'db'). `source: 'none'` means the ref did not
+   * resolve and the agent did not inject it (yet: task_runs keeps the state at start).
+   */
+  fallback_reason?: 'legacy_ref' | 'skill_not_found' | 'version_not_found' | 'no_active_version' | 'db_error' | 'not_referenced';
+  /** Exact text, stored in the trace only for source 'code' (constants are not versioned in the db). */
+  text?: string;
 }
 
 export interface ScheduleSpec {
@@ -128,6 +164,74 @@ export const agentVersions = pgTable(
     createdBy: text('created_by'),
   },
   (t) => [uniqueIndex('agent_versions_agent_version_uq').on(t.agentId, t.version), index('agent_versions_tenant_idx').on(t.tenantId)],
+);
+
+// ---------------------------------------------------------------------------
+// 6.3 Skill + SkillVersion (MVP-1, migration 0005_skills)
+// ---------------------------------------------------------------------------
+export const SKILL_STATUSES = ['DRAFT', 'ACTIVE', 'DEPRECATED'] as const;
+export type SkillStatus = (typeof SKILL_STATUSES)[number];
+export const SKILL_VERSION_STATUSES = ['DRAFT', 'ACTIVE', 'DEPRECATED'] as const;
+export type SkillVersionStatus = (typeof SKILL_VERSION_STATUSES)[number];
+
+/**
+ * A versioned skill (LLD v0.1 section 6.3). `name` is the stable kebab-case id agent
+ * versions reference (`skill_refs[].name`). DRAFT until a version is activated. No DELETE
+ * (trigger): a skill is retired with status DEPRECATED.
+ */
+export const skills = pgTable(
+  'skills',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    tenantId: tenantId(),
+    name: text('name').notNull(),
+    description: text('description'),
+    domain: text('domain'),
+    status: text('status').$type<SkillStatus>().notNull().default('DRAFT'),
+    activeVersionId: uuid('active_version_id').references((): AnyPgColumn => skillVersions.id),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [
+    uniqueIndex('skills_tenant_name_uq').on(t.tenantId, t.name),
+    check('skills_status_ck', sql`${t.status} in ('DRAFT', 'ACTIVE', 'DEPRECATED')`),
+  ],
+);
+
+/**
+ * Immutable content of one skill version: a trigger rejects UPDATE of the content columns
+ * and any DELETE; only `status`, `activated_at` and `deprecated_at` change. `version` is
+ * 1, 2, 3... per skill. At most one ACTIVE version per skill (partial unique index).
+ * `content_hash` = sha256 of the rendered text the runtime injects (src/skills/render.ts).
+ */
+export const skillVersions = pgTable(
+  'skill_versions',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    tenantId: tenantId(),
+    skillId: uuid('skill_id')
+      .notNull()
+      .references((): AnyPgColumn => skills.id),
+    version: integer('version').notNull(),
+    status: text('status').$type<SkillVersionStatus>().notNull().default('DRAFT'),
+    instructions: text('instructions').notNull(),
+    constraints: text('constraints'),
+    examples: jsonb('examples').$type<unknown[]>(),
+    antiPatterns: text('anti_patterns'),
+    metadata: jsonb('metadata').$type<Record<string, unknown>>().notNull().default({}),
+    contentHash: text('content_hash').notNull(),
+    activatedAt: timestamp('activated_at', { withTimezone: true }),
+    deprecatedAt: timestamp('deprecated_at', { withTimezone: true }),
+    createdAt: createdAt(),
+    createdBy: text('created_by'),
+  },
+  (t) => [
+    uniqueIndex('skill_versions_skill_version_uq').on(t.skillId, t.version),
+    uniqueIndex('skill_versions_one_active_uq').on(t.skillId).where(sql`${t.status} = 'ACTIVE'`),
+    index('skill_versions_tenant_idx').on(t.tenantId),
+    check('skill_versions_status_ck', sql`${t.status} in ('DRAFT', 'ACTIVE', 'DEPRECATED')`),
+    check('skill_versions_version_ck', sql`${t.version} > 0`),
+  ],
 );
 
 // ---------------------------------------------------------------------------
@@ -248,7 +352,8 @@ export const taskRuns = pgTable(
     agentVersionId: uuid('agent_version_id').references(() => agentVersions.id),
     agentVersion: integer('agent_version'),
     harnessVersion: text('harness_version'),
-    skillVersions: jsonb('skill_versions').$type<SkillRef[]>().notNull().default([]),
+    /** Refs of the agent version, resolved: exactly which skill versions the run used. */
+    skillVersions: jsonb('skill_versions').$type<Array<SkillVersionUsed | SkillRef>>().notNull().default([]),
     environmentVersion: text('environment_version'),
     input: jsonb('input').$type<Record<string, unknown>>().notNull().default({}),
     output: jsonb('output').$type<Record<string, unknown>>(),
@@ -290,6 +395,8 @@ export const traces = pgTable(
       .references(() => agents.id),
     agentVersionId: uuid('agent_version_id').references(() => agentVersions.id),
     harnessVersion: text('harness_version'),
+    /** Skill versions the execution used (LLD P4), with the code text when it fell back. */
+    skillVersions: jsonb('skill_versions').$type<SkillVersionUsed[]>().notNull().default([]),
     toolCalls: jsonb('tool_calls').$type<unknown[]>().notNull().default([]),
     messages: jsonb('messages').$type<unknown[]>().notNull().default([]),
     memoryReads: jsonb('memory_reads').$type<unknown[]>().notNull().default([]),
@@ -474,6 +581,44 @@ export const inboundState = pgTable(
   ],
 );
 
+// ---------------------------------------------------------------------------
+// Event bus, outbound side (LLD v0.1 section 20): webhook subscriptions (n8n first)
+// ---------------------------------------------------------------------------
+/**
+ * One outbound webhook per row: every event of the tenant whose type matches `event_types`
+ * (exact `task.completed` or prefix `task.*`) is POSTed to `target_url`, signed with
+ * `secret` (HMAC-SHA256 of `timestamp:body`, same scheme as Twenty). No DELETE: a
+ * subscription is switched off with `enabled = false` (section 22). The secret is stored
+ * in clear because the runtime must sign with it; the API never returns it after creation.
+ */
+export const eventSubscriptions = pgTable(
+  'event_subscriptions',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    tenantId: tenantId(),
+    name: text('name').notNull(),
+    targetUrl: text('target_url').notNull(),
+    secret: text('secret').notNull(),
+    eventTypes: text('event_types').array().notNull(),
+    enabled: boolean('enabled').notNull().default(true),
+    /** Last successful delivery (2xx). */
+    lastDeliveryAt: timestamp('last_delivery_at', { withTimezone: true }),
+    /** Last delivery error (kept after later successes; compare with `last_error_at`). */
+    lastError: text('last_error'),
+    lastErrorAt: timestamp('last_error_at', { withTimezone: true }),
+    /** Deliveries that failed for good (all attempts) since the last success. */
+    consecutiveFailures: integer('consecutive_failures').notNull().default(0),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [
+    uniqueIndex('event_subscriptions_tenant_name_uq').on(t.tenantId, t.name),
+    index('event_subscriptions_tenant_enabled_idx').on(t.tenantId, t.enabled),
+    check('event_subscriptions_types_ck', sql`cardinality(${t.eventTypes}) > 0`),
+    check('event_subscriptions_url_ck', sql`${t.targetUrl} ~ '^https?://'`),
+  ],
+);
+
 export type Agent = typeof agents.$inferSelect;
 export type AgentVersion = typeof agentVersions.$inferSelect;
 export type TaskDefinition = typeof taskDefinitions.$inferSelect;
@@ -486,3 +631,6 @@ export type EntityLock = typeof entityLocks.$inferSelect;
 export type EventRow = typeof events.$inferSelect;
 export type Evaluation = typeof evaluations.$inferSelect;
 export type InboundState = typeof inboundState.$inferSelect;
+export type Skill = typeof skills.$inferSelect;
+export type SkillVersion = typeof skillVersions.$inferSelect;
+export type EventSubscription = typeof eventSubscriptions.$inferSelect;

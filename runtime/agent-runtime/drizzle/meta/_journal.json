@@ -57,6 +57,20 @@
       "when": 1791375681363,
       "tag": "0007_email_sends",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1791375700000,
+      "tag": "0008_harness",
+      "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1791375800000,
+      "tag": "0009_knowledge",
+      "breakpoints": true
     }
   ]
 }

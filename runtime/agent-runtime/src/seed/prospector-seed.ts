@@ -4,7 +4,7 @@
  *
  * - Agent "Prospector": created with version 1 if missing. If it exists and its
  *   ACTIVE version differs from the desired one (model, provider, prompt,
- *   configuration, skills), a NEW version is added and activated; the previous
+ *   configuration, skills, harness), a NEW version is added and activated; the previous
  *   ACTIVE version becomes DEPRECATED (versions are immutable, nothing is deleted).
  * - Each TaskDefinition: created with version 1 if missing; if it differs, it is
  *   updated and a new TaskDefinitionVersion snapshot is written.
@@ -17,6 +17,7 @@ import {
   agentVersions,
   taskDefinitions,
   taskDefinitionVersions,
+  type HarnessRef,
   type RetryPolicy,
   type ScheduleSpec,
   type SkillRef,
@@ -26,6 +27,7 @@ import { PROSPECTOR_TOOLS } from '../agents/prospector-agent.js';
 import { PROSPECTOR_SKILL_ID } from '../agents/prospector-prompt.js';
 import { SCOUT_EXTRACT_SKILL_ID, SCOUT_SKILL_ID } from '../agents/event-scout-prompt.js';
 import { DEFAULT_USD_TO_EUR } from '../providers/gemini-pricing.js';
+import { DEFAULT_COMMERCIAL_HARNESS_NAME } from '../harness/config.js';
 
 export const PROSPECTOR_AGENT_NAME = 'Prospector';
 export const PROSPECTOR_TASK_NAME = 'daily-event-prospecting';
@@ -66,14 +68,16 @@ export function desiredProspectorVersion() {
       tool_policy: {
         allow: [...PROSPECTOR_TOOLS],
         max_risk_level: 'LOW_WRITE',
-        // Direct: 50 exhibitors x (upsert + signal + hypothesis, or find) + summary.
-        // Scout: 3 fairs x 100 exhibitors x 3 writes + fetches + renders + profiles + event signals + summary.
+        // Direct: 50 exhibitors x (upsert + signal + research + hypothesis, or find) + summary.
+        // Scout: 3 fairs x 100 exhibitors x 4 writes + fetches + renders + profiles + event signals + summary.
         // The real limit of a scout run is its time budget (scout.time_budget_ms).
-        max_calls_per_execution: 1_500,
+        max_calls_per_execution: 1_800,
         // fetch_url: 18 pages/PDFs + 3 grounding redirects (+1) + 100 profiles + 100 domain checks;
         // render_url: 4 catalog renders (+1 retry, +1 older-renderer retry each) + 100 profiles.
         max_calls_per_tool: { fetch_url: 230, render_url: 115 },
       },
+      // Knowledge layer (LLD 6.4): ACTIVE entries of these domains go into the per-exhibitor decision prompt.
+      knowledge_domains: ['prospeccion'],
       min_confidence: 0.5,
       usd_to_eur: DEFAULT_USD_TO_EUR,
       max_output_tokens: 4096,
@@ -103,7 +107,7 @@ export function desiredProspectorVersion() {
 export function desiredTask(defaultInput: Record<string, unknown>) {
   return {
     description:
-      'Prospección diaria a partir de los expositores de un evento: el Prospector evalúa cada expositor con el LLM y registra en Twenty empresa, señal e hipótesis (PROPOSED) de los relevantes.',
+      'Prospección diaria a partir de los expositores de un evento: el Prospector evalúa cada expositor con el LLM y registra en Twenty empresa, señal, research e hipótesis (PROPOSED) de los relevantes.',
     defaultInput,
     schedule: { type: 'CRON', expression: '0 8 * * *' },
     timezone: 'Europe/Madrid',
@@ -121,7 +125,7 @@ export const SCOUT_DEFAULT_INPUT = { sector: 'alimentación y bebidas', region: 
 export function desiredScoutTask() {
   return {
     description:
-      'Exploración semanal de ferias reales: el Prospector (modo scout) busca con Google (grounding de Gemini) ferias próximas del sector, descarga su página de expositores, extrae los expositores del texto y registra en Twenty empresa, señal e hipótesis (PROPOSED) de los relevantes; sin lista de expositores, registra la feria como señal FAIR.',
+      'Exploración semanal de ferias reales: el Prospector (modo scout) busca con Google (grounding de Gemini) ferias próximas del sector, descarga su página de expositores, extrae los expositores del texto y registra en Twenty empresa, señal, research e hipótesis (PROPOSED) de los relevantes; sin lista de expositores, registra la feria como señal FAIR.',
     defaultInput: { ...SCOUT_DEFAULT_INPUT },
     schedule: { type: 'CRON', expression: '30 7 * * 1' },
     timezone: 'Europe/Madrid',
@@ -211,7 +215,12 @@ export interface AgentVersionSpec {
   systemPrompt: string;
   configuration: Record<string, unknown>;
   skillRefs: SkillRef[];
+  /** Harness of the version; omitted = the seed default (`default-commercial`, ACTIVE version); null = none. */
+  harnessRef?: HarnessRef | null;
 }
+
+/** Harness the seeded agent versions reference (no version: they follow its ACTIVE one). */
+export const SEED_HARNESS_REF: HarnessRef = { name: DEFAULT_COMMERCIAL_HARNESS_NAME };
 
 export interface UpsertAgentResult {
   agentId: string;
@@ -228,7 +237,8 @@ export async function upsertAgent(
   db: Db,
   args: { tenantId: string; createdBy: string; name: string; description: string; role: string; want: AgentVersionSpec; log: (msg: string) => void },
 ): Promise<UpsertAgentResult> {
-  const { tenantId, createdBy, name, description, role, want, log } = args;
+  const { tenantId, createdBy, name, description, role, log } = args;
+  const want = { ...args.want, harnessRef: args.want.harnessRef === undefined ? SEED_HARNESS_REF : args.want.harnessRef };
   return db.transaction(async (tx) => {
     const existing = await tx.query.agents.findFirst({ where: and(eq(agents.tenantId, tenantId), eq(agents.name, name)) });
     if (!existing) {
@@ -264,7 +274,8 @@ export async function upsertAgent(
       active.modelProvider === want.modelProvider &&
       active.systemPrompt === want.systemPrompt &&
       same(active.configuration, want.configuration) &&
-      same(active.skillRefs, want.skillRefs);
+      same(active.skillRefs, want.skillRefs) &&
+      same(active.harnessRef ?? null, want.harnessRef);
     if (active && upToDate) {
       if (existing.status === 'DRAFT') await tx.update(agents).set({ status: 'ACTIVE', updatedAt: new Date() }).where(eq(agents.id, existing.id));
       return { agentId: existing.id, versionId: active.id, version: active.version, action: 'unchanged' as const };

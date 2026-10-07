@@ -28,6 +28,8 @@ import type { RunStatus } from '../domain/statuses.js';
 import type { ProviderFactory } from '../providers/index.js';
 import type { RunJob } from '../queue/run-queue.js';
 import { resolveSkillRefs, type SkillSet } from '../skills/resolver.js';
+import { applyHarness, harnessRecord, resolveHarnessRef, type EffectivePolicies, type ResolvedHarness } from '../harness/index.js';
+import { resolveKnowledge } from '../knowledge/resolver.js';
 import { createDefaultToolRegistry, parseToolPolicy, ToolExecutor, type ToolRegistry } from '../tools/index.js';
 import { EntityLocks } from './entity-locks.js';
 import { recoverOrphanRun } from './recovery.js';
@@ -100,6 +102,15 @@ interface Outcome {
   latencyMs: number;
 }
 
+/** Harness of one attempt: what was resolved and the effective policies after precedence. */
+interface AttemptHarness {
+  resolved: ResolvedHarness;
+  policies: EffectivePolicies;
+}
+
+/** Today's policies of a direct execution (POST /executions): 300 s, no retries. */
+const DIRECT_EXECUTION_BASE = { timeoutMs: 300_000, retry: { max_attempts: 1, backoff_ms: 0 } };
+
 function errorPayload(err: unknown): Record<string, unknown> {
   if (err instanceof Error) return { name: err.name, message: err.message };
   return { message: String(err) };
@@ -159,7 +170,10 @@ export class RunProcessor {
     }
     const resolved = task ? await this.resolveActiveVersion(tenantId, task.agentId) : null;
     const queuedRun = run;
-    if (resolved) await this.gateOnTwenty(taskRunId, resolved.version, attempt.twentyWait);
+    // The harness is resolved once per attempt, when it starts (before the Twenty gate, which
+    // uses its wait cap): a version activated later only affects later attempts.
+    const harness = resolved && task ? await this.resolveHarness(tenantId, resolved.version, { timeoutMs: task.timeoutMs, retry: task.retryPolicy }) : null;
+    if (resolved) await this.gateOnTwenty(taskRunId, resolved.version, attempt.twentyWait, harness);
     // Skills are resolved once per attempt, when it starts: a version activated later only
     // affects later runs.
     const skills = resolved ? await this.resolveSkills(tenantId, resolved.version) : null;
@@ -185,7 +199,7 @@ export class RunProcessor {
           attempts: sql`${taskRuns.attempts} + 1`,
           agentVersionId: resolved?.version.id ?? null,
           agentVersion: resolved?.version.version ?? null,
-          harnessVersion: resolved?.version.harnessVersionId ?? null,
+          harnessVersion: harness?.resolved.label ?? resolved?.version.harnessVersionId ?? null,
           skillVersions: skills?.runRecords() ?? resolved?.version.skillRefs ?? [],
           environmentVersion: task?.environmentId ?? null,
           updatedAt: new Date(),
@@ -197,7 +211,7 @@ export class RunProcessor {
     if (started === 'deferred') throw new ConcurrencyLimitError(task!.id, task!.maxConcurrency);
     if (!started) return;
 
-    if (!task || !resolved || !skills) {
+    if (!task || !resolved || !skills || !harness) {
       await this.finishTaskRun(run.id, 'FAILED', {
         error: { message: !task ? 'task definition not found' : 'agent has no ACTIVE version or is not ACTIVE' },
       });
@@ -224,11 +238,11 @@ export class RunProcessor {
 
     let outcome: Outcome;
     try {
-      outcome = await this.runAgent(execution, resolved.agent, resolved.version, task.timeoutMs, skills);
+      outcome = await this.runAgent(execution, resolved.agent, resolved.version, harness.policies, skills);
       await this.persistOutcome(execution, resolved.agent, resolved.version, outcome, {
         taskRunId: run.id,
         taskDefinitionId: task.id,
-      }, skills);
+      }, skills, harness);
     } finally {
       await this.releaseLocks(execution.id);
     }
@@ -249,7 +263,7 @@ export class RunProcessor {
 
     // Retry only while both the queue and the run have attempts left (a stalled attempt
     // consumes a run attempt without consuming a BullMQ attempt).
-    if (outcome.status === 'FAILED' && attempt.attempt < attempt.maxAttempts && started.attempts < maxAttempts) {
+    if (outcome.status === 'FAILED' && attempt.attempt < attempt.maxAttempts && started.attempts < harness.policies.retry.max_attempts) {
       // RUNNING -> QUEUED, then let the queue retry the job.
       await this.db
         .update(taskRuns)
@@ -293,9 +307,10 @@ export class RunProcessor {
     }
     await this.events.emit(executionStartedEvent(execution, this.eventContext(agent, version, null, null)));
     const skills = await this.resolveSkills(tenantId, version);
+    const harness = await this.resolveHarness(tenantId, version, DIRECT_EXECUTION_BASE);
     try {
-      const outcome = await this.runAgent(execution, agent, version, 300_000, skills);
-      await this.persistOutcome(execution, agent, version, outcome, {}, skills);
+      const outcome = await this.runAgent(execution, agent, version, harness.policies, skills);
+      await this.persistOutcome(execution, agent, version, outcome, {}, skills, harness);
     } finally {
       await this.releaseLocks(execution.id);
     }
@@ -305,20 +320,21 @@ export class RunProcessor {
    * Twenty health gate before QUEUED -> RUNNING. Throws TwentyUnavailableError to defer the
    * job; past TWENTY_WAIT_MAX_MS it lets the run go (tools fail, agent reports PARTIAL).
    */
-  private async gateOnTwenty(taskRunId: string, version: AgentVersion, state: TwentyWaitState | undefined): Promise<void> {
+  private async gateOnTwenty(taskRunId: string, version: AgentVersion, state: TwentyWaitState | undefined, harness: AttemptHarness | null): Promise<void> {
     if (!this.twentyGate) return;
-    const requires = policyRequiresTwenty(this.tools, parseToolPolicy(version.configuration));
-    const decision = await this.twentyGate.check(requires, state);
+    const requires = policyRequiresTwenty(this.tools, harness?.policies.toolPolicy ?? parseToolPolicy(version.configuration));
+    const maxWaitMs = harness?.policies.twentyWaitMaxMs ?? this.twentyGate.maxWaitMs;
+    const decision = await this.twentyGate.check(requires, state, maxWaitMs);
     if (decision.action === 'defer') {
       this.logger.warn(
-        { taskRunId, deferral: decision.state.deferrals, delayMs: decision.delayMs, waitedMs: decision.waitedMs, maxWaitMs: this.twentyGate.maxWaitMs },
+        { taskRunId, deferral: decision.state.deferrals, delayMs: decision.delayMs, waitedMs: decision.waitedMs, maxWaitMs },
         'Twenty not healthy; deferring task run',
       );
       throw new TwentyUnavailableError(decision.delayMs, decision.state);
     }
     if (decision.reason === 'wait_exceeded') {
       this.logger.warn(
-        { taskRunId, waitedMs: decision.waitedMs, deferrals: decision.deferrals, maxWaitMs: this.twentyGate.maxWaitMs },
+        { taskRunId, waitedMs: decision.waitedMs, deferrals: decision.deferrals, maxWaitMs },
         'Twenty still not healthy after TWENTY_WAIT_MAX_MS; running anyway',
       );
     } else if (state) {
@@ -363,27 +379,55 @@ export class RunProcessor {
     });
   }
 
-  private async runAgent(execution: AgentExecution, agent: Agent, version: AgentVersion, timeoutMs: number, skills: SkillSet): Promise<Outcome> {
+  /**
+   * Harness ref of the version against the database, plus the effective policies of the
+   * attempt (harness over task/env; ceiling over the version's own policy). Never throws:
+   * without a harness (or if it does not resolve) the policies are exactly today's.
+   */
+  private async resolveHarness(
+    tenantId: string,
+    version: AgentVersion,
+    base: { timeoutMs: number; retry: { max_attempts: number; backoff_ms: number } },
+  ): Promise<AttemptHarness> {
+    const resolved = await resolveHarnessRef(this.db, tenantId, version.harnessRef, {
+      warn: (obj, msg) => this.logger.warn({ tenantId, agentVersionId: version.id, ...obj }, msg),
+    });
+    const policies = applyHarness(resolved.config, {
+      timeoutMs: base.timeoutMs,
+      retry: base.retry,
+      twentyWaitMaxMs: this.twentyGate ? this.twentyGate.maxWaitMs : null,
+      toolPolicy: parseToolPolicy(version.configuration),
+      configuration: version.configuration,
+    });
+    return { resolved, policies };
+  }
+
+  private async runAgent(execution: AgentExecution, agent: Agent, version: AgentVersion, policies: EffectivePolicies, skills: SkillSet): Promise<Outcome> {
+    const timeoutMs = policies.timeoutMs;
     const startedAt = Date.now();
     const controller = new AbortController();
     let timer: NodeJS.Timeout | undefined;
     try {
       const impl = resolveAgentImplementation(version.configuration, { db: this.db });
       const provider = this.providers(version.modelProvider);
+      // Knowledge layer (LLD 6.4): ACTIVE entries of the version's knowledge_domains. Never throws.
+      const knowledge = await resolveKnowledge(this.db, execution.tenantId, version.configuration, {
+        warn: (obj, msg) => this.logger.warn({ executionId: execution.id, ...obj }, msg),
+      });
       const timeout = new Promise<never>((_, reject) => {
         timer = setTimeout(() => {
           controller.abort();
           reject(new TimeoutError(timeoutMs));
         }, timeoutMs);
       });
-      // Per-execution executor: enforces the version's tool_policy allowlist.
+      // Per-execution executor: enforces the version's tool_policy allowlist (capped by the harness).
       const toolLogger = {
         info: (msg: string, meta?: object) => this.logger.info({ executionId: execution.id, ...meta }, msg),
         error: (msg: string, meta?: object) => this.logger.error({ executionId: execution.id, ...meta }, msg),
       };
       const tools = new ToolExecutor(
         this.tools,
-        parseToolPolicy(version.configuration),
+        policies.toolPolicy,
         {
           tenantId: execution.tenantId,
           executionId: execution.id,
@@ -404,16 +448,20 @@ export class RunProcessor {
             model: version.model,
             modelProvider: version.modelProvider,
             systemPrompt: version.systemPrompt,
-            configuration: version.configuration,
+            configuration: policies.configuration,
           },
           input: execution.input,
           provider,
           signal: controller.signal,
           tools,
           skills,
+          knowledge,
         }),
         timeout,
       ]);
+      // The knowledge read goes first in the trace (memory_reads, LLD 17.1): entry ids injected.
+      const memoryRead = knowledge.traceStep(new Date(startedAt));
+      if (memoryRead) result.steps.unshift(memoryRead);
       return { status: 'COMPLETED', result, latencyMs: Date.now() - startedAt };
     } catch (err) {
       const status = err instanceof TimeoutError ? 'TIMED_OUT' : 'FAILED';
@@ -432,6 +480,7 @@ export class RunProcessor {
     outcome: Outcome,
     link: { taskRunId?: string; taskDefinitionId?: string },
     skills: SkillSet,
+    harness: AttemptHarness,
   ): Promise<void> {
     const r = outcome.result;
     const toolSteps = r?.steps.filter((s) => s.type === 'TOOL') ?? [];
@@ -446,7 +495,8 @@ export class RunProcessor {
           taskDefinitionId: link.taskDefinitionId ?? null,
           agentId: agent.id,
           agentVersionId: version.id,
-          harnessVersion: version.harnessVersionId,
+          harnessVersion: harness.resolved.label ?? version.harnessVersionId,
+          harness: harnessRecord(harness.resolved, harness.policies),
           skillVersions: skills.traceRecords(),
           toolCalls: toolSteps.map((s) => ({ tool: s.tool, input: s.toolInput, output: s.toolOutput })),
           errors: outcome.error ? [outcome.error] : [],

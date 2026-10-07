@@ -36,7 +36,13 @@ describe('universal identifiers', () => {
     expect(new Set(allIds).size).toBe(allIds.length);
   });
 
-  it('should cover the four LLD objects', () => {
-    expect(Object.keys(objectIds)).toHaveLength(4);
+  it('should cover the four LLD objects plus the daily metrics', () => {
+    expect(Object.keys(objectIds).sort()).toEqual([
+      'AGENT_OS_DAILY_METRIC_OBJECT_UNIVERSAL_IDENTIFIER',
+      'AGENT_RUN_SUMMARY_OBJECT_UNIVERSAL_IDENTIFIER',
+      'COMMERCIAL_HYPOTHESIS_OBJECT_UNIVERSAL_IDENTIFIER',
+      'COMMERCIAL_SIGNAL_OBJECT_UNIVERSAL_IDENTIFIER',
+      'RESEARCH_OBJECT_UNIVERSAL_IDENTIFIER',
+    ]);
   });
 });

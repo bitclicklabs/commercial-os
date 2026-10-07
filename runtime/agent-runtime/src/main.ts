@@ -6,6 +6,7 @@ import { createDb } from './db/client.js';
 import { BullEventQueue, EventBus, eventsQueueName } from './events/event-bus.js';
 import { BullWebhookDeliveryQueue, WebhookDeliveryWorker, WebhookDispatcher, webhooksQueueName } from './events/webhook-delivery.js';
 import { twentyClientFromEnv } from './integrations/twenty/index.js';
+import { metricsSyncSettingsFromEnv, TwentyMetricsSync } from './metrics/twenty-sync.js';
 import { createProviderRegistry } from './providers/index.js';
 import { BullRunQueue } from './queue/run-queue.js';
 import { EventTriggerConsumer } from './scheduler/event-triggers.js';
@@ -44,6 +45,7 @@ async function main(): Promise<void> {
       })
     : undefined;
   let eventConsumer: EventTriggerConsumer | undefined;
+  let metricsSync: TwentyMetricsSync | undefined;
   let webhookQueue: BullWebhookDeliveryQueue | undefined;
   let webhookWorker: WebhookDeliveryWorker | undefined;
 
@@ -114,12 +116,19 @@ async function main(): Promise<void> {
     eventBus.startRepublisher(config.eventRepublishIntervalMs);
     logger.info({ queue: eventsQueue, maxChainDepth: config.eventChainMaxDepth }, 'event consumer started');
     logger.info({ queue: webhooksQueue, allowPrivate: config.externalWebhookAllowPrivate.length }, 'event webhook delivery started');
+    // Daily metrics -> Twenty (agentOsDailyMetric), for the native "Agent OS · Métricas" page.
+    const syncSettings = metricsSyncSettingsFromEnv();
+    if (syncSettings.enabled) {
+      metricsSync = new TwentyMetricsSync(dbHandle.db, twentyClientFromEnv(), { tenantId: config.defaultTenantId, days: syncSettings.days, logger });
+      metricsSync.start(syncSettings.intervalMs);
+      logger.info({ intervalMs: syncSettings.intervalMs, days: syncSettings.days }, 'metrics sync to Twenty started');
+    }
   }
 
   const shutdown = async (signal: string) => {
     console.log(`received ${signal}, shutting down`);
     reconciler?.stop();
-    await Promise.allSettled([app?.close(), worker?.close(), eventConsumer?.close(), webhookWorker?.close()]);
+    await Promise.allSettled([app?.close(), worker?.close(), eventConsumer?.close(), webhookWorker?.close(), metricsSync?.stop()]);
     await Promise.allSettled([scheduler?.close(), eventBus.close(), queue.close(), webhookQueue?.close()]);
     await dbHandle.close();
     process.exit(0);

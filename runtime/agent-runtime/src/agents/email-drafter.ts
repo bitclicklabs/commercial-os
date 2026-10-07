@@ -42,6 +42,7 @@ import {
 } from './email-draft.js';
 import { EMAIL_DRAFT_JSON_SCHEMA, EMAIL_DRAFTER_SKILL_ID, EMAIL_DRAFTER_SYSTEM_PROMPT, buildDraftPrompt } from './email-drafter-prompt.js';
 import { useSkill } from '../skills/resolver.js';
+import { useKnowledge } from '../knowledge/resolver.js';
 import { DIFFERENTIATORS, ProspectorRun, issues, readConfig, round6, toolError } from './prospector-core.js';
 
 export const EMAIL_DRAFTER_TOOLS = ['find_company', 'get_company', 'get_hypothesis', 'create_note', 'set_hypothesis_draft'] as const;
@@ -223,7 +224,7 @@ export class EmailDrafterAgent implements AgentImplementation {
 
     // 2. One LLM call.
     const today = run.startedAt.toISOString().slice(0, 10);
-    const system = useSkill(ctx, EMAIL_DRAFTER_SKILL_ID, ctx.version.systemPrompt.trim().length > 0 ? ctx.version.systemPrompt : EMAIL_DRAFTER_SYSTEM_PROMPT);
+    const system = useKnowledge(ctx, useSkill(ctx, EMAIL_DRAFTER_SKILL_ID, ctx.version.systemPrompt.trim().length > 0 ? ctx.version.systemPrompt : EMAIL_DRAFTER_SYSTEM_PROMPT));
     const call = await run.completeJson({
       label: { step: 'draft_email', hypothesis: h.id },
       system,

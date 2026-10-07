@@ -145,21 +145,25 @@ Las contraseñas de Postgres solo se aplican al crear el volumen por primera vez
 
    En el contenedor no tienes que hacer nada: `pxos-runtime` las aplica al arrancar porque `RUN_MIGRATIONS=true`. Las migraciones son idempotentes (journal de Drizzle).
 
-   Hoy hay siete migraciones, `0000` a `0006`. Las de las tandas 6 y 7 se aplican solas al arrancar, sin pasos extra:
+   Hoy hay nueve migraciones, `0000` a `0008`. Las de las tandas 6 a 9 se aplican solas al arrancar, sin pasos extra:
 
    | Migración | Qué añade |
    |---|---|
    | `0004_inbound` | Tabla `inbound_state` (cursor del BajasAgent) |
    | `0005_skills` | Tablas `skills` y `skill_versions` (inmutables por trigger) y la columna `traces.skill_versions` |
    | `0006_event_subscriptions` | Tabla `event_subscriptions` (webhooks salientes hacia n8n) |
+   | `0007_email_sends` | Tabla `email_sends` (envíos observados desde Twenty) |
+   | `0008_harness` | Tablas `harnesses` y `harness_versions` (inmutables por trigger) y las columnas `agent_versions.harness_ref` y `traces.harness` |
 
-   Las migraciones posteriores (`0007` y siguientes, si llegan) se aplican igual. Para comprobar cuáles están aplicadas (la tabla es la que crea Drizzle por defecto `[NO VERIFICADO]` en esta instancia):
+   Las migraciones posteriores (`0009` y siguientes, si llegan) se aplican igual. Para comprobar cuáles están aplicadas (la tabla es la que crea Drizzle por defecto `[NO VERIFICADO]` en esta instancia):
 
    ```bash
    docker exec pxos-postgres psql -U agentos -d agentos -c "SELECT id, created_at FROM drizzle.__drizzle_migrations ORDER BY id"
    ```
 
-   > **Importante:** si aplicas las migraciones a mano en una base compartida, aplica la `0005` **antes** de desplegar el código que resuelve skills: usa la columna `traces.skill_versions`.
+   > **Importante:** si aplicas las migraciones a mano en una base compartida, aplica la `0005` **antes** de desplegar el código que resuelve skills: usa la columna `traces.skill_versions`. Lo mismo con la `0008` y el código que resuelve el harness: escribe `traces.harness`.
+
+   Tras aplicar la `0008`, ejecuta `pnpm seed`: crea el harness `default-commercial` v1 `ACTIVE` con los valores vigentes y añade a cada agente del seed una versión nueva que lo referencia. El comportamiento no cambia. Consulta [Harness](../runtime/agent-runtime/README.md#harness).
 
    > **Precaución:** antes de fusionar una rama con migraciones nuevas, comprueba que las fechas (`when`) del journal crecen con el índice. Si no, Drizzle puede saltarse una migración en silencio (consulta [ADR-31](LLD-0.3-estado-real.md#adr-31)). Desde `runtime/agent-runtime/`:
 

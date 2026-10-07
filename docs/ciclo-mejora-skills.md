@@ -2,7 +2,7 @@
 
 Este procedimiento explica cómo mejorar una skill del Agent OS con datos reales y sin poner en riesgo producción: del análisis de trazas a una versión candidata, su comparación offline, la decisión humana, la activación, la medición y el rollback. Es la versión manual del ciclo del LLD v0.1 §6.3 (el optimizador automático llega en MVP-3) y respeta P5: nunca se evalúa sobre los datos que generaron el cambio.
 
-El ejemplo completo de una vuelta es [EXP-001 · Prospector v2](experimentos/EXP-001-prospector-v2.md).
+El ejemplo completo de una vuelta es [EXP-001 · Prospector v2](experimentos/EXP-001-prospector-v2.md), que terminó en «iterar»; su iteración, con datos de validación nuevos, es [EXP-002 · Prospector v3](experimentos/EXP-002-prospector-v3.md).
 
 ```
 SKILL ACTIVA → TRAZAS REALES → PATRONES → OPERACIONES ACOTADAS → CANDIDATA (DRAFT)

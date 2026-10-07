@@ -24,6 +24,13 @@ Cambios notables de PubliEXPE Commercial OS, agrupados por tanda de trabajo. For
 - Docs: ADRs 23-31 en el LLD v0.3; guía del comercial y warm-up en presente (envío con un clic operativo desde 2026-10-07); roadmap LLD 0.1 vs construido (docs/ROADMAP.md).
 - Fixes PM: título de la nota de supresión reparado (mojibake de encoding), compose con EXTERNAL_EVENTS_TOKEN, tests alineados con send_from_twenty activo.
 
+## 2026-10-07 — Tanda 9 (PR #9)
+
+- MVP-1 cerrado: skill v3 del Prospector ACTIVADA tras el EXP-002 (todos los criterios pre-declarados cumplidos; la regresión de la v2 ausente; rollback a un comando); harness versionado v1 (políticas consolidadas e inmutables, semántica de techo sobre límites por agente, 7 fallbacks, comportamiento idéntico verificado; migración 0008); memoria semántica KnowledgeEntry (ACTIVE solo con evidencia, 3 entradas reales sembradas del EXP-001 y del feedback del usuario, paso MEMORY_READ en el trace; migración 0009); y el Prospector escribe Research (solo hechos observados y fuentes del SourceLedger).
+- Dashboard en Twenty (nativo): estudio con evidencia (Front Components con Origin null e iframe descartados), objeto agentOsDailyMetric sincronizado cada 15 min por el runtime + página "Agent OS · Métricas" con KPIs, 4 gráficos de 14 días y tabla de últimos runs. Sin CORS ni superficies nuevas.
+- E2E en producción: run con harness default-commercial@1, skill v3 (hash del EXP-002), MEMORY_READ con 2 entradas y research creado.
+- Pendiente del operador: sync de la App (rol Admin temporal en la key, revertir y verificar send_email=0) y backfill de métricas (--days=30).
+
 ## Sin publicar
 
 ### Documentación y herramientas

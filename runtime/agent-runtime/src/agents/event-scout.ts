@@ -96,6 +96,7 @@ import {
 } from './event-scout-prompt.js';
 import { PROSPECTOR_SKILL_ID, PROSPECTOR_SYSTEM_PROMPT } from './prospector-prompt.js';
 import { useSkill } from '../skills/resolver.js';
+import { useKnowledge } from '../knowledge/resolver.js';
 import { hostOf, normalizeUrl, scrubUnknownUrls, SourceLedger } from './source-ledger.js';
 
 // ---------------------------------------------------------------------------
@@ -524,7 +525,8 @@ export async function runScout(run: ProspectorRun, rawInput: Record<string, unkn
   const maxEvents = Math.max(1, Math.min(input.max_events ?? cfg.maxEvents, cfg.maxEvents));
   const maxExhibitors = Math.max(1, Math.min(input.max_exhibitors ?? cfg.maxExhibitorsPerEvent, cfg.maxExhibitorsPerEvent));
   const until = addMonths(today, input.horizon_months);
-  const system = useSkill(run.ctx, PROSPECTOR_SKILL_ID, run.ctx.version.systemPrompt.trim().length > 0 ? run.ctx.version.systemPrompt : PROSPECTOR_SYSTEM_PROMPT);
+  // Validated knowledge (LLD 6.4) only in the per-exhibitor decision, not in search/extraction.
+  const system = useKnowledge(run.ctx, useSkill(run.ctx, PROSPECTOR_SKILL_ID, run.ctx.version.systemPrompt.trim().length > 0 ? run.ctx.version.systemPrompt : PROSPECTOR_SYSTEM_PROMPT));
   const ledger = new SourceLedger();
   const pageCache = new Map<string, FetchUrlOutput>();
   const partialReasons: string[] = [];
@@ -1342,7 +1344,7 @@ export async function runScout(run: ProspectorRun, rawInput: Record<string, unkn
       ? [`Búsqueda con Google (grounding): ${searchInfo.queries.length} consultas, ${searchInfo.sources} fuentes; ferias propuestas: ${searchInfo.proposed}, verificadas: ${events.length}, descartadas: ${discarded.length}.`]
       : []),
     `Páginas de catálogo leídas: ${counters.catalog_pages}${jsonListsUsed > 0 ? ` (lista tomada de la API JSON del catálogo en ${jsonListsUsed} feria(s))` : ''}; expositores leídos: ${counters.exhibitors_read}, evaluados: ${counters.evaluated}${exhibitorsNotEvaluated > 0 ? `, sin evaluar por tiempo: ${exhibitorsNotEvaluated}` : ''}; fichas de expositor abiertas: ${profileLookups} (de ${maxProfileLookups} posibles${profilesSkippedForTime > 0 ? `, ${profilesSkippedForTime} sin abrir por tiempo` : ''}), dominios obtenidos de la ficha: ${domainsResolved}.`,
-    `Totales: relevantes ${counters.relevant}, hipótesis nuevas ${counters.hypotheses_created}, ya existentes ${counters.hypotheses_existing}, descartados ${counters.discarded_irrelevant + counters.discarded_low_confidence}, sin dominio verificado ${counters.skipped_no_domain}, errores ${errors}.`,
+    `Totales: relevantes ${counters.relevant}, hipótesis nuevas ${counters.hypotheses_created}, ya existentes ${counters.hypotheses_existing}, research ${counters.research_created}${counters.research_errors > 0 ? ` (${counters.research_errors} sin registrar)` : ''}, descartados ${counters.discarded_irrelevant + counters.discarded_low_confidence}, sin dominio verificado ${counters.skipped_no_domain}, errores ${errors}.`,
     `Coste del modelo: ${formatEur(run.costEur())} (${run.llmCalls} llamadas, ${run.groundingCalls} con búsqueda: ${formatEur(groundingEur)} de búsqueda; ${run.usage.inputTokens} tokens de entrada y ${run.usage.outputTokens} de salida). Tiempo: ${minutes(counters.elapsed_ms)} min de ${minutes(timeBudgetMs)} min de presupuesto.`,
     ...(partialReasons.length > 0 ? [`Motivos: ${partialReasons.join(' | ')}`] : []),
     ...events.flatMap((e) => [

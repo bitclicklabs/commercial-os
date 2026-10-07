@@ -58,6 +58,7 @@ Detalles en el [runbook](docs/runbook-local.md#windows-workaround-del-cli-de-twe
 - [Guía de contribución](docs/CONTRIBUTING.md)
 - [Guía del equipo comercial](docs/guia-comercial.md)
 - [Runbook de operación local](docs/runbook-local.md)
+- [Plan de warm-up del canal de email](docs/email-warmup.md)
 - [Estado del proyecto por tandas](docs/ESTADO.md)
 - [Registro de cambios](docs/CHANGELOG.md)
 - [Script de sincronización de la Twenty App (Windows)](scripts/sync-twenty-app.ps1)

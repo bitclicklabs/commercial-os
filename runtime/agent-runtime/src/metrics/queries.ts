@@ -19,6 +19,8 @@
  */
 import { sql, type SQL } from 'drizzle-orm';
 import type { Db } from '../db/client.js';
+import { countEmailSends } from '../email-ops/sends.js';
+import { exceedsTarget, ionosHourlyLimit, WARMUP_END, WARMUP_START, WARMUP_TIMEZONE, warmupDay } from '../email-ops/warmup.js';
 import { DEFAULT_USD_TO_EUR } from '../providers/gemini-pricing.js';
 
 export interface Window {
@@ -118,7 +120,7 @@ function feedbackCounts(r: Row | undefined): FeedbackCounts {
 // ---------------------------------------------------------------------------
 // GET /metrics/summary
 // ---------------------------------------------------------------------------
-export async function metricsSummary(db: Db, w: Window) {
+export async function metricsSummary(db: Db, w: Window, clock: { now?: Date; timezone?: string } = {}) {
   const runWhere = windowWhere('r', 'created_at', w);
   const runsCte = sql`runs as (
     select r.id, r.task_definition_id, r.status, r.created_at, r.started_at, r.finished_at,
@@ -266,6 +268,7 @@ export async function metricsSummary(db: Db, w: Window) {
     },
     human_feedback: { window_field: 'evaluations.occurred_at', ...feedbackCounts(feedback) },
     direct_executions: { executions: n(direct?.executions), cost_eur: round(n(direct?.cost_eur)) },
+    email: await emailMetrics(db, { tenantId: w.tenantId, since: w.since, until: w.until, now: clock.now ?? new Date(), timezone: clock.timezone ?? WARMUP_TIMEZONE }),
     acceptance: {
       ac15_cost_per_run: {
         threshold_eur: AC15_MAX_RUN_COST_EUR,
@@ -291,6 +294,60 @@ export async function metricsSummary(db: Db, w: Window) {
           finished_at: iso(last.finished_at),
         }
       : null,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Email block of /metrics/summary (email-ops): sends from Twenty and the warm-up calendar
+// ---------------------------------------------------------------------------
+/**
+ * Day, week and hour are relative to `now` (not to the summary window): the dashboard
+ * reads them from any summary call. `sends.in_window` follows since/until.
+ */
+export async function emailMetrics(db: Db, o: Window & { now: Date; timezone: string }) {
+  const counts = await countEmailSends(db, { tenantId: o.tenantId, now: o.now, timezone: o.timezone, since: o.since, until: o.until });
+  const day = warmupDay(o.now, o.timezone);
+  const exceeded = exceedsTarget(day, counts.today);
+  const [emitted] = await rows(
+    db,
+    sql`select id from events where tenant_id = ${o.tenantId} and idempotency_key = ${`evt:email.warmup_target_exceeded:${day.date}`} limit 1`,
+  );
+  const hourly = ionosHourlyLimit(day.mailboxAgeDays);
+  return {
+    source: 'twenty_workflow',
+    note: 'Cuenta solo los envíos desde Twenty (email_sends). Suma a mano los del webmail.',
+    timezone: o.timezone,
+    sends: {
+      today: counts.today,
+      week: counts.week,
+      total: counts.total,
+      last_hour: counts.lastHour,
+      last_sent_at: counts.lastSentAt,
+      in_window: counts.inWindow,
+      week_field: 'lunes a domingo',
+    },
+    warmup: {
+      start: WARMUP_START,
+      end: WARMUP_END,
+      date: day.date,
+      stage: day.stage,
+      phase: day.phase,
+      rest_day: day.restDay,
+      target_today: day.target,
+      target_per_mailbox: day.targetPerMailbox,
+      target_scope: 'total de ambos buzones, por día laborable',
+      status: day.target === null ? 'no_target' : exceeded ? 'exceeded' : 'ok',
+      exceeded,
+      exceeded_event_emitted: Boolean(emitted),
+    },
+    ionos_limit: {
+      per_hour: hourly.perHour,
+      basis: hourly.basis,
+      mailbox_age_days: day.mailboxAgeDays,
+      last_hour: counts.lastHour,
+      status: counts.lastHour >= hourly.perHour ? 'reached' : 'ok',
+      informative: true,
+    },
   };
 }
 

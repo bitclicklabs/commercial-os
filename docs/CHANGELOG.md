@@ -17,6 +17,13 @@ Cambios notables de PubliEXPE Commercial OS, agrupados por tanda de trabajo. For
 - Skills versionadas (primer paso MVP-1): tablas `skills`/`skill_versions` inmutables por trigger SQL, 4 skills migradas byte a byte como v1 ACTIVE, resolución desde BD con fallback a código, API de versiones con activación/rollback, y el trace registra la versión exacta usada. Migración 0005.
 - PM: journal de migraciones 0005/0006 refechado (el orden por fecha contradecía el de índice: drizzle habría saltado la 0006 en silencio).
 
+## 2026-10-07 — Tanda 8 (PR #8)
+
+- Email-ops en el flujo: al marcar READY, el runtime comprueba la lista de supresión (y destinatario vacío/ inválido) y devuelve a DRAFT con nota ⛔; doble chequeo en SENT para la ventana de carrera; tabla `email_sends` (migración 0007) y eventos `email.*`; bloque Email en métricas/dashboard con las fases del calendario de warm-up y el límite horario de IONOS.
+- Ciclo de mejora de skills (primera vuelta real, LLD §6.4 en manual): análisis de trazas con patrones citables (cantidades de plantilla, confianza inflada sin datos, suposiciones como hechos), v2 del Prospector como DRAFT con 5 operaciones acotadas, tooling `pnpm skill:candidate` (límites de edición 35%/50%) y `pnpm skill:compare`, holdout sin contaminar (P5) y EXP-001 documentado. Veredicto del gate: ITERAR (regresión de semántica de confianza detectada) — la v2 no se activa. Playbook en docs/ciclo-mejora-skills.md.
+- Docs: ADRs 23-31 en el LLD v0.3; guía del comercial y warm-up en presente (envío con un clic operativo desde 2026-10-07); roadmap LLD 0.1 vs construido (docs/ROADMAP.md).
+- Fixes PM: título de la nota de supresión reparado (mojibake de encoding), compose con EXTERNAL_EVENTS_TOKEN, tests alineados con send_from_twenty activo.
+
 ## Sin publicar
 
 ### Documentación y herramientas
@@ -29,6 +36,11 @@ Cambios notables de PubliEXPE Commercial OS, agrupados por tanda de trabajo. For
 - Se amplía el [plan de warm-up](email-warmup.md) con la sección "Alta en Microsoft SNDS" (SNDS no es accesible con IONOS correo compartido; se documenta la alternativa manual: prueba de colocación con cuentas Outlook propias, cabeceras, rebotes y señales indirectas) y con el procedimiento de la lista de supresión: nota de Twenty "Lista de supresión — NO contactar", una línea `email — fecha — motivo` por baja y comprobación obligatoria antes de cada envío en frío.
 - La [guía del equipo comercial](guia-comercial.md) resume el procedimiento de la lista de supresión en la sección de borradores y documenta que una hipótesis editada y validada también genera borrador, con los datos corregidos.
 - Se añade el [LLD v0.3 — estado real del sistema](LLD-0.3-estado-real.md): resumen de lo que corre hoy, registro de 22 decisiones (ADR) de las tandas 1 a 5, tabla «LLD 0.2 → realidad» sobre los 34 puntos del v0.2, métricas de línea base a 2026-10-07 y mapa honesto de pendientes hacia MVP-1 y MVP-2. Marca como `[TANDA 6, EN CURSO]` el descriptor de PubliEXPE en los borradores.
+- Se amplía el [LLD v0.3](LLD-0.3-estado-real.md) con las ADR 23 a 31 de las tandas 6 y 7 (descriptor de PubliEXPE por código, BajasAgent de solo lectura, captura de la API JSON del renderer, presupuesto por tiempo del scout, envío HITL con workflow manual de Twenty, rol restringido «Agent runtime» de la API key, skills versionadas, puente de eventos `ext.*` con firma HMAC y regla de refechado del journal de migraciones). Total: 31 ADR. Las skills y n8n dejan de figurar como pendientes en el mapa de los 34 puntos (2 iguales, 23 distintos, 9 pendientes), se cierra la marca `[TANDA 6, EN CURSO]` y se añaden contradicciones de documentación nuevas.
+- La [guía del equipo comercial](guia-comercial.md) pasa el envío desde Twenty de condicional a activo (operativo desde el 2026-10-07): flujo con `Email to`, `Email status` (`Draft`, `Reviewed`, `Sending`, `Sent`) y el botón **Enviar borrador de email**, la comprobación de la lista de supresión antes de poner `Reviewed`, la alternativa de enviar a mano y la nota de que el sistema añade las bajas a la lista cada 2 horas.
+- El [plan de warm-up](email-warmup.md) indica que los envíos desde Twenty cuentan en el calendario y en los límites de IONOS, remite al bloque **Email** del dashboard local y actualiza la gestión de bajas (altas automáticas del BajasAgent).
+- El [runbook](runbook-local.md) añade el mapa de `pxos-renderer`, las variables `IONOS_IMAP_*` y `RENDERER_URL`, las migraciones `0004` a `0006` y la comprobación del journal, la comprobación de skills con `GET /skills`, la sección «Rol de la API key de Twenty» (al rotar la key hay que reasignar el rol restringido) y problemas frecuentes nuevos.
+- El README raíz corrige la tabla de componentes (el Catalog Service y el Inbound Manager no existen como servicios), añade el puerto `4030` y enlaza las guías de envío desde Twenty y de integración con n8n.
 
 ## 2026-10-06 — Tanda 2 (PR #2)
 

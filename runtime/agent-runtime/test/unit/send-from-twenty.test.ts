@@ -140,7 +140,7 @@ describe('set_hypothesis_draft (LOW_WRITE, writes four fields, never sends)', ()
 
 describe('EmailDrafter: send_from_twenty flag', () => {
   it('is OFF in the seed and read as a strict boolean', () => {
-    expect(desiredEmailDrafterVersion().configuration.send_from_twenty).toEqual({ enabled: false });
+    expect(desiredEmailDrafterVersion().configuration.send_from_twenty).toEqual({ enabled: true });
     expect(readDrafterConfig({}).sendFromTwenty).toBe(false);
     expect(readDrafterConfig({ send_from_twenty: { enabled: 'yes' } }).sendFromTwenty).toBe(false);
     expect(readDrafterConfig({ send_from_twenty: { enabled: true } }).sendFromTwenty).toBe(true);

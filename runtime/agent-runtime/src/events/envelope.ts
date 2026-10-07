@@ -28,8 +28,21 @@ export type RuntimeEventType = (typeof RUNTIME_EVENT_TYPES)[number];
 export const EVALUATION_EVENT_TYPES = ['evaluation.recorded'] as const;
 export type EvaluationEventType = (typeof EVALUATION_EVENT_TYPES)[number];
 
+/**
+ * Email-ops events (src/email-ops/): guard and tracking of the send-from-Twenty flow.
+ * Payloads never carry a full address, only domains.
+ */
+export const EMAIL_EVENT_TYPES = [
+  'email.blocked_suppressed',
+  'email.sent',
+  'email.sent_suppressed',
+  'email.warmup_target_exceeded',
+] as const;
+export type EmailEventType = (typeof EMAIL_EVENT_TYPES)[number];
+
 export const EVENT_TYPE_RE = /^[a-z]+(\.[a-z_]+)+$/;
-const SCHEMA_VERSION_RE = /^[a-z.]+\.v[0-9]+$/;
+/** `{type}.v{n}`; underscores allowed, as in EVENT_TYPE_RE (`email.blocked_suppressed.v1`). */
+const SCHEMA_VERSION_RE = /^[a-z._]+\.v[0-9]+$/;
 
 export const EventEnvelopeSchema = z
   .object({

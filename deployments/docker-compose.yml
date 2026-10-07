@@ -179,6 +179,8 @@ services:
       IONOS_IMAP_HOST: ${IONOS_IMAP_HOST:-}
       IONOS_IMAP_USER: ${IONOS_IMAP_USER:-}
       IONOS_IMAP_PASSWORD: ${IONOS_IMAP_PASSWORD:-}
+      EXTERNAL_EVENTS_TOKEN: ${EXTERNAL_EVENTS_TOKEN:-}
+      EXTERNAL_WEBHOOK_ALLOW_PRIVATE: ${EXTERNAL_WEBHOOK_ALLOW_PRIVATE:-host.docker.internal:5678}
       RENDERER_URL: ${RENDERER_URL:-http://pxos-renderer:3000}
     depends_on:
       pxos-postgres:

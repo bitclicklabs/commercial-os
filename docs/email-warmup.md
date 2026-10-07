@@ -2,7 +2,7 @@
 
 Este documento describe cómo calentar (*warm-up*) los buzones de envío en frío de PubliEXPE durante las primeras cuatro semanas, qué vigilar cada semana y cuándo endurecer la política DMARC. Está pensado para el operador del sistema y para el equipo comercial que envía los correos.
 
-El warm-up es manual: IONOS no incluye ninguna herramienta que lo haga por ti. El sistema no envía ningún correo; los envíos los haces tú desde el buzón.
+El warm-up es manual: IONOS no incluye ninguna herramienta que lo haga por ti. El sistema no envía ningún correo por su cuenta: los envíos los haces tú, desde el webmail o con un clic desde Twenty (consulta [Los envíos desde Twenty cuentan](#los-envíos-desde-twenty-cuentan)).
 
 ## Contenido
 
@@ -36,6 +36,7 @@ Todo lo siguiente está configurado y verificado desde el 2026-10-06. Las decisi
 | Google Postmaster Tools | Alta del dominio verificada |
 | Autenticación | SPF, DKIM y DMARC comprobados con `PASS` contra Gmail |
 | Inicio del warm-up | 2026-10-06 |
+| Envío desde Twenty | Operativo desde 2026-10-07 con el SMTP de `jesus.abril@publiexpe.info` ([guía](twenty-envio-email.md)) |
 
 ### Límites de envío de IONOS
 
@@ -44,7 +45,7 @@ Todo lo siguiente está configurado y verificado desde el 2026-10-06. Las decisi
 | Primeros 7 días | 50 correos por hora |
 | Más de 30 días | 500 por hora |
 
-> **Importante:** los volúmenes de este plan están muy por debajo de esos límites. Aun así, no los superes nunca: un buzón bloqueado por exceso de envíos retrasa todo el calendario.
+> **Importante:** los volúmenes de este plan están muy por debajo de esos límites. Aun así, no los superes nunca: un buzón bloqueado por exceso de envíos retrasa todo el calendario. Los correos enviados desde Twenty salen por el mismo SMTP de IONOS y cuentan para estos límites.
 
 ## Reglas de oro
 
@@ -97,6 +98,18 @@ El **2026-11-03** (martes) se revisan los informes DMARC y, si están limpios, s
 1. Cambia la hora cada día. Un patrón idéntico (siempre a las 10:00 en punto) parece automatizado.
 1. Escribe a destinatarios de proveedores distintos: Gmail, Outlook, dominios corporativos y, si puedes, otros proveedores.
 1. Escribe correos distintos entre sí, con asuntos y textos diferentes. No copies y pegues el mismo mensaje.
+
+### Los envíos desde Twenty cuentan
+
+Los correos que envías con **Enviar borrador de email** en Twenty salen por el mismo buzón y el mismo servidor SMTP de IONOS que los del webmail. Para IONOS y para los proveedores de destino no hay diferencia, así que **cuentan en el calendario** igual que los demás.
+
+1. Suma los envíos desde Twenty y desde el webmail para comprobar el volumen del día frente a la tabla de la semana. En Twenty, filtra **Hypotheses** por **Email status** = `Sent` y por fecha de actualización.
+1. Consulta el bloque **Email** del dashboard local del runtime (`http://127.0.0.1:4020/dashboard`) para ver la actividad de envío junto al resto de métricas.
+1. Cada clic envía un solo correo, de uno en uno. No lo uses para recuperar volumen de golpe.
+1. Twenty envía desde tu buzón conectado, `jesus.abril@publiexpe.info`. Para repartir el volumen entre los dos buzones, sigue enviando desde el webmail con `j.abril@publiexpe.info`.
+1. Si conectaste solo SMTP (lo recomendado), el correo enviado desde Twenty **no aparece en *Enviados*** del webmail de IONOS. Cuéntalo igualmente.
+
+Los pasos para enviar están en la [guía del equipo comercial](guia-comercial.md#enviar-desde-twenty-con-un-clic) y los detalles técnicos en [Enviar los borradores desde Twenty](twenty-envio-email.md).
 
 ### Busca respuestas
 
@@ -326,11 +339,11 @@ Usa la fecha en formato `AAAA-MM-DD` y un motivo breve (por ejemplo, la vía por
 1. Si aparece, **no envíes el correo** y no vuelvas a contactar con esa persona nunca.
 1. Si no aparece, continúa con el envío.
 
-Haz esta comprobación **antes de enviar cualquier correo en frío**, sin excepciones.
+Haz esta comprobación **antes de enviar cualquier correo en frío**, sin excepciones. Si envías desde Twenty, el sistema además la comprueba y devuelve el borrador a `Draft` si la dirección está en la lista; no te saltes tu comprobación por eso.
 
 > **Importante:** escribir a alguien que se ha dado de baja incumple la normativa (LSSI y RGPD) y daña la reputación del dominio.
 
-El Inbound Manager, que procesará las bajas de forma automática, llegará más adelante ([sección 10.2 del LLD v0.1](LLD-0.1-publiexpe-commercial-os.md#102-inbound-y-conversaciones)). Hasta entonces la gestión es manual y la nota de Twenty es la única fuente de verdad.
+Desde la tanda 6, el sistema revisa el buzón cada 2 horas y añade a la nota las bajas que detecta, sin intervención humana (primera pieza del Inbound Manager, [sección 10.2 del LLD v0.1](LLD-0.1-publiexpe-commercial-os.md#102-inbound-y-conversaciones)). Solo lee el correo: no responde ni mueve mensajes. Si una baja no está en la nota, añádela tú el mismo día. La nota de Twenty es la única fuente de verdad.
 
 ## Checklist diaria de 5 minutos
 
@@ -338,7 +351,7 @@ Hazla al empezar el día y antes de cerrar.
 
 1. Revisa la bandeja de `jesus.abril@publiexpe.info` y `j.abril@publiexpe.info`: respuestas, rebotes y avisos del proveedor.
 1. Procesa las bajas recibidas en `baja@` y en las respuestas: añade cada una a la nota `Lista de supresión — NO contactar` de Twenty.
-1. Comprueba el volumen de ayer frente al calendario de la semana: no superes el rango.
+1. Comprueba el volumen de ayer frente al calendario de la semana: no superes el rango. Suma los envíos desde Twenty y desde el webmail (bloque **Email** del dashboard local).
 1. Reparte los envíos de hoy entre los dos buzones y varía horas y destinatarios.
 1. Responde a las conversaciones abiertas. Una respuesta tuya a una respuesta ajena refuerza la reputación.
 1. Si recibes un correo de bloqueo o un rebote con código 5xx, pausa y anótalo.
@@ -360,11 +373,12 @@ Hazla el último día laborable de cada semana de warm-up (2026-10-12, 2026-10-1
 
 Terminadas las cuatro semanas, empieza la prospección real de forma gradual. No pases de golpe del volumen de warm-up al máximo de IONOS. El volumen previsto en el MVP-0 es de unos 10 a 20 correos aprobados al día ([LLD v0.1, sección 10.1](LLD-0.1-publiexpe-commercial-os.md#101-canal-de-envío-outbound)).
 
-Para cada hipótesis validada, el sistema prepara un borrador de email que tú revisas y envías a mano. Consulta [Borradores de email](guia-comercial.md#borradores-de-email) en la guía del equipo comercial.
+Para cada hipótesis validada, el sistema prepara un borrador de email que tú revisas y envías, con un clic desde Twenty o a mano. Consulta [Borradores de email](guia-comercial.md#borradores-de-email) en la guía del equipo comercial.
 
 ## Referencias
 
 - [LLD v0.1, sección 10: canal de email](LLD-0.1-publiexpe-commercial-os.md#10-email-canal-de-envío-e-inbound-c3)
 - [Guía del equipo comercial](guia-comercial.md)
+- [Enviar los borradores desde Twenty](twenty-envio-email.md)
 - [Runbook de operación local](runbook-local.md)
 - [Límites de envío de IONOS](https://www.ionos.com/help/email/general-topics/what-are-the-mass-mailing-limits/)

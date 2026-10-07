@@ -1,0 +1,37 @@
+{
+  "event": {
+    "name": "Gastrónoma 2026",
+    "type": "FAIR",
+    "date": "2026-10-26",
+    "location": "Valencia",
+    "source_url": "https://apps.feriavalencia.com/catalog/gastronoma/exhibitors"
+  },
+  "exhibitors": [
+    {
+      "name": "MUÑOZ BOSCH S.L."
+    },
+    {
+      "name": "ORIENTE EXQUISITO",
+      "sector": "Alimentación / Food"
+    },
+    {
+      "name": "QANTIMA GROUP"
+    },
+    {
+      "name": "REY JAYÓN"
+    },
+    {
+      "name": "STEEL-INOX, S.L."
+    },
+    {
+      "name": "UNIFORMES SANTA BÁRBARA"
+    },
+    {
+      "name": "VICENTE GANDIA PLA, S.A."
+    },
+    {
+      "name": "XUNTA DE GALICIA",
+      "sector": "Organismos públicos,asociaciones / Public institutions, associations"
+    }
+  ]
+}

@@ -405,7 +405,7 @@ describe('EmailDrafterAgent', () => {
     expect(note.bodyV2.markdown).toContain('baja@publiexpe.info');
     expect((output.draft as { body: string }).body.endsWith(unsubscribeLine(DEFAULT_SENDER))).toBe(true);
     expect(fake.tables.noteTargets.map((t) => t.targetCompanyId ?? t.targetCommercialHypothesisId)).toEqual([company.id, hyp.id]);
-    expect(steps.filter((s) => s.type === 'TOOL').map((s) => s.tool)).toEqual(['get_hypothesis', 'create_note']);
+    expect(steps.filter((s) => s.type === 'TOOL').map((s) => s.tool)).toEqual(['get_hypothesis', 'set_hypothesis_draft', 'create_note']);
 
     // Second delivery (another event, same hypothesis): same note, nothing new in Twenty.
     const again = await new EmailDrafterAgent().run(ctxFor(fake, eventTriggeredInput(envelope({ subjectId: hyp.id })), new StubProvider({ responses: [JSON.stringify(ANSWER)] })));

@@ -1,6 +1,7 @@
 import type { Config } from '../config.js';
 import type { Db } from '../db/client.js';
 import type { EventPublisher } from '../events/event-bus.js';
+import type { TwentyClient } from '../integrations/twenty/index.js';
 import type { RunQueue } from '../queue/run-queue.js';
 import type { SchedulerControl } from '../scheduler/task-scheduler.js';
 
@@ -15,4 +16,6 @@ export interface ApiContext {
   scheduler?: SchedulerControl;
   /** Optional: when present, runs created through the API emit task.scheduled. */
   events?: EventPublisher;
+  /** Optional: Twenty client of the email-ops guard (READY check). Without it the check is skipped and logged. */
+  twenty?: TwentyClient;
 }

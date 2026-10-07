@@ -29,6 +29,7 @@ runtime/agent-runtime/
 │   ├── events/               Event bus: sobre event.envelope.v1, EventBus, payloads, triggers EVENT y GET /events; puente externo (POST /events/external, event_subscriptions y webhooks firmados con guarda SSRF)
 │   ├── domain/               Estados, máquina de estados e idempotency keys
 │   ├── evaluations/          Evaluador HUMAN: mapeo de feedback, vínculo con la ejecución de origen, webhook de Twenty y evento evaluation.recorded
+│   ├── email-ops/            Guardarraíles del envío desde Twenty: chequeo de supresión al marcar READY, registro de envíos (email_sends) y calendario del warm-up
 │   ├── metrics/              Consultas SQL de métricas (solo lectura) y HTML del dashboard
 │   ├── providers/            ModelProvider, StubProvider, AnthropicProvider, GeminiProvider y tabla de precios
 │   ├── queue/                RunQueue (BullMQ y en memoria)
@@ -147,6 +148,7 @@ El esquema vive en `src/db/schema.ts`. Todas las tablas llevan `tenant_id` (C6).
 | `0004_inbound` | Tabla `inbound_state` (cursor IMAP del inbound de bajas). SQL idempotente (`IF NOT EXISTS`) |
 | `0005_skills` | Tablas `skills` y `skill_versions` (triggers anti-`DELETE` y de contenido inmutable) y columna `traces.skill_versions`. SQL idempotente |
 | `0006_event_subscriptions` | Tabla `event_subscriptions` (webhooks salientes del event bus, trigger anti-`DELETE`). SQL idempotente. La `0005` la reclama otra rama: el journal salta del idx 4 al 6 hasta la fusión, y la `0006` debe quedar con fecha (`when`) posterior a la `0005` |
+| `0007_email_sends` | Tabla `email_sends` (envíos observados desde Twenty, append-only con trigger anti-`DELETE`, dedupe `(tenant_id, hypothesis_id, sent_at)`). SQL idempotente |
 
 Importante: el migrador de Drizzle aplica solo las migraciones con fecha posterior a la última aplicada. Si dos ramas generan migraciones en paralelo contra la misma BD de desarrollo, aplica primero la más antigua o regenera la nueva tras el merge.
 
@@ -217,10 +219,10 @@ Cabecera opcional `x-tenant-id` en todas las rutas. Las respuestas usan `snake_c
 | `GET /executions`, `GET /executions/:id` | Lista o detalle con trace y pasos |
 | `POST /executions/:id/cancel` | `QUEUED` o `RUNNING` a `CANCELLED` |
 | `POST /executions/:id/{pause,resume}` | `501`, requiere harness con checkpoints |
-| `POST /webhooks/twenty` | Webhook de Twenty firmado. Convierte cambios de `commercialHypothesis` en evaluaciones HUMAN |
+| `POST /webhooks/twenty` | Webhook de Twenty firmado. Convierte cambios de `commercialHypothesis` en evaluaciones HUMAN y, si cambia `emailStatus` a `READY` o `SENT`, ejecuta [email-ops](#email-ops-guardarraíles-del-envío-desde-twenty) (respuesta con `email`; `502` si email-ops falla) |
 | `POST /evaluations/human` | Registra un veredicto manual: `201` nuevo, `200` duplicado |
 | `GET /evaluations` | Lista evaluaciones. Filtros: `subject_id`, `subject_type`, `feedback`, `agent_execution_id`, `since`, `limit` |
-| `GET /metrics/summary` | Runs por estado, tarea y outcome; coste, tokens, latencia, embudo comercial y feedback. Filtros `since`, `until` |
+| `GET /metrics/summary` | Runs por estado, tarea y outcome; coste, tokens, latencia, embudo comercial, feedback y bloque `email` (envíos y warm-up). Filtros `since`, `until` |
 | `GET /metrics/agents` | Por agente y versión: runs, coste medio, outcome y tasa de aceptación humana. Filtros `since`, `until` |
 | `GET /metrics/evaluations` | Veredictos por día y por sujeto. Filtros `since`, `until`, `tz`, `subject_limit` |
 | `GET /metrics/runs` | Últimos `TaskRun` (`limit`, 10 por defecto) con coste, duración y enlace al trace |
@@ -352,6 +354,10 @@ Todos los eventos viajan con este sobre. Los campos del sobre y de `data` usan `
 | `agent.execution.started` | Processor, al arrancar cada intento o ejecución directa | `executionId`, `taskRunId`, `taskDefinitionId`, `agentId`, `agentVersionId`, `agentVersion`, `stage`, `chainDepth` |
 | `agent.execution.completed` / `.failed` | Processor, al persistir el resultado (si no se canceló antes) | Lo anterior más `status`, `costEur`, `inputTokens`, `outputTokens`, `latencyMs` y `outcome` o `error` |
 | `evaluation.recorded` | Servicio de evaluaciones, tras guardar un veredicto humano (webhook de Twenty o `POST /evaluations/human`) | `evaluationId`, `evaluatorId`, `subjectType`, `subjectId`, `feedback`, `score`, `toStatus`, `source`, `agentExecutionId`, `taskRunId`, `companyId` (o `null` si no se pudo resolver), `occurredAt` |
+| `email.blocked_suppressed` | Email-ops, al bloquear un `READY` | `hypothesisId`, `companyId`, `reason` (`suppressed`, `missing_recipient`, `invalid_recipient`, `suppression_list_unavailable`), `matchedBy`, `matchedDomains` (`@dominio`), `toDomains`, `reverted`, `revertResult`, `noteId`. Nunca la dirección |
+| `email.sent` | Email-ops, al registrar un `SENT` | `hypothesisId`, `companyId`, `toDomain`, `recipients`, `sendId`, `sentAt`. Nunca la dirección |
+| `email.sent_suppressed` | Email-ops, si lo enviado iba a una dirección suprimida (el chequeo de `READY` perdió la carrera) | `hypothesisId`, `companyId`, `matchedBy`, `toDomains`, `noteId` |
+| `email.warmup_target_exceeded` | Email-ops, cuando los envíos del día superan el objetivo del warm-up (una vez por día local) | `date`, `timezone`, `phase`, `restDay`, `target`, `sendsToday`, `countedSource` |
 
 Cada evento del runtime lleva una `idempotencyKey` (`evt:{type}:{task_run_id}`, `evt:task.started:{task_run_id}:{attempt}`, `evt:{type}:{execution_id}`, `evt:evaluation.recorded:{evaluation_id}`): publicar dos veces el mismo hecho devuelve la fila existente.
 
@@ -575,6 +581,50 @@ Si una ref no se resuelve (la skill no existe, la versión no existe, no hay ver
 
 Las transiciones son idempotentes: repetir `activate` o `deprecate` devuelve `200` con `changed: false`.
 
+### Ciclo de mejora: `skill:candidate` y `skill:compare`
+
+Dos herramientas de desarrollo (en `scripts/`, fuera de la imagen del runtime) para mejorar una skill con datos reales. El procedimiento completo está en [Ciclo de mejora de skills](../../docs/ciclo-mejora-skills.md) y el primer ejemplo en [EXP-001](../../docs/experimentos/EXP-001-prospector-v2.md).
+
+**`pnpm skill:candidate`** construye una candidata como la versión base más una lista de operaciones acotadas (`ADD`, `REMOVE`, `REPLACE`, `MOVE`, `REORDER`; `src/skills/edit-ops.ts`), cada una anclada en texto único y con su justificación (`why`). Rechaza la candidata si borra o sustituye más del 35 % del texto base o añade más del 50 %: eso sería reescribir la skill.
+
+```sh
+# Simulación: imprime el diff y el tamaño de la edición. No escribe nada.
+pnpm skill:candidate prospector-event-exhibitors --ops ../../docs/experimentos/EXP-001-prospector-v2.ops.json
+# Crea la versión DRAFT por la API (nunca la activa).
+pnpm skill:candidate prospector-event-exhibitors --ops ../../docs/experimentos/EXP-001-prospector-v2.ops.json --post --created-by "jesus"
+```
+
+El fichero de operaciones lleva `base_version`, `change_reason` (máximo 2.000 caracteres) y `operations`; opcionalmente `experiment`, `design_data` y `validation_data`, que se guardan en `skill_versions.metadata` junto con las operaciones y el tamaño de la edición.
+
+**`pnpm skill:compare`** ejecuta la misma entrada con dos versiones de la skill y compara las salidas:
+
+```sh
+pnpm skill:compare prospector-event-exhibitors --versions 1,2 \
+  --fixture test/fixtures/feria-ejemplo.json --fixture test/fixtures/gastronoma-holdout.json \
+  --repeat 2 --max-cost-eur 0.15 --today 2026-10-07 --out ../../docs/experimentos/EXP-001/compare-v1-v2
+```
+
+| Opción | Por defecto | Descripción |
+|---|---|---|
+| `--versions a,b` | — | Las dos versiones (cualquier estado; se leen con `GET /skills/:id`) |
+| `--fixture <ruta>` | — | Entrada del modo directo (`{ event, exhibitors[] }`). Repetible: una comparación por fixture |
+| `--repeat N` | `1` | Ejecuciones por versión (1-5); el orden alterna entre repeticiones |
+| `--max-cost-eur` | `0.15` | Presupuesto total: al alcanzarlo no se hacen más llamadas y el informe queda marcado como incompleto (código de salida `3`) |
+| `--today AAAA-MM-DD` | hoy | Fecha que ve el agente |
+| `--out <prefijo>` | — | Escribe `<prefijo>.md` y `<prefijo>.json` |
+| `--provider` | `gemini` | `gemini` (necesita `GEMINI_API_KEY`) o `stub` (prueba en seco) |
+| `--rerender <informe.json>` | — | Recalcula métricas e informe de una comparación guardada sin llamar al modelo |
+
+Garantías:
+
+- Proveedor real y configuración del agente del seed (`desiredProspectorVersion()`), con la versión de la skill inyectada exactamente (se comprueba su `content_hash`).
+- CRM en memoria: un FakeTwenty nuevo por ejecución. Nada llega a Twenty y no se escribe en la BD.
+- El informe incluye relevantes y escribibles, confianza por nivel de datos (solo nombre, sector, descripción o dominio), no relevantes con confianza > 0,19, forma de la hipótesis (horquillas repetidas, amplitud, cantidades en `need`, precio unitario implícito), estabilidad entre repeticiones, tokens y coste por versión, y la tabla lado a lado por expositor.
+
+> **Importante:** la herramienta no puede saber si los fixtures se usaron para diseñar la candidata (P5). Usa datos que no aparezcan en el análisis y dilo en el experimento.
+
+Hoy solo hay *harness* para `prospector-event-exhibitors` (modo directo del Prospector). Los tests unitarios (`test/unit/skill-edit-ops.test.ts`, `test/unit/skill-compare.test.ts`) usan un `StubProvider` guionizado y no llaman a ningún servicio.
+
 ## Tools
 
 Capa de tools del LLD v0.2 (secciones 5.2, 5.7 y 10). Los agentes no llaman a Twenty directamente: reciben un `AgentToolbox` (`ctx.tools`) que solo ejecuta las tools permitidas por la versión del agente.
@@ -609,6 +659,7 @@ Las de Twenty usan `TWENTY_BASE_URL` y `TWENTY_API_KEY` y tienen `outputTrust = 
 | `create_note` | `LOW_WRITE` | Sí | Empresa + título; adopta una nota huérfana con el mismo título |
 | `get_note` | `READ` | No | — (título y markdown de una nota; salida `untrusted`) |
 | `update_note` | `LOW_WRITE` | Sí | Solo añade líneas al final; las que ya están (coincidencia exacta) se omiten. Nunca edita ni borra contenido |
+| `revert_hypothesis_draft_status` | `LOW_WRITE` | Sí | Pone `emailStatus = DRAFT` solo si sigue en `READY` (relee antes de escribir) y el `PATCH` lleva solo ese campo. Solo puede hacer el envío menos probable. Ningún agente la tiene en su política: la usa email-ops |
 | `fetch_url` | `READ` | No | — (consulta [Seguridad del contenido web](#seguridad-del-contenido-web)) |
 | `render_url` | `READ` | No | — (consulta [Render de JavaScript](#render-de-javascript-render_url)) |
 
@@ -922,7 +973,7 @@ Las dos tareas usan la misma versión del agente. La versión del seed añade `f
 
 La versión actual del seed añade `render_url` a la tool policy, sube los límites del scout (`max_fetches` 18, `max_pages_per_event` 3, `max_renders` 4, `max_pdfs_per_event` 2) y la skill `event-source-discovery` a v2 (PDF y páginas renderizadas): ejecuta `pnpm seed` después de desplegar para crear la versión nueva. Hasta entonces, la versión activa no tiene `render_url` en su política: el scout lee PDF pero no renderiza (`render.disabled = TOOL_NOT_ALLOWED`).
 
-La versión de la tanda 5 sube `max_exhibitors_per_event` a 60, añade `max_catalog_pages` (3) y `max_profile_lookups` (10), amplía la tool policy (`fetch_url` 42, `render_url` 15, 640 llamadas) y sube la skill `event-source-discovery` a v3 (paginación y fichas). Necesita el renderer con `max_pages` (imagen `pxos-renderer` reconstruida desde esta rama). Con un renderer anterior, el scout lee solo la primera página y, como los enlaces del listado llegan sin texto, no encuentra las fichas.
+La versión de la tanda 5 sube `max_exhibitors_per_event` a 60, añade `max_catalog_pages` (3) y `max_profile_lookups` (10, hoy 100), amplía la tool policy (`fetch_url` 42, `render_url` 15, 640 llamadas) y sube la skill `event-source-discovery` a v3 (paginación y fichas). Necesita el renderer con `max_pages` (imagen `pxos-renderer` reconstruida desde esta rama). Con un renderer anterior, el scout lee solo la primera página y, como los enlaces del listado llegan sin texto, no encuentra las fichas.
 
 La versión de la tanda 6 (catálogo completo) sube `max_catalog_pages` a 10, `max_profile_lookups` a 60 y `max_exhibitors_per_event` a 100, añade `time_budget_ms` (20 min), `profile_concurrency` (2) y `capture_json` (`true`), amplía la tool policy (`fetch_url` 230, `render_url` 115, 1 500 llamadas) y sube la skill `event-source-discovery` a v4. Para el atajo JSON y más de 5 páginas necesita pxos-renderer 0.2 (imagen reconstruida desde esta rama); con uno anterior, el scout lee 5 páginas y extrae el texto.
 
@@ -1348,6 +1399,61 @@ POST /rest/noteTargets  { "noteId": "<note>", "targetCommercialHypothesisId": "<
 ### Coste
 
 Una llamada a Gemini por borrador. En la prueba en vivo: 0,0021 USD (0,0018 €) y unos 5 s por run.
+
+## Email-ops: guardarraíles del envío desde Twenty
+
+Red de seguridad del flujo «Enviar borrador de email» ([docs/twenty-envio-email.md](../../docs/twenty-envio-email.md)). El runtime **sigue sin enviar nada** y no toca el workflow de Twenty: solo reacciona al webhook `commercialHypothesis.updated` cuando `updatedFields` incluye `emailStatus` (`src/email-ops/`).
+
+### Al marcar Reviewed (`READY`)
+
+1. Relee la hipótesis en Twenty (la copia del webhook puede estar desfasada). Si ya no está en `READY`, no hace nada: `DRAFT` significa que una persona la cambió; `SENDING` o `SENT`, que el workflow fue más rápido (lo detecta el paso `SENT`).
+1. Comprueba `emailTo` (una o varias direcciones separadas por comas o `;`, también `Nombre <a@b.com>`):
+   - vacío: `missing_recipient`;
+   - algo que no es una dirección: `invalid_recipient`;
+   - dirección exacta en la nota `Lista de supresión — NO contactar`, o `@dominio` que la cubre a ella o a un dominio padre (`@empresa.example` bloquea `ventas.empresa.example`; `@ventas.empresa.example` no bloquea `empresa.example`): `suppressed`. Reutiliza el parser del inbound de bajas (`parseSuppressionList`);
+   - si la nota no se puede leer (no existe o cambió de título): `suppression_list_unavailable`. **Falla cerrado**.
+1. Si hay bloqueo:
+   - `emailStatus` vuelve a `DRAFT` con `revert_hypothesis_draft_status` (relee y solo escribe si sigue en `READY`; el `PATCH` lleva únicamente `emailStatus`);
+   - deja una nota en la hipótesis (y en su empresa) titulada `⛔ Dirección en la lista de supresión — no enviar` (o `⛔ Falta destinatario — no enviar`, `⛔ Destinatario no válido — no enviar`, `⛔ No se pudo comprobar la lista de supresión — no enviar`). Una nota por hipótesis y motivo: si se repite, solo añade una línea al historial (append-only; una reentrega del webhook no añade nada);
+   - emite `email.blocked_suppressed` con dominios, nunca direcciones.
+
+La nota de supresión se localiza por su id (`SUPPRESSION_NOTE_ID`) y, además, por título exacto (si alguien hizo una copia, cuentan todas). En la instancia local su título está guardado con caracteres dañados (`Lista de supresi�n � NO contactar`): para la nota encontrada **por id**, cada `U+FFFD` vale por un carácter y se registra un aviso.
+
+### Ventana de carrera
+
+El chequeo de `READY` es una red de seguridad, no un bloqueo. Twenty entrega el webhook de forma asíncrona (su cola de jobs y, después, las llamadas del runtime a Twenty), así que, si una persona pone *Reviewed* y pulsa **Enviar borrador de email** en uno o dos segundos, el workflow puede leer `READY` antes de que el runtime escriba `DRAFT` y el correo sale. Twenty no tiene escritura condicional: entre la relectura y el `PATCH` queda además un viaje de ida y vuelta. Por eso:
+
+- la comprobación manual de la lista de supresión sigue en el [uso diario](../../docs/twenty-envio-email.md#uso-diario);
+- el paso `SENT` vuelve a comprobar la lista y, si lo enviado iba a una dirección suprimida, deja la nota `⛔ Enviado a una dirección de la lista de supresión — revisar` y emite `email.sent_suppressed`.
+
+### Al marcar Sent (`SENT`)
+
+1. Inserta una fila en `email_sends` con `sent_at` = `updatedAt` del registro del webhook. Una reentrega (misma hipótesis y mismo `sent_at`) no añade nada.
+1. Emite `email.sent` (`hypothesisId`, `companyId`, `toDomain`; nunca la dirección).
+1. Si los envíos del día local (Europe/Madrid) superan el objetivo del warm-up, emite `email.warmup_target_exceeded` **una vez por día** (clave de idempotencia por fecha).
+1. Comprobación tardía de la lista de supresión (ver la ventana de carrera).
+
+Cuenta tanto los `SENT` del workflow como los que una persona pone a mano (el correo salió). Una fila por envío, aunque `emailTo` tenga varias direcciones.
+
+### Tabla `email_sends`
+
+Migración `0007_email_sends`: `id`, `tenant_id`, `hypothesis_id`, `company_id`, `to_email` (destinatarios normalizados, separados por comas; dato del CRM), `to_domain` (dominio del primero), `subject`, `sent_at`, `workspace_member_id` (si el webhook lo trae), `created_at`. Índice único `(tenant_id, hypothesis_id, sent_at)` e índice `(tenant_id, sent_at)`. Sin `DELETE` (trigger).
+
+### Warm-up y límites en métricas
+
+`GET /metrics/summary` añade el bloque `email` (relativo al momento de la consulta, no a `since`/`until`, salvo `sends.in_window`):
+
+- `sends`: `today`, `week` (lunes a domingo), `total`, `last_hour`, `last_sent_at`.
+- `warmup`: fase del calendario de [docs/email-warmup.md](../../docs/email-warmup.md#calendario-de-4-semanas) por fecha local desde el 2026-10-06 (`src/email-ops/warmup.ts`), `target_today` (total de ambos buzones por día laborable; fines de semana 0), `target_per_mailbox`, `status` (`ok`, `exceeded`, `no_target`) y si ya se emitió el aviso del día. Las semanas 1 y 3 son rampas: los objetivos diarios las interpolan sin subir más de un 30 % de un día laborable al siguiente (salvo la cifra que fija el plan, «15 por buzón el martes» de la semana 3). Las semanas 2 y 4 usan el máximo del rango. Desde el 2026-11-03: `post_warmup`, sin tope blando.
+- `ionos_limit` (informativo): 50 por hora los primeros 7 días del buzón, 50 por prudencia entre el día 8 y el 30 (IONOS no publica cifra) y 500 después, frente a `last_hour`.
+
+Solo cuenta los envíos desde Twenty: los del webmail van aparte. El dashboard muestra el bloque **Email** con la tarjeta de hoy en ámbar si se supera el objetivo y la del límite de IONOS en rojo si se alcanza.
+
+### Tests
+
+- `test/unit/email-ops.test.ts`: coincidencias de supresión (exacta, `@dominio` con subdominios, no el padre), destinatario vacío o no válido, fallo cerrado, calendario del warm-up con reloj falso (zona horaria, fines de semana, antes y después), límite de IONOS y la guarda de `READY` sobre `FakeTwenty`.
+- `test/integration/email-ops.test.ts` (PostgreSQL + `FakeTwenty` + payload real de Twenty): bloqueo y vuelta a `DRAFT`, dedupe de `SENT`, una sola emisión diaria del exceso, bloque `email` del resumen y del dashboard, trigger anti-`DELETE`.
+- `test/integration/email-ops-live.test.ts` (opcional, `EMAIL_OPS_LIVE=1`, Twenty real): añade a la nota real de supresión la línea de prueba `suprimido-test@ejemplo-supresion.example` (TLD `.example`, no recibe correo; no se borra), simula el webhook de `READY` sobre la hipótesis `[TEST] pxos-emailops READY a dirección suprimida` (estado `PROPOSED`, que el workflow nunca enviaría) y comprueba que vuelve a `DRAFT` con su nota ⛔; después simula un `SENT` sobre `[TEST] pxos-emailops SENT simulado` (la transición solo existe en el payload). Tenant `it-emailops`, colas en memoria. No envía nada.
 
 ## Pendiente
 

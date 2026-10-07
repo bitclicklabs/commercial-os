@@ -79,7 +79,18 @@ Canal de email (recordatorio operativo): warm-up iniciado el 2026-10-06; DMARC p
 | Cuenta de correo conectada en Twenty: envío HITL con un clic + historial en ficha (hallazgo del usuario) | `feat/twenty-email-account` | Opus | ✅ fusionado (2.45 = solo IMAP/SMTP genérico; workflow manual creado en borrador; campos de email en la hipótesis; HALLAZGO: la API key tenía rol Admin con send_email vía MCP → rol restringido "Agent runtime" creado y asignado, verificado send_email=0) |
 | Puente de eventos con n8n: ingesta de eventos externos + reenvío saliente por webhook | `feat/n8n-events` | Opus | ✅ fusionado (ext.* firmados HMAC; journal 0005/0006 refechado por el PM — evitado salto silencioso de migración) |
 | Skills versionadas en BD (primer paso MVP-1): tablas, loader, seed de las skills actuales, API sin DELETE | `feat/skills-versionadas` | Opus | ✅ fusionado (4 skills migradas byte a byte; versiones inmutables por trigger SQL; rollback por API; 461 tests) |
-| Docs de cierre (guía, runbook, ADRs nuevos en LLD v0.3) | — | — | ↩️ cada rama actualizó sus docs; los ADRs de la tanda 7 en el LLD v0.3 quedan para la próxima pasada de docs |
+| Docs de cierre (guía, runbook, ADRs nuevos en LLD v0.3) | — | — | ✅ ADRs 23-31 añadidas al LLD v0.3 en la tanda 8 (rama docs/adrs-tanda7) |
 | Integración, e2e y PR | `feat/tanda7` | PM | ✅ 510 tests; App sincronizada (script ps1 estrenado OK); workflow en borrador validado; rol restringido; 4 skills v1 ACTIVE en BD; Prospector v7/EmailDrafter v3; e2e: hipótesis Tuawa con borrador en campos (DRAFT) |
 
 Fuera de la tanda: Catalog Service (sigue a la espera del contrato del conector con el backend de publiexpe).
+
+## Tanda 8 — Operación de envío y ciclo de mejora ✅ (PR #8, 2026-10-07)
+
+Contexto: el usuario conectó el SMTP, activó el workflow y el primer email real llegó bien ("buena lectura y buen copy").
+
+| Pieza | Rama | Agente | Estado |
+|---|---|---|---|
+| Email-ops en el flujo: chequeo automático de la lista de supresión al marcar READY, tracking de envíos (SENT) y contadores de warm-up en el dashboard | `feat/email-ops-flujo` | Opus | ✅ fusionado (probado en vivo: READY-suprimido vuelve a DRAFT con nota ⛔; doble chequeo en SENT; dashboard con fases del calendario; + fix PM: título de la nota de supresión reparado) |
+| Ciclo de mejora de skills: playbook, tooling de comparación, y una v2 real del Prospector en DRAFT a partir de trazas/evaluaciones (sin activar: decide el humano) | `feat/skill-cycle` | Opus | ✅ fusionado (EXP-001: v2 mejora F1-F3 pero regresión de semántica de confianza en el holdout → veredicto ITERAR; v2 queda DRAFT; 0,09 € de validación) |
+| Docs: ADRs de la tanda 7 al LLD v0.3, guía del comercial con el envío ya activo, runbook | `docs/adrs-tanda7` | Sonnet | ✅ fusionado (ADRs 23-31; guía y warm-up en presente; + fixes PM: guía de envío, README runtime, compose con token de eventos) |
+| Integración, e2e y PR | `feat/tanda8` | PM | ✅ 560 tests; redeploy con 0007; bloque Email en métricas verificado (fase Semana 1 detectada); nota de supresión reparada; v2 NO activada siguiendo el gate |

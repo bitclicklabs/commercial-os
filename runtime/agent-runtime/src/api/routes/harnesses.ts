@@ -17,11 +17,13 @@ import {
   HarnessServiceError,
   listHarnessVersions,
 } from '../../harness/service.js';
+import { checkActivationGate, logGate, ReleaseGateBlockedError } from '../../experiments/release-gate.js';
 import type { ApiContext } from '../context.js';
 import { HttpError, notFound, parse, serialize, tenantOf } from '../http.js';
-import { CreateHarnessBody, CreateHarnessVersionBody, HarnessParams, HarnessVersionParams, ListHarnessesQuery } from '../schemas.js';
+import { ActivateVersionBody, CreateHarnessBody, CreateHarnessVersionBody, HarnessParams, HarnessVersionParams, ListHarnessesQuery } from '../schemas.js';
 
 function toHttp(err: unknown): unknown {
+  if (err instanceof ReleaseGateBlockedError) return new HttpError(409, err.code, err.message, err.details);
   if (!(err instanceof HarnessServiceError)) return err;
   if (err.code === 'not_found') return new HttpError(404, 'not_found', err.message, err.details);
   if (err.code === 'conflict') return new HttpError(409, 'conflict', err.message, err.details);
@@ -96,12 +98,34 @@ export async function harnessRoutes(app: FastifyInstance, ctx: ApiContext): Prom
     return reply.status(201).send({ harness: serialize(result.harness), version: versionOut(result.version), warnings: warningsOf(result.version) });
   });
 
-  /** ACTIVE the version and DEPRECATED the previous ACTIVE one, in one transaction. Idempotent. */
+  /**
+   * ACTIVE the version and DEPRECATED the previous ACTIVE one, in one transaction. Idempotent.
+   * Same Release Gate as skills (src/experiments/release-gate.ts). There is no experiment
+   * runner for harnesses yet, so a harness version that was never ACTIVE needs, for now, a
+   * human override `{ force: true, reason }`; a rollback to a former ACTIVE version does not.
+   */
   app.post('/harnesses/:id/versions/:v/activate', async (req) => {
     const tenantId = tenantOf(req, ctx.config.defaultTenantId);
     const { id, v } = parse(HarnessVersionParams, req.params);
-    const r = await mapped(() => activateHarnessVersion(db, { tenantId, harnessKey: id, version: v }));
-    return { harness: serialize(r.harness), version: versionOut(r.version), changed: r.changed, previous_version: versionOut(r.previous) };
+    const body = parse(ActivateVersionBody, req.body ?? {});
+    const r = await mapped(() =>
+      activateHarnessVersion(db, {
+        tenantId,
+        harnessKey: id,
+        version: v,
+        guard: (tx, g) =>
+          checkActivationGate(tx, {
+            tenantId,
+            subjectType: 'harness',
+            subjectName: g.harness.name,
+            target: g.target,
+            activeVersion: g.active?.version ?? null,
+            override: body,
+          }),
+      }),
+    );
+    logGate(req, 'harness', id, v, r.gate);
+    return { harness: serialize(r.harness), version: versionOut(r.version), changed: r.changed, previous_version: versionOut(r.previous), gate: r.gate ?? null };
   });
 
   /**

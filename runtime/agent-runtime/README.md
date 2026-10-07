@@ -29,6 +29,7 @@ runtime/agent-runtime/
 │   ├── events/               Event bus: sobre event.envelope.v1, EventBus, payloads, triggers EVENT y GET /events; puente externo (POST /events/external, event_subscriptions y webhooks firmados con guarda SSRF)
 │   ├── domain/               Estados, máquina de estados e idempotency keys
 │   ├── evaluations/          Evaluador HUMAN: mapeo de feedback, vínculo con la ejecución de origen, webhook de Twenty y evento evaluation.recorded
+│   ├── evaluators/           Evaluadores automáticos (MVP-2): RULE, EXACT, LLM_JUDGE y COMPOSITE, sujetos (trazas e informes de skill:compare), pipeline y persistencia en evaluations
 │   ├── email-ops/            Guardarraíles del envío desde Twenty: chequeo de supresión al marcar READY, registro de envíos (email_sends) y calendario del warm-up
 │   ├── metrics/              Consultas SQL de métricas (solo lectura) y HTML del dashboard
 │   ├── providers/            ModelProvider, StubProvider, AnthropicProvider, GeminiProvider y tabla de precios
@@ -37,6 +38,8 @@ runtime/agent-runtime/
 │   ├── seed/                 Seed idempotente del harness default-commercial, las skills, el Prospector, el EmailDrafter, el BajasAgent y sus tareas (pnpm seed)
 │   ├── skills/               Skills versionadas (MVP-1): render, resolución desde la BD con fallback a las constantes, ciclo de estados
 │   ├── harness/              Harness versionado (MVP-1): config v1 por dimensiones, precedencia, resolución desde la BD con fallback y ciclo de estados
+│   ├── datasets/             Datasets de evaluación (MVP-2): cosecha de trazas y veredictos, split determinista, registro de exclusiones de EXP-001/EXP-002 y control de contaminación (markUsed)
+│   ├── experiments/          Experiments y Release Gate (MVP-2): runner de pnpm experiment:run, criterios del gate (seesaw, PASS_FORM), tabla experiments y candado de la activación
 │   ├── services/             Lanzamiento idempotente de TaskRuns
 │   └── worker/               RunProcessor, worker BullMQ, locks por entidad y reconciliador
 └── test/
@@ -152,6 +155,8 @@ El esquema vive en `src/db/schema.ts`. Todas las tablas llevan `tenant_id` (C6).
 | `0007_email_sends` | Tabla `email_sends` (envíos observados desde Twenty, append-only con trigger anti-`DELETE`, dedupe `(tenant_id, hypothesis_id, sent_at)`). SQL idempotente |
 | `0008_harness` | Tablas `harnesses` y `harness_versions` (triggers anti-`DELETE` y de contenido inmutable) y columnas `agent_versions.harness_ref` y `traces.harness`. SQL idempotente. La `0009` la reclama otra rama: la `0008` lleva `when` = `1791375700000`, entre la `0007` y la `0009` ([ADR-31](../../docs/LLD-0.3-estado-real.md#adr-31)) |
 | `0009_knowledge` | Tabla `knowledge_entries` (memoria semántica, LLD §6.4): triggers anti-`DELETE`, de transiciones válidas y de contenido inmutable fuera de `PROPOSED`/`VALIDATED`; CHECK que impide `ACTIVE` sin evidencia. SQL idempotente. La `0008` es de `feat/harness-v1` (`when` 1791375700000); la `0009` lleva `when` 1791375800000 e idx 9 (ADR-31) |
+| `0010_eval_datasets` | Tablas `evaluation_datasets` y `evaluation_cases` (LLD §11.4 y P5): triggers anti-`DELETE`, versión de dataset inmutable salvo el estado, caso inmutable salvo `used_by` (solo crece) y casos solo en datasets `DRAFT`. SQL idempotente. `when` 1791375900000 e idx 10; la `0011` la reserva la rama de experiments (ADR-31). Consulta [Datasets de evaluación](#datasets-de-evaluación) |
+| `0011_experiments` | Tabla `experiments` (LLD §11.5-11.6): triggers anti-`DELETE`, un experimento nace `DRAFT` o `RUNNING`, identidad y `config` inmutables, transiciones válidas y un experimento terminado (`COMPLETED`, `FAILED`, `CANCELLED`) inmutable entero. SQL idempotente. `when` 1791376000000 e idx 11. Consulta [Experiments y Release Gate](#experiments-y-release-gate) |
 
 Importante: el migrador de Drizzle aplica solo las migraciones con fecha posterior a la última aplicada. Si dos ramas generan migraciones en paralelo contra la misma BD de desarrollo, aplica primero la más antigua o regenera la nueva tras el merge.
 
@@ -233,8 +238,14 @@ Cabecera opcional `x-tenant-id` en todas las rutas. Las respuestas usan `snake_c
 | `GET /skills`, `GET /skills/:id` | Lista de skills o detalle con versiones. `:id` admite el uuid o el nombre |
 | `POST /skills` | Crea la skill y su versión 1 en `DRAFT` |
 | `POST /skills/:id/versions` | Versión nueva en `DRAFT`, desde texto o copiando la activa (`copy_from`) |
-| `POST /skills/:id/versions/:v/activate` | La versión pasa a `ACTIVE` y la anterior a `DEPRECATED`, en una transacción |
+| `POST /skills/:id/versions/:v/activate` | La versión pasa a `ACTIVE` y la anterior a `DEPRECATED`, en una transacción. Pasa por el [Release Gate](#experiments-y-release-gate): exige un experimento `PASS`/`PASS_FORM` o `{ force: true, reason }` (`409 release_gate_blocked` si no) |
 | `POST /skills/:id/versions/:v/deprecate` | `DRAFT` a `DEPRECATED`; sobre la `ACTIVE`, vuelve a la versión activa anterior. No hay `DELETE` |
+| `GET /datasets`, `GET /datasets/:id` | Datasets de evaluación con conteos por split. Consulta [Datasets de evaluación](#datasets-de-evaluación) |
+| `POST /datasets`, `POST /datasets/:id/build` | Cosecha y crea la v1, o la versión siguiente. Nunca modifica una versión |
+| `GET /datasets/:id/cases`, `GET /datasets/:id/fixtures` | Casos de un split sin los vetados por P5; `fixtures` en el formato de `skill:compare` |
+| `POST /datasets/:id/mark-used` | Registra qué experimento usó qué casos y en qué papel (`design`, `validation`, `test`) |
+| `POST /datasets/:id/activate`, `/archive` | Ciclo de vida de una versión. No hay `DELETE` |
+| `GET /experiments`, `GET /experiments/:id` | Experimentos (solo lectura; `:id` admite el uuid o `EXP-003`). Filtros `subject_type`, `subject_name`, `candidate_version`, `status`. Consulta [Experiments y Release Gate](#experiments-y-release-gate) |
 
 ### Idempotencia
 
@@ -568,11 +579,13 @@ Si una ref no se resuelve (la skill no existe, la versión no existe, no hay ver
 
    La versión se crea en `DRAFT`. La respuesta incluye `warnings` si `instructions` no contiene la regla de contenido web no confiable (`UNTRUSTED_SYSTEM_RULE`).
 
-1. Actívala. La versión anterior pasa a `DEPRECATED` en la misma transacción:
+1. Pásala por un experimento (`pnpm experiment:run`, consulta [Experiments y Release Gate](#experiments-y-release-gate)) y, si el gate da `PASS` o `PASS_FORM` y la persona responsable lo decide, actívala. La versión anterior pasa a `DEPRECATED` en la misma transacción:
 
    ```sh
    curl -s -X POST localhost:4020/skills/prospector-event-exhibitors/versions/2/activate
    ```
+
+   Sin experimento que la respalde, la llamada responde `409 release_gate_blocked`. Una persona puede forzarla con `-H 'content-type: application/json' -d '{"force": true, "reason": "…", "by": "…"}'`.
 
 1. Para volver atrás, depreca la versión activa. Se reactiva la versión anterior con número menor que se activó más recientemente:
 
@@ -803,6 +816,172 @@ curl -s -X POST http://127.0.0.1:4020/knowledge/<id>/activate -H 'x-tenant-id: p
 | `email` · `presentacion-primer-contacto` | Presenta siempre a PubliEXPE como expertos en merchandising para empresas al nombrarla | Feedback del usuario del 2026-10-07 (CHANGELOG, tanda 6) y LLD v0.3 (`company_descriptor`) |
 
 No se siembra el techo de confianza de EXP-001 (OP1): provocó la regresión de semántica de la confianza y el gate decidió iterar.
+
+## Datasets de evaluación
+
+Un dataset de evaluación (LLD v0.1 §11.4) es un objeto versionado con splits `TRAIN` / `VALIDATION` / `TEST` construido desde las trazas reales y el veredicto del comercial, no a mano. Aplica P5 de forma operativa: un caso que un experimento ya ha usado nunca vuelve a servir de validación o test para otro.
+
+### Tablas
+
+- `evaluation_datasets`: `id`, `tenant_id`, `name` (minúsculas, p. ej. `prospeccion-v1`), `domain` (`prospeccion`), `version`, `description`, `status` (`DRAFT` → `ACTIVE` → `ARCHIVED`), `build_info` (reglas, exclusiones, conteos y avisos de la construcción), `created_at`, `created_by`. Única por `(tenant_id, name, version)`.
+- `evaluation_cases`: `id`, `dataset_id`, `tenant_id`, `split`, `entity_key` (empresa normalizada: decide el split), `input` (lo que recibió el agente: `{ event, exhibitor }`), `context` (fecha, modo, agente, versiones de skill, nivel de datos, posición), `expected` (del veredicto humano o de una regla), `source` (`origin` `harvested` | `synthetic` | `manual`, `expected_source` `human` | `rule` | `none`, `trace_id`, `execution_id`, `evaluation_id`, `input_fidelity`, ocurrencias), `difficulty` (`easy` datos ricos, `medium` con sector, `hard` solo nombre), `tags`, `content_hash` (sha256 de `input` + `expected`, único por dataset), `used_by` (registro P5) y `created_at`.
+
+Reglas que aplica la BD (migración `0010_eval_datasets`): sin `DELETE` físico; una versión de dataset solo cambia de estado; un caso es inmutable salvo `used_by`, que solo crece (el valor nuevo contiene al anterior); y solo se insertan casos en un dataset `DRAFT`.
+
+### Reglas de cosecha (`prospeccion`)
+
+El cosechador lee en una transacción `READ ONLY`. No lee las decisiones del modelo (`relevant`, `confidence`, hipótesis): solo lo que el agente recibió y el veredicto humano. Así, construir un dataset no expone salidas de casos reservados a quien diseña la siguiente candidata.
+
+1. **Ocurrencias.** Cada paso `MODEL` con `input.exhibitor` de una ejecución real (sin modelo `stub`, sin agentes `[TEST]`) es una ocurrencia, numerada por orden de decisión en su traza (posición 1..n; los reintentos no cuentan). La entrada se reconstruye así:
+   - Modo directo: `agent_executions.input` (`{ event, exhibitors[] }`), exacto (`input_fidelity: execution_input`).
+   - Modo scout: el JSON del catálogo capturado por `render_url` (con `findExhibitorListInJson`, la misma función del scout) si el evento dice `catalog_source: json_api` (`catalog_json`); si no, los pasos de extracción `scout_extract` (`llm_extraction`). El evento sale de `final_output.events`. Sin datos, solo el nombre (`name_only_fallback`).
+1. **Veredicto humano** (`expected_source: human`): una hipótesis con evaluación `HUMAN` y `details.actor.human = true` (sin `[TEST]`, enlazada a una ejecución) da un caso con la entrada del expositor en la ejecución que la escribió. Manda el último veredicto. `expected`: `feedback`, `score`, `relevant` y `writable` (falsos solo con `DISCARDED`), `reference_hypothesis` (la propuesta del agente, con los valores editados si es `EDITED`) y `edited_fields`.
+1. **Descarte estructural** (`expected_source: rule`): una entidad sin veredicto cuya entrada coincide con un organismo público (gobiernos, universidades públicas, consejos reguladores DO/IGP, empresas de capital público o con licitación pública en la descripción) da `relevant: false`, `writable: false`, `hypothesis: null`, `confidence_max: 0.19`. Es la regla de la skill: «Administraciones, organismos y empresas públicas: compran por licitación pública». El sector mixto «Organismos públicos, asociaciones» de Feria Valencia no basta: las asociaciones son privadas.
+1. **Sin etiquetar** (`expected: { kind: "unlabeled" }`): el resto de entidades, solo con la entrada. Sirven para comparar dos versiones con `skill:compare` sobre datos que nadie ha mirado, como se hizo a mano en EXP-001 y EXP-002.
+
+Hay un caso por entidad (nombre normalizado: sin tildes, sin puntuación, sin forma jurídica) y tipo. De sus ocurrencias se elige la de más datos (rico > sector > solo nombre), luego la más fiel y luego la más antigua.
+
+### Splits y exclusiones
+
+- **Split determinista:** `sha256(nombre_del_dataset \0 entity_key)` reparte 50 / 25 / 25. La semilla es el nombre, no la versión: una empresa cae siempre en el mismo split entre versiones y nunca está en dos a la vez.
+- **Exclusiones (P5):** un caso con algún uso en `used_by` va siempre a `TRAIN` (`burned` y una etiqueta `exp-001:design`, `exp-002:validation`…). `used_by` se rellena desde:
+  - el registro `src/datasets/exclusions.ts`, que pone por escrito lo que se aplicaba a mano: las trazas de diseño de EXP-001 (`e67cba89` y `44e35e27` enteras, posiciones 1-60 de `7eaa0dd4`), `feria-ejemplo.json`, el holdout de EXP-001 (quemado como diseño de EXP-002) y la validación de EXP-002 (`gastronoma-holdout-2.json` y los 2 sintéticos), por nombre en cualquier traza;
+  - `markUsed` (abajo), para los experimentos nuevos;
+  - los usos de las versiones anteriores del mismo dataset (`via: inherited`), porque un caso quemado no se des-quema.
+
+### API (sin DELETE)
+
+| Método y ruta | Qué hace |
+|---|---|
+| `GET /datasets?name=&domain=&status=` | Lista versiones con conteos por split |
+| `POST /datasets` | Dataset nuevo: cosecha ahora y crea la v1 `DRAFT`. `{ name, domain, description?, created_by? }`. `409` si el nombre existe |
+| `GET /datasets/:id` | Una versión con `counts`: `by_split`, `labeled_by_split` y `burned_by_split` |
+| `POST /datasets/:id/build` | Re-cosecha: crea la versión siguiente del mismo nombre (`DRAFT`). Nunca modifica la versión existente |
+| `GET /datasets/:id/cases?split=&experiment=&role=&include_vetoed=&tag=` | Casos de un split. En `VALIDATION` y `TEST` omite los vetados para ese experimento y papel (o para un experimento nuevo si no se indica) y devuelve cuántos (`vetoed`) |
+| `GET /datasets/:id/fixtures?split=&experiment=` | Los mismos casos como entradas de `skill:compare` (`{ event, exhibitors[] }`, máximo 50, con `case_ids`) |
+| `POST /datasets/:id/mark-used` | Registro P5: `{ case_ids, experiment, role: design \| validation \| test, by?, note? }`. Todo o nada |
+| `POST /datasets/:id/activate` | `DRAFT` → `ACTIVE`; archiva la `ACTIVE` anterior del mismo nombre |
+| `POST /datasets/:id/archive` | → `ARCHIVED` |
+
+Reglas de `mark-used`:
+
+- `design` se acepta siempre y quema el caso: ya no se sirve como `VALIDATION`/`TEST` a ningún experimento.
+- `validation` o `test` solo se aceptan si todos los usos anteriores son del mismo experimento y en el mismo papel (repetir la misma comparación). Si no, `409` y no se escribe nada.
+- Marcar dos veces lo mismo no hace nada (`already`).
+
+Flujo de un experimento: pide el split, ejecuta la comparación y marca lo usado.
+
+```sh
+curl -s "http://127.0.0.1:4020/datasets/<id>/fixtures?split=VALIDATION&experiment=EXP-003" -H 'x-tenant-id: publiexpe'
+# ... pnpm skill:compare con esas entradas ...
+curl -s -X POST http://127.0.0.1:4020/datasets/<id>/mark-used -H 'content-type: application/json' -H 'x-tenant-id: publiexpe' \
+  -d '{"case_ids":["<id>","<id>"],"experiment":"EXP-003","role":"validation","by":"PM"}'
+```
+
+### `pnpm dataset:build`
+
+```sh
+# Simulación: cosecha y reparte, no escribe nada
+DATABASE_URL=postgres://agentos:agentos_dev@127.0.0.1:5440/agentos pnpm dataset:build --dry-run
+# Crea prospeccion-v1 (v1, o la versión siguiente si ya existe) y guarda el informe
+pnpm dataset:build --name prospeccion-v1 --domain prospeccion --tenant publiexpe --created-by "<quién>" --out informe.json
+```
+
+- Escribe solo `evaluation_datasets` y `evaluation_cases` en `DATABASE_URL`. Con `--source-url` cosecha de otra BD (siempre en solo lectura).
+- Imprime trazas y decisiones leídas, veredictos usados y omitidos, casos por split, por tipo, etiquetados por split y por nivel de datos.
+
+> **Importante:** un dataset nuevo queda en `DRAFT`. Actívalo (`POST /datasets/:id/activate`) cuando lo hayas revisado.
+
+### Tests
+
+`test/unit/datasets.test.ts` fija las reglas puras (hash, clave de entidad, split 50/25/25 estable, veto P5, registro de exclusiones contra los fixtures, regla de organismo público, plan y entradas de `skill:compare`). `test/integration/datasets.test.ts` cosecha trazas sintéticas en modo directo y scout, recorre la API completa y comprueba los triggers; ejecútalo contra una BD propia:
+
+```sh
+DATABASE_URL=postgres://agentos:agentos_dev@127.0.0.1:5440/agentos_wt10_datasets pnpm vitest run test/integration/datasets.test.ts
+```
+
+## Experiments y Release Gate
+
+Un experimento (LLD v0.1 §11.5) compara la versión `ACTIVE` de una skill (baseline) con una candidata sobre los mismos casos y deja la decisión del Release Gate (§11.6). La activación de una versión pasa por ese gate: ningún agente se promueve a producción a sí mismo (§19). `pnpm experiment:run` hace de forma automática lo que EXP-001 y EXP-002 hicieron a mano.
+
+### Tabla `experiments`
+
+`id`, `tenant_id`, `name` (`EXP-NNN`, numerado por tenant a partir de `EXP-003`: EXP-001 y EXP-002 fueron manuales), `number`, `subject_type` (`skill` | `harness`), `subject_name`, `baseline_version`, `candidate_version`, `dataset_id`, `splits` (casos usados por split y papel, con el resultado de `markUsed`), `config` (versiones con su `content_hash`, dataset, presupuesto, repeticiones, modelos, catálogo de evaluadores con sus hashes y criterios del gate), `metrics` (por fase y por versión: composite, dimensiones, cada evaluador, decisiones, accuracy, tokens y coste), `gate_result` (cada criterio con baseline, candidata, umbral y resultado), `decision` (`PASS`, `PASS_FORM`, `FAIL`, `INCONCLUSIVE`), `status` (`DRAFT` → `RUNNING` → `COMPLETED` | `FAILED` | `CANCELLED`), `cost_eur`, `error`, `started_at`, `finished_at`, `created_at`, `created_by`.
+
+Reglas que aplica la BD (migración `0011_experiments`): sin `DELETE`; un experimento nace `DRAFT` o `RUNNING` (nunca con un resultado ya escrito); identidad y `config` inmutables desde la creación; `decision` existe si y solo si el estado es `COMPLETED`; y un experimento terminado es inmutable entero.
+
+### `pnpm experiment:run`
+
+```sh
+# Simulación: versiones, dataset, casos que reservaría y modo del gate. No escribe nada.
+pnpm experiment:run --subject skill:prospector-event-exhibitors --candidate 4 --dry-run
+# Experimento real (Gemini; escribe en DATABASE_URL)
+pnpm experiment:run --subject skill:prospector-event-exhibitors --candidate 4 --dataset prospeccion-v1 --budget 0.30 --today 2026-10-07
+```
+
+| Opción | Por defecto | Descripción |
+|---|---|---|
+| `--subject skill:<nombre>` | — | Sujeto. Hoy solo hay runner para `prospector-event-exhibitors` (la maquinaria de `skill:compare`) |
+| `--candidate <v>` | — | Versión candidata (no puede ser la `ACTIVE`, que es la baseline) |
+| `--dataset` | `prospeccion-v1` | Nombre (versión `ACTIVE`, o la última no archivada) o uuid |
+| `--budget` | `0.30` | Presupuesto total en euros: ejecutor + juez |
+| `--judge-budget` | un tercio de `--budget` | Parte del juez; el resto es del ejecutor |
+| `--repeat` | `2` | Ejecuciones por versión (1-5), alternando el orden |
+| `--form-sample` | `auto` | En modo forma, casos de `TRAIN` sin quemar que se añaden: `auto` (los que permite el presupuesto, con un 20 % de margen), un número o `0` |
+| `--test-on-form` | no | Gastar `TEST` también tras un `PASS_FORM` |
+| `--min-delta`, `--max-cost-ratio`, `--seesaw-tolerance` | `0.02`, `1.25`, `0` | Criterios del gate |
+| `--no-judge`, `--judge-model` | juez `gemini-pro-latest` | Sin juez el composite redistribuye su peso |
+| `--today AAAA-MM-DD` | hoy | Fecha que ve el agente |
+| `--out-dir` | `docs/experimentos` | Escribe `EXP-NNN-auto/informe.md`, `informe.json` y `fixtures/` |
+
+Qué hace, en orden:
+
+1. Crea `EXP-NNN` con la `config` inmutable y lo pasa a `RUNNING`.
+1. **Reserva los casos (P5).** Pide al servicio de datasets el split `VALIDATION` que este experimento puede usar y lo marca con `markUsed` (`validation`) **antes** de ejecutar nada. Un `409` de contaminación aborta el experimento (`FAILED`, sin marcar nada: `markUsed` es todo o nada). Si el split no tiene casos etiquetados, añade la muestra de forma (casos de `TRAIN` que nadie ha usado, elegidos por hash del experimento y marcados igual, con una nota).
+1. **Ejecuta** baseline y candidata con la maquinaria de `skill:compare`: proveedor real, configuración del agente del seed, un FakeTwenty nuevo por ejecución (nada llega a Twenty) y presupuesto compartido.
+1. **Evalúa** con el pipeline de evaluadores (RULEs, juez con su presupuesto y COMPOSITE) y guarda las evaluaciones en el tenant `experiments`.
+1. **Release Gate** sobre `VALIDATION`. Solo un `PASS` estricto (con etiquetas) reserva y ejecuta `TEST` (marcado `test`); la decisión final es la más débil de las fases. Un `PASS_FORM` no gasta `TEST` salvo `--test-on-form`: es el último dato limpio.
+1. Escribe el informe y cierra el experimento en `COMPLETED`. Nunca activa nada.
+
+Código de salida: `0` con `PASS`/`PASS_FORM`, `3` con `FAIL`/`INCONCLUSIVE`, `4` si el experimento se aborta (contaminación o sin casos), `2` si los argumentos no son válidos.
+
+### Criterios del gate
+
+| Criterio | Default | Notas |
+|---|---|---|
+| `composite_delta` | composite(candidata) ≥ composite(baseline) + 0,02 | Composite del grupo de cada versión (todos sus casos y repeticiones) |
+| `hard_failures` | 0 en la candidata | Casos que incumplen un evaluador duro + umbrales por dimensión (§11.3) |
+| `seesaw` | 0 regresiones | Ninguna regla (RULE/EXACT) que la baseline resolvía con 1,0 puede bajar en la candidata; si deja de aplicar, también cuenta como regresión. Una regresión es de su dimensión y hace `FAIL` aunque el composite suba |
+| `cost_per_decision` | ≤ baseline × 1,25 | Coste del ejecutor por decisión |
+| `accuracy` | ≥ baseline | Solo si el split tiene casos etiquetados (veredicto humano o descarte estructural). Una decisión acierta si coincide en `relevant`, `writable` y, en un descarte estructural, `confidence ≤ confidence_max` |
+
+Orden de la decisión: un fallo duro es siempre `FAIL`; si no, una medición incompleta (presupuesto del ejecutor agotado, el juez puntuó una versión y no la otra, sin composite) es `INCONCLUSIVE`; si no, cualquier criterio incumplido es `FAIL`; si no, `PASS` (con etiquetas) o `PASS_FORM`.
+
+> **Importante — `PASS_FORM`:** con 0 casos etiquetados en el split (la realidad de `prospeccion-v1` hoy: los 5 veredictos reales están quemados como diseño del EXP-001), el gate opera en **modo forma**: comprueba reglas, juez, coste y regresiones, pero no puede medir si las decisiones aciertan. `PASS_FORM` basta para activar sin `force`, y el experimento queda registrado como pendiente de re-validar cuando haya etiquetas. El informe y la respuesta de la activación lo dicen (`revalidate: true`).
+
+La latencia (§11.6, `latency <= max_latency`) aún no es criterio: `skill:compare` no la mide por decisión.
+
+### Candado en la activación
+
+`POST /skills/:id/versions/:v/activate` (y `POST /harnesses/:id/versions/:v/activate`) comprueba el gate dentro de la transacción de activación, después de bloquear la fila:
+
+| Caso | Resultado | `gate.mode` |
+|---|---|---|
+| La versión ya es `ACTIVE` | `200`, `changed: false` | `noop` |
+| La versión estuvo `ACTIVE` antes (rollback) | `200` | `rollback` |
+| Último experimento `COMPLETED` de esa versión **contra la versión activa actual** con `PASS` o `PASS_FORM` | `200` (`revalidate: true` si es `PASS_FORM`) | `experiment` |
+| Sin experimento, con `FAIL`/`INCONCLUSIVE`, o hecho contra otra baseline | `409 release_gate_blocked` con los experimentos encontrados | — |
+| Lo anterior con `{ "force": true, "reason": "≥ 10 caracteres", "by": "…" }` | `200`, línea `WARN` en el log con motivo y autor | `override` |
+
+El humano puede forzar; el sistema no: ningún código del runtime llama a `activate`, y `experiment:run` nunca activa. La API no tiene autenticación, así que el override es auditable (log y respuesta), no imposible. Una skill nueva (v1 sin versión activa) no tiene baseline y necesita `force`. Las harness todavía no tienen runner de experimentos: una versión de harness que nunca estuvo activa se activa hoy solo con `force`.
+
+### Tests
+
+`test/unit/experiments-gate.test.ts` fija cada criterio, el seesaw, el modo forma, el orden de la decisión, la accuracy contra etiquetas, la muestra de forma y el cuerpo del override. `test/integration/experiments.test.ts` ejecuta el runner con proveedores guionizados (sin red) contra una BD propia: `PASS_FORM` con muestra de forma, contaminación (`409` → `FAILED`), `PASS` con `TEST`, `FAIL` por accuracy sin tocar `TEST`, inmutabilidad, y el candado (bloqueo, `PASS_FORM`, baseline obsoleta, override, rollback):
+
+```sh
+DATABASE_URL=postgres://agentos:agentos_dev@127.0.0.1:5440/agentos_wt10_experiments pnpm vitest run test/integration/experiments.test.ts
+```
 
 ## Research
 
@@ -1468,6 +1647,147 @@ Si no envías `agent_execution_id` (o `agentExecutionId`), el runtime resuelve e
 
 Índices: `(tenant_id, subject_type, subject_id, occurred_at)`, `(tenant_id, agent_execution_id)` y único `(tenant_id, idempotency_key)`. La tabla es solo de inserción.
 
+## Evaluadores
+
+Evaluadores automáticos del Evaluation Engine (LLD v0.1 §11.1-11.3, MVP-2), en `src/evaluators/`. La regla que lo gobierna: no es un botón que pregunta a otro LLM si la respuesta parece buena. Cada evaluador tiene tipo (`EXACT`, `RULE`, `LLM_JUDGE`, `COMPOSITE`), puntúa **una** dimensión del LLD, tiene versión y un `content_hash` de su definición (umbrales, expresiones regulares, rúbrica, modelo), y se registra como código, igual que las tools (`EvaluatorRegistry`, `defaultEvaluators()`). `BUSINESS` y `HUMAN` llegan por otra vía (el evaluador HUMAN es la sección anterior).
+
+La unidad que se evalúa es un **caso**: la decisión del Prospector para un expositor. `evaluate(caseInput, output, context)` devuelve `{ dimension, score 0..1, pass?, details }`, o `null` si el caso no aplica (por ejemplo, una regla de hipótesis sobre un descarte). Un **sujeto** es la salida de una ejecución y agrupa sus casos:
+
+| `subject_type` | Qué es | `subject_id` |
+|---|---|---|
+| `execution_output` | Una ejecución del Prospector leída de su traza (modo directo o scout) | id de la ejecución |
+| `comparison_case` | Una versión × una entrada × una repetición de un informe de `pnpm skill:compare` | `<skill>@v<versión>:<input_sha256[0:16]>:r<repetición>` |
+
+### Catálogo
+
+| Evaluador | Tipo | Dimensión | Dura | Qué comprueba | Origen |
+|---|---|---|---|---|---|
+| `rule.decision_valid@1` | RULE | `TASK_SUCCESS` | no | Sin error del modelo o del CRM, con `relevant` y `confidence`, e hipótesis si es relevante | Errores de las ejecuciones |
+| `rule.need_has_quantities@1` | RULE | `NEXT_ACTION_QUALITY` | no | `need` lleva unidades (un número que no es un año) | F1 (EXP-001/002) |
+| `rule.quantity_spread_le_2_5@1` | RULE | `NEXT_ACTION_QUALITY` | no | `quantity_max / quantity_min ≤ 2,5` | F1 |
+| `rule.budget_derived@1` | RULE | `FACTUALITY` | no | Precio unitario implícito entre 0,50 y 15 € y suma de unidades de `need` dentro de la horquilla (0,5 si `need` no enumera unidades) | F1, OP4 |
+| `rule.assumptions_marked@1` | RULE | `FACTUALITY` | no | Solo nombre: la razón marca la suposición (parece, por el nombre, suponemos…) | F3 |
+| `rule.confidence_capped_by_data@1` | RULE | `FACTUALITY` | no | Relevantes: solo nombre ≤ 0,6, nombre y sector ≤ 0,75, salvo notoriedad declarada en la razón | F2, OP1 |
+| `rule.discard_confidence_low@1` | RULE | `COMMERCIAL_RELEVANCE` | **sí** | Descartes (`relevant = false`) con confianza < 0,2 | F4: el criterio 4 de EXP-002 (veredicto NO) |
+| `rule.source_urls_known@1` | RULE | `SOURCE_QUALITY` | **sí** | Toda URL del caso (texto libre y fuentes escritas en el CRM) está en el SourceLedger (visitada o de grounding) o venía en la entrada (URL del evento, dominio del expositor o del CRM) | LLD §11.3: `hallucinated_source → FAIL` |
+| `judge.next_action_quality@1` | LLM_JUDGE | `NEXT_ACTION_QUALITY` | no | ¿La hipótesis es accionable para un comercial? Rúbrica cerrada de 5 niveles | — |
+| `judge.commercial_relevance@1` | LLM_JUDGE | `COMMERCIAL_RELEVANCE` | no | ¿El encaje con PubliEXPE es pertinente, razonado con los datos y con la confianza coherente? | — |
+| `composite.commercial_score@1` | COMPOSITE | — | — | Score compuesto del LLD §11.3 con restricciones duras | — |
+| `makeExactEvaluator(...)` | EXACT | la que se configure | configurable | Un campo (`relevant`, `writable`, `status`) igual al esperado por expositor | Datasets (§11.4) |
+
+Las expresiones regulares de `need_has_quantities` y `assumptions_marked` son copia de las de `src/skills/compare.ts` (congeladas por versión). Un test comprueba que las reglas reproducen las métricas que EXP-002 calculó a mano sobre su JSON.
+
+### Juez (LLM_JUDGE)
+
+- **Modelo distinto del ejecutor:** `JUDGE_MODEL`, por defecto `gemini-pro-latest` (servido por `gemini-3.1-pro-preview` el 2026-10-07; precio en `GEMINI_PRICING`). El pipeline rechaza un juez que sea el modelo del ejecutor, resolviendo los alias `*-latest`.
+- **Una dimensión por llamada**, con rúbrica cerrada (niveles 0-4; `score = nivel / 4`). Una llamada puntúa hasta `--judge-batch` casos (20 por defecto) de la misma dimensión, cada uno por separado. Los casos de todas las versiones van mezclados en orden pseudoaleatorio determinista y sin etiqueta de versión: el juez no sabe qué versión está puntuando y un corte de presupuesto afecta a todas por igual.
+- **Salida validada con zod:** una entrada por id, `level` entero de 0 a 4, `justification` de 50 palabras como máximo y `quote`, un fragmento que tiene que aparecer **literalmente** en la salida del caso (se comprueba). Un reintento con el error; si sigue sin ser válida, el caso queda sin nota del juez (se informa como error, nunca como 0).
+- **Datos no confiables:** la entrada y la salida del caso van en un bloque `DATOS_NO_CONFIABLES` en el mensaje de usuario; el prompt de sistema solo lleva la rúbrica y el contexto de negocio.
+- **Coste medido y acotado:** tokens y coste por llamada en el informe. `JudgeBudgetProvider` proyecta el coste de cada llamada antes de hacerla y la rechaza si `gastado + previsto > --judge-max-cost-eur`.
+- **Muestra en comparaciones:** solo la primera repetición de cada versión (las repeticiones son casi idénticas y su estabilidad ya la miden las reglas). En trazas, todos los casos con hipótesis.
+- Hoy las dos rúbricas aplican solo a casos con hipótesis: los descartes ya los cubre `discard_confidence_low`.
+
+### Composite y mapeo de dimensiones
+
+`commercial_score = 0,30 task_success + 0,20 factuality + 0,15 source_quality + 0,15 crm_correctness + 0,10 commercial_relevance + 0,10 next_action_quality` (pesos configurables con `CompositeEvaluator({ weights })`).
+
+| Dimensión (peso LLD) | Evaluadores hoy | Nota |
+|---|---|---|
+| `TASK_SUCCESS` (0,30) | `rule.decision_valid` | El veredicto HUMAN también es `TASK_SUCCESS`, pero llega después y por otra vía |
+| `FACTUALITY` (0,20) | `budget_derived`, `assumptions_marked`, `confidence_capped_by_data` | Las cifras y la confianza se derivan de los datos, y lo supuesto se dice |
+| `SOURCE_QUALITY` (0,15) | `source_urls_known` (dura) | |
+| `CRM_CORRECTNESS` (0,15) | ninguno | **No evaluable hoy:** las comparaciones usan un FakeTwenty. Su peso se reparte en proporción entre las dimensiones evaluadas y el informe lo lista en «Sin evaluar». Su umbral duro (≥ 0,95) solo se aplica cuando haya un evaluador |
+| `COMMERCIAL_RELEVANCE` (0,10) | `discard_confidence_low` (dura), `judge.commercial_relevance` | |
+| `NEXT_ACTION_QUALITY` (0,10) | `need_has_quantities`, `quantity_spread_le_2_5`, `judge.next_action_quality` | |
+| `POLICY_COMPLIANCE` (umbral 1,00) | ninguno | Umbral del LLD preparado; sin evaluador todavía |
+
+- La nota de una dimensión es la media de sus evaluadores; la de un evaluador, la media de sus casos aplicables.
+- **Restricciones duras:** si un evaluador marcado `hard` falla en **un** caso, el composite es `FAIL` sea cual sea el score. Igual con los umbrales por dimensión del LLD (`CRM_CORRECTNESS < 0,95`, `POLICY_COMPLIANCE < 1,00`).
+- El composite se calcula por sujeto y por grupo. En una comparación, el grupo es la versión y junta todos sus sujetos: ese es el veredicto que se compara entre versiones.
+
+### `pnpm evaluate`
+
+```sh
+# Informe de skill:compare (los fixtures que cita se leen si su hash coincide con input_sha256)
+pnpm evaluate -- --input ../../docs/experimentos/EXP-002/compare-v1-v3.json --out ../../docs/experimentos/EXP-002/evaluacion-v1-v3
+# Una ejecución real, por trace_id o id de ejecución (se lee del tenant --trace-tenant)
+pnpm evaluate -- --input 0b1893ee-a6e6-4acf-b76a-29b6d5650cbb
+```
+
+| Opción | Por defecto | Descripción |
+|---|---|---|
+| `--input` | — | Informe `.json` de `skill:compare` o un `trace_id` (o id de ejecución) |
+| `--tenant` | `experiments` | Tenant donde se **guardan** las evaluaciones (decisión del PM: las automáticas no se mezclan con los veredictos humanos de `publiexpe`) |
+| `--trace-tenant` | `DEFAULT_TENANT_ID` o `publiexpe` | Tenant del que se **lee** la traza |
+| `--no-judge` | — | Solo reglas y composite (sin coste) |
+| `--judge-model` | `JUDGE_MODEL` o `gemini-pro-latest` | Modelo del juez |
+| `--judge-max-cost-eur` | `0.10` | Presupuesto del juez |
+| `--judge-batch` | `20` | Casos por llamada al juez |
+| `--no-persist` | — | No escribe en la BD (con un `.json` no hace falta `DATABASE_URL`) |
+| `--min-confidence` | `0.5` | Umbral de escritura con el que corrió la comparación |
+| `--out <prefijo>` | — | Escribe `<prefijo>.md` y `<prefijo>.json` |
+| `--provider` | `gemini` | `gemini` o `stub` (prueba en seco del juez) |
+
+Imprime el veredicto y el score por grupo, la nota de cada dimensión con su peso efectivo, cada evaluador (score y fallos sobre aplicables), cada sujeto, las notas del juez (nivel, justificación y cita) y las llamadas al juez (modelo servido, tokens y coste).
+
+Resultado sobre el EXP-002 real (2026-10-07; juez `gemini-3.1-pro-preview`, 2 llamadas de 20 casos, 0,0636 € de 0,10 €; informe en `docs/experimentos/EXP-002/evaluacion-v1-v3.md`):
+
+| | v1 | v3 |
+|---|---|---|
+| Veredicto | PASS | PASS |
+| Score compuesto | 0,706 | 0,978 |
+| Restricciones duras incumplidas | ninguna | ninguna |
+| `NEXT_ACTION_QUALITY` | 0,167 | 1,000 |
+| `FACTUALITY` | 0,292 | 0,967 |
+| `COMMERCIAL_RELEVANCE` | 0,750 | 0,875 |
+
+### Persistencia en `evaluations`
+
+Sin migración: la tabla de la sección anterior, tal cual.
+
+| Columna | Valor |
+|---|---|
+| `kind` | `RULE`, `EXACT`, `LLM_JUDGE` o `COMPOSITE` |
+| `evaluator_id` | `<id>@<versión>`; el `content_hash` va en `details.evaluator` |
+| `subject_type`, `subject_id` | Ver la tabla de sujetos. El composite de grupo usa `comparison_case` y `<skill>@v<versión>:<hash de las salidas>` con `details.scope = 'group'` |
+| `agent_execution_id`, `task_run_id` | Los de la ejecución en `execution_output`; `null` en comparaciones |
+| `feedback` | `PASS` o `FAIL` (reglas y composite); `SCORED` (juez: nota sin aprobado) |
+| `score` | Media de los casos aplicables; en el composite, el score compuesto |
+| `details` | Evaluador, `output_hash`, agregado, desglose por caso (con la justificación y la cita del juez), metadatos del sujeto; en el composite, dimensiones, pesos efectivos, restricciones duras y componentes |
+| `source`, `evaluated_by` | `auto`; `evaluators` o el modelo servido del juez |
+| `idempotency_key` | `auto:<evaluador>:<hash del evaluador>:<subject_type>:<subject_id>:<output_hash>` |
+
+- **Idempotente** por (sujeto, evaluador con su versión y hash, `content_hash` de la salida): índice único `(tenant_id, idempotency_key)` y `ON CONFLICT DO NOTHING`. Repetir `pnpm evaluate` sobre la misma salida no guarda nada nuevo y **reutiliza** las notas del juez ya guardadas (0 llamadas, 0 €).
+- Una fila por evaluador con al menos un caso aplicable, un composite por sujeto y un composite por grupo cuando el grupo junta varios sujetos.
+- Un juez con casos sin nota (error, presupuesto) no se guarda, ni el composite que depende de él: otra ejecución los completa con las mismas claves.
+- **Nunca** emite `evaluation.recorded`: ese evento es de los veredictos humanos y dispara el EmailDrafter.
+
+### Integración con métricas
+
+`src/metrics/queries.ts` no filtra `evaluations` por `kind`. Si se guardaran evaluaciones automáticas en el tenant de producción, contaminarían `verdicts`, `avg_score` y la lista de sujetos de `/metrics` y del dashboard de Twenty (los recuentos `ACCEPTED`/`EDITED`/`DISCARDED` no, porque las automáticas usan `PASS`/`FAIL`/`SCORED`). Por eso `pnpm evaluate` escribe en `experiments` por defecto. Parche propuesto para quien sea dueño de `queries.ts` (pendiente; no se ha aplicado):
+
+```ts
+// metricsSummary (CTE latest y recuento verdicts, líneas 197 y 200): las dos apariciones de
+//   from evaluations ev where ${windowWhere('ev', 'occurred_at', w)}
+// pasan a
+//   from evaluations ev where ${windowWhere('ev', 'occurred_at', w)} and ev.kind = 'HUMAN'
+
+// metricsAgents (CTE linked, líneas 390-391):
+//   from evaluations ev join ex on ex.id = ev.agent_execution_id
+//   where ev.tenant_id = ${w.tenantId}
+// pasa a
+//   where ev.tenant_id = ${w.tenantId} and ev.kind = 'HUMAN'
+
+// metricsEvaluations (línea 460), que alimenta days, bySubjectType, subjects y totals:
+//   const where = windowWhere('ev', 'occurred_at', o);
+// pasa a
+//   const where = sql`${windowWhere('ev', 'occurred_at', o)} and ev.kind = 'HUMAN'`;
+```
+
+### Tests
+
+`test/unit/evaluators.test.ts` (sin red ni BD): cada regla con casos que pasan, fallan y no aplican; que las reglas reproducen las métricas de EXP-002; el juez con un proveedor guionizado (bloque no confiable, reintento por cita no literal o justificación larga, ids inventados, presupuesto); el composite (pesos, reparto de lo no evaluado, restricciones duras, umbrales); el pipeline sobre el JSON real de EXP-002 (v3 ≥ v1 sin restricciones duras, y `FAIL` si se inyecta un descarte con 0,95), y las filas idempotentes. `test/integration/evaluators.test.ts` (PostgreSQL, tenant nuevo): una traza real como `execution_output` con una fuente inventada, la persistencia idempotente y la reutilización de las notas del juez.
+
 ## Métricas y dashboard
 
 Primeras métricas del sistema (LLD v0.1 secciones 17.2 y 17.3, criterios AC-15 a AC-20 del LLD v0.2). Son consultas SQL de solo lectura sobre las tablas del runtime (`src/metrics/queries.ts`): no hay almacén nuevo ni escrituras. Todas filtran por el tenant de `x-tenant-id`.
@@ -1668,8 +1988,9 @@ Solo cuenta los envíos desde Twenty: los del webmail van aparte. El dashboard m
 - Validación de URL en campos de texto libre contra las fuentes del trace (LLD v0.2 sección 10.4, punto 4) en el modo directo: el modo scout ya la aplica con su `SourceLedger`.
 - Eventos aún no emitidos: `task.failed` cuando el reconciliador cierra un huérfano, cancelaciones y `signal.detected`.
 - Borradores de email: disparar también con `EDITED` (necesita una segunda tarea o un operador OR en el filtro), plantillas por sector y registro de si el comercial envió el borrador. Entrada de eventos externos (Twenty, n8n) por HTTP y entrega a n8n por webhook.
-- Harness, memoria y verificador reales; promote, rollback y evaluate. Skills: versionadas en BD (MVP-1), falta el optimizador (operaciones acotadas, experimentos y gate de validación), `workflow` y `optimization_budget` del LLD §6.3 y la comprobación del `content_hash` al cargar.
+- Harness, memoria y verificador reales; promote, rollback y evaluate. Skills: versionadas en BD (MVP-1) con experimentos y Release Gate (MVP-2); falta el optimizador automático, `workflow` y `optimization_budget` del LLD §6.3 y la comprobación del `content_hash` al cargar.
 - Borradores de email: disparar también con `EDITED` (necesita una segunda tarea o un operador OR en el filtro), plantillas por sector y registro de si el comercial envió el borrador. (Hecho: la entrada de eventos externos por HTTP y la entrega a n8n por webhook, consulta [Eventos externos](#eventos-externos).)
 - Harness, skills, memoria y verificador reales; promote, rollback y evaluate.
 - Export de los contratos zod a JSON Schema versionado en `schemas/`.
+- Experiments: runner para harness (hoy activar una harness nueva exige `force`), criterio de latencia, re-validación automática de los `PASS_FORM` cuando el dataset tenga etiquetas en VALIDATION/TEST, y registrar los overrides también en el log de eventos (hoy van al log del proceso y a la respuesta).
 - Métricas: AC-17 y AC-18 piden hipótesis `HOT`, pero el resumen de ejecución solo cuenta hipótesis creadas; falta el desglose por prioridad (en Twenty o en `output.counters`). El dashboard oculta por defecto los agentes `ARCHIVED` (los de prueba se archivan con `pnpm cleanup:archive-test-agents`); `include_archived=true` los muestra.

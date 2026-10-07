@@ -200,7 +200,9 @@ describe.skipIf(!dbAvailable)('versioned harness (PostgreSQL)', () => {
     // DRAFT: runs keep v1.
     expect((await run(taskId)).taskRun.harnessVersion).toBe('default-commercial@1');
 
-    const act = await app.inject({ method: 'POST', url: `/harnesses/${DEFAULT_COMMERCIAL_HARNESS_NAME}/versions/2/activate`, headers });
+    // Release Gate: no experiment runner for harnesses yet -> blocked without a human override.
+    expect((await app.inject({ method: 'POST', url: `/harnesses/${DEFAULT_COMMERCIAL_HARNESS_NAME}/versions/2/activate`, headers })).statusCode).toBe(409);
+    const act = await app.inject({ method: 'POST', url: `/harnesses/${DEFAULT_COMMERCIAL_HARNESS_NAME}/versions/2/activate`, headers, payload: { force: true, reason: 'prueba de integración del harness', by: 'it' } });
     expect(act.statusCode).toBe(200);
     expect(act.json()).toMatchObject({ changed: true, version: { version: 2, status: 'ACTIVE' }, previous_version: { version: 1, status: 'DEPRECATED' } });
     const again = await app.inject({ method: 'POST', url: `/harnesses/${DEFAULT_COMMERCIAL_HARNESS_NAME}/versions/2/activate`, headers });

@@ -228,18 +228,26 @@ async function applyPlan(tx: Tx, harness: Harness, plan: HarnessTransitionPlan):
   return { harness: updated ?? harness, byId };
 }
 
+/** Check run inside the activation transaction, after the lock (the Release Gate). Throwing aborts it. */
+export type HarnessActivationGuard<G> = (tx: Tx, ctx: { harness: Harness; versions: HarnessVersion[]; target: HarnessVersion; active: HarnessVersion | null }) => Promise<G>;
+
 /** Makes `version` the ACTIVE one; running attempts are not touched, the next attempt resolves it. */
-export async function activateHarnessVersion(db: Db, args: { tenantId: string; harnessKey: string; version: number }): Promise<HarnessTransitionResult> {
+export async function activateHarnessVersion<G = undefined>(
+  db: Db,
+  args: { tenantId: string; harnessKey: string; version: number; guard?: HarnessActivationGuard<G> },
+): Promise<HarnessTransitionResult & { gate?: G }> {
   return db.transaction(async (tx) => {
     const harness = await lockHarness(tx, args.tenantId, args.harnessKey);
     if (harness.status === 'DEPRECATED') throw new HarnessServiceError('conflict', 'harness is DEPRECATED');
     const versions = await listHarnessVersions(tx, harness.id);
     const plan = planHarnessActivate(versions, args.version);
     const t = versions.find((v) => v.version === args.version)!;
-    if (!plan.changed) return { harness, version: t, changed: false, previous: null };
+    const gate = args.guard ? await args.guard(tx, { harness, versions, target: t, active: versions.find((v) => v.status === 'ACTIVE') ?? null }) : undefined;
+    const withGate = gate === undefined ? {} : { gate };
+    if (!plan.changed) return { harness, version: t, changed: false, previous: null, ...withGate };
     const applied = await applyPlan(tx, harness, plan);
     const previous = plan.deprecate[0] ? (applied.byId.get(plan.deprecate[0]) ?? null) : null;
-    return { harness: applied.harness, version: applied.byId.get(t.id)!, changed: true, previous };
+    return { harness: applied.harness, version: applied.byId.get(t.id)!, changed: true, previous, ...withGate };
   });
 }
 

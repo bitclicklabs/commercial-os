@@ -2,15 +2,16 @@
 
 Este procedimiento explica cómo mejorar una skill del Agent OS con datos reales y sin poner en riesgo producción: del análisis de trazas a una versión candidata, su comparación offline, la decisión humana, la activación, la medición y el rollback. Es la versión manual del ciclo del LLD v0.1 §6.3 (el optimizador automático llega en MVP-3) y respeta P5: nunca se evalúa sobre los datos que generaron el cambio.
 
-El ejemplo completo de una vuelta es [EXP-001 · Prospector v2](experimentos/EXP-001-prospector-v2.md), que terminó en «iterar»; su iteración, con datos de validación nuevos, es [EXP-002 · Prospector v3](experimentos/EXP-002-prospector-v3.md).
+El ejemplo completo de una vuelta es [EXP-001 · Prospector v2](experimentos/EXP-001-prospector-v2.md), que terminó en «iterar»; su iteración, con datos de validación nuevos, es [EXP-002 · Prospector v3](experimentos/EXP-002-prospector-v3.md). Desde EXP-003 la comparación, la evaluación y la decisión del gate las hace `pnpm experiment:run` ([EXP-003 · Prospector v4](experimentos/EXP-003-auto/informe.md), el primero automático).
 
 ```
 SKILL ACTIVA → TRAZAS REALES → PATRONES → OPERACIONES ACOTADAS → CANDIDATA (DRAFT)
-            → COMPARACIÓN OFFLINE (datos no usados) → DECISIÓN HUMANA → ACTIVAR | ITERAR | DESCARTAR
+            → pnpm experiment:run (P5 + comparación + evaluación + RELEASE GATE)
+            → DECISIÓN HUMANA → ACTIVAR (el gate la deja pasar) | ITERAR | DESCARTAR
             → MEDIR ACEPTACIÓN POR VERSIÓN → (ROLLBACK si empeora)
 ```
 
-> **Importante:** ningún agente activa una versión. La activación es siempre una decisión humana (LLD §19, regla de oro). Un agente puede analizar, proponer, crear la versión `DRAFT` y compararla.
+> **Importante:** ningún agente activa una versión. La activación es siempre una decisión humana (LLD §19, regla de oro), y desde el MVP-2 la API la hace cumplir: `POST /skills/:id/versions/:v/activate` exige un experimento `COMPLETED` con decisión `PASS` o `PASS_FORM` frente a la versión activa, o un override humano con motivo. Un agente puede analizar, proponer, crear la versión `DRAFT` y ejecutar el experimento.
 
 ## Antes de empezar
 
@@ -29,6 +30,8 @@ SKILL ACTIVA → TRAZAS REALES → PATRONES → OPERACIONES ACOTADAS → CANDIDA
   ```
 
 ## 1. Fija el reparto de datos antes de mirar
+
+> **Nota:** con el dataset `prospeccion-v1` (consulta [Datasets de evaluación](../runtime/agent-runtime/README.md#datasets-de-evaluación)) el reparto ya está fijado: split determinista por entidad y registro P5 en `used_by`. `pnpm experiment:run` reserva el split `VALIDATION` con `markUsed` antes de ejecutar y aborta si hay contaminación. Esta sección sigue valiendo para elegir los datos de **diseño** (las trazas que analizas en el paso 2): anótalos en `design_data` del fichero de operaciones.
 
 Decide **antes** de analizar qué datos sirven para diseñar el cambio (*train*) y cuáles para validarlo (*validation*). Si lo decides después, sin querer elegirás la validación que favorece a tu candidata.
 
@@ -99,9 +102,27 @@ pnpm skill:candidate <skill> --ops ../../docs/experimentos/EXP-NNN-<skill>.ops.j
 
 `--post` llama a `POST /skills/:id/versions` con `copy_from` = versión base y guarda en `metadata` las operaciones, su justificación, los datos de diseño y de validación y el tamaño de la edición. El `change_reason` (máximo 2.000 caracteres) resume patrones, operaciones y datos de validación. El contenido de una versión es inmutable: si te equivocas en una cifra, corrígelo en el documento del experimento.
 
-## 4. Compara offline sin contaminar
+## 4. Ejecuta el experimento: `pnpm experiment:run`
 
-`pnpm skill:compare` ejecuta la misma entrada con las dos versiones, con el proveedor real y un CRM en memoria (FakeTwenty), y saca la comparación:
+El paso manual de EXP-001 y EXP-002 (elegir fixtures, `skill:compare`, `pnpm evaluate`, calcular a mano la decisión) es ahora un solo comando:
+
+```sh
+pnpm experiment:run --subject skill:<skill> --candidate <v> --dry-run      # qué reservaría, sin escribir
+pnpm experiment:run --subject skill:<skill> --candidate <v> --dataset prospeccion-v1 --budget 0.30 --today <AAAA-MM-DD>
+```
+
+1. Crea `EXP-NNN` (tabla `experiments`) con la versión `ACTIVE` como baseline.
+1. Reserva el split `VALIDATION` con `markUsed` (P5). Si otro experimento ya lo usó, el `409` aborta el experimento. Si el split no tiene etiquetas, añade una muestra de forma de `TRAIN` sin quemar.
+1. Ejecuta las dos versiones con `skill:compare` (Gemini, FakeTwenty, `--repeat 2` por defecto).
+1. Evalúa con los evaluadores automáticos (RULEs, juez y composite) en el tenant `experiments`.
+1. Aplica el Release Gate: composite ≥ baseline + 0,02, 0 fallos duros, seesaw (ninguna regla que la baseline resolvía cae), coste/decisión ≤ ×1,25 y, con etiquetas, accuracy ≥ baseline. Sin etiquetas la decisión máxima es `PASS_FORM` (modo forma). `TEST` solo se gasta tras un `PASS` estricto.
+1. Escribe `docs/experimentos/EXP-NNN-auto/informe.md` (y `.json`, con los fixtures) y cierra el experimento, inmutable.
+
+Los detalles y las opciones están en el [README del runtime](../runtime/agent-runtime/README.md#experiments-y-release-gate).
+
+### Comparación suelta (exploración)
+
+`pnpm skill:compare` sigue disponible para explorar sin dejar rastro en `experiments` (no reserva casos ni decide nada; su resultado no desbloquea la activación). `pnpm skill:compare` ejecuta la misma entrada con las dos versiones, con el proveedor real y un CRM en memoria (FakeTwenty), y saca la comparación:
 
 ```sh
 pnpm skill:compare <skill> --versions <base>,<candidata> \
@@ -122,11 +143,11 @@ El informe incluye relevantes y escribibles, confianza por nivel de datos, incoh
 
 ## 5. Decide (humano)
 
-Escribe el resultado en `docs/experimentos/EXP-NNN-<skill>.md` con estas secciones: hipótesis de mejora, datos de diseño, patrones, operaciones, datos de validación y por qué no contaminan, resultados lado a lado, recomendación, medición en producción y rollback. Contrasta cada criterio de la hipótesis con el resultado.
+El informe automático ya trae la decisión del gate, cada criterio con sus valores, los casos usados y las tablas lado a lado. Léelo entero (sobre todo las razones por expositor: las métricas no lo ven todo) y, si hace falta, complétalo en `docs/experimentos/EXP-NNN-<skill>.md` con estas secciones: hipótesis de mejora, datos de diseño, patrones, operaciones, datos de validación y por qué no contaminan, resultados lado a lado, recomendación, medición en producción y rollback. Contrasta cada criterio de la hipótesis con el resultado.
 
 | Decisión | Cuándo |
 |---|---|
-| **Activar** | Cumple la hipótesis, no hay regresiones en el control (casos que ya funcionaban) ni incoherencias nuevas, y el sobrecoste es aceptable |
+| **Activar** | El gate da `PASS` (o `PASS_FORM`, sabiendo que falta re-validar con etiquetas), cumple la hipótesis y la lectura cualitativa no muestra problemas |
 | **Iterar** | Mejora lo propuesto pero rompe algo, o el efecto no se distingue del ruido. Crea otra versión desde la base con la operación que falte y valídala con datos nuevos |
 | **Descartar** | No mejora o empeora. Depreca la versión: `POST /skills/<skill>/versions/<v>/deprecate` |
 
@@ -138,6 +159,12 @@ Solo con la decisión humana escrita en el experimento:
 
 ```sh
 curl -s -X POST "http://127.0.0.1:4020/skills/<skill>/versions/<v>/activate" -H 'x-tenant-id: publiexpe'
+```
+
+El Release Gate la deja pasar si el último experimento `COMPLETED` de esa versión contra la versión activa actual decidió `PASS` o `PASS_FORM` (la respuesta trae `gate`). Si no, responde `409 release_gate_blocked`. Si la persona responsable decide activar igualmente, lo fuerza con motivo, que queda en el log y en la respuesta:
+
+```sh
+curl -s -X POST "http://127.0.0.1:4020/skills/<skill>/versions/<v>/activate" -H 'x-tenant-id: publiexpe'   -H 'content-type: application/json' -d '{"force": true, "reason": "<por qué, mínimo 10 caracteres>", "by": "<quién>"}'
 ```
 
 La versión activa anterior pasa a `DEPRECATED` en la misma transacción. Las ejecuciones en curso no cambian; la siguiente resuelve la nueva versión al arrancar. Anota la fecha y hora de activación en el experimento.
@@ -171,7 +198,7 @@ Si la versión activa empeora:
 curl -s -X POST "http://127.0.0.1:4020/skills/<skill>/versions/<v>/deprecate" -H 'x-tenant-id: publiexpe'
 ```
 
-Si no hay una versión anterior que restaurar, la API responde `409`; en ese caso activa explícitamente la versión que quieras. Comprueba en `traces.skill_versions` de la siguiente ejecución qué versión se inyectó. No se borra nada: las versiones descartadas quedan en `DEPRECATED` con su historial.
+El rollback no pasa por el Release Gate: deprecar la activa, o activar una versión que ya estuvo `ACTIVE`, no necesita experimento (`gate.mode: rollback`). Si no hay una versión anterior que restaurar, la API responde `409`; en ese caso activa explícitamente la versión que quieras. Comprueba en `traces.skill_versions` de la siguiente ejecución qué versión se inyectó. No se borra nada: las versiones descartadas quedan en `DEPRECATED` con su historial.
 
 ## Lista de comprobación
 
@@ -179,7 +206,7 @@ Si no hay una versión anterior que restaurar, la API responde `409`; en ese cas
 - [ ] Cada patrón con dos o más ejemplos citables (ejecución, paso, campo).
 - [ ] Operaciones acotadas, cada una con su `why`; diff revisado sin `--post`.
 - [ ] Versión creada como `DRAFT` por la API, sin activar.
-- [ ] Comparación con datos no usados en el diseño, con repetición y presupuesto.
-- [ ] Experimento escrito con recomendación razonada.
+- [ ] `pnpm experiment:run` ejecutado (P5 reservado por el runner, repetición y presupuesto).
+- [ ] Informe automático leído y, si hace falta, completado con la recomendación razonada.
 - [ ] Decisión humana registrada antes de activar.
 - [ ] Medición por versión de skill y plan de rollback.

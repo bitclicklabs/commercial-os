@@ -31,6 +31,13 @@ Cambios notables de PubliEXPE Commercial OS, agrupados por tanda de trabajo. For
 - E2E en producción: run con harness default-commercial@1, skill v3 (hash del EXP-002), MEMORY_READ con 2 entradas y research creado.
 - Pendiente del operador: sync de la App (rol Admin temporal en la key, revertir y verificar send_email=0) y backfill de métricas (--days=30).
 
+## 2026-10-07 — Tanda 10 (PR #10)
+
+- MVP-2 cerrado: datasets de evaluación versionados cosechados de datos reales (prospeccion-v1: 94 casos; P5 operativo con markUsed y registro de exclusiones; hallazgo honesto: 0 etiquetados limpios en VAL/TEST hasta que haya más veredictos humanos frescos — migración 0010); 11 evaluadores (RULE deterministas destilados de EXP-001/002, LLM_JUDGE ciego a versiones con gemini-pro, COMPOSITE §11.3 con restricciones duras) que reproducen el veredicto del EXP-002 automáticamente; y motor de Experiments + Release Gate (§11.5-11.6 con seesaw, PASS/PASS_FORM/FAIL/INCONCLUSIVE, migración 0011) con candado en la activación de skills y harness (409 release_gate_blocked; override humano con force+reason auditado).
+- EXP-003, el primer experimento 100% automático, rechazó la v4 (Δ composite 0,007 < 0,02; el juez detectó además que v4 inventaba "notoriedad contrastada"). 0,14 €.
+- Incidente PM sin impacto (documentado): una verificación contra el contenedor sin redesplegar activó brevemente la v2; restaurada la v3 en ~3 min; 0 trazas afectadas; el VALIDATION de prospeccion-v1 queda gastado por EXP-003 (siguiente experimento: dataset v2 o etiquetas nuevas).
+- Decisión de coordinación: evaluaciones automáticas al tenant `experiments` (métricas humanas limpias por diseño); el filtro kind='HUMAN' en queries.ts queda documentado para la sesión externa que posee ese archivo.
+
 ## Sin publicar
 
 ### Documentación y herramientas

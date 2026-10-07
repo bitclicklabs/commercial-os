@@ -1,0 +1,52 @@
+{
+  "event": {
+    "date": "2026-10-26",
+    "name": "Gastrónoma 2026",
+    "type": "FAIR",
+    "location": "Valencia",
+    "source_url": "https://apps.feriavalencia.com/catalog/gastronoma/exhibitors"
+  },
+  "exhibitors": [
+    {
+      "name": "MisterRestaurant"
+    },
+    {
+      "name": "WATERCUT"
+    },
+    {
+      "name": "VERDE DIVINO",
+      "sector": "Aceite / Oil"
+    },
+    {
+      "name": "ONEKEG",
+      "sector": "Bebidas espirituosas / Spirit drinks,Bodegas, vinos y cavas / Celars, wines & cavas,Menaje / Household,Productos y servicios auxiliares / Products & auxiliary services,Maquinaria y mobiliario / Restaurant machinery and furniture,Otros / Others"
+    },
+    {
+      "name": "PRODUCTOS CHURRUCA, S.A."
+    },
+    {
+      "name": "TPV ÚNICO – KIOSKPOS – NUMIQA",
+      "sector": "Software,Servicios del sector / Sector services"
+    },
+    {
+      "name": "SORBETES Y GRANIZADOS"
+    },
+    {
+      "name": "PROAVA"
+    },
+    {
+      "name": "QUESOS DON EUSEBIO"
+    }
+  ],
+  "case_ids": [
+    "f5aacd8b-81b4-4dc4-9aa7-8ced8bb60c14",
+    "87f35ae4-5c6f-482e-81d1-1ebc25fe4678",
+    "0c2f9c2d-027c-4231-b4ba-cd9f68e642b3",
+    "a8df6e72-cd3b-4dd2-9989-005ec3ddba73",
+    "720d4a44-76f3-462d-b988-0816eaa350f0",
+    "9af9442f-bdf3-4595-9342-1df3fcf32a09",
+    "b36be110-4b30-44ac-a4d9-726a5f2b1ccb",
+    "02acd28f-78e3-4da8-b7a2-004213575759",
+    "bc495dbe-ee23-4834-95dd-125861e551d4"
+  ]
+}

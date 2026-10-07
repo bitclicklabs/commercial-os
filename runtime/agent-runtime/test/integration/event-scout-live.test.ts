@@ -277,7 +277,9 @@ describe.skipIf(!live)('Prospector scout live (Gemini grounding + web + Twenty +
         const hyp = await twenty.get<{ status: string; companyId: string }>(TWENTY_OBJECTS.commercialHypothesis, r.hypothesis_id!);
         expect(company!.domainName.primaryLinkUrl).toContain(r.domain!);
         expect(signal).toMatchObject({ signalType: 'FAIR', companyId: r.company_id });
-        expect(hyp).toMatchObject({ status: 'PROPOSED', companyId: r.company_id });
+        expect(hyp).toMatchObject({ companyId: r.company_id });
+        // A new hypothesis is PROPOSED; an existing one may already have been reviewed by a person (VALIDATED...).
+        if (r.status === 'hypothesis_created') expect(hyp!.status).toBe('PROPOSED');
         created.push({ name: company!.name, domain: r.domain!, companyCreated: r.company_created === true });
       }
       console.log('[scout-live] companies with domain from their profile', JSON.stringify(created, null, 2));

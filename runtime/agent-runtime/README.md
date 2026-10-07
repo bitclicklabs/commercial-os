@@ -656,7 +656,9 @@ El corte llega en el siguiente punto de control: una ficha en curso (10-15 s) o 
 
 El `agentRunSummary` pone primero los totales, el tiempo, el coste y los motivos, y después una línea por expositor: con un catálogo entero, las líneas por expositor superan los 4 000 caracteres del resumen y antes desplazaban los totales.
 
-Prueba en vivo del 2026-10-07 (`event_url = https://www.gastronoma.es`, Gemini y Twenty reales, renderer en Docker): 3 páginas de catálogo, 60 expositores evaluados, 56 relevantes, 10 fichas abiertas (las de mayor confianza), 6 dominios obtenidos y 6 empresas creadas en Twenty con señal `FAIR` e hipótesis `PROPOSED`. Las otras 4 fichas no publican web (`no_website`). Coste: 0,139 € (63 llamadas al LLM), unos 8 minutos.
+Prueba en vivo del catálogo completo (2026-10-07, `event_url = https://www.gastronoma.es`, Gemini y Twenty reales, pxos-renderer 0.2 en Docker, configuración por defecto): un render de 5 páginas (19 s, `pagination_stop = not_changed`) con la lista tomada de la API JSON (`POST /api/puisearch`, 91 de 91 nombres en la página, sin extracción del listado con el LLM); 91 expositores evaluados, 87 relevantes, 60 fichas abiertas (2 a la vez; las 22 restantes quedaron fuera por `max_profile_lookups`, no por tiempo), 29 dominios obtenidos: 23 empresas nuevas en Twenty con señal `FAIR` e hipótesis `PROPOSED` y 6 ya existentes (5 de ellas ya `VALIDATED` por un comercial). 93 llamadas al LLM, 0,195 €, 16,4 min de 20 (lectura 43 s, evaluación 7,5 min, fichas 7,1 min, escrituras 1,1 min).
+
+Prueba anterior (2026-10-07, tanda 5, renderer en Docker): 3 páginas de catálogo, 60 expositores evaluados, 56 relevantes, 10 fichas abiertas (las de mayor confianza), 6 dominios obtenidos y 6 empresas creadas en Twenty con señal `FAIR` e hipótesis `PROPOSED`. Las otras 4 fichas no publican web (`no_website`). Coste: 0,139 € (63 llamadas al LLM), unos 8 minutos.
 
 #### Coste esperado por feria
 

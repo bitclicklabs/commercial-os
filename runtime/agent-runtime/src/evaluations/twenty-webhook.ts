@@ -11,6 +11,7 @@
  */
 import { createHmac, timingSafeEqual } from 'node:crypto';
 import type { Db } from '../db/client.js';
+import type { EventPublisher } from '../events/event-bus.js';
 import {
   classifyHypothesisChange,
   passedOf,
@@ -102,6 +103,8 @@ export type WebhookOutcome =
 export interface ProcessOptions {
   defaultTenantId: string;
   dedupeWindowMs: number;
+  /** Publisher of `evaluation.recorded` (best-effort). */
+  events?: EventPublisher | undefined;
 }
 
 export function isHypothesisPayload(body: unknown): body is TwentyWebhookPayload {
@@ -152,6 +155,7 @@ export async function processTwentyWebhook(db: Db, payload: TwentyWebhookPayload
     occurredAt: Number.isNaN(occurredAt.getTime()) ? new Date() : occurredAt,
     idempotencyKey: `twenty:${payload.webhookId ?? 'unknown'}:${payload.eventName}:${hypothesisId}:${String(record.updatedAt ?? payload.eventDate ?? '')}`,
     dedupeWindowMs: opts.dedupeWindowMs,
+    companyId: typeof record.companyId === 'string' ? record.companyId : null,
     details: {
       from_status: decision.fromStatus,
       from_status_source: decision.fromStatusSource,
@@ -165,7 +169,7 @@ export async function processTwentyWebhook(db: Db, payload: TwentyWebhookPayload
       actor,
       twenty: { webhook_id: payload.webhookId ?? null, workspace_id: payload.workspaceId ?? null, event: payload.eventName, event_date: payload.eventDate ?? null },
     },
-  });
+  }, { events: opts.events });
   const e = result.evaluation;
   return {
     status: result.deduplicated ? 'deduplicated' : 'recorded',

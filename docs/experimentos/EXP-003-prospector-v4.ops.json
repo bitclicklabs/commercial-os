@@ -1,0 +1,22 @@
+{
+  "experiment": "EXP-003",
+  "skill": "prospector-event-exhibitors",
+  "base_version": 3,
+  "change_reason": "EXP-003 (primer experimento automático, pnpm experiment:run). v4 = v3 (ACTIVE) + OP7, una ADD menor derivada del juez del EXP-002: en docs/experimentos/EXP-002/evaluacion-v1-v3.md el juez COMMERCIAL_RELEVANCE puntuó con nivel 2 a TEMPLO CAFÉS y UNOX (v3, gastronoma-holdout-2, r1) porque la razón que supera el techo de confianza se apoya en 'conocimiento general' y no en un dato concreto. OP7 pide citar en reason el dato concreto que sustenta la notoriedad y, si no hay ninguno, no superar el techo. Cambio trivial pero honesto para probar el motor de experimentos de extremo a extremo; DRAFT: no se activa sin decisión humana y el Release Gate.",
+  "design_data": {
+    "evaluation": "docs/experimentos/EXP-002/evaluacion-v1-v3.md, notas del juez judge.commercial_relevance@1: TEMPLO CAFÉS (0,80, nivel 2) y UNOX (0,85, nivel 2), v3, gastronoma-holdout-2.json r1",
+    "burned": "gastronoma-holdout-2.json ya estaba quemado como validación de EXP-002 (registro src/datasets/exclusions.ts): pasa a ser, además, dato de diseño de OP7. No se usa para validar"
+  },
+  "validation_data": {
+    "dataset": "prospeccion-v1 (publiexpe): split VALIDATION que el runner reserva con markUsed (EXP-003, validation) y, como el split no tiene casos etiquetados, una muestra de forma de TRAIN sin quemar marcada igual",
+    "rule": "lo decide pnpm experiment:run (P5 operativo: un caso vetado no se sirve y un 409 aborta el experimento); TEST solo tras un PASS estricto"
+  },
+  "operations": [
+    {
+      "op": "ADD",
+      "anchor": "Solo superas el techo si la empresa es notoriamente conocida en su sector",
+      "text": "- Si superas el techo por notoriedad, cita además en \"reason\" el dato concreto que la sustenta (qué fabrica o vende, una marca o un producto reconocible, su posición en el sector), no solo «conocimiento general». Si no puedes citar ningún dato concreto, no superes el techo.",
+      "why": "OP7 (nueva en EXP-003). Hallazgo del juez del EXP-002: las dos razones de v3 que superan el techo con nombre y sector (TEMPLO CAFÉS 0,80; UNOX 0,85) se apoyan en «conocimiento general» sin decir qué dato conocido justifica la notoriedad; la rúbrica COMMERCIAL_RELEVANCE las deja en nivel 2 («la razón y la necesidad no se apoyan en los datos»). La regla rule.confidence_capped_by_data sigue exigiendo que la notoriedad se declare."
+    }
+  ]
+}

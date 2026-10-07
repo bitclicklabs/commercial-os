@@ -39,6 +39,7 @@ runtime/agent-runtime/
 │   ├── skills/               Skills versionadas (MVP-1): render, resolución desde la BD con fallback a las constantes, ciclo de estados
 │   ├── harness/              Harness versionado (MVP-1): config v1 por dimensiones, precedencia, resolución desde la BD con fallback y ciclo de estados
 │   ├── datasets/             Datasets de evaluación (MVP-2): cosecha de trazas y veredictos, split determinista, registro de exclusiones de EXP-001/EXP-002 y control de contaminación (markUsed)
+│   ├── experiments/          Experiments y Release Gate (MVP-2): runner de pnpm experiment:run, criterios del gate (seesaw, PASS_FORM), tabla experiments y candado de la activación
 │   ├── services/             Lanzamiento idempotente de TaskRuns
 │   └── worker/               RunProcessor, worker BullMQ, locks por entidad y reconciliador
 └── test/
@@ -155,6 +156,7 @@ El esquema vive en `src/db/schema.ts`. Todas las tablas llevan `tenant_id` (C6).
 | `0008_harness` | Tablas `harnesses` y `harness_versions` (triggers anti-`DELETE` y de contenido inmutable) y columnas `agent_versions.harness_ref` y `traces.harness`. SQL idempotente. La `0009` la reclama otra rama: la `0008` lleva `when` = `1791375700000`, entre la `0007` y la `0009` ([ADR-31](../../docs/LLD-0.3-estado-real.md#adr-31)) |
 | `0009_knowledge` | Tabla `knowledge_entries` (memoria semántica, LLD §6.4): triggers anti-`DELETE`, de transiciones válidas y de contenido inmutable fuera de `PROPOSED`/`VALIDATED`; CHECK que impide `ACTIVE` sin evidencia. SQL idempotente. La `0008` es de `feat/harness-v1` (`when` 1791375700000); la `0009` lleva `when` 1791375800000 e idx 9 (ADR-31) |
 | `0010_eval_datasets` | Tablas `evaluation_datasets` y `evaluation_cases` (LLD §11.4 y P5): triggers anti-`DELETE`, versión de dataset inmutable salvo el estado, caso inmutable salvo `used_by` (solo crece) y casos solo en datasets `DRAFT`. SQL idempotente. `when` 1791375900000 e idx 10; la `0011` la reserva la rama de experiments (ADR-31). Consulta [Datasets de evaluación](#datasets-de-evaluación) |
+| `0011_experiments` | Tabla `experiments` (LLD §11.5-11.6): triggers anti-`DELETE`, un experimento nace `DRAFT` o `RUNNING`, identidad y `config` inmutables, transiciones válidas y un experimento terminado (`COMPLETED`, `FAILED`, `CANCELLED`) inmutable entero. SQL idempotente. `when` 1791376000000 e idx 11. Consulta [Experiments y Release Gate](#experiments-y-release-gate) |
 
 Importante: el migrador de Drizzle aplica solo las migraciones con fecha posterior a la última aplicada. Si dos ramas generan migraciones en paralelo contra la misma BD de desarrollo, aplica primero la más antigua o regenera la nueva tras el merge.
 
@@ -236,13 +238,14 @@ Cabecera opcional `x-tenant-id` en todas las rutas. Las respuestas usan `snake_c
 | `GET /skills`, `GET /skills/:id` | Lista de skills o detalle con versiones. `:id` admite el uuid o el nombre |
 | `POST /skills` | Crea la skill y su versión 1 en `DRAFT` |
 | `POST /skills/:id/versions` | Versión nueva en `DRAFT`, desde texto o copiando la activa (`copy_from`) |
-| `POST /skills/:id/versions/:v/activate` | La versión pasa a `ACTIVE` y la anterior a `DEPRECATED`, en una transacción |
+| `POST /skills/:id/versions/:v/activate` | La versión pasa a `ACTIVE` y la anterior a `DEPRECATED`, en una transacción. Pasa por el [Release Gate](#experiments-y-release-gate): exige un experimento `PASS`/`PASS_FORM` o `{ force: true, reason }` (`409 release_gate_blocked` si no) |
 | `POST /skills/:id/versions/:v/deprecate` | `DRAFT` a `DEPRECATED`; sobre la `ACTIVE`, vuelve a la versión activa anterior. No hay `DELETE` |
 | `GET /datasets`, `GET /datasets/:id` | Datasets de evaluación con conteos por split. Consulta [Datasets de evaluación](#datasets-de-evaluación) |
 | `POST /datasets`, `POST /datasets/:id/build` | Cosecha y crea la v1, o la versión siguiente. Nunca modifica una versión |
 | `GET /datasets/:id/cases`, `GET /datasets/:id/fixtures` | Casos de un split sin los vetados por P5; `fixtures` en el formato de `skill:compare` |
 | `POST /datasets/:id/mark-used` | Registra qué experimento usó qué casos y en qué papel (`design`, `validation`, `test`) |
 | `POST /datasets/:id/activate`, `/archive` | Ciclo de vida de una versión. No hay `DELETE` |
+| `GET /experiments`, `GET /experiments/:id` | Experimentos (solo lectura; `:id` admite el uuid o `EXP-003`). Filtros `subject_type`, `subject_name`, `candidate_version`, `status`. Consulta [Experiments y Release Gate](#experiments-y-release-gate) |
 
 ### Idempotencia
 
@@ -576,11 +579,13 @@ Si una ref no se resuelve (la skill no existe, la versión no existe, no hay ver
 
    La versión se crea en `DRAFT`. La respuesta incluye `warnings` si `instructions` no contiene la regla de contenido web no confiable (`UNTRUSTED_SYSTEM_RULE`).
 
-1. Actívala. La versión anterior pasa a `DEPRECATED` en la misma transacción:
+1. Pásala por un experimento (`pnpm experiment:run`, consulta [Experiments y Release Gate](#experiments-y-release-gate)) y, si el gate da `PASS` o `PASS_FORM` y la persona responsable lo decide, actívala. La versión anterior pasa a `DEPRECATED` en la misma transacción:
 
    ```sh
    curl -s -X POST localhost:4020/skills/prospector-event-exhibitors/versions/2/activate
    ```
+
+   Sin experimento que la respalde, la llamada responde `409 release_gate_blocked`. Una persona puede forzarla con `-H 'content-type: application/json' -d '{"force": true, "reason": "…", "by": "…"}'`.
 
 1. Para volver atrás, depreca la versión activa. Se reactiva la versión anterior con número menor que se activó más recientemente:
 
@@ -893,6 +898,89 @@ pnpm dataset:build --name prospeccion-v1 --domain prospeccion --tenant publiexpe
 
 ```sh
 DATABASE_URL=postgres://agentos:agentos_dev@127.0.0.1:5440/agentos_wt10_datasets pnpm vitest run test/integration/datasets.test.ts
+```
+
+## Experiments y Release Gate
+
+Un experimento (LLD v0.1 §11.5) compara la versión `ACTIVE` de una skill (baseline) con una candidata sobre los mismos casos y deja la decisión del Release Gate (§11.6). La activación de una versión pasa por ese gate: ningún agente se promueve a producción a sí mismo (§19). `pnpm experiment:run` hace de forma automática lo que EXP-001 y EXP-002 hicieron a mano.
+
+### Tabla `experiments`
+
+`id`, `tenant_id`, `name` (`EXP-NNN`, numerado por tenant a partir de `EXP-003`: EXP-001 y EXP-002 fueron manuales), `number`, `subject_type` (`skill` | `harness`), `subject_name`, `baseline_version`, `candidate_version`, `dataset_id`, `splits` (casos usados por split y papel, con el resultado de `markUsed`), `config` (versiones con su `content_hash`, dataset, presupuesto, repeticiones, modelos, catálogo de evaluadores con sus hashes y criterios del gate), `metrics` (por fase y por versión: composite, dimensiones, cada evaluador, decisiones, accuracy, tokens y coste), `gate_result` (cada criterio con baseline, candidata, umbral y resultado), `decision` (`PASS`, `PASS_FORM`, `FAIL`, `INCONCLUSIVE`), `status` (`DRAFT` → `RUNNING` → `COMPLETED` | `FAILED` | `CANCELLED`), `cost_eur`, `error`, `started_at`, `finished_at`, `created_at`, `created_by`.
+
+Reglas que aplica la BD (migración `0011_experiments`): sin `DELETE`; un experimento nace `DRAFT` o `RUNNING` (nunca con un resultado ya escrito); identidad y `config` inmutables desde la creación; `decision` existe si y solo si el estado es `COMPLETED`; y un experimento terminado es inmutable entero.
+
+### `pnpm experiment:run`
+
+```sh
+# Simulación: versiones, dataset, casos que reservaría y modo del gate. No escribe nada.
+pnpm experiment:run --subject skill:prospector-event-exhibitors --candidate 4 --dry-run
+# Experimento real (Gemini; escribe en DATABASE_URL)
+pnpm experiment:run --subject skill:prospector-event-exhibitors --candidate 4 --dataset prospeccion-v1 --budget 0.30 --today 2026-10-07
+```
+
+| Opción | Por defecto | Descripción |
+|---|---|---|
+| `--subject skill:<nombre>` | — | Sujeto. Hoy solo hay runner para `prospector-event-exhibitors` (la maquinaria de `skill:compare`) |
+| `--candidate <v>` | — | Versión candidata (no puede ser la `ACTIVE`, que es la baseline) |
+| `--dataset` | `prospeccion-v1` | Nombre (versión `ACTIVE`, o la última no archivada) o uuid |
+| `--budget` | `0.30` | Presupuesto total en euros: ejecutor + juez |
+| `--judge-budget` | un tercio de `--budget` | Parte del juez; el resto es del ejecutor |
+| `--repeat` | `2` | Ejecuciones por versión (1-5), alternando el orden |
+| `--form-sample` | `auto` | En modo forma, casos de `TRAIN` sin quemar que se añaden: `auto` (los que permite el presupuesto, con un 20 % de margen), un número o `0` |
+| `--test-on-form` | no | Gastar `TEST` también tras un `PASS_FORM` |
+| `--min-delta`, `--max-cost-ratio`, `--seesaw-tolerance` | `0.02`, `1.25`, `0` | Criterios del gate |
+| `--no-judge`, `--judge-model` | juez `gemini-pro-latest` | Sin juez el composite redistribuye su peso |
+| `--today AAAA-MM-DD` | hoy | Fecha que ve el agente |
+| `--out-dir` | `docs/experimentos` | Escribe `EXP-NNN-auto/informe.md`, `informe.json` y `fixtures/` |
+
+Qué hace, en orden:
+
+1. Crea `EXP-NNN` con la `config` inmutable y lo pasa a `RUNNING`.
+1. **Reserva los casos (P5).** Pide al servicio de datasets el split `VALIDATION` que este experimento puede usar y lo marca con `markUsed` (`validation`) **antes** de ejecutar nada. Un `409` de contaminación aborta el experimento (`FAILED`, sin marcar nada: `markUsed` es todo o nada). Si el split no tiene casos etiquetados, añade la muestra de forma (casos de `TRAIN` que nadie ha usado, elegidos por hash del experimento y marcados igual, con una nota).
+1. **Ejecuta** baseline y candidata con la maquinaria de `skill:compare`: proveedor real, configuración del agente del seed, un FakeTwenty nuevo por ejecución (nada llega a Twenty) y presupuesto compartido.
+1. **Evalúa** con el pipeline de evaluadores (RULEs, juez con su presupuesto y COMPOSITE) y guarda las evaluaciones en el tenant `experiments`.
+1. **Release Gate** sobre `VALIDATION`. Solo un `PASS` estricto (con etiquetas) reserva y ejecuta `TEST` (marcado `test`); la decisión final es la más débil de las fases. Un `PASS_FORM` no gasta `TEST` salvo `--test-on-form`: es el último dato limpio.
+1. Escribe el informe y cierra el experimento en `COMPLETED`. Nunca activa nada.
+
+Código de salida: `0` con `PASS`/`PASS_FORM`, `3` con `FAIL`/`INCONCLUSIVE`, `4` si el experimento se aborta (contaminación o sin casos), `2` si los argumentos no son válidos.
+
+### Criterios del gate
+
+| Criterio | Default | Notas |
+|---|---|---|
+| `composite_delta` | composite(candidata) ≥ composite(baseline) + 0,02 | Composite del grupo de cada versión (todos sus casos y repeticiones) |
+| `hard_failures` | 0 en la candidata | Casos que incumplen un evaluador duro + umbrales por dimensión (§11.3) |
+| `seesaw` | 0 regresiones | Ninguna regla (RULE/EXACT) que la baseline resolvía con 1,0 puede bajar en la candidata; si deja de aplicar, también cuenta como regresión. Una regresión es de su dimensión y hace `FAIL` aunque el composite suba |
+| `cost_per_decision` | ≤ baseline × 1,25 | Coste del ejecutor por decisión |
+| `accuracy` | ≥ baseline | Solo si el split tiene casos etiquetados (veredicto humano o descarte estructural). Una decisión acierta si coincide en `relevant`, `writable` y, en un descarte estructural, `confidence ≤ confidence_max` |
+
+Orden de la decisión: un fallo duro es siempre `FAIL`; si no, una medición incompleta (presupuesto del ejecutor agotado, el juez puntuó una versión y no la otra, sin composite) es `INCONCLUSIVE`; si no, cualquier criterio incumplido es `FAIL`; si no, `PASS` (con etiquetas) o `PASS_FORM`.
+
+> **Importante — `PASS_FORM`:** con 0 casos etiquetados en el split (la realidad de `prospeccion-v1` hoy: los 5 veredictos reales están quemados como diseño del EXP-001), el gate opera en **modo forma**: comprueba reglas, juez, coste y regresiones, pero no puede medir si las decisiones aciertan. `PASS_FORM` basta para activar sin `force`, y el experimento queda registrado como pendiente de re-validar cuando haya etiquetas. El informe y la respuesta de la activación lo dicen (`revalidate: true`).
+
+La latencia (§11.6, `latency <= max_latency`) aún no es criterio: `skill:compare` no la mide por decisión.
+
+### Candado en la activación
+
+`POST /skills/:id/versions/:v/activate` (y `POST /harnesses/:id/versions/:v/activate`) comprueba el gate dentro de la transacción de activación, después de bloquear la fila:
+
+| Caso | Resultado | `gate.mode` |
+|---|---|---|
+| La versión ya es `ACTIVE` | `200`, `changed: false` | `noop` |
+| La versión estuvo `ACTIVE` antes (rollback) | `200` | `rollback` |
+| Último experimento `COMPLETED` de esa versión **contra la versión activa actual** con `PASS` o `PASS_FORM` | `200` (`revalidate: true` si es `PASS_FORM`) | `experiment` |
+| Sin experimento, con `FAIL`/`INCONCLUSIVE`, o hecho contra otra baseline | `409 release_gate_blocked` con los experimentos encontrados | — |
+| Lo anterior con `{ "force": true, "reason": "≥ 10 caracteres", "by": "…" }` | `200`, línea `WARN` en el log con motivo y autor | `override` |
+
+El humano puede forzar; el sistema no: ningún código del runtime llama a `activate`, y `experiment:run` nunca activa. La API no tiene autenticación, así que el override es auditable (log y respuesta), no imposible. Una skill nueva (v1 sin versión activa) no tiene baseline y necesita `force`. Las harness todavía no tienen runner de experimentos: una versión de harness que nunca estuvo activa se activa hoy solo con `force`.
+
+### Tests
+
+`test/unit/experiments-gate.test.ts` fija cada criterio, el seesaw, el modo forma, el orden de la decisión, la accuracy contra etiquetas, la muestra de forma y el cuerpo del override. `test/integration/experiments.test.ts` ejecuta el runner con proveedores guionizados (sin red) contra una BD propia: `PASS_FORM` con muestra de forma, contaminación (`409` → `FAILED`), `PASS` con `TEST`, `FAIL` por accuracy sin tocar `TEST`, inmutabilidad, y el candado (bloqueo, `PASS_FORM`, baseline obsoleta, override, rollback):
+
+```sh
+DATABASE_URL=postgres://agentos:agentos_dev@127.0.0.1:5440/agentos_wt10_experiments pnpm vitest run test/integration/experiments.test.ts
 ```
 
 ## Research
@@ -1900,8 +1988,9 @@ Solo cuenta los envíos desde Twenty: los del webmail van aparte. El dashboard m
 - Validación de URL en campos de texto libre contra las fuentes del trace (LLD v0.2 sección 10.4, punto 4) en el modo directo: el modo scout ya la aplica con su `SourceLedger`.
 - Eventos aún no emitidos: `task.failed` cuando el reconciliador cierra un huérfano, cancelaciones y `signal.detected`.
 - Borradores de email: disparar también con `EDITED` (necesita una segunda tarea o un operador OR en el filtro), plantillas por sector y registro de si el comercial envió el borrador. Entrada de eventos externos (Twenty, n8n) por HTTP y entrega a n8n por webhook.
-- Harness, memoria y verificador reales; promote, rollback y evaluate. Skills: versionadas en BD (MVP-1), falta el optimizador (operaciones acotadas, experimentos y gate de validación), `workflow` y `optimization_budget` del LLD §6.3 y la comprobación del `content_hash` al cargar.
+- Harness, memoria y verificador reales; promote, rollback y evaluate. Skills: versionadas en BD (MVP-1) con experimentos y Release Gate (MVP-2); falta el optimizador automático, `workflow` y `optimization_budget` del LLD §6.3 y la comprobación del `content_hash` al cargar.
 - Borradores de email: disparar también con `EDITED` (necesita una segunda tarea o un operador OR en el filtro), plantillas por sector y registro de si el comercial envió el borrador. (Hecho: la entrada de eventos externos por HTTP y la entrega a n8n por webhook, consulta [Eventos externos](#eventos-externos).)
 - Harness, skills, memoria y verificador reales; promote, rollback y evaluate.
 - Export de los contratos zod a JSON Schema versionado en `schemas/`.
+- Experiments: runner para harness (hoy activar una harness nueva exige `force`), criterio de latencia, re-validación automática de los `PASS_FORM` cuando el dataset tenga etiquetas en VALIDATION/TEST, y registrar los overrides también en el log de eventos (hoy van al log del proceso y a la respuesta).
 - Métricas: AC-17 y AC-18 piden hipótesis `HOT`, pero el resumen de ejecución solo cuenta hipótesis creadas; falta el desglose por prioridad (en Twenty o en `output.counters`). El dashboard oculta por defecto los agentes `ARCHIVED` (los de prueba se archivan con `pnpm cleanup:archive-test-agents`); `include_archived=true` los muestra.

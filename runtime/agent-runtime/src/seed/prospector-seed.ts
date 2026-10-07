@@ -58,8 +58,8 @@ export function desiredProspectorVersion() {
         // Direct: 50 exhibitors x (upsert + signal + hypothesis, or find) + summary.
         // Scout: 3 fairs x 20 exhibitors x 3 + fetches + renders + event signals + summary.
         max_calls_per_execution: 240,
-        // fetch_url: 16 pages/PDFs + 3 grounding redirects (+1 margin); render_url: 3 renders (+1).
-        max_calls_per_tool: { fetch_url: 20, render_url: 4 },
+        // fetch_url: 18 pages/PDFs + 3 grounding redirects (+1); render_url: 4 renders (+1).
+        max_calls_per_tool: { fetch_url: 22, render_url: 5 },
       },
       min_confidence: 0.5,
       usd_to_eur: DEFAULT_USD_TO_EUR,
@@ -69,9 +69,9 @@ export function desiredProspectorVersion() {
         task_name: SCOUT_TASK_NAME,
         max_events: 3,
         max_exhibitors_per_event: 20,
-        max_fetches: 16,
-        max_pages_per_event: 2,
-        max_renders: 3,
+        max_fetches: 18,
+        max_pages_per_event: 3,
+        max_renders: 4,
         max_pdfs_per_event: 2,
         max_redirect_resolutions: 3,
         event_signal_confidence: 0.5,

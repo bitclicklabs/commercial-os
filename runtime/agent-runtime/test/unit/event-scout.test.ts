@@ -424,8 +424,8 @@ describe('seed: weekly-event-scouting', () => {
     expect(desiredTask({ a: 1 })).toMatchObject({ schedule: { type: 'CRON', expression: '0 8 * * *' }, timezone: 'Europe/Madrid', defaultInput: { a: 1 } });
     const cfg = desiredProspectorVersion().configuration as { scout: Record<string, unknown>; tool_policy: { max_calls_per_tool: Record<string, number> } };
     expect(cfg.scout).toMatchObject({ task_name: 'weekly-event-scouting', max_events: 3 });
-    expect(cfg.tool_policy.max_calls_per_tool).toEqual({ fetch_url: 20, render_url: 4 });
-    expect(cfg.scout).toMatchObject({ max_fetches: 16, max_renders: 3, max_pdfs_per_event: 2 });
+    expect(cfg.tool_policy.max_calls_per_tool).toEqual({ fetch_url: 22, render_url: 5 });
+    expect(cfg.scout).toMatchObject({ max_fetches: 18, max_pages_per_event: 3, max_renders: 4, max_pdfs_per_event: 2 });
     expect(desiredProspectorVersion().skillRefs.map((s) => s.skill_id)).toEqual(['prospector-event-exhibitors', 'event-source-discovery']);
   });
 });
@@ -611,5 +611,59 @@ describe('scout: JavaScript catalogs (render_url) and PDF catalogs', () => {
     ]);
     const sources = fake.tables.commercialSignals.map((s) => (s.sourceUrl as { primaryLinkUrl: string }).primaryLinkUrl).sort();
     expect(sources).toEqual(['https://feria.example/catalogo-expositores.pdf', 'https://feria.example/expositores']);
+  });
+});
+
+describe('scout: the real Gastrónoma chain (static home -> JS catalog home -> JS exhibitor list)', () => {
+  it('follows the exhibitor link found in a RENDERED page and renders the list too (3 pages, 2 renders)', async () => {
+    const SPA = '<!doctype html><html><head><title>es.prodevelop.feriavalencia.catalog</title><script src="/catalog/js/app.js"></script></head><body><div id="app"></div></body></html>';
+    const web = new FakeWeb()
+      .page('https://www.gastronoma.es/', '<title>Home 26 - Gastrónoma</title><p>Gastrónoma 2026, 26-28 octubre, Feria Valencia</p><a href="https://apps.feriavalencia.com/catalog/gastronoma/home">Catálogo</a>')
+      .page('https://apps.feriavalencia.com/catalog/gastronoma/home', SPA)
+      .page('https://apps.feriavalencia.com/catalog/gastronoma/exhibitors', SPA);
+    const renderer = new FakeRenderer()
+      .page('https://apps.feriavalencia.com/catalog/gastronoma/home', {
+        title: 'Inicio | GASTRÕNOMA 2026',
+        text: 'Catálogo de expositores\nMarketplace de productos\nInicio',
+        links: [{ url: 'https://apps.feriavalencia.com/catalog/gastronoma/exhibitors', text: 'Catálogo de expositores' }],
+      })
+      .page('https://apps.feriavalencia.com/catalog/gastronoma/exhibitors', {
+        title: 'Catálogo de expositores | GASTRÕNOMA 2026',
+        text: 'Catálogo de expositores\nNombre Sectores País\nALBONS CHOCOLATES\nEspaña\nARCECARNE\nAlimentación / Food\nEspaña\n1 - 20 de 91',
+        links: [{ url: 'https://apps.feriavalencia.com/catalog/gastronoma/exhibitors/36157', text: '' }],
+      });
+    const { ctx, agent, provider } = setup(
+      [
+        extract({ page_kind: 'event_home', exhibitors_page_url: 'https://apps.feriavalencia.com/catalog/gastronoma/home', event: { name: 'Mediterránea Gastrónoma 2026', start_date: '2026-10-26', end_date: '2026-10-28', city: 'Valencia' } }),
+        extract({ page_kind: 'event_home', exhibitors_page_url: 'https://apps.feriavalencia.com/catalog/gastronoma/exhibitors' }),
+        extract({
+          exhibitors: [
+            { name: 'ALBONS CHOCOLATES', domain: null, description: null, sector: null },
+            { name: 'ARCECARNE', domain: null, description: null, sector: 'Alimentación' },
+          ],
+        }),
+        relevant(0.8),
+        IRRELEVANT,
+      ],
+      { web, renderer, input: { event_url: 'https://www.gastronoma.es/' } },
+    );
+    const out = (await agent.run(ctx)).output as unknown as Out;
+    expect(renderer.requests.map((r) => r.url)).toEqual(['https://apps.feriavalencia.com/catalog/gastronoma/home', 'https://apps.feriavalencia.com/catalog/gastronoma/exhibitors']);
+    const ev = out.events[0]! as unknown as { status: string; source_url: string; pages: Array<{ via: string; url: string; code?: string }>; results: Array<{ name: string; status: string }> };
+    expect(ev.pages.map((p) => [p.via, p.url, p.code ?? null])).toEqual([
+      ['fetch', 'https://www.gastronoma.es/', null],
+      ['fetch', 'https://apps.feriavalencia.com/catalog/gastronoma/home', 'JS_APP_SHELL'],
+      ['render', 'https://apps.feriavalencia.com/catalog/gastronoma/home', null],
+      ['fetch', 'https://apps.feriavalencia.com/catalog/gastronoma/exhibitors', 'JS_APP_SHELL'],
+      ['render', 'https://apps.feriavalencia.com/catalog/gastronoma/exhibitors', null],
+    ]);
+    expect(ev).toMatchObject({ status: 'exhibitors_processed', source_url: 'https://apps.feriavalencia.com/catalog/gastronoma/exhibitors' });
+    // The list has no websites: relevant exhibitors without a verified domain are never created in Twenty.
+    expect(ev.results.map((r) => [r.name, r.status])).toEqual([
+      ['ALBONS CHOCOLATES', 'skipped_no_domain'],
+      ['ARCECARNE', 'discarded_irrelevant'],
+    ]);
+    expect(provider.requests).toHaveLength(5);
+    expect(out.counters).toMatchObject({ renders: 2, renders_ok: 2, fetches: 3 });
   });
 });

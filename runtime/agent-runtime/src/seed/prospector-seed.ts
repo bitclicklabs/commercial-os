@@ -84,7 +84,7 @@ export function desiredProspectorVersion() {
         max_renders: 4,
         max_pdfs_per_event: 2,
         max_catalog_pages: 3,
-        max_profile_lookups: 10,
+        max_profile_lookups: 20,
         max_redirect_resolutions: 3,
         event_signal_confidence: 0.5,
         verify_unsourced_by_fetch: true,

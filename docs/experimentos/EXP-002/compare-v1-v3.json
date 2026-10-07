@@ -1,0 +1,3208 @@
+{
+  "skill": "prospector-event-exhibitors",
+  "versions": [
+    1,
+    3
+  ],
+  "spent_eur": 0.10669503999999999,
+  "budget_eur": 0.15,
+  "crm_writes": 8,
+  "reports": [
+    {
+      "fixture": "test/fixtures/organismos-publicos-sinteticos.json",
+      "report": {
+        "skill": "prospector-event-exhibitors",
+        "generated_at": "2026-10-07T14:06:17.097Z",
+        "today": "2026-10-07",
+        "model": "gemini-flash-latest",
+        "input_sha256": "a5c9a330b56c7129f4645baca511140764d9cedfcb05e82b44bbdf73f0e8217c",
+        "event": "Expo Alimentaria Ibérica 2026",
+        "exhibitors": 2,
+        "repeat": 2,
+        "versions": [
+          {
+            "version": 1,
+            "status": "ACTIVE",
+            "skillVersionId": "c204154d-3cc0-4d99-80be-5891bd1359e2",
+            "contentHash": "bb29d60415e9d7a48be6bb3360a8506dc5f60f92cdec89edbc5cf3c77012518e"
+          },
+          {
+            "version": 3,
+            "status": "DRAFT",
+            "skillVersionId": "317ee89f-0bff-4525-83b5-ae49dbe03119",
+            "contentHash": "f8078d67b891e10a53d790f36425a4405fb667ddfe7345e09414be1a528a5a36"
+          }
+        ],
+        "runs": [
+          {
+            "version": 1,
+            "repetition": 1,
+            "decisions": [
+              {
+                "exhibitor": "DIPUTACIÓN PROVINCIAL DE MONTEALTO",
+                "dataLevel": "sector",
+                "status": "discarded_irrelevant",
+                "relevant": false,
+                "confidence": 0.05,
+                "writable": false,
+                "reason": "Se trata de un organismo público (Diputación Provincial) que gestiona sus compras a través de licitaciones públicas oficiales, quedando fuera del circuito comercial directo de PubliEXPE.",
+                "hypothesis": null,
+                "usage": {
+                  "inputTokens": 1629,
+                  "outputTokens": 71,
+                  "cachedTokens": 0
+                },
+                "cost": 0.001488,
+                "attempts": 1
+              },
+              {
+                "exhibitor": "Mercamontealto, Unidad Alimentaria de Montealto S.A.",
+                "dataLevel": "rich",
+                "status": "discarded_irrelevant",
+                "relevant": false,
+                "confidence": 0.05,
+                "writable": false,
+                "reason": "Se trata de una sociedad de capital íntegramente público que gestiona sus compras mediante licitación pública sujeta a la LCSP. Queda explícitamente fuera del circuito de prospección comercial directa de PubliEXPE.",
+                "hypothesis": null,
+                "usage": {
+                  "inputTokens": 1716,
+                  "outputTokens": 82,
+                  "cachedTokens": 0
+                },
+                "cost": 0.001595,
+                "attempts": 1
+              }
+            ],
+            "usage": {
+              "inputTokens": 3345,
+              "outputTokens": 153,
+              "cachedTokens": 0
+            },
+            "costEur": 0.002651,
+            "llmCalls": 2,
+            "outcome": "SUCCESS",
+            "skillRecords": [
+              {
+                "name": "prospector-event-exhibitors",
+                "version": 1,
+                "skill_version_id": "c204154d-3cc0-4d99-80be-5891bd1359e2",
+                "content_hash": "bb29d60415e9d7a48be6bb3360a8506dc5f60f92cdec89edbc5cf3c77012518e",
+                "source": "db",
+                "requested": {
+                  "name": "prospector-event-exhibitors",
+                  "version": 1
+                }
+              }
+            ]
+          },
+          {
+            "version": 3,
+            "repetition": 1,
+            "decisions": [
+              {
+                "exhibitor": "DIPUTACIÓN PROVINCIAL DE MONTEALTO",
+                "dataLevel": "sector",
+                "status": "discarded_irrelevant",
+                "relevant": false,
+                "confidence": 0.05,
+                "writable": false,
+                "reason": "Se trata de un organismo público (Diputación Provincial) catalogado en el sector de instituciones públicas. La contratación en este tipo de entidades se realiza mediante licitación pública, quedando fuera del circuito comercial directo de PubliEXPE.",
+                "hypothesis": null,
+                "usage": {
+                  "inputTokens": 1940,
+                  "outputTokens": 80,
+                  "cachedTokens": 0
+                },
+                "cost": 0.001755,
+                "attempts": 1
+              },
+              {
+                "exhibitor": "Mercamontealto, Unidad Alimentaria de Montealto S.A.",
+                "dataLevel": "rich",
+                "status": "discarded_irrelevant",
+                "relevant": false,
+                "confidence": 0.05,
+                "writable": false,
+                "reason": "Se trata de una empresa de capital íntegramente público que adquiere suministros mediante licitación pública sujeta a la LCSP, fuera del circuito comercial directo de PubliEXPE.",
+                "hypothesis": null,
+                "usage": {
+                  "inputTokens": 2027,
+                  "outputTokens": 72,
+                  "cachedTokens": 0
+                },
+                "cost": 0.00179,
+                "attempts": 1
+              }
+            ],
+            "usage": {
+              "inputTokens": 3967,
+              "outputTokens": 152,
+              "cachedTokens": 0
+            },
+            "costEur": 0.003049,
+            "llmCalls": 2,
+            "outcome": "SUCCESS",
+            "skillRecords": [
+              {
+                "name": "prospector-event-exhibitors",
+                "version": 3,
+                "skill_version_id": "317ee89f-0bff-4525-83b5-ae49dbe03119",
+                "content_hash": "f8078d67b891e10a53d790f36425a4405fb667ddfe7345e09414be1a528a5a36",
+                "source": "db",
+                "requested": {
+                  "name": "prospector-event-exhibitors",
+                  "version": 3
+                }
+              }
+            ]
+          },
+          {
+            "version": 3,
+            "repetition": 2,
+            "decisions": [
+              {
+                "exhibitor": "DIPUTACIÓN PROVINCIAL DE MONTEALTO",
+                "dataLevel": "sector",
+                "status": "discarded_irrelevant",
+                "relevant": false,
+                "confidence": 0.05,
+                "writable": false,
+                "reason": "Se trata de un organismo público (Diputación Provincial) que gestiona sus compras mediante licitaciones públicas oficiales, fuera del circuito comercial directo de PubliEXPE.",
+                "hypothesis": null,
+                "usage": {
+                  "inputTokens": 1936,
+                  "outputTokens": 68,
+                  "cachedTokens": 0
+                },
+                "cost": 0.001707,
+                "attempts": 1
+              },
+              {
+                "exhibitor": "Mercamontealto, Unidad Alimentaria de Montealto S.A.",
+                "dataLevel": "rich",
+                "status": "discarded_irrelevant",
+                "relevant": false,
+                "confidence": 0.05,
+                "writable": false,
+                "reason": "Se trata de una empresa de capital íntegramente público que gestiona sus compras mediante licitación pública sujeta a la LCSP. Queda fuera del circuito de venta comercial directa de PubliEXPE.",
+                "hypothesis": null,
+                "usage": {
+                  "inputTokens": 2029,
+                  "outputTokens": 76,
+                  "cachedTokens": 0
+                },
+                "cost": 0.001807,
+                "attempts": 1
+              }
+            ],
+            "usage": {
+              "inputTokens": 3965,
+              "outputTokens": 144,
+              "cachedTokens": 0
+            },
+            "costEur": 0.003022,
+            "llmCalls": 2,
+            "outcome": "SUCCESS",
+            "skillRecords": [
+              {
+                "name": "prospector-event-exhibitors",
+                "version": 3,
+                "skill_version_id": "317ee89f-0bff-4525-83b5-ae49dbe03119",
+                "content_hash": "f8078d67b891e10a53d790f36425a4405fb667ddfe7345e09414be1a528a5a36",
+                "source": "db",
+                "requested": {
+                  "name": "prospector-event-exhibitors",
+                  "version": 3
+                }
+              }
+            ]
+          },
+          {
+            "version": 1,
+            "repetition": 2,
+            "decisions": [
+              {
+                "exhibitor": "DIPUTACIÓN PROVINCIAL DE MONTEALTO",
+                "dataLevel": "sector",
+                "status": "discarded_irrelevant",
+                "relevant": false,
+                "confidence": 0.05,
+                "writable": false,
+                "reason": "Se trata de un organismo público (Diputación Provincial) que gestiona sus compras mediante licitación oficial, quedando fuera del circuito comercial directo de PubliEXPE.",
+                "hypothesis": null,
+                "usage": {
+                  "inputTokens": 1631,
+                  "outputTokens": 67,
+                  "cachedTokens": 0
+                },
+                "cost": 0.001475,
+                "attempts": 1
+              },
+              {
+                "exhibitor": "Mercamontealto, Unidad Alimentaria de Montealto S.A.",
+                "dataLevel": "rich",
+                "status": "discarded_irrelevant",
+                "relevant": false,
+                "confidence": 0.05,
+                "writable": false,
+                "reason": "Se trata de una sociedad mercantil de capital íntegramente público que tramita sus compras mediante licitación pública sujeta a la LCSP. Por política de prospección, los organismos públicos quedan fuera del circuito comercial directo de PubliEXPE.",
+                "hypothesis": null,
+                "usage": {
+                  "inputTokens": 1718,
+                  "outputTokens": 84,
+                  "cachedTokens": 0
+                },
+                "cost": 0.001604,
+                "attempts": 1
+              }
+            ],
+            "usage": {
+              "inputTokens": 3349,
+              "outputTokens": 151,
+              "cachedTokens": 0
+            },
+            "costEur": 0.002648,
+            "llmCalls": 2,
+            "outcome": "SUCCESS",
+            "skillRecords": [
+              {
+                "name": "prospector-event-exhibitors",
+                "version": 1,
+                "skill_version_id": "c204154d-3cc0-4d99-80be-5891bd1359e2",
+                "content_hash": "bb29d60415e9d7a48be6bb3360a8506dc5f60f92cdec89edbc5cf3c77012518e",
+                "source": "db",
+                "requested": {
+                  "name": "prospector-event-exhibitors",
+                  "version": 1
+                }
+              }
+            ]
+          }
+        ],
+        "metrics": [
+          {
+            "version": 1,
+            "runs": 2,
+            "decisions": 4,
+            "errors": 0,
+            "relevant": 0,
+            "writable": 0,
+            "confidence_mean": 0.05,
+            "confidence_relevant_mean": null,
+            "irrelevant_high_confidence": 0,
+            "confidence_by_level": {
+              "name_only": {
+                "n": 0,
+                "mean": null,
+                "max": null
+              },
+              "sector": {
+                "n": 0,
+                "mean": null,
+                "max": null
+              },
+              "rich": {
+                "n": 0,
+                "mean": null,
+                "max": null
+              }
+            },
+            "hypotheses": 0,
+            "distinct_ranges_ratio": null,
+            "top_range": null,
+            "quantity_ratio_mean": null,
+            "quantity_ratio_over_2_5": 0,
+            "need_with_quantities": 0,
+            "unit_price_in_band": 0,
+            "name_only_flagged_inference": {
+              "n": 0,
+              "flagged": 0
+            },
+            "input_tokens": 6694,
+            "output_tokens": 304,
+            "cost_eur": 0.005299,
+            "cost_eur_per_decision": 0.001325
+          },
+          {
+            "version": 3,
+            "runs": 2,
+            "decisions": 4,
+            "errors": 0,
+            "relevant": 0,
+            "writable": 0,
+            "confidence_mean": 0.05,
+            "confidence_relevant_mean": null,
+            "irrelevant_high_confidence": 0,
+            "confidence_by_level": {
+              "name_only": {
+                "n": 0,
+                "mean": null,
+                "max": null
+              },
+              "sector": {
+                "n": 0,
+                "mean": null,
+                "max": null
+              },
+              "rich": {
+                "n": 0,
+                "mean": null,
+                "max": null
+              }
+            },
+            "hypotheses": 0,
+            "distinct_ranges_ratio": null,
+            "top_range": null,
+            "quantity_ratio_mean": null,
+            "quantity_ratio_over_2_5": 0,
+            "need_with_quantities": 0,
+            "unit_price_in_band": 0,
+            "name_only_flagged_inference": {
+              "n": 0,
+              "flagged": 0
+            },
+            "input_tokens": 7932,
+            "output_tokens": 296,
+            "cost_eur": 0.006071,
+            "cost_eur_per_decision": 0.001518
+          }
+        ],
+        "cases": [
+          {
+            "exhibitor": "DIPUTACIÓN PROVINCIAL DE MONTEALTO",
+            "dataLevel": "sector",
+            "byVersion": [
+              {
+                "version": 1,
+                "relevant": "0/2",
+                "writable": "0/2",
+                "confidence_mean": 0.05,
+                "confidences": [
+                  0.05,
+                  0.05
+                ],
+                "hypothesis": null,
+                "reason": "Se trata de un organismo público (Diputación Provincial) que gestiona sus compras mediante licitación oficial, quedando fuera del circuito comercial directo de PubliEXPE."
+              },
+              {
+                "version": 3,
+                "relevant": "0/2",
+                "writable": "0/2",
+                "confidence_mean": 0.05,
+                "confidences": [
+                  0.05,
+                  0.05
+                ],
+                "hypothesis": null,
+                "reason": "Se trata de un organismo público (Diputación Provincial) que gestiona sus compras mediante licitaciones públicas oficiales, fuera del circuito comercial directo de PubliEXPE."
+              }
+            ],
+            "confidence_delta": 0,
+            "writable_changed": false
+          },
+          {
+            "exhibitor": "Mercamontealto, Unidad Alimentaria de Montealto S.A.",
+            "dataLevel": "rich",
+            "byVersion": [
+              {
+                "version": 1,
+                "relevant": "0/2",
+                "writable": "0/2",
+                "confidence_mean": 0.05,
+                "confidences": [
+                  0.05,
+                  0.05
+                ],
+                "hypothesis": null,
+                "reason": "Se trata de una sociedad mercantil de capital íntegramente público que tramita sus compras mediante licitación pública sujeta a la LCSP. Por política de prospección, los organismos públicos quedan fuera del circuito comercial directo de PubliEXPE."
+              },
+              {
+                "version": 3,
+                "relevant": "0/2",
+                "writable": "0/2",
+                "confidence_mean": 0.05,
+                "confidences": [
+                  0.05,
+                  0.05
+                ],
+                "hypothesis": null,
+                "reason": "Se trata de una empresa de capital íntegramente público que gestiona sus compras mediante licitación pública sujeta a la LCSP. Queda fuera del circuito de venta comercial directa de PubliEXPE."
+              }
+            ],
+            "confidence_delta": 0,
+            "writable_changed": false
+          }
+        ],
+        "stability": [
+          {
+            "version": 1,
+            "confidence_mad": 0,
+            "relevant_flips": 0,
+            "writable_flips": 0
+          },
+          {
+            "version": 3,
+            "confidence_mad": 0,
+            "relevant_flips": 0,
+            "writable_flips": 0
+          }
+        ],
+        "total_cost_eur": 0.01137,
+        "budget_eur": 0.15,
+        "budget_exceeded": false
+      }
+    },
+    {
+      "fixture": "test/fixtures/gastronoma-holdout-2.json",
+      "report": {
+        "skill": "prospector-event-exhibitors",
+        "generated_at": "2026-10-07T14:09:22.605Z",
+        "today": "2026-10-07",
+        "model": "gemini-flash-latest",
+        "input_sha256": "2d1b2a463ec8a838d5b239639d80e5a8a6ae6a293455f7f3f6c81770158cdbfb",
+        "event": "Gastrónoma 2026",
+        "exhibitors": 8,
+        "repeat": 2,
+        "versions": [
+          {
+            "version": 1,
+            "status": "ACTIVE",
+            "skillVersionId": "c204154d-3cc0-4d99-80be-5891bd1359e2",
+            "contentHash": "bb29d60415e9d7a48be6bb3360a8506dc5f60f92cdec89edbc5cf3c77012518e"
+          },
+          {
+            "version": 3,
+            "status": "DRAFT",
+            "skillVersionId": "317ee89f-0bff-4525-83b5-ae49dbe03119",
+            "contentHash": "f8078d67b891e10a53d790f36425a4405fb667ddfe7345e09414be1a528a5a36"
+          }
+        ],
+        "runs": [
+          {
+            "version": 1,
+            "repetition": 1,
+            "decisions": [
+              {
+                "exhibitor": "MYBAOS SL",
+                "dataLevel": "name_only",
+                "status": "skipped_no_domain",
+                "relevant": true,
+                "confidence": 0.65,
+                "writable": true,
+                "reason": "Empresa privada del sector gastronómico exponiendo en Gastrónoma 2026, con necesidad habitual de textil y regalo promocional para feria. La información sobre su tamaño es limitada, pero su participación comercial justifica el contacto.",
+                "hypothesis": {
+                  "need": "Material promocional para captar clientes en stand y textil corporativo para el equipo de atención durante la feria Gastrónoma.",
+                  "why_now": "Gastrónoma 2026 se celebra el 26 de octubre, a menos de 3 semanas vista; nuestro taller propio permite producir y entregar a tiempo.",
+                  "quantity_min": 100,
+                  "quantity_max": 400,
+                  "budget_min_eur": 450,
+                  "budget_max_eur": 1800,
+                  "recommended_products": [
+                    "delantales personalizados",
+                    "bolsas tote de algodón",
+                    "camisetas o polos bordados",
+                    "libretas con bolígrafo"
+                  ],
+                  "timing": "IMMEDIATE",
+                  "differentiators": [
+                    "TALLER_PROPIO",
+                    "TRATO_CERCANO",
+                    "PRECIO"
+                  ]
+                },
+                "usage": {
+                  "inputTokens": 1618,
+                  "outputTokens": 306,
+                  "cachedTokens": 0
+                },
+                "cost": 0.002361,
+                "attempts": 1
+              },
+              {
+                "exhibitor": "PREZO",
+                "dataLevel": "name_only",
+                "status": "skipped_no_domain",
+                "relevant": true,
+                "confidence": 0.7,
+                "writable": true,
+                "reason": "Empresa privada de software de gestión para hostelería (Prezo) exponiendo en feria del sector gastronómico. No se aportan detalles de stand o tamaño en la ficha, pero tiene claro encaje comercial.",
+                "hypothesis": {
+                  "need": "Material promocional para captar clientes en su stand de Gastrónoma (hosteleros y restauradores), además de textil corporativo para su equipo comercial.",
+                  "why_now": "Gastrónoma 2026 se celebra en menos de 20 días (26 de octubre). Es urgente cerrar pedidos y nuestro taller propio permite asegurar entregas a tiempo.",
+                  "quantity_min": 250,
+                  "quantity_max": 1000,
+                  "budget_min_eur": 600,
+                  "budget_max_eur": 2200,
+                  "recommended_products": [
+                    "Libretas personalizadas",
+                    "Bolígrafos metálicos grabados",
+                    "Lanyards corporativos",
+                    "Polos o camisetas bordadas para el equipo",
+                    "Bolsas tote de algodón con logo"
+                  ],
+                  "timing": "IMMEDIATE",
+                  "differentiators": [
+                    "TALLER_PROPIO",
+                    "TRATO_CERCANO",
+                    "PRECIO"
+                  ]
+                },
+                "usage": {
+                  "inputTokens": 1618,
+                  "outputTokens": 332,
+                  "cachedTokens": 0
+                },
+                "cost": 0.002459,
+                "attempts": 1
+              },
+              {
+                "exhibitor": "QBO DELICIAS SL",
+                "dataLevel": "name_only",
+                "status": "skipped_no_domain",
+                "relevant": true,
+                "confidence": 0.65,
+                "writable": true,
+                "reason": "Empresa privada del sector gastronómico exponiendo en Gastrónoma 2026, lo que implica necesidad de merchandising y textil para el stand. La confianza es moderada debido a la falta de detalles sobre el tamaño de la empresa.",
+                "hypothesis": {
+                  "need": "Material promocional para obsequiar a visitantes y compradores en el stand, además de textil corporativo para el equipo de atención.",
+                  "why_now": "La feria Gastrónoma 2026 se celebra el 26 de octubre (en menos de tres semanas), por lo que contar con taller propio y plazos cortos de producción es fundamental para llegar a tiempo.",
+                  "quantity_min": 250,
+                  "quantity_max": 1000,
+                  "budget_min_eur": 600,
+                  "budget_max_eur": 2200,
+                  "recommended_products": [
+                    "Bolsas tote de algodón personalizadas",
+                    "Delantales serigrafiados",
+                    "Libretas de notas",
+                    "Bolígrafos ecológicos",
+                    "Polos bordados para el personal"
+                  ],
+                  "timing": "IMMEDIATE",
+                  "differentiators": [
+                    "TALLER_PROPIO",
+                    "TRATO_CERCANO",
+                    "PRECIO"
+                  ]
+                },
+                "usage": {
+                  "inputTokens": 1622,
+                  "outputTokens": 337,
+                  "cachedTokens": 0
+                },
+                "cost": 0.00248,
+                "attempts": 1
+              },
+              {
+                "exhibitor": "SERHS PROJECTS",
+                "dataLevel": "name_only",
+                "status": "skipped_no_domain",
+                "relevant": true,
+                "confidence": 0.75,
+                "writable": true,
+                "reason": "SERHS Projects es una empresa privada de equipamiento y proyectos de hostelería del grupo SERHS, con perfil B2B idóneo para stand en feria. Al faltar detalles sobre el tamaño del stand en los datos, la confianza se sitúa en 0,75.",
+                "hypothesis": {
+                  "need": "Material corporativo para los comerciales en el stand y detalles promocionales útiles orientados a profesionales de la hostelería y restauración.",
+                  "why_now": "Gastrónoma 2026 comienza en menos de 20 días (26 de octubre). Nuestro taller propio es el diferencial clave para personalizar y entregar pedidos urgentes a tiempo.",
+                  "quantity_min": 250,
+                  "quantity_max": 800,
+                  "budget_min_eur": 750,
+                  "budget_max_eur": 2800,
+                  "recommended_products": [
+                    "Bolsas tote de algodón personalizadas",
+                    "Libretas y blocs de notas corporativos",
+                    "Bolígrafos metálicos grabados",
+                    "Polos bordados para el equipo del stand",
+                    "Lanyards e identificadores"
+                  ],
+                  "timing": "IMMEDIATE",
+                  "differentiators": [
+                    "TALLER_PROPIO",
+                    "TRATO_CERCANO",
+                    "PRECIO"
+                  ]
+                },
+                "usage": {
+                  "inputTokens": 1613,
+                  "outputTokens": 348,
+                  "cachedTokens": 0
+                },
+                "cost": 0.002515,
+                "attempts": 1
+              },
+              {
+                "exhibitor": "TEMPLO CAFÉS",
+                "dataLevel": "sector",
+                "status": "skipped_no_domain",
+                "relevant": true,
+                "confidence": 0.85,
+                "writable": true,
+                "reason": "Empresa privada consolidada del sector de la alimentación (café Horeca) que expone en Gastrónoma 2026, con alta necesidad de material promocional para hostelería y visitantes del stand.",
+                "hypothesis": {
+                  "need": "Artículos promocionales de temática hostelera y de feria para obsequiar a profesionales del sector, clientes de hostelería y visitantes del stand en Gastrónoma.",
+                  "why_now": "Gastrónoma 2026 se celebra el 26 de octubre, a menos de 20 días vista; la rapidez y capacidad de respuesta de nuestro taller propio son clave para producir y entregar a tiempo.",
+                  "quantity_min": 300,
+                  "quantity_max": 1500,
+                  "budget_min_eur": 800,
+                  "budget_max_eur": 3500,
+                  "recommended_products": [
+                    "Tazas de cerámica personalizadas",
+                    "Delantales de barista con bordado o serigrafía",
+                    "Bolsas tote de algodón personalizadas",
+                    "Libretas y bolígrafos para notas de catas"
+                  ],
+                  "timing": "IMMEDIATE",
+                  "differentiators": [
+                    "TALLER_PROPIO",
+                    "TRATO_CERCANO",
+                    "PRECIO"
+                  ]
+                },
+                "usage": {
+                  "inputTokens": 1630,
+                  "outputTokens": 346,
+                  "cachedTokens": 0
+                },
+                "cost": 0.00252,
+                "attempts": 1
+              },
+              {
+                "exhibitor": "UNOX",
+                "dataLevel": "sector",
+                "status": "skipped_no_domain",
+                "relevant": true,
+                "confidence": 0.85,
+                "writable": true,
+                "reason": "UNOX es un fabricante multinacional líder de hornos profesionales con presencia comercial destacada en ferias gastronómicas. Necesitarán textil técnico para demostraciones en directo y regalos corporativos para distribuidores y chefs visitantes.",
+                "hypothesis": {
+                  "need": "Dotación de delantales y chaquetillas técnicas personalizadas para el equipo comercial y chefs de demostración en el stand, además de obsequios premium (libretas, botellas, bolsas) para clientes del sector HORECA.",
+                  "why_now": "La feria Gastrónoma 2026 se celebra el 26 de octubre, a menos de 20 días. Nuestro taller propio garantiza plazos de entrega exprés para que el material esté a tiempo.",
+                  "quantity_min": 300,
+                  "quantity_max": 1200,
+                  "budget_min_eur": 1500,
+                  "budget_max_eur": 5000,
+                  "recommended_products": [
+                    "delantales bordados para hostelería",
+                    "bolsas tote de algodón de alto gramaje",
+                    "libretas con bolígrafo para notas técnicas",
+                    "botellas térmicas reutilizables con marcado láser"
+                  ],
+                  "timing": "IMMEDIATE",
+                  "differentiators": [
+                    "TALLER_PROPIO",
+                    "TRATO_CERCANO",
+                    "PRECIO"
+                  ]
+                },
+                "usage": {
+                  "inputTokens": 1630,
+                  "outputTokens": 356,
+                  "cachedTokens": 0
+                },
+                "cost": 0.002558,
+                "attempts": 1
+              },
+              {
+                "exhibitor": "VINO CAÑAS Y BARRO - VIÑAS DEL PORTILLO",
+                "dataLevel": "sector",
+                "status": "skipped_no_domain",
+                "relevant": true,
+                "confidence": 0.75,
+                "writable": true,
+                "reason": "Bodega privada que expone en una feria gastronómica relevante, con necesidad clara de merchandising para catas, promociones y atención a profesionales del canal HORECA.",
+                "hypothesis": {
+                  "need": "Artículos promocionales específicos del sector vitivinícola para obsequiar a sumilleres, hosteleros y visitantes del stand, además de textil corporativo para el personal de cata.",
+                  "why_now": "La feria Gastrónoma 2026 se celebra en menos de 20 días (26 de octubre), por lo que nuestro taller propio es clave para garantizar plazos de entrega urgentes.",
+                  "quantity_min": 250,
+                  "quantity_max": 1000,
+                  "budget_min_eur": 600,
+                  "budget_max_eur": 2200,
+                  "recommended_products": [
+                    "Sacacorchos personalizados de doble palanca",
+                    "Bolsas de tela para botellas de vino",
+                    "Delantales bordados para sumiller",
+                    "Copas serigrafiadas para cata",
+                    "Lanyards para acreditaciones del equipo"
+                  ],
+                  "timing": "IMMEDIATE",
+                  "differentiators": [
+                    "TALLER_PROPIO",
+                    "TRATO_CERCANO",
+                    "PRECIO"
+                  ]
+                },
+                "usage": {
+                  "inputTokens": 1652,
+                  "outputTokens": 346,
+                  "cachedTokens": 0
+                },
+                "cost": 0.002537,
+                "attempts": 1
+              },
+              {
+                "exhibitor": "ZERO,O MIXERS",
+                "dataLevel": "name_only",
+                "status": "skipped_no_domain",
+                "relevant": true,
+                "confidence": 0.65,
+                "writable": true,
+                "reason": "Empresa del sector de bebidas y mixers que expone en Gastrónoma, con potencial necesidad de merchandising para hostelería y degustaciones en el stand.",
+                "hypothesis": {
+                  "need": "Artículos promocionales para promocionar sus bebidas (mixers) entre hosteleros y distribuidores, así como textil corporativo para el personal de barra del stand.",
+                  "why_now": "Gastrónoma 2026 se celebra el 26 de octubre (en menos de 3 semanas); la proximidad hace clave nuestro taller propio para producir y entregar a tiempo.",
+                  "quantity_min": 300,
+                  "quantity_max": 1000,
+                  "budget_min_eur": 600,
+                  "budget_max_eur": 2200,
+                  "recommended_products": [
+                    "Abridores y sacacorchos personalizados",
+                    "Vasos y copas reutilizables",
+                    "Camisetas o delantales bordados para el equipo",
+                    "Bolsas tote de algodón con logo"
+                  ],
+                  "timing": "IMMEDIATE",
+                  "differentiators": [
+                    "TALLER_PROPIO",
+                    "TRATO_CERCANO",
+                    "PRECIO"
+                  ]
+                },
+                "usage": {
+                  "inputTokens": 1615,
+                  "outputTokens": 321,
+                  "cachedTokens": 0
+                },
+                "cost": 0.002415,
+                "attempts": 1
+              }
+            ],
+            "usage": {
+              "inputTokens": 12998,
+              "outputTokens": 2692,
+              "cachedTokens": 0
+            },
+            "costEur": 0.017067,
+            "llmCalls": 8,
+            "outcome": "SUCCESS",
+            "skillRecords": [
+              {
+                "name": "prospector-event-exhibitors",
+                "version": 1,
+                "skill_version_id": "c204154d-3cc0-4d99-80be-5891bd1359e2",
+                "content_hash": "bb29d60415e9d7a48be6bb3360a8506dc5f60f92cdec89edbc5cf3c77012518e",
+                "source": "db",
+                "requested": {
+                  "name": "prospector-event-exhibitors",
+                  "version": 1
+                }
+              }
+            ]
+          },
+          {
+            "version": 3,
+            "repetition": 1,
+            "decisions": [
+              {
+                "exhibitor": "MYBAOS SL",
+                "dataLevel": "name_only",
+                "status": "skipped_no_domain",
+                "relevant": true,
+                "confidence": 0.55,
+                "writable": true,
+                "reason": "Por el nombre y su presencia en Gastrónoma parece una empresa privada del sector hostelero/alimentario (panes bao), pero solo disponemos del nombre social sin detalles de su stand.",
+                "hypothesis": {
+                  "need": "Unas 250 bolsas tote de algodón para repartir a profesionales del sector gastronómico y 10 delantales o camisetas personalizadas para el personal del stand.",
+                  "why_now": "Gastrónoma 2026 se celebra el 26 de octubre (en menos de tres semanas), por lo que nuestro taller propio y capacidad de respuesta rápida son clave para llegar a tiempo.",
+                  "quantity_min": 260,
+                  "quantity_max": 500,
+                  "budget_min_eur": 550,
+                  "budget_max_eur": 1200,
+                  "recommended_products": [
+                    "Bolsas tote de algodón personalizadas",
+                    "Delantales de cocina personalizados",
+                    "Camisetas serigrafiadas",
+                    "Libretas pequeñas con bolígrafo"
+                  ],
+                  "timing": "IMMEDIATE",
+                  "differentiators": [
+                    "TALLER_PROPIO",
+                    "TRATO_CERCANO"
+                  ]
+                },
+                "usage": {
+                  "inputTokens": 1929,
+                  "outputTokens": 315,
+                  "cachedTokens": 0
+                },
+                "cost": 0.002628,
+                "attempts": 1
+              },
+              {
+                "exhibitor": "PREZO",
+                "dataLevel": "name_only",
+                "status": "skipped_no_domain",
+                "relevant": true,
+                "confidence": 0.55,
+                "writable": true,
+                "reason": "Por el nombre y el contexto de Gastrónoma, parece tratarse del software de gestión de compras para hostelería Prezo, una empresa privada con stand. Al recibir solo el nombre sin datos adicionales, calculamos la hipótesis para un stand estándar de feria tecnológica/B2B.",
+                "hypothesis": {
+                  "need": "Unas 250 libretas con bolígrafo para demostraciones a hosteleros, 300 bolsas de tela para entregar documentación y 10 polos técnicos bordados para el equipo comercial.",
+                  "why_now": "Gastrónoma 2026 se celebra en menos de 20 días (26 de octubre), por lo que nuestro taller propio garantiza la personalización y entrega urgente a tiempo.",
+                  "quantity_min": 560,
+                  "quantity_max": 1100,
+                  "budget_min_eur": 950,
+                  "budget_max_eur": 2100,
+                  "recommended_products": [
+                    "bolsas tote de algodón personalizadas",
+                    "libretas con bolígrafo",
+                    "polos técnicos bordados",
+                    "lanyards personalizados"
+                  ],
+                  "timing": "IMMEDIATE",
+                  "differentiators": [
+                    "TALLER_PROPIO",
+                    "TRATO_CERCANO"
+                  ]
+                },
+                "usage": {
+                  "inputTokens": 1925,
+                  "outputTokens": 340,
+                  "cachedTokens": 0
+                },
+                "cost": 0.002719,
+                "attempts": 1
+              },
+              {
+                "exhibitor": "QBO DELICIAS SL",
+                "dataLevel": "name_only",
+                "status": "skipped_no_domain",
+                "relevant": true,
+                "confidence": 0.55,
+                "writable": true,
+                "reason": "Por el nombre y su presencia en Gastrónoma parece una empresa privada del sector alimentación/delicatessen; al no tener descripción ni web se presupone un stand de tamaño estándar y la confianza no supera 0,6.",
+                "hypothesis": {
+                  "need": "Unas 300 bolsas de tela o papel personalizadas para entregar muestras de producto a visitantes y 10 delantales o polos bordados para el personal del stand.",
+                  "why_now": "Gastrónoma 2026 se celebra el 26 de octubre (en menos de 20 días); la cercanía del evento exige la rapidez y flexibilidad de nuestro taller propio para cumplir plazos.",
+                  "quantity_min": 310,
+                  "quantity_max": 600,
+                  "budget_min_eur": 650,
+                  "budget_max_eur": 1400,
+                  "recommended_products": [
+                    "Bolsas tote de algodón personalizadas",
+                    "Delantales de hostelería bordados",
+                    "Polos técnicos bordados",
+                    "Libretas de notas con bolígrafo ecológico"
+                  ],
+                  "timing": "IMMEDIATE",
+                  "differentiators": [
+                    "TALLER_PROPIO",
+                    "TRATO_CERCANO",
+                    "PRECIO"
+                  ]
+                },
+                "usage": {
+                  "inputTokens": 1929,
+                  "outputTokens": 341,
+                  "cachedTokens": 0
+                },
+                "cost": 0.002726,
+                "attempts": 1
+              },
+              {
+                "exhibitor": "SERHS PROJECTS",
+                "dataLevel": "name_only",
+                "status": "skipped_no_domain",
+                "relevant": true,
+                "confidence": 0.55,
+                "writable": true,
+                "reason": "Por el nombre, parece la división de equipamiento y proyectos para hostelería del Grupo SERHS, con encaje directo en una feria como Gastrónoma. Al recibir únicamente el nombre, la confianza se mantiene prudente y dimensionada para un stand estándar.",
+                "hypothesis": {
+                  "need": "Unas 250 libretas con bolígrafo para reuniones con clientes del canal Horeca, 200 bolsas tote para catálogos y 15 camisas o polos bordados para el equipo técnico y comercial del stand.",
+                  "why_now": "Gastrónoma 2026 se celebra el 26 de octubre, a menos de 20 días vista; nuestro taller propio permite producir y entregar el material personalizado a tiempo sin retrasos.",
+                  "quantity_min": 465,
+                  "quantity_max": 750,
+                  "budget_min_eur": 1200,
+                  "budget_max_eur": 2100,
+                  "recommended_products": [
+                    "Bolsas tote de algodón personalizadas",
+                    "Libretas con bolígrafo a juego",
+                    "Polos bordados para personal",
+                    "Lanyards corporativos"
+                  ],
+                  "timing": "IMMEDIATE",
+                  "differentiators": [
+                    "TALLER_PROPIO",
+                    "TRATO_CERCANO"
+                  ]
+                },
+                "usage": {
+                  "inputTokens": 1930,
+                  "outputTokens": 351,
+                  "cachedTokens": 0
+                },
+                "cost": 0.002764,
+                "attempts": 1
+              },
+              {
+                "exhibitor": "TEMPLO CAFÉS",
+                "dataLevel": "sector",
+                "status": "skipped_no_domain",
+                "relevant": true,
+                "confidence": 0.8,
+                "writable": true,
+                "reason": "Templo Cafés es una marca líder y consolidada en el sector hostelero (Horeca) según conocimiento general, con presencia relevante y necesidades recurrentes de merchandising para hostelería.",
+                "hypothesis": {
+                  "need": "Unas 400 tazas térmicas o de cerámica grabadas para clientes y baristas, 300 delantales serigrafiados y 20 polos bordados para el personal del stand.",
+                  "why_now": "Gastrónoma 2026 se celebra en menos de tres semanas (26 de octubre); nuestro taller propio permite personalizar y entregar los pedidos con máxima urgencia.",
+                  "quantity_min": 720,
+                  "quantity_max": 1200,
+                  "budget_min_eur": 2800,
+                  "budget_max_eur": 5500,
+                  "recommended_products": [
+                    "delantales personalizados",
+                    "tazas de cerámica serigrafiadas",
+                    "polos bordados para equipo",
+                    "bolsas tote de algodón",
+                    "vasos térmicos reutilizables"
+                  ],
+                  "timing": "IMMEDIATE",
+                  "differentiators": [
+                    "TALLER_PROPIO",
+                    "PRECIO",
+                    "TRATO_CERCANO"
+                  ]
+                },
+                "usage": {
+                  "inputTokens": 1943,
+                  "outputTokens": 334,
+                  "cachedTokens": 0
+                },
+                "cost": 0.00271,
+                "attempts": 1
+              },
+              {
+                "exhibitor": "UNOX",
+                "dataLevel": "sector",
+                "status": "skipped_no_domain",
+                "relevant": true,
+                "confidence": 0.85,
+                "writable": true,
+                "reason": "Por conocimiento general, UNOX es un fabricante internacional referente de hornos profesionales de hostelería, con gran despliegue en ferias como Gastrónoma.",
+                "hypothesis": {
+                  "need": "Unas 400 bolsas de tela para catálogos y visitantes del stand, 300 libretas con bolígrafo para reuniones con hosteleros y distribuidores, y 20 delantales o chaquetillas técnicas bordadas para el equipo de cocina y demostraciones.",
+                  "why_now": "Gastrónoma 2026 se celebra el 26 de octubre, a menos de tres semanas vista; nuestro taller propio permite personalizar y entregar a tiempo con total agilidad.",
+                  "quantity_min": 720,
+                  "quantity_max": 1400,
+                  "budget_min_eur": 1800,
+                  "budget_max_eur": 3600,
+                  "recommended_products": [
+                    "Bolsas tote de algodón personalizadas",
+                    "Libretas con bolígrafo para notas comerciales",
+                    "Delantales de cocina bordados para showcookings",
+                    "Lanyards para el equipo técnico y comercial"
+                  ],
+                  "timing": "IMMEDIATE",
+                  "differentiators": [
+                    "TALLER_PROPIO",
+                    "TRATO_CERCANO",
+                    "PRECIO"
+                  ]
+                },
+                "usage": {
+                  "inputTokens": 1945,
+                  "outputTokens": 350,
+                  "cachedTokens": 0
+                },
+                "cost": 0.002771,
+                "attempts": 1
+              },
+              {
+                "exhibitor": "VINO CAÑAS Y BARRO - VIÑAS DEL PORTILLO",
+                "dataLevel": "sector",
+                "status": "skipped_no_domain",
+                "relevant": true,
+                "confidence": 0.7,
+                "writable": true,
+                "reason": "Bodega privada que expone en feria gastronómica relevante; al tener únicamente nombre y sector asumimos un stand de tamaño medio-pequeño.",
+                "hypothesis": {
+                  "need": "Unas 200 bolsas de tela o yute para botellas destinadas a compradores, 100 sacacorchos grabados con láser y 10 delantales o camisas bordadas para el personal del stand.",
+                  "why_now": "Gastrónoma 2026 se celebra el 26 de octubre (en menos de 20 días), por lo que nuestro taller propio es clave para garantizar la personalización urgente.",
+                  "quantity_min": 310,
+                  "quantity_max": 500,
+                  "budget_min_eur": 850,
+                  "budget_max_eur": 1600,
+                  "recommended_products": [
+                    "Bolsas de tela para botellas",
+                    "Sacacorchos personalizados con láser",
+                    "Delantales bordados",
+                    "Copas o catavinos serigrafiados",
+                    "Libretas de notas con bolígrafo"
+                  ],
+                  "timing": "IMMEDIATE",
+                  "differentiators": [
+                    "TALLER_PROPIO",
+                    "TRATO_CERCANO",
+                    "PRECIO"
+                  ]
+                },
+                "usage": {
+                  "inputTokens": 1963,
+                  "outputTokens": 330,
+                  "cachedTokens": 0
+                },
+                "cost": 0.00271,
+                "attempts": 1
+              },
+              {
+                "exhibitor": "ZERO,O MIXERS",
+                "dataLevel": "name_only",
+                "status": "skipped_no_domain",
+                "relevant": true,
+                "confidence": 0.55,
+                "writable": true,
+                "reason": "Por el nombre, parece una marca de mixers o bebidas para hostelería participando en una feria gastronómica. Al disponer únicamente del nombre comercial, calculamos para un stand estándar.",
+                "hypothesis": {
+                  "need": "Unas 250 bolsas tote de algodón para obsequio a distribuidores y visitantes, 20 delantales o polos personalizados para el personal del stand y 300 abridores o posavasos publicitarios.",
+                  "why_now": "Gastrónoma 2026 se celebra el 26 de octubre (en menos de 20 días); nuestro taller propio permite producir y entregar a tiempo sin retrasos.",
+                  "quantity_min": 350,
+                  "quantity_max": 600,
+                  "budget_min_eur": 650,
+                  "budget_max_eur": 1200,
+                  "recommended_products": [
+                    "bolsas tote de algodón personalizadas",
+                    "delantales personalizados",
+                    "abridores metálicos grabados",
+                    "polos bordados"
+                  ],
+                  "timing": "IMMEDIATE",
+                  "differentiators": [
+                    "TALLER_PROPIO",
+                    "TRATO_CERCANO"
+                  ]
+                },
+                "usage": {
+                  "inputTokens": 1928,
+                  "outputTokens": 319,
+                  "cachedTokens": 0
+                },
+                "cost": 0.002642,
+                "attempts": 1
+              }
+            ],
+            "usage": {
+              "inputTokens": 15492,
+              "outputTokens": 2680,
+              "cachedTokens": 0
+            },
+            "costEur": 0.018636,
+            "llmCalls": 8,
+            "outcome": "SUCCESS",
+            "skillRecords": [
+              {
+                "name": "prospector-event-exhibitors",
+                "version": 3,
+                "skill_version_id": "317ee89f-0bff-4525-83b5-ae49dbe03119",
+                "content_hash": "f8078d67b891e10a53d790f36425a4405fb667ddfe7345e09414be1a528a5a36",
+                "source": "db",
+                "requested": {
+                  "name": "prospector-event-exhibitors",
+                  "version": 3
+                }
+              }
+            ]
+          },
+          {
+            "version": 3,
+            "repetition": 2,
+            "decisions": [
+              {
+                "exhibitor": "MYBAOS SL",
+                "dataLevel": "name_only",
+                "status": "skipped_no_domain",
+                "relevant": true,
+                "confidence": 0.55,
+                "writable": true,
+                "reason": "Empresa privada expositora en Gastrónoma 2026; por el nombre parece vinculada a hostelería/alimentación (baos), pero solo disponemos de la razón social, por lo que calculamos para un stand pequeño.",
+                "hypothesis": {
+                  "need": "Unas 250 bolsas tote de algodón para repartir a visitantes y compradores, junto con 10 delantales o camisetas personalizadas para el personal del stand.",
+                  "why_now": "Gastrónoma 2026 se celebra el 26 de octubre (en menos de 3 semanas), por lo que nuestro taller propio permite asegurar la entrega urgente y personalizada.",
+                  "quantity_min": 260,
+                  "quantity_max": 500,
+                  "budget_min_eur": 580,
+                  "budget_max_eur": 1250,
+                  "recommended_products": [
+                    "Bolsas tote de algodón personalizadas",
+                    "Delantales personalizados para cocina/degustación",
+                    "Camisetas serigrafiadas",
+                    "Lanyards identificativos"
+                  ],
+                  "timing": "IMMEDIATE",
+                  "differentiators": [
+                    "TALLER_PROPIO",
+                    "TRATO_CERCANO",
+                    "PRECIO"
+                  ]
+                },
+                "usage": {
+                  "inputTokens": 1931,
+                  "outputTokens": 336,
+                  "cachedTokens": 0
+                },
+                "cost": 0.002708,
+                "attempts": 1
+              },
+              {
+                "exhibitor": "PREZO",
+                "dataLevel": "name_only",
+                "status": "skipped_no_domain",
+                "relevant": true,
+                "confidence": 0.55,
+                "writable": true,
+                "reason": "Empresa privada expositora en Gastrónoma 2026; por conocimiento general del sector horeca, Prezo es una plataforma de software de gestión de compras para hostelería, pero al recibir solo el nombre la confianza se mantiene prudente.",
+                "hypothesis": {
+                  "need": "Unas 250 libretas con bolígrafo para captar contactos de hosteleros en demostraciones y 10 camisetas corporativas para el personal del stand.",
+                  "why_now": "Gastrónoma 2026 se celebra el 26 de octubre, a menos de tres semanas vista; nuestro taller propio permite producir y entregar el material a tiempo.",
+                  "quantity_min": 260,
+                  "quantity_max": 500,
+                  "budget_min_eur": 650,
+                  "budget_max_eur": 1400,
+                  "recommended_products": [
+                    "libretas personalizadas",
+                    "bolígrafos metálicos o ecológicos",
+                    "camisetas corporativas",
+                    "lanyards identificativos"
+                  ],
+                  "timing": "IMMEDIATE",
+                  "differentiators": [
+                    "TALLER_PROPIO",
+                    "TRATO_CERCANO"
+                  ]
+                },
+                "usage": {
+                  "inputTokens": 1923,
+                  "outputTokens": 323,
+                  "cachedTokens": 0
+                },
+                "cost": 0.002654,
+                "attempts": 1
+              },
+              {
+                "exhibitor": "QBO DELICIAS SL",
+                "dataLevel": "name_only",
+                "status": "skipped_no_domain",
+                "relevant": true,
+                "confidence": 0.55,
+                "writable": true,
+                "reason": "Por el nombre y su presencia en Gastrónoma, parece una empresa privada del sector agroalimentario o restauración. Solo disponemos del nombre, por lo que estimamos necesidades para un stand pequeño o mediano.",
+                "hypothesis": {
+                  "need": "Unas 300 bolsas de tela o non-woven para entregar catálogos/muestras en el stand, 10 delantales o polos bordados para el equipo y 200 abridores o libretas promocionales.",
+                  "why_now": "Gastrónoma 2026 se celebra el 26 de octubre, a menos de 20 días. Nuestro taller propio es decisivo para garantizar plazos de entrega urgentes.",
+                  "quantity_min": 350,
+                  "quantity_max": 600,
+                  "budget_min_eur": 650,
+                  "budget_max_eur": 1400,
+                  "recommended_products": [
+                    "bolsas tote de algodón personalizadas",
+                    "delantales personalizados",
+                    "polos bordados",
+                    "abridores metálicos personalizados",
+                    "libretas con bolígrafo"
+                  ],
+                  "timing": "IMMEDIATE",
+                  "differentiators": [
+                    "TALLER_PROPIO",
+                    "TRATO_CERCANO"
+                  ]
+                },
+                "usage": {
+                  "inputTokens": 1931,
+                  "outputTokens": 334,
+                  "cachedTokens": 0
+                },
+                "cost": 0.002701,
+                "attempts": 1
+              },
+              {
+                "exhibitor": "SERHS PROJECTS",
+                "dataLevel": "name_only",
+                "status": "skipped_no_domain",
+                "relevant": true,
+                "confidence": 0.58,
+                "writable": true,
+                "reason": "Por el nombre y el evento Gastrónoma, suponemos que es la división de equipamiento y proyectos para hostelería de Grup SERHS, empresa privada idónea para merchandising técnico y de stand. Al recibir solo el nombre sin descripción ni web, aplicamos un límite de confianza.",
+                "hypothesis": {
+                  "need": "Unas 250 libretas con bolígrafo para reuniones con hosteleros y proyectistas, 200 metros de lanyards con acreditaciones y 15 camisas o polos bordados para el equipo comercial del stand.",
+                  "why_now": "Gastrónoma 2026 empieza el 26 de octubre (en menos de tres semanas), por lo que contar con taller propio y plazos cortos de producción es fundamental.",
+                  "quantity_min": 465,
+                  "quantity_max": 750,
+                  "budget_min_eur": 1100,
+                  "budget_max_eur": 2200,
+                  "recommended_products": [
+                    "libretas con bolígrafo personalizadas",
+                    "polos bordados para personal",
+                    "lanyards personalizados",
+                    "bolsas tote de algodón"
+                  ],
+                  "timing": "IMMEDIATE",
+                  "differentiators": [
+                    "TALLER_PROPIO",
+                    "TRATO_CERCANO"
+                  ]
+                },
+                "usage": {
+                  "inputTokens": 1922,
+                  "outputTokens": 349,
+                  "cachedTokens": 0
+                },
+                "cost": 0.00275,
+                "attempts": 1
+              },
+              {
+                "exhibitor": "TEMPLO CAFÉS",
+                "dataLevel": "sector",
+                "status": "skipped_no_domain",
+                "relevant": true,
+                "confidence": 0.85,
+                "writable": true,
+                "reason": "Templo Cafés es una marca líder muy consolidada en el sector horeca y alimentación, conocida por su amplia presencia en ferias profesionales. Al ser una empresa de gran tamaño con alto volumen de distribución, encaja perfectamente en compras recurrentes de merchandising.",
+                "hypothesis": {
+                  "need": "Unas 400 tazas térmicas o de cerámica personalizadas para degustaciones y clientes clave, 600 bolsas de algodón para catálogos y 20 delantales o polos bordados para el equipo del stand.",
+                  "why_now": "Gastrónoma 2026 se celebra en menos de 20 días (26 de octubre), por lo que la cercanía del evento exige la rapidez de producción de nuestro taller propio para llegar a tiempo.",
+                  "quantity_min": 700,
+                  "quantity_max": 1020,
+                  "budget_min_eur": 2100,
+                  "budget_max_eur": 3800,
+                  "recommended_products": [
+                    "Tazas de cerámica personalizadas",
+                    "Vasos térmicos reutilizables",
+                    "Delantales de barista bordados",
+                    "Bolsas tote de algodón orgánico",
+                    "Polos corporativos bordados"
+                  ],
+                  "timing": "IMMEDIATE",
+                  "differentiators": [
+                    "TALLER_PROPIO",
+                    "TRATO_CERCANO",
+                    "PRECIO"
+                  ]
+                },
+                "usage": {
+                  "inputTokens": 1941,
+                  "outputTokens": 368,
+                  "cachedTokens": 0
+                },
+                "cost": 0.002836,
+                "attempts": 1
+              },
+              {
+                "exhibitor": "UNOX",
+                "dataLevel": "sector",
+                "status": "skipped_no_domain",
+                "relevant": true,
+                "confidence": 0.85,
+                "writable": true,
+                "reason": "UNOX es un fabricante multinacional líder de hornos profesionales muy consolidado en hostelería, con gran presencia habitual en ferias del sector gastronómico (conocimiento general del sector).",
+                "hypothesis": {
+                  "need": "Unas 400 bolsas de tela para catálogos y visitantes, 20 delantales o chaquetillas técnicas personalizadas para demostraciones en directo de sus hornos, y 300 libretas con bolígrafo para reuniones con distribuidores.",
+                  "why_now": "Gastrónoma 2026 se celebra el 26 de octubre (en menos de 3 semanas), por lo que el taller propio de PubliEXPE es fundamental para garantizar personalización y entrega urgente.",
+                  "quantity_min": 720,
+                  "quantity_max": 1200,
+                  "budget_min_eur": 1800,
+                  "budget_max_eur": 3200,
+                  "recommended_products": [
+                    "delantales bordados para hostelería",
+                    "bolsas tote de algodón personalizadas",
+                    "libretas con bolígrafo",
+                    "lanyards identificativos"
+                  ],
+                  "timing": "IMMEDIATE",
+                  "differentiators": [
+                    "TALLER_PROPIO",
+                    "TRATO_CERCANO",
+                    "PRECIO"
+                  ]
+                },
+                "usage": {
+                  "inputTokens": 1941,
+                  "outputTokens": 348,
+                  "cachedTokens": 0
+                },
+                "cost": 0.002761,
+                "attempts": 1
+              },
+              {
+                "exhibitor": "VINO CAÑAS Y BARRO - VIÑAS DEL PORTILLO",
+                "dataLevel": "sector",
+                "status": "skipped_no_domain",
+                "relevant": true,
+                "confidence": 0.7,
+                "writable": true,
+                "reason": "Bodega privada exponiendo en Gastrónoma con necesidad directa de merchandising y textil para el stand; al disponer solo de nombre y sector, se dimensiona como stand estándar de bodega.",
+                "hypothesis": {
+                  "need": "Unas 250 bolsas tote de algodón para botellas o catálogos, 10 delantales o polos bordados para el personal de cata y 150 sacacorchos personalizados para obsequio a distribuidores.",
+                  "why_now": "Gastrónoma 2026 se celebra en menos de 20 días (26 de octubre), por lo que el taller propio de PubliEXPE es fundamental para asegurar la producción y entrega a tiempo.",
+                  "quantity_min": 410,
+                  "quantity_max": 650,
+                  "budget_min_eur": 850,
+                  "budget_max_eur": 1600,
+                  "recommended_products": [
+                    "Bolsas tote de algodón personalizadas",
+                    "Delantales o polos bordados",
+                    "Sacacorchos sommelier grabados",
+                    "Libretas de notas con bolígrafo"
+                  ],
+                  "timing": "IMMEDIATE",
+                  "differentiators": [
+                    "TALLER_PROPIO",
+                    "TRATO_CERCANO",
+                    "PRECIO"
+                  ]
+                },
+                "usage": {
+                  "inputTokens": 1961,
+                  "outputTokens": 344,
+                  "cachedTokens": 0
+                },
+                "cost": 0.002761,
+                "attempts": 1
+              },
+              {
+                "exhibitor": "ZERO,O MIXERS",
+                "dataLevel": "name_only",
+                "status": "skipped_no_domain",
+                "relevant": true,
+                "confidence": 0.55,
+                "writable": true,
+                "reason": "Por el nombre, parece una marca privada de bebidas o mixers para hostelería exponiendo en Gastrónoma, aunque al disponer solo del nombre la confianza se sitúa en un techo prudente y se estima un stand mediano.",
+                "hypothesis": {
+                  "need": "Unas 300 bolsas de tela serigrafiadas para catas y folletos a visitantes, 15 delantales o camisetas personalizadas para el personal de servicio y 150 abridores de botellas publicitarios.",
+                  "why_now": "Gastrónoma 2026 empieza el 26 de octubre, a menos de 20 días vista; nuestro taller propio permite producir y entregar a tiempo con total garantía.",
+                  "quantity_min": 465,
+                  "quantity_max": 900,
+                  "budget_min_eur": 850,
+                  "budget_max_eur": 1800,
+                  "recommended_products": [
+                    "bolsas tote de algodón personalizadas",
+                    "camisetas o polos bordados",
+                    "delantales personalizados",
+                    "abridores de botellas promocionales",
+                    "vasos reutilizables serigrafiados"
+                  ],
+                  "timing": "IMMEDIATE",
+                  "differentiators": [
+                    "TALLER_PROPIO",
+                    "TRATO_CERCANO",
+                    "PRECIO"
+                  ]
+                },
+                "usage": {
+                  "inputTokens": 1932,
+                  "outputTokens": 352,
+                  "cachedTokens": 0
+                },
+                "cost": 0.002769,
+                "attempts": 1
+              }
+            ],
+            "usage": {
+              "inputTokens": 15482,
+              "outputTokens": 2754,
+              "cachedTokens": 0
+            },
+            "costEur": 0.018868,
+            "llmCalls": 8,
+            "outcome": "SUCCESS",
+            "skillRecords": [
+              {
+                "name": "prospector-event-exhibitors",
+                "version": 3,
+                "skill_version_id": "317ee89f-0bff-4525-83b5-ae49dbe03119",
+                "content_hash": "f8078d67b891e10a53d790f36425a4405fb667ddfe7345e09414be1a528a5a36",
+                "source": "db",
+                "requested": {
+                  "name": "prospector-event-exhibitors",
+                  "version": 3
+                }
+              }
+            ]
+          },
+          {
+            "version": 1,
+            "repetition": 2,
+            "decisions": [
+              {
+                "exhibitor": "MYBAOS SL",
+                "dataLevel": "name_only",
+                "status": "skipped_no_domain",
+                "relevant": true,
+                "confidence": 0.65,
+                "writable": true,
+                "reason": "Empresa privada del sector gastronómico exponiendo en Gastrónoma 2026, lo que implica necesidad de merchandising y textil para el stand. La confianza es moderada debido a la falta de datos adicionales sobre el tamaño específico de la compañía.",
+                "hypothesis": {
+                  "need": "Prendas de vestir personalizadas para el personal del stand (delantales o camisetas) y regalos promocionales para atraer visitantes y distribuidores del sector hostelero.",
+                  "why_now": "La feria Gastrónoma se celebra el 26 de octubre de 2026, a menos de tres semanas vista; nuestro taller propio es fundamental para asegurar la producción y entrega a tiempo.",
+                  "quantity_min": 150,
+                  "quantity_max": 600,
+                  "budget_min_eur": 500,
+                  "budget_max_eur": 2200,
+                  "recommended_products": [
+                    "delantales personalizados",
+                    "camisetas de algodón serigrafiadas",
+                    "bolsas tote de algodón",
+                    "libretas de notas con bolígrafo"
+                  ],
+                  "timing": "IMMEDIATE",
+                  "differentiators": [
+                    "TALLER_PROPIO",
+                    "TRATO_CERCANO",
+                    "PRECIO"
+                  ]
+                },
+                "usage": {
+                  "inputTokens": 1618,
+                  "outputTokens": 329,
+                  "cachedTokens": 0
+                },
+                "cost": 0.002447,
+                "attempts": 1
+              },
+              {
+                "exhibitor": "PREZO",
+                "dataLevel": "name_only",
+                "status": "skipped_no_domain",
+                "relevant": true,
+                "confidence": 0.65,
+                "writable": true,
+                "reason": "Prezo es una plataforma de software de gestión de compras y pedidos para hostelería que expone en Gastrónoma para captar restaurantes. Al contar solo con el nombre en la ficha, la confianza es moderada pero el encaje en feria B2B es claro.",
+                "hypothesis": {
+                  "need": "Artículos promocionales para captar la atención de hosteleros y gerentes de restaurantes en su stand, además de textil corporativo para los comerciales que hacen demos.",
+                  "why_now": "Gastrónoma 2026 se celebra el 26 de octubre (en menos de tres semanas), por lo que contar con taller propio es clave para entregar a tiempo sin incidencias.",
+                  "quantity_min": 300,
+                  "quantity_max": 800,
+                  "budget_min_eur": 600,
+                  "budget_max_eur": 1800,
+                  "recommended_products": [
+                    "Libretas personalizadas para hostelería",
+                    "Bolígrafos metálicos o de bambú",
+                    "Bolsas tote de algodón con logo",
+                    "Polos técnicos bordados para el equipo comercial"
+                  ],
+                  "timing": "IMMEDIATE",
+                  "differentiators": [
+                    "TALLER_PROPIO",
+                    "TRATO_CERCANO",
+                    "PRECIO"
+                  ]
+                },
+                "usage": {
+                  "inputTokens": 1610,
+                  "outputTokens": 342,
+                  "cachedTokens": 0
+                },
+                "cost": 0.00249,
+                "attempts": 1
+              },
+              {
+                "exhibitor": "QBO DELICIAS SL",
+                "dataLevel": "name_only",
+                "status": "skipped_no_domain",
+                "relevant": true,
+                "confidence": 0.65,
+                "writable": true,
+                "reason": "Empresa privada del sector de la alimentación que expone en Gastrónoma 2026, lo que implica necesidad de merchandising promocional e indumentaria para el stand, aunque faltan detalles específicos sobre su tamaño.",
+                "hypothesis": {
+                  "need": "Artículos de regalo para visitantes del stand y distribuidores gastronómicos, además de textil corporativo para el personal de atención y degustación.",
+                  "why_now": "Gastrónoma 2026 se celebra en menos de 20 días (26 de octubre). Es urgente producir el material a tiempo, donde nuestro taller propio y capacidad de respuesta rápida son decisivos.",
+                  "quantity_min": 250,
+                  "quantity_max": 800,
+                  "budget_min_eur": 600,
+                  "budget_max_eur": 1800,
+                  "recommended_products": [
+                    "Bolsas tote de algodón personalizadas",
+                    "Delantales de cocina personalizados",
+                    "Bolígrafos promocionales",
+                    "Libretas con logo"
+                  ],
+                  "timing": "IMMEDIATE",
+                  "differentiators": [
+                    "TALLER_PROPIO",
+                    "TRATO_CERCANO",
+                    "PRECIO"
+                  ]
+                },
+                "usage": {
+                  "inputTokens": 1618,
+                  "outputTokens": 323,
+                  "cachedTokens": 0
+                },
+                "cost": 0.002425,
+                "attempts": 1
+              },
+              {
+                "exhibitor": "SERHS PROJECTS",
+                "dataLevel": "name_only",
+                "status": "skipped_no_domain",
+                "relevant": true,
+                "confidence": 0.7,
+                "writable": true,
+                "reason": "SERHS Projects es una división especializada en proyectos e instalaciones de hostelería del Grupo SERHS, con perfil B2B idóneo para Gastrónoma. Aunque faltan detalles específicos sobre el tamaño del stand, su presencia comercial justifica material promocional corporativo.",
+                "hypothesis": {
+                  "need": "Material promocional para captación y fidelización de profesionales del sector hostelero (restauración y hoteles) que visiten su stand en Gastrónoma 2026, además de indumentaria corporativa para el equipo comercial.",
+                  "why_now": "Gastrónoma 2026 se celebra el 26 de octubre, a menos de 20 días vista. Nuestro taller propio es clave para asegurar la personalización y entrega urgente sin fallos de plazo.",
+                  "quantity_min": 250,
+                  "quantity_max": 800,
+                  "budget_min_eur": 850,
+                  "budget_max_eur": 2600,
+                  "recommended_products": [
+                    "Libretas corporativas con bolígrafo",
+                    "Bolsas tote de algodón personalizadas",
+                    "Polos técnicos bordados para el equipo comercial",
+                    "Memorias USB o tarjetas USB con catálogo técnico",
+                    "Botellas térmicas reutilizables"
+                  ],
+                  "timing": "IMMEDIATE",
+                  "differentiators": [
+                    "TALLER_PROPIO",
+                    "TRATO_CERCANO",
+                    "PRECIO"
+                  ]
+                },
+                "usage": {
+                  "inputTokens": 1619,
+                  "outputTokens": 374,
+                  "cachedTokens": 0
+                },
+                "cost": 0.002617,
+                "attempts": 1
+              },
+              {
+                "exhibitor": "TEMPLO CAFÉS",
+                "dataLevel": "sector",
+                "status": "skipped_no_domain",
+                "relevant": true,
+                "confidence": 0.85,
+                "writable": true,
+                "reason": "Empresa consolidada del sector hostelero y alimentación exponiendo en una feria gastronómica relevante. Requieren obsequios para profesionales de hostelería y textil corporativo para su equipo en el stand.",
+                "hypothesis": {
+                  "need": "Artículos promocionales para hostelería (tazas térmicas, delantales y bolsas) y textil corporativo para el personal del stand para reforzar marca en degustaciones y reuniones con clientes.",
+                  "why_now": "Gastrónoma 2026 se celebra el 26 de octubre, a menos de 20 días. Nuestro taller propio permite asegurar plazos de entrega urgentes y control de marcaje.",
+                  "quantity_min": 300,
+                  "quantity_max": 1200,
+                  "budget_min_eur": 1200,
+                  "budget_max_eur": 4500,
+                  "recommended_products": [
+                    "delantales personalizados",
+                    "tazas térmicas para café",
+                    "bolsas tote de algodón",
+                    "libretas con bolígrafo para pedidos",
+                    "camisetas o polos bordados"
+                  ],
+                  "timing": "IMMEDIATE",
+                  "differentiators": [
+                    "TALLER_PROPIO",
+                    "TRATO_CERCANO",
+                    "PRECIO"
+                  ]
+                },
+                "usage": {
+                  "inputTokens": 1632,
+                  "outputTokens": 340,
+                  "cachedTokens": 0
+                },
+                "cost": 0.002499,
+                "attempts": 1
+              },
+              {
+                "exhibitor": "UNOX",
+                "dataLevel": "sector",
+                "status": "skipped_no_domain",
+                "relevant": true,
+                "confidence": 0.85,
+                "writable": true,
+                "reason": "UNOX es un fabricante líder internacional de hornos profesionales para hostelería con presencia comercial destacada y stand relevante en ferias del sector.",
+                "hypothesis": {
+                  "need": "Material promocional para profesionales de hostelería y distribuidores que visiten el stand, además de textil corporativo para su equipo comercial y técnico.",
+                  "why_now": "Gastrónoma 2026 se celebra el 26 de octubre, a menos de 20 días vista; la agilidad de nuestro taller propio es clave para entregar a tiempo.",
+                  "quantity_min": 300,
+                  "quantity_max": 1000,
+                  "budget_min_eur": 900,
+                  "budget_max_eur": 3500,
+                  "recommended_products": [
+                    "delantales personalizados",
+                    "libretas con bolígrafo",
+                    "bolsas tote de algodón",
+                    "polos bordados para equipo",
+                    "memorias USB o lanyards"
+                  ],
+                  "timing": "IMMEDIATE",
+                  "differentiators": [
+                    "TALLER_PROPIO",
+                    "TRATO_CERCANO",
+                    "PRECIO"
+                  ]
+                },
+                "usage": {
+                  "inputTokens": 1634,
+                  "outputTokens": 314,
+                  "cachedTokens": 0
+                },
+                "cost": 0.002403,
+                "attempts": 1
+              },
+              {
+                "exhibitor": "VINO CAÑAS Y BARRO - VIÑAS DEL PORTILLO",
+                "dataLevel": "sector",
+                "status": "skipped_no_domain",
+                "relevant": true,
+                "confidence": 0.75,
+                "writable": true,
+                "reason": "Bodega privada exponiendo en feria gastronómica relevante, con necesidad habitual de merchandising para degustaciones y obsequios comerciales. La cercanía del evento exige plazos rápidos.",
+                "hypothesis": {
+                  "need": "Artículos promocionales para visitantes del stand y clientes de hostelería o distribución, tales como accesorios de vino personalizados y bolsas de tela para botellas o catálogos.",
+                  "why_now": "Gastrónoma 2026 se celebra en menos de 20 días (26 de octubre de 2026), por lo que nuestro taller propio y plazos cortos de producción son el factor clave para llegar a tiempo.",
+                  "quantity_min": 250,
+                  "quantity_max": 1000,
+                  "budget_min_eur": 600,
+                  "budget_max_eur": 2500,
+                  "recommended_products": [
+                    "Sacacorchos de dos tiempos personalizados",
+                    "Bolsas tote de algodón o yute para botellas",
+                    "Identificadores o copas serigrafiadas",
+                    "Delantales bordados para el personal del stand",
+                    "Bolígrafos metálicos grabados"
+                  ],
+                  "timing": "IMMEDIATE",
+                  "differentiators": [
+                    "TALLER_PROPIO",
+                    "TRATO_CERCANO",
+                    "PRECIO"
+                  ]
+                },
+                "usage": {
+                  "inputTokens": 1652,
+                  "outputTokens": 352,
+                  "cachedTokens": 0
+                },
+                "cost": 0.002559,
+                "attempts": 1
+              },
+              {
+                "exhibitor": "ZERO,O MIXERS",
+                "dataLevel": "name_only",
+                "status": "skipped_no_domain",
+                "relevant": true,
+                "confidence": 0.65,
+                "writable": true,
+                "reason": "Empresa privada del sector de bebidas/mixers exponiendo en Gastrónoma, ideal para obsequios promocionales y textil para su stand. La información disponible sobre el expositor es limitada pero suficiente para deducir su encaje comercial.",
+                "hypothesis": {
+                  "need": "Material promocional para degustaciones y obsequios a clientes del canal HORECA, además de textil corporativo para el personal en feria.",
+                  "why_now": "Gastrónoma 2026 se celebra el 26 de octubre, a menos de 3 semanas vista; nuestro taller propio permite asegurar la entrega urgente y personalizada a tiempo.",
+                  "quantity_min": 250,
+                  "quantity_max": 800,
+                  "budget_min_eur": 600,
+                  "budget_max_eur": 2200,
+                  "recommended_products": [
+                    "Abridores y sacacorchos personalizados",
+                    "Vasos reutilizables serigrafiados",
+                    "Delantales o polos bordados para el personal",
+                    "Bolsas tote de algodón con logo"
+                  ],
+                  "timing": "IMMEDIATE",
+                  "differentiators": [
+                    "TALLER_PROPIO",
+                    "TRATO_CERCANO",
+                    "PRECIO"
+                  ]
+                },
+                "usage": {
+                  "inputTokens": 1621,
+                  "outputTokens": 327,
+                  "cachedTokens": 0
+                },
+                "cost": 0.002442,
+                "attempts": 1
+              }
+            ],
+            "usage": {
+              "inputTokens": 13004,
+              "outputTokens": 2701,
+              "cachedTokens": 0
+            },
+            "costEur": 0.017099,
+            "llmCalls": 8,
+            "outcome": "SUCCESS",
+            "skillRecords": [
+              {
+                "name": "prospector-event-exhibitors",
+                "version": 1,
+                "skill_version_id": "c204154d-3cc0-4d99-80be-5891bd1359e2",
+                "content_hash": "bb29d60415e9d7a48be6bb3360a8506dc5f60f92cdec89edbc5cf3c77012518e",
+                "source": "db",
+                "requested": {
+                  "name": "prospector-event-exhibitors",
+                  "version": 1
+                }
+              }
+            ]
+          }
+        ],
+        "metrics": [
+          {
+            "version": 1,
+            "runs": 2,
+            "decisions": 16,
+            "errors": 0,
+            "relevant": 16,
+            "writable": 16,
+            "confidence_mean": 0.725,
+            "confidence_relevant_mean": 0.725,
+            "irrelevant_high_confidence": 0,
+            "confidence_by_level": {
+              "name_only": {
+                "n": 10,
+                "mean": 0.67,
+                "max": 0.75
+              },
+              "sector": {
+                "n": 6,
+                "mean": 0.8167,
+                "max": 0.85
+              },
+              "rich": {
+                "n": 0,
+                "mean": null,
+                "max": null
+              }
+            },
+            "hypotheses": 16,
+            "distinct_ranges_ratio": 0.875,
+            "top_range": {
+              "range": "250-1000 u / 600-2200 €",
+              "count": 3
+            },
+            "quantity_ratio_mean": 3.6958,
+            "quantity_ratio_over_2_5": 16,
+            "need_with_quantities": 0,
+            "unit_price_in_band": 16,
+            "name_only_flagged_inference": {
+              "n": 10,
+              "flagged": 0
+            },
+            "input_tokens": 26002,
+            "output_tokens": 5393,
+            "cost_eur": 0.034166,
+            "cost_eur_per_decision": 0.002135
+          },
+          {
+            "version": 3,
+            "runs": 2,
+            "decisions": 16,
+            "errors": 0,
+            "relevant": 16,
+            "writable": 16,
+            "confidence_mean": 0.6425,
+            "confidence_relevant_mean": 0.6425,
+            "irrelevant_high_confidence": 0,
+            "confidence_by_level": {
+              "name_only": {
+                "n": 10,
+                "mean": 0.553,
+                "max": 0.58
+              },
+              "sector": {
+                "n": 6,
+                "mean": 0.7917,
+                "max": 0.85
+              },
+              "rich": {
+                "n": 0,
+                "mean": null,
+                "max": null
+              }
+            },
+            "hypotheses": 16,
+            "distinct_ranges_ratio": 1,
+            "top_range": {
+              "range": "260-500 u / 550-1200 €",
+              "count": 1
+            },
+            "quantity_ratio_mean": 1.762,
+            "quantity_ratio_over_2_5": 0,
+            "need_with_quantities": 16,
+            "unit_price_in_band": 16,
+            "name_only_flagged_inference": {
+              "n": 10,
+              "flagged": 9
+            },
+            "input_tokens": 30974,
+            "output_tokens": 5434,
+            "cost_eur": 0.037504,
+            "cost_eur_per_decision": 0.002344
+          }
+        ],
+        "cases": [
+          {
+            "exhibitor": "MYBAOS SL",
+            "dataLevel": "name_only",
+            "byVersion": [
+              {
+                "version": 1,
+                "relevant": "2/2",
+                "writable": "2/2",
+                "confidence_mean": 0.65,
+                "confidences": [
+                  0.65,
+                  0.65
+                ],
+                "hypothesis": {
+                  "need": "Prendas de vestir personalizadas para el personal del stand (delantales o camisetas) y regalos promocionales para atraer visitantes y distribuidores del sector hostelero.",
+                  "why_now": "La feria Gastrónoma se celebra el 26 de octubre de 2026, a menos de tres semanas vista; nuestro taller propio es fundamental para asegurar la producción y entrega a tiempo.",
+                  "quantity_min": 150,
+                  "quantity_max": 600,
+                  "budget_min_eur": 500,
+                  "budget_max_eur": 2200,
+                  "recommended_products": [
+                    "delantales personalizados",
+                    "camisetas de algodón serigrafiadas",
+                    "bolsas tote de algodón",
+                    "libretas de notas con bolígrafo"
+                  ],
+                  "timing": "IMMEDIATE",
+                  "differentiators": [
+                    "TALLER_PROPIO",
+                    "TRATO_CERCANO",
+                    "PRECIO"
+                  ]
+                },
+                "reason": "Empresa privada del sector gastronómico exponiendo en Gastrónoma 2026, lo que implica necesidad de merchandising y textil para el stand. La confianza es moderada debido a la falta de datos adicionales sobre el tamaño específico de la compañía."
+              },
+              {
+                "version": 3,
+                "relevant": "2/2",
+                "writable": "2/2",
+                "confidence_mean": 0.55,
+                "confidences": [
+                  0.55,
+                  0.55
+                ],
+                "hypothesis": {
+                  "need": "Unas 250 bolsas tote de algodón para repartir a visitantes y compradores, junto con 10 delantales o camisetas personalizadas para el personal del stand.",
+                  "why_now": "Gastrónoma 2026 se celebra el 26 de octubre (en menos de 3 semanas), por lo que nuestro taller propio permite asegurar la entrega urgente y personalizada.",
+                  "quantity_min": 260,
+                  "quantity_max": 500,
+                  "budget_min_eur": 580,
+                  "budget_max_eur": 1250,
+                  "recommended_products": [
+                    "Bolsas tote de algodón personalizadas",
+                    "Delantales personalizados para cocina/degustación",
+                    "Camisetas serigrafiadas",
+                    "Lanyards identificativos"
+                  ],
+                  "timing": "IMMEDIATE",
+                  "differentiators": [
+                    "TALLER_PROPIO",
+                    "TRATO_CERCANO",
+                    "PRECIO"
+                  ]
+                },
+                "reason": "Empresa privada expositora en Gastrónoma 2026; por el nombre parece vinculada a hostelería/alimentación (baos), pero solo disponemos de la razón social, por lo que calculamos para un stand pequeño."
+              }
+            ],
+            "confidence_delta": -0.1,
+            "writable_changed": false
+          },
+          {
+            "exhibitor": "PREZO",
+            "dataLevel": "name_only",
+            "byVersion": [
+              {
+                "version": 1,
+                "relevant": "2/2",
+                "writable": "2/2",
+                "confidence_mean": 0.675,
+                "confidences": [
+                  0.7,
+                  0.65
+                ],
+                "hypothesis": {
+                  "need": "Artículos promocionales para captar la atención de hosteleros y gerentes de restaurantes en su stand, además de textil corporativo para los comerciales que hacen demos.",
+                  "why_now": "Gastrónoma 2026 se celebra el 26 de octubre (en menos de tres semanas), por lo que contar con taller propio es clave para entregar a tiempo sin incidencias.",
+                  "quantity_min": 300,
+                  "quantity_max": 800,
+                  "budget_min_eur": 600,
+                  "budget_max_eur": 1800,
+                  "recommended_products": [
+                    "Libretas personalizadas para hostelería",
+                    "Bolígrafos metálicos o de bambú",
+                    "Bolsas tote de algodón con logo",
+                    "Polos técnicos bordados para el equipo comercial"
+                  ],
+                  "timing": "IMMEDIATE",
+                  "differentiators": [
+                    "TALLER_PROPIO",
+                    "TRATO_CERCANO",
+                    "PRECIO"
+                  ]
+                },
+                "reason": "Prezo es una plataforma de software de gestión de compras y pedidos para hostelería que expone en Gastrónoma para captar restaurantes. Al contar solo con el nombre en la ficha, la confianza es moderada pero el encaje en feria B2B es claro."
+              },
+              {
+                "version": 3,
+                "relevant": "2/2",
+                "writable": "2/2",
+                "confidence_mean": 0.55,
+                "confidences": [
+                  0.55,
+                  0.55
+                ],
+                "hypothesis": {
+                  "need": "Unas 250 libretas con bolígrafo para captar contactos de hosteleros en demostraciones y 10 camisetas corporativas para el personal del stand.",
+                  "why_now": "Gastrónoma 2026 se celebra el 26 de octubre, a menos de tres semanas vista; nuestro taller propio permite producir y entregar el material a tiempo.",
+                  "quantity_min": 260,
+                  "quantity_max": 500,
+                  "budget_min_eur": 650,
+                  "budget_max_eur": 1400,
+                  "recommended_products": [
+                    "libretas personalizadas",
+                    "bolígrafos metálicos o ecológicos",
+                    "camisetas corporativas",
+                    "lanyards identificativos"
+                  ],
+                  "timing": "IMMEDIATE",
+                  "differentiators": [
+                    "TALLER_PROPIO",
+                    "TRATO_CERCANO"
+                  ]
+                },
+                "reason": "Empresa privada expositora en Gastrónoma 2026; por conocimiento general del sector horeca, Prezo es una plataforma de software de gestión de compras para hostelería, pero al recibir solo el nombre la confianza se mantiene prudente."
+              }
+            ],
+            "confidence_delta": -0.125,
+            "writable_changed": false
+          },
+          {
+            "exhibitor": "QBO DELICIAS SL",
+            "dataLevel": "name_only",
+            "byVersion": [
+              {
+                "version": 1,
+                "relevant": "2/2",
+                "writable": "2/2",
+                "confidence_mean": 0.65,
+                "confidences": [
+                  0.65,
+                  0.65
+                ],
+                "hypothesis": {
+                  "need": "Artículos de regalo para visitantes del stand y distribuidores gastronómicos, además de textil corporativo para el personal de atención y degustación.",
+                  "why_now": "Gastrónoma 2026 se celebra en menos de 20 días (26 de octubre). Es urgente producir el material a tiempo, donde nuestro taller propio y capacidad de respuesta rápida son decisivos.",
+                  "quantity_min": 250,
+                  "quantity_max": 800,
+                  "budget_min_eur": 600,
+                  "budget_max_eur": 1800,
+                  "recommended_products": [
+                    "Bolsas tote de algodón personalizadas",
+                    "Delantales de cocina personalizados",
+                    "Bolígrafos promocionales",
+                    "Libretas con logo"
+                  ],
+                  "timing": "IMMEDIATE",
+                  "differentiators": [
+                    "TALLER_PROPIO",
+                    "TRATO_CERCANO",
+                    "PRECIO"
+                  ]
+                },
+                "reason": "Empresa privada del sector de la alimentación que expone en Gastrónoma 2026, lo que implica necesidad de merchandising promocional e indumentaria para el stand, aunque faltan detalles específicos sobre su tamaño."
+              },
+              {
+                "version": 3,
+                "relevant": "2/2",
+                "writable": "2/2",
+                "confidence_mean": 0.55,
+                "confidences": [
+                  0.55,
+                  0.55
+                ],
+                "hypothesis": {
+                  "need": "Unas 300 bolsas de tela o non-woven para entregar catálogos/muestras en el stand, 10 delantales o polos bordados para el equipo y 200 abridores o libretas promocionales.",
+                  "why_now": "Gastrónoma 2026 se celebra el 26 de octubre, a menos de 20 días. Nuestro taller propio es decisivo para garantizar plazos de entrega urgentes.",
+                  "quantity_min": 350,
+                  "quantity_max": 600,
+                  "budget_min_eur": 650,
+                  "budget_max_eur": 1400,
+                  "recommended_products": [
+                    "bolsas tote de algodón personalizadas",
+                    "delantales personalizados",
+                    "polos bordados",
+                    "abridores metálicos personalizados",
+                    "libretas con bolígrafo"
+                  ],
+                  "timing": "IMMEDIATE",
+                  "differentiators": [
+                    "TALLER_PROPIO",
+                    "TRATO_CERCANO"
+                  ]
+                },
+                "reason": "Por el nombre y su presencia en Gastrónoma, parece una empresa privada del sector agroalimentario o restauración. Solo disponemos del nombre, por lo que estimamos necesidades para un stand pequeño o mediano."
+              }
+            ],
+            "confidence_delta": -0.1,
+            "writable_changed": false
+          },
+          {
+            "exhibitor": "SERHS PROJECTS",
+            "dataLevel": "name_only",
+            "byVersion": [
+              {
+                "version": 1,
+                "relevant": "2/2",
+                "writable": "2/2",
+                "confidence_mean": 0.725,
+                "confidences": [
+                  0.75,
+                  0.7
+                ],
+                "hypothesis": {
+                  "need": "Material promocional para captación y fidelización de profesionales del sector hostelero (restauración y hoteles) que visiten su stand en Gastrónoma 2026, además de indumentaria corporativa para el equipo comercial.",
+                  "why_now": "Gastrónoma 2026 se celebra el 26 de octubre, a menos de 20 días vista. Nuestro taller propio es clave para asegurar la personalización y entrega urgente sin fallos de plazo.",
+                  "quantity_min": 250,
+                  "quantity_max": 800,
+                  "budget_min_eur": 850,
+                  "budget_max_eur": 2600,
+                  "recommended_products": [
+                    "Libretas corporativas con bolígrafo",
+                    "Bolsas tote de algodón personalizadas",
+                    "Polos técnicos bordados para el equipo comercial",
+                    "Memorias USB o tarjetas USB con catálogo técnico",
+                    "Botellas térmicas reutilizables"
+                  ],
+                  "timing": "IMMEDIATE",
+                  "differentiators": [
+                    "TALLER_PROPIO",
+                    "TRATO_CERCANO",
+                    "PRECIO"
+                  ]
+                },
+                "reason": "SERHS Projects es una división especializada en proyectos e instalaciones de hostelería del Grupo SERHS, con perfil B2B idóneo para Gastrónoma. Aunque faltan detalles específicos sobre el tamaño del stand, su presencia comercial justifica material promocional corporativo."
+              },
+              {
+                "version": 3,
+                "relevant": "2/2",
+                "writable": "2/2",
+                "confidence_mean": 0.565,
+                "confidences": [
+                  0.55,
+                  0.58
+                ],
+                "hypothesis": {
+                  "need": "Unas 250 libretas con bolígrafo para reuniones con hosteleros y proyectistas, 200 metros de lanyards con acreditaciones y 15 camisas o polos bordados para el equipo comercial del stand.",
+                  "why_now": "Gastrónoma 2026 empieza el 26 de octubre (en menos de tres semanas), por lo que contar con taller propio y plazos cortos de producción es fundamental.",
+                  "quantity_min": 465,
+                  "quantity_max": 750,
+                  "budget_min_eur": 1100,
+                  "budget_max_eur": 2200,
+                  "recommended_products": [
+                    "libretas con bolígrafo personalizadas",
+                    "polos bordados para personal",
+                    "lanyards personalizados",
+                    "bolsas tote de algodón"
+                  ],
+                  "timing": "IMMEDIATE",
+                  "differentiators": [
+                    "TALLER_PROPIO",
+                    "TRATO_CERCANO"
+                  ]
+                },
+                "reason": "Por el nombre y el evento Gastrónoma, suponemos que es la división de equipamiento y proyectos para hostelería de Grup SERHS, empresa privada idónea para merchandising técnico y de stand. Al recibir solo el nombre sin descripción ni web, aplicamos un límite de confianza."
+              }
+            ],
+            "confidence_delta": -0.16,
+            "writable_changed": false
+          },
+          {
+            "exhibitor": "TEMPLO CAFÉS",
+            "dataLevel": "sector",
+            "byVersion": [
+              {
+                "version": 1,
+                "relevant": "2/2",
+                "writable": "2/2",
+                "confidence_mean": 0.85,
+                "confidences": [
+                  0.85,
+                  0.85
+                ],
+                "hypothesis": {
+                  "need": "Artículos promocionales para hostelería (tazas térmicas, delantales y bolsas) y textil corporativo para el personal del stand para reforzar marca en degustaciones y reuniones con clientes.",
+                  "why_now": "Gastrónoma 2026 se celebra el 26 de octubre, a menos de 20 días. Nuestro taller propio permite asegurar plazos de entrega urgentes y control de marcaje.",
+                  "quantity_min": 300,
+                  "quantity_max": 1200,
+                  "budget_min_eur": 1200,
+                  "budget_max_eur": 4500,
+                  "recommended_products": [
+                    "delantales personalizados",
+                    "tazas térmicas para café",
+                    "bolsas tote de algodón",
+                    "libretas con bolígrafo para pedidos",
+                    "camisetas o polos bordados"
+                  ],
+                  "timing": "IMMEDIATE",
+                  "differentiators": [
+                    "TALLER_PROPIO",
+                    "TRATO_CERCANO",
+                    "PRECIO"
+                  ]
+                },
+                "reason": "Empresa consolidada del sector hostelero y alimentación exponiendo en una feria gastronómica relevante. Requieren obsequios para profesionales de hostelería y textil corporativo para su equipo en el stand."
+              },
+              {
+                "version": 3,
+                "relevant": "2/2",
+                "writable": "2/2",
+                "confidence_mean": 0.825,
+                "confidences": [
+                  0.8,
+                  0.85
+                ],
+                "hypothesis": {
+                  "need": "Unas 400 tazas térmicas o de cerámica personalizadas para degustaciones y clientes clave, 600 bolsas de algodón para catálogos y 20 delantales o polos bordados para el equipo del stand.",
+                  "why_now": "Gastrónoma 2026 se celebra en menos de 20 días (26 de octubre), por lo que la cercanía del evento exige la rapidez de producción de nuestro taller propio para llegar a tiempo.",
+                  "quantity_min": 700,
+                  "quantity_max": 1020,
+                  "budget_min_eur": 2100,
+                  "budget_max_eur": 3800,
+                  "recommended_products": [
+                    "Tazas de cerámica personalizadas",
+                    "Vasos térmicos reutilizables",
+                    "Delantales de barista bordados",
+                    "Bolsas tote de algodón orgánico",
+                    "Polos corporativos bordados"
+                  ],
+                  "timing": "IMMEDIATE",
+                  "differentiators": [
+                    "TALLER_PROPIO",
+                    "TRATO_CERCANO",
+                    "PRECIO"
+                  ]
+                },
+                "reason": "Templo Cafés es una marca líder muy consolidada en el sector horeca y alimentación, conocida por su amplia presencia en ferias profesionales. Al ser una empresa de gran tamaño con alto volumen de distribución, encaja perfectamente en compras recurrentes de merchandising."
+              }
+            ],
+            "confidence_delta": -0.025,
+            "writable_changed": false
+          },
+          {
+            "exhibitor": "UNOX",
+            "dataLevel": "sector",
+            "byVersion": [
+              {
+                "version": 1,
+                "relevant": "2/2",
+                "writable": "2/2",
+                "confidence_mean": 0.85,
+                "confidences": [
+                  0.85,
+                  0.85
+                ],
+                "hypothesis": {
+                  "need": "Material promocional para profesionales de hostelería y distribuidores que visiten el stand, además de textil corporativo para su equipo comercial y técnico.",
+                  "why_now": "Gastrónoma 2026 se celebra el 26 de octubre, a menos de 20 días vista; la agilidad de nuestro taller propio es clave para entregar a tiempo.",
+                  "quantity_min": 300,
+                  "quantity_max": 1000,
+                  "budget_min_eur": 900,
+                  "budget_max_eur": 3500,
+                  "recommended_products": [
+                    "delantales personalizados",
+                    "libretas con bolígrafo",
+                    "bolsas tote de algodón",
+                    "polos bordados para equipo",
+                    "memorias USB o lanyards"
+                  ],
+                  "timing": "IMMEDIATE",
+                  "differentiators": [
+                    "TALLER_PROPIO",
+                    "TRATO_CERCANO",
+                    "PRECIO"
+                  ]
+                },
+                "reason": "UNOX es un fabricante líder internacional de hornos profesionales para hostelería con presencia comercial destacada y stand relevante en ferias del sector."
+              },
+              {
+                "version": 3,
+                "relevant": "2/2",
+                "writable": "2/2",
+                "confidence_mean": 0.85,
+                "confidences": [
+                  0.85,
+                  0.85
+                ],
+                "hypothesis": {
+                  "need": "Unas 400 bolsas de tela para catálogos y visitantes, 20 delantales o chaquetillas técnicas personalizadas para demostraciones en directo de sus hornos, y 300 libretas con bolígrafo para reuniones con distribuidores.",
+                  "why_now": "Gastrónoma 2026 se celebra el 26 de octubre (en menos de 3 semanas), por lo que el taller propio de PubliEXPE es fundamental para garantizar personalización y entrega urgente.",
+                  "quantity_min": 720,
+                  "quantity_max": 1200,
+                  "budget_min_eur": 1800,
+                  "budget_max_eur": 3200,
+                  "recommended_products": [
+                    "delantales bordados para hostelería",
+                    "bolsas tote de algodón personalizadas",
+                    "libretas con bolígrafo",
+                    "lanyards identificativos"
+                  ],
+                  "timing": "IMMEDIATE",
+                  "differentiators": [
+                    "TALLER_PROPIO",
+                    "TRATO_CERCANO",
+                    "PRECIO"
+                  ]
+                },
+                "reason": "UNOX es un fabricante multinacional líder de hornos profesionales muy consolidado en hostelería, con gran presencia habitual en ferias del sector gastronómico (conocimiento general del sector)."
+              }
+            ],
+            "confidence_delta": 0,
+            "writable_changed": false
+          },
+          {
+            "exhibitor": "VINO CAÑAS Y BARRO - VIÑAS DEL PORTILLO",
+            "dataLevel": "sector",
+            "byVersion": [
+              {
+                "version": 1,
+                "relevant": "2/2",
+                "writable": "2/2",
+                "confidence_mean": 0.75,
+                "confidences": [
+                  0.75,
+                  0.75
+                ],
+                "hypothesis": {
+                  "need": "Artículos promocionales para visitantes del stand y clientes de hostelería o distribución, tales como accesorios de vino personalizados y bolsas de tela para botellas o catálogos.",
+                  "why_now": "Gastrónoma 2026 se celebra en menos de 20 días (26 de octubre de 2026), por lo que nuestro taller propio y plazos cortos de producción son el factor clave para llegar a tiempo.",
+                  "quantity_min": 250,
+                  "quantity_max": 1000,
+                  "budget_min_eur": 600,
+                  "budget_max_eur": 2500,
+                  "recommended_products": [
+                    "Sacacorchos de dos tiempos personalizados",
+                    "Bolsas tote de algodón o yute para botellas",
+                    "Identificadores o copas serigrafiadas",
+                    "Delantales bordados para el personal del stand",
+                    "Bolígrafos metálicos grabados"
+                  ],
+                  "timing": "IMMEDIATE",
+                  "differentiators": [
+                    "TALLER_PROPIO",
+                    "TRATO_CERCANO",
+                    "PRECIO"
+                  ]
+                },
+                "reason": "Bodega privada exponiendo en feria gastronómica relevante, con necesidad habitual de merchandising para degustaciones y obsequios comerciales. La cercanía del evento exige plazos rápidos."
+              },
+              {
+                "version": 3,
+                "relevant": "2/2",
+                "writable": "2/2",
+                "confidence_mean": 0.7,
+                "confidences": [
+                  0.7,
+                  0.7
+                ],
+                "hypothesis": {
+                  "need": "Unas 250 bolsas tote de algodón para botellas o catálogos, 10 delantales o polos bordados para el personal de cata y 150 sacacorchos personalizados para obsequio a distribuidores.",
+                  "why_now": "Gastrónoma 2026 se celebra en menos de 20 días (26 de octubre), por lo que el taller propio de PubliEXPE es fundamental para asegurar la producción y entrega a tiempo.",
+                  "quantity_min": 410,
+                  "quantity_max": 650,
+                  "budget_min_eur": 850,
+                  "budget_max_eur": 1600,
+                  "recommended_products": [
+                    "Bolsas tote de algodón personalizadas",
+                    "Delantales o polos bordados",
+                    "Sacacorchos sommelier grabados",
+                    "Libretas de notas con bolígrafo"
+                  ],
+                  "timing": "IMMEDIATE",
+                  "differentiators": [
+                    "TALLER_PROPIO",
+                    "TRATO_CERCANO",
+                    "PRECIO"
+                  ]
+                },
+                "reason": "Bodega privada exponiendo en Gastrónoma con necesidad directa de merchandising y textil para el stand; al disponer solo de nombre y sector, se dimensiona como stand estándar de bodega."
+              }
+            ],
+            "confidence_delta": -0.05,
+            "writable_changed": false
+          },
+          {
+            "exhibitor": "ZERO,O MIXERS",
+            "dataLevel": "name_only",
+            "byVersion": [
+              {
+                "version": 1,
+                "relevant": "2/2",
+                "writable": "2/2",
+                "confidence_mean": 0.65,
+                "confidences": [
+                  0.65,
+                  0.65
+                ],
+                "hypothesis": {
+                  "need": "Material promocional para degustaciones y obsequios a clientes del canal HORECA, además de textil corporativo para el personal en feria.",
+                  "why_now": "Gastrónoma 2026 se celebra el 26 de octubre, a menos de 3 semanas vista; nuestro taller propio permite asegurar la entrega urgente y personalizada a tiempo.",
+                  "quantity_min": 250,
+                  "quantity_max": 800,
+                  "budget_min_eur": 600,
+                  "budget_max_eur": 2200,
+                  "recommended_products": [
+                    "Abridores y sacacorchos personalizados",
+                    "Vasos reutilizables serigrafiados",
+                    "Delantales o polos bordados para el personal",
+                    "Bolsas tote de algodón con logo"
+                  ],
+                  "timing": "IMMEDIATE",
+                  "differentiators": [
+                    "TALLER_PROPIO",
+                    "TRATO_CERCANO",
+                    "PRECIO"
+                  ]
+                },
+                "reason": "Empresa privada del sector de bebidas/mixers exponiendo en Gastrónoma, ideal para obsequios promocionales y textil para su stand. La información disponible sobre el expositor es limitada pero suficiente para deducir su encaje comercial."
+              },
+              {
+                "version": 3,
+                "relevant": "2/2",
+                "writable": "2/2",
+                "confidence_mean": 0.55,
+                "confidences": [
+                  0.55,
+                  0.55
+                ],
+                "hypothesis": {
+                  "need": "Unas 300 bolsas de tela serigrafiadas para catas y folletos a visitantes, 15 delantales o camisetas personalizadas para el personal de servicio y 150 abridores de botellas publicitarios.",
+                  "why_now": "Gastrónoma 2026 empieza el 26 de octubre, a menos de 20 días vista; nuestro taller propio permite producir y entregar a tiempo con total garantía.",
+                  "quantity_min": 465,
+                  "quantity_max": 900,
+                  "budget_min_eur": 850,
+                  "budget_max_eur": 1800,
+                  "recommended_products": [
+                    "bolsas tote de algodón personalizadas",
+                    "camisetas o polos bordados",
+                    "delantales personalizados",
+                    "abridores de botellas promocionales",
+                    "vasos reutilizables serigrafiados"
+                  ],
+                  "timing": "IMMEDIATE",
+                  "differentiators": [
+                    "TALLER_PROPIO",
+                    "TRATO_CERCANO",
+                    "PRECIO"
+                  ]
+                },
+                "reason": "Por el nombre, parece una marca privada de bebidas o mixers para hostelería exponiendo en Gastrónoma, aunque al disponer solo del nombre la confianza se sitúa en un techo prudente y se estima un stand mediano."
+              }
+            ],
+            "confidence_delta": -0.1,
+            "writable_changed": false
+          }
+        ],
+        "stability": [
+          {
+            "version": 1,
+            "confidence_mad": 0.0062,
+            "relevant_flips": 0,
+            "writable_flips": 0
+          },
+          {
+            "version": 3,
+            "confidence_mad": 0.005,
+            "relevant_flips": 0,
+            "writable_flips": 0
+          }
+        ],
+        "total_cost_eur": 0.07167,
+        "budget_eur": 0.15,
+        "budget_exceeded": false
+      }
+    },
+    {
+      "fixture": "test/fixtures/feria-ejemplo.json",
+      "report": {
+        "skill": "prospector-event-exhibitors",
+        "generated_at": "2026-10-07T14:10:22.602Z",
+        "today": "2026-10-07",
+        "model": "gemini-flash-latest",
+        "input_sha256": "c38e913484f371f43a2f64b70b63e0a0e8522b1935d5cf5df2d3d2fbfe95ad14",
+        "event": "Expo Alimentaria Ibérica 2026",
+        "exhibitors": 3,
+        "repeat": 2,
+        "versions": [
+          {
+            "version": 1,
+            "status": "ACTIVE",
+            "skillVersionId": "c204154d-3cc0-4d99-80be-5891bd1359e2",
+            "contentHash": "bb29d60415e9d7a48be6bb3360a8506dc5f60f92cdec89edbc5cf3c77012518e"
+          },
+          {
+            "version": 3,
+            "status": "DRAFT",
+            "skillVersionId": "317ee89f-0bff-4525-83b5-ae49dbe03119",
+            "contentHash": "f8078d67b891e10a53d790f36425a4405fb667ddfe7345e09414be1a528a5a36"
+          }
+        ],
+        "runs": [
+          {
+            "version": 1,
+            "repetition": 1,
+            "decisions": [
+              {
+                "exhibitor": "Conservas Marineras del Cantábrico",
+                "dataLevel": "rich",
+                "status": "hypothesis_created",
+                "relevant": true,
+                "confidence": 0.88,
+                "writable": true,
+                "reason": "Empresa privada de tamaño relevante (140 empleados) con stand amplio de 60 m², equipo comercial presencial y presentación de una nueva línea gourmet en feria.",
+                "hypothesis": {
+                  "need": "Material promocional para apoyar el lanzamiento de la nueva línea de ventresca gourmet y dotar a su equipo comercial de textil corporativo y detalles para compradores internacionales.",
+                  "why_now": "La feria Expo Alimentaria Ibérica se celebra el 24 de noviembre de 2026 (en unas 7 semanas), lo que exige cerrar pedidos pronto; nuestro taller propio garantiza la personalización y plazos a tiempo.",
+                  "quantity_min": 600,
+                  "quantity_max": 2500,
+                  "budget_min_eur": 1200,
+                  "budget_max_eur": 4500,
+                  "recommended_products": [
+                    "Bolsas tote de algodón personalizadas",
+                    "Delantales de cocina corporativos",
+                    "Abrelatas o accesorios gourmet personalizados",
+                    "Polos bordados para el equipo del stand",
+                    "Libretas y bolígrafos para reuniones con distribuidores"
+                  ],
+                  "timing": "THIS_QUARTER",
+                  "differentiators": [
+                    "TALLER_PROPIO",
+                    "TRATO_CERCANO",
+                    "PRECIO"
+                  ]
+                },
+                "usage": {
+                  "inputTokens": 1688,
+                  "outputTokens": 344,
+                  "cachedTokens": 0
+                },
+                "cost": 0.002556,
+                "attempts": 1
+              },
+              {
+                "exhibitor": "Envases y Bolsas Garrido",
+                "dataLevel": "rich",
+                "status": "discarded_low_confidence",
+                "relevant": true,
+                "confidence": 0.45,
+                "writable": false,
+                "reason": "Empresa privada exponiendo en IFEMA, pero presenta dudas por ser parcialmente competidora al ofrecer bolsas promocionales y contar con un stand compartido pequeño.",
+                "hypothesis": {
+                  "need": "Artículos de merchandising complementarios a su catálogo (como textil para el personal del stand o bolígrafos y libretas para visitantes) para promocionar su marca en la feria.",
+                  "why_now": "Exponen en Expo Alimentaria Ibérica el 24 de noviembre; nuestro taller propio permite resolver con rapidez pedidos de merchandising corporativo antes de la cita.",
+                  "quantity_min": 100,
+                  "quantity_max": 300,
+                  "budget_min_eur": 250,
+                  "budget_max_eur": 800,
+                  "recommended_products": [
+                    "polos bordados para el equipo del stand",
+                    "bolígrafos metálicos personalizados",
+                    "libretas con logotipo",
+                    "lanyards identificativos"
+                  ],
+                  "timing": "THIS_QUARTER",
+                  "differentiators": [
+                    "TALLER_PROPIO",
+                    "TRATO_CERCANO"
+                  ]
+                },
+                "usage": {
+                  "inputTokens": 1670,
+                  "outputTokens": 299,
+                  "cachedTokens": 0
+                },
+                "cost": 0.002374,
+                "attempts": 1
+              },
+              {
+                "exhibitor": "Instituto Regional de Promoción Agroalimentaria",
+                "dataLevel": "rich",
+                "status": "discarded_irrelevant",
+                "relevant": false,
+                "confidence": 0.05,
+                "writable": false,
+                "reason": "Se trata de un organismo público autonómico cuyas compras se realizan mediante licitación pública, quedando fuera del circuito comercial directo de PubliEXPE.",
+                "hypothesis": null,
+                "usage": {
+                  "inputTokens": 1664,
+                  "outputTokens": 62,
+                  "cachedTokens": 0
+                },
+                "cost": 0.001481,
+                "attempts": 1
+              }
+            ],
+            "usage": {
+              "inputTokens": 5022,
+              "outputTokens": 705,
+              "cachedTokens": 0
+            },
+            "costEur": 0.005513,
+            "llmCalls": 3,
+            "outcome": "SUCCESS",
+            "skillRecords": [
+              {
+                "name": "prospector-event-exhibitors",
+                "version": 1,
+                "skill_version_id": "c204154d-3cc0-4d99-80be-5891bd1359e2",
+                "content_hash": "bb29d60415e9d7a48be6bb3360a8506dc5f60f92cdec89edbc5cf3c77012518e",
+                "source": "db",
+                "requested": {
+                  "name": "prospector-event-exhibitors",
+                  "version": 1
+                }
+              }
+            ]
+          },
+          {
+            "version": 3,
+            "repetition": 1,
+            "decisions": [
+              {
+                "exhibitor": "Conservas Marineras del Cantábrico",
+                "dataLevel": "rich",
+                "status": "hypothesis_created",
+                "relevant": true,
+                "confidence": 0.88,
+                "writable": true,
+                "reason": "Empresa privada de tamaño relevante (140 empleados) con stand amplio de 60 m², cinco comerciales y lanzamiento de producto nuevo. El perfil y los datos concretos encajan perfectamente para merchandising promocional y textil de equipo.",
+                "hypothesis": {
+                  "need": "Unas 400 bolsas de algodón personalizadas para entrega de muestras y catálogos, 15 delantales o polos bordados para los 5 comerciales (3 mudas por persona) y 200 abridores multiusos o detalles gourmet para clientes clave.",
+                  "why_now": "La feria Expo Alimentaria Ibérica se celebra el 24 de noviembre de 2026 (a mes y medio); nuestro taller propio permite asegurar plazos y calidad de bordado y marcaje para el lanzamiento.",
+                  "quantity_min": 615,
+                  "quantity_max": 1000,
+                  "budget_min_eur": 1800,
+                  "budget_max_eur": 3500,
+                  "recommended_products": [
+                    "Bolsas tote de algodón personalizadas",
+                    "Polos o delantales bordados para el equipo",
+                    "Abridores metálicos multiusos personalizados",
+                    "Libretas con bolígrafo para reuniones B2B"
+                  ],
+                  "timing": "THIS_QUARTER",
+                  "differentiators": [
+                    "TALLER_PROPIO",
+                    "TRATO_CERCANO",
+                    "PRECIO"
+                  ]
+                },
+                "usage": {
+                  "inputTokens": 1999,
+                  "outputTokens": 376,
+                  "cachedTokens": 0
+                },
+                "cost": 0.002909,
+                "attempts": 1
+              },
+              {
+                "exhibitor": "Envases y Bolsas Garrido",
+                "dataLevel": "rich",
+                "status": "discarded_low_confidence",
+                "relevant": true,
+                "confidence": 0.45,
+                "writable": false,
+                "reason": "Es un distribuidor de envases que compite parcialmente al imprimir bolsas promocionales, y cuenta con un stand compartido de tamaño reducido. Mantenemos la propuesta con confianza baja por si precisan merchandising corporativo que no fabriquen ellos mismos.",
+                "hypothesis": {
+                  "need": "Unas 200 libretas con bolígrafo para entregar a contactos comerciales del canal HORECA y 6 polos bordados para el personal del stand compartido.",
+                  "why_now": "La feria Expo Alimentaria Ibérica 2026 se celebra el 24 de noviembre y necesitan equipar a su equipo y captar clientes; nuestro taller propio permite agilidad en personalización textil.",
+                  "quantity_min": 206,
+                  "quantity_max": 412,
+                  "budget_min_eur": 450,
+                  "budget_max_eur": 950,
+                  "recommended_products": [
+                    "Polos técnicos bordados",
+                    "Libretas ecológicas con bolígrafo",
+                    "Lanyards personalizados",
+                    "Botellas térmicas corporativas"
+                  ],
+                  "timing": "THIS_QUARTER",
+                  "differentiators": [
+                    "TALLER_PROPIO",
+                    "PRECIO",
+                    "TRATO_CERCANO"
+                  ]
+                },
+                "usage": {
+                  "inputTokens": 1975,
+                  "outputTokens": 329,
+                  "cachedTokens": 0
+                },
+                "cost": 0.002715,
+                "attempts": 1
+              },
+              {
+                "exhibitor": "Instituto Regional de Promoción Agroalimentaria",
+                "dataLevel": "rich",
+                "status": "discarded_irrelevant",
+                "relevant": false,
+                "confidence": 0.05,
+                "writable": false,
+                "reason": "Se trata de un organismo público autonómico cuyas compras se tramitan por licitación pública, quedando fuera del circuito de prospección comercial directa de PubliEXPE.",
+                "hypothesis": null,
+                "usage": {
+                  "inputTokens": 1977,
+                  "outputTokens": 67,
+                  "cachedTokens": 0
+                },
+                "cost": 0.001734,
+                "attempts": 1
+              }
+            ],
+            "usage": {
+              "inputTokens": 5951,
+              "outputTokens": 772,
+              "cachedTokens": 0
+            },
+            "costEur": 0.006328,
+            "llmCalls": 3,
+            "outcome": "SUCCESS",
+            "skillRecords": [
+              {
+                "name": "prospector-event-exhibitors",
+                "version": 3,
+                "skill_version_id": "317ee89f-0bff-4525-83b5-ae49dbe03119",
+                "content_hash": "f8078d67b891e10a53d790f36425a4405fb667ddfe7345e09414be1a528a5a36",
+                "source": "db",
+                "requested": {
+                  "name": "prospector-event-exhibitors",
+                  "version": 3
+                }
+              }
+            ]
+          },
+          {
+            "version": 3,
+            "repetition": 2,
+            "decisions": [
+              {
+                "exhibitor": "Conservas Marineras del Cantábrico",
+                "dataLevel": "rich",
+                "status": "hypothesis_created",
+                "relevant": true,
+                "confidence": 0.88,
+                "writable": true,
+                "reason": "Empresa privada consolidada de 140 empleados con presencia destacada (stand de 60 m² y 5 comerciales) y lanzamiento de producto confirmado. Encaje comercial óptimo para merchandising promocional y textil corporativo.",
+                "hypothesis": {
+                  "need": "Unas 400 bolsas de algodón para entregar muestras del lanzamiento de ventresca, 20 polos o delantales bordados para el equipo comercial y 300 abridores o detalles gourmet para compradores clave.",
+                  "why_now": "Expo Alimentaria Ibérica 2026 se celebra el 24 de noviembre (en unas 7 semanas), requiriendo producción ágil mediante taller propio para el lanzamiento de su nueva línea.",
+                  "quantity_min": 720,
+                  "quantity_max": 1200,
+                  "budget_min_eur": 1800,
+                  "budget_max_eur": 3500,
+                  "recommended_products": [
+                    "bolsas tote de algodón personalizadas",
+                    "polos bordados",
+                    "delantales corporativos",
+                    "abridores multiusos personalizados",
+                    "libretas con bolígrafo para notas de cata"
+                  ],
+                  "timing": "THIS_QUARTER",
+                  "differentiators": [
+                    "TALLER_PROPIO",
+                    "TRATO_CERCANO",
+                    "PRECIO"
+                  ]
+                },
+                "usage": {
+                  "inputTokens": 1999,
+                  "outputTokens": 346,
+                  "cachedTokens": 0
+                },
+                "cost": 0.002797,
+                "attempts": 1
+              },
+              {
+                "exhibitor": "Envases y Bolsas Garrido",
+                "dataLevel": "rich",
+                "status": "discarded_low_confidence",
+                "relevant": true,
+                "confidence": 0.45,
+                "writable": false,
+                "reason": "Empresa privada de packaging que expone en stand compartido, pero supone un caso dudoso al ofrecer también impresión de bolsas promocionales (competidor parcial). Asumimos stand pequeño y requerimientos limitados.",
+                "hypothesis": {
+                  "need": "Unas 200 libretas y bolígrafos para clientes HORECA que visiten el stand, y 6 polos bordados para el personal comercial.",
+                  "why_now": "Expo Alimentaria Ibérica 2026 se celebra el 24 de noviembre (en unas 7 semanas); nuestro taller propio asegura plazos ajustados y calidad en textil y papelería técnica.",
+                  "quantity_min": 206,
+                  "quantity_max": 412,
+                  "budget_min_eur": 380,
+                  "budget_max_eur": 850,
+                  "recommended_products": [
+                    "bolígrafos metálicos grabados",
+                    "libretas personalizadas con soporte para bolígrafo",
+                    "polos bordados corporativos",
+                    "lanyards identificativos"
+                  ],
+                  "timing": "THIS_QUARTER",
+                  "differentiators": [
+                    "TALLER_PROPIO",
+                    "TRATO_CERCANO",
+                    "PRECIO"
+                  ]
+                },
+                "usage": {
+                  "inputTokens": 1981,
+                  "outputTokens": 326,
+                  "cachedTokens": 0
+                },
+                "cost": 0.002708,
+                "attempts": 1
+              },
+              {
+                "exhibitor": "Instituto Regional de Promoción Agroalimentaria",
+                "dataLevel": "rich",
+                "status": "discarded_irrelevant",
+                "relevant": false,
+                "confidence": 0.05,
+                "writable": false,
+                "reason": "Se trata de un organismo público autonómico cuyas compras se tramitan por licitación pública, quedando fuera del circuito comercial directo de PubliEXPE.",
+                "hypothesis": null,
+                "usage": {
+                  "inputTokens": 1967,
+                  "outputTokens": 63,
+                  "cachedTokens": 0
+                },
+                "cost": 0.001712,
+                "attempts": 1
+              }
+            ],
+            "usage": {
+              "inputTokens": 5947,
+              "outputTokens": 735,
+              "cachedTokens": 0
+            },
+            "costEur": 0.006207,
+            "llmCalls": 3,
+            "outcome": "SUCCESS",
+            "skillRecords": [
+              {
+                "name": "prospector-event-exhibitors",
+                "version": 3,
+                "skill_version_id": "317ee89f-0bff-4525-83b5-ae49dbe03119",
+                "content_hash": "f8078d67b891e10a53d790f36425a4405fb667ddfe7345e09414be1a528a5a36",
+                "source": "db",
+                "requested": {
+                  "name": "prospector-event-exhibitors",
+                  "version": 3
+                }
+              }
+            ]
+          },
+          {
+            "version": 1,
+            "repetition": 2,
+            "decisions": [
+              {
+                "exhibitor": "Conservas Marineras del Cantábrico",
+                "dataLevel": "rich",
+                "status": "hypothesis_created",
+                "relevant": true,
+                "confidence": 0.9,
+                "writable": true,
+                "reason": "Empresa privada de tamaño relevante (140 empleados) con presencia destacada de 60 m² y lanzamiento de producto nuevo en feria. Tienen necesidad clara de material corporativo y regalos para visitantes y distribuidores.",
+                "hypothesis": {
+                  "need": "Merchandising promocional para visitantes del stand y packaging o detalles premium para apoyar el lanzamiento de su nueva línea de ventresca, además de uniformidad para sus cinco comerciales.",
+                  "why_now": "La feria Expo Alimentaria Ibérica se celebra el 24 de noviembre de 2026 (a mes y medio vista), por lo que necesitan cerrar producción rápido; nuestro taller propio garantiza plazos seguros.",
+                  "quantity_min": 500,
+                  "quantity_max": 2500,
+                  "budget_min_eur": 1200,
+                  "budget_max_eur": 4500,
+                  "recommended_products": [
+                    "Bolsas tote de algodón personalizadas",
+                    "Delantales de cocina bordados",
+                    "Polos bordados para comerciales",
+                    "Bolígrafos metálicos grabados",
+                    "Abrelatas o accesorios gourmet personalizados"
+                  ],
+                  "timing": "THIS_QUARTER",
+                  "differentiators": [
+                    "TALLER_PROPIO",
+                    "TRATO_CERCANO",
+                    "PRECIO"
+                  ]
+                },
+                "usage": {
+                  "inputTokens": 1690,
+                  "outputTokens": 339,
+                  "cachedTokens": 0
+                },
+                "cost": 0.002539,
+                "attempts": 1
+              },
+              {
+                "exhibitor": "Envases y Bolsas Garrido",
+                "dataLevel": "rich",
+                "status": "discarded_low_confidence",
+                "relevant": true,
+                "confidence": 0.45,
+                "writable": false,
+                "reason": "Es un distribuidor de envases en stand compartido que además imprime bolsas promocionales, por lo que es un competidor parcial y el encaje comercial es dudoso.",
+                "hypothesis": {
+                  "need": "Artículos de merchandising corporativo para su equipo comercial y detalles de cortesía para clientes HORECA que visiten su stand, complementando su oferta sin solaparse con las bolsas que ellos mismos imprimen.",
+                  "why_now": "La feria Expo Alimentaria Ibérica se celebra en noviembre de 2026 y disponen de poco más de seis semanas para encargar material identificativo y de regalo con nuestro taller propio asegurando plazos.",
+                  "quantity_min": 150,
+                  "quantity_max": 400,
+                  "budget_min_eur": 350,
+                  "budget_max_eur": 1200,
+                  "recommended_products": [
+                    "Polos técnicos bordados para el equipo comercial",
+                    "Lanyards e identificadores personalizados",
+                    "Bolígrafos metálicos grabados con láser",
+                    "Libretas corporativas con soporte para bolígrafo"
+                  ],
+                  "timing": "THIS_QUARTER",
+                  "differentiators": [
+                    "TALLER_PROPIO",
+                    "TRATO_CERCANO"
+                  ]
+                },
+                "usage": {
+                  "inputTokens": 1664,
+                  "outputTokens": 333,
+                  "cachedTokens": 0
+                },
+                "cost": 0.002497,
+                "attempts": 1
+              },
+              {
+                "exhibitor": "Instituto Regional de Promoción Agroalimentaria",
+                "dataLevel": "rich",
+                "status": "discarded_irrelevant",
+                "relevant": false,
+                "confidence": 0.05,
+                "writable": false,
+                "reason": "Se trata de un organismo público autonómico cuyas compras se gestionan mediante licitación pública, quedando fuera del circuito comercial directo de PubliEXPE.",
+                "hypothesis": null,
+                "usage": {
+                  "inputTokens": 1664,
+                  "outputTokens": 63,
+                  "cachedTokens": 0
+                },
+                "cost": 0.001484,
+                "attempts": 1
+              }
+            ],
+            "usage": {
+              "inputTokens": 5018,
+              "outputTokens": 735,
+              "cachedTokens": 0
+            },
+            "costEur": 0.005607,
+            "llmCalls": 3,
+            "outcome": "SUCCESS",
+            "skillRecords": [
+              {
+                "name": "prospector-event-exhibitors",
+                "version": 1,
+                "skill_version_id": "c204154d-3cc0-4d99-80be-5891bd1359e2",
+                "content_hash": "bb29d60415e9d7a48be6bb3360a8506dc5f60f92cdec89edbc5cf3c77012518e",
+                "source": "db",
+                "requested": {
+                  "name": "prospector-event-exhibitors",
+                  "version": 1
+                }
+              }
+            ]
+          }
+        ],
+        "metrics": [
+          {
+            "version": 1,
+            "runs": 2,
+            "decisions": 6,
+            "errors": 0,
+            "relevant": 4,
+            "writable": 2,
+            "confidence_mean": 0.4633,
+            "confidence_relevant_mean": 0.67,
+            "irrelevant_high_confidence": 0,
+            "confidence_by_level": {
+              "name_only": {
+                "n": 0,
+                "mean": null,
+                "max": null
+              },
+              "sector": {
+                "n": 0,
+                "mean": null,
+                "max": null
+              },
+              "rich": {
+                "n": 4,
+                "mean": 0.67,
+                "max": 0.9
+              }
+            },
+            "hypotheses": 4,
+            "distinct_ranges_ratio": 1,
+            "top_range": {
+              "range": "600-2500 u / 1200-4500 €",
+              "count": 1
+            },
+            "quantity_ratio_mean": 3.7083,
+            "quantity_ratio_over_2_5": 4,
+            "need_with_quantities": 0,
+            "unit_price_in_band": 4,
+            "name_only_flagged_inference": {
+              "n": 0,
+              "flagged": 0
+            },
+            "input_tokens": 10040,
+            "output_tokens": 1440,
+            "cost_eur": 0.01112,
+            "cost_eur_per_decision": 0.001853
+          },
+          {
+            "version": 3,
+            "runs": 2,
+            "decisions": 6,
+            "errors": 0,
+            "relevant": 4,
+            "writable": 2,
+            "confidence_mean": 0.46,
+            "confidence_relevant_mean": 0.665,
+            "irrelevant_high_confidence": 0,
+            "confidence_by_level": {
+              "name_only": {
+                "n": 0,
+                "mean": null,
+                "max": null
+              },
+              "sector": {
+                "n": 0,
+                "mean": null,
+                "max": null
+              },
+              "rich": {
+                "n": 4,
+                "mean": 0.665,
+                "max": 0.88
+              }
+            },
+            "hypotheses": 4,
+            "distinct_ranges_ratio": 1,
+            "top_range": {
+              "range": "615-1000 u / 1800-3500 €",
+              "count": 1
+            },
+            "quantity_ratio_mean": 1.8232,
+            "quantity_ratio_over_2_5": 0,
+            "need_with_quantities": 4,
+            "unit_price_in_band": 4,
+            "name_only_flagged_inference": {
+              "n": 0,
+              "flagged": 0
+            },
+            "input_tokens": 11898,
+            "output_tokens": 1507,
+            "cost_eur": 0.012535,
+            "cost_eur_per_decision": 0.002089
+          }
+        ],
+        "cases": [
+          {
+            "exhibitor": "Conservas Marineras del Cantábrico",
+            "dataLevel": "rich",
+            "byVersion": [
+              {
+                "version": 1,
+                "relevant": "2/2",
+                "writable": "2/2",
+                "confidence_mean": 0.89,
+                "confidences": [
+                  0.88,
+                  0.9
+                ],
+                "hypothesis": {
+                  "need": "Merchandising promocional para visitantes del stand y packaging o detalles premium para apoyar el lanzamiento de su nueva línea de ventresca, además de uniformidad para sus cinco comerciales.",
+                  "why_now": "La feria Expo Alimentaria Ibérica se celebra el 24 de noviembre de 2026 (a mes y medio vista), por lo que necesitan cerrar producción rápido; nuestro taller propio garantiza plazos seguros.",
+                  "quantity_min": 500,
+                  "quantity_max": 2500,
+                  "budget_min_eur": 1200,
+                  "budget_max_eur": 4500,
+                  "recommended_products": [
+                    "Bolsas tote de algodón personalizadas",
+                    "Delantales de cocina bordados",
+                    "Polos bordados para comerciales",
+                    "Bolígrafos metálicos grabados",
+                    "Abrelatas o accesorios gourmet personalizados"
+                  ],
+                  "timing": "THIS_QUARTER",
+                  "differentiators": [
+                    "TALLER_PROPIO",
+                    "TRATO_CERCANO",
+                    "PRECIO"
+                  ]
+                },
+                "reason": "Empresa privada de tamaño relevante (140 empleados) con presencia destacada de 60 m² y lanzamiento de producto nuevo en feria. Tienen necesidad clara de material corporativo y regalos para visitantes y distribuidores."
+              },
+              {
+                "version": 3,
+                "relevant": "2/2",
+                "writable": "2/2",
+                "confidence_mean": 0.88,
+                "confidences": [
+                  0.88,
+                  0.88
+                ],
+                "hypothesis": {
+                  "need": "Unas 400 bolsas de algodón para entregar muestras del lanzamiento de ventresca, 20 polos o delantales bordados para el equipo comercial y 300 abridores o detalles gourmet para compradores clave.",
+                  "why_now": "Expo Alimentaria Ibérica 2026 se celebra el 24 de noviembre (en unas 7 semanas), requiriendo producción ágil mediante taller propio para el lanzamiento de su nueva línea.",
+                  "quantity_min": 720,
+                  "quantity_max": 1200,
+                  "budget_min_eur": 1800,
+                  "budget_max_eur": 3500,
+                  "recommended_products": [
+                    "bolsas tote de algodón personalizadas",
+                    "polos bordados",
+                    "delantales corporativos",
+                    "abridores multiusos personalizados",
+                    "libretas con bolígrafo para notas de cata"
+                  ],
+                  "timing": "THIS_QUARTER",
+                  "differentiators": [
+                    "TALLER_PROPIO",
+                    "TRATO_CERCANO",
+                    "PRECIO"
+                  ]
+                },
+                "reason": "Empresa privada consolidada de 140 empleados con presencia destacada (stand de 60 m² y 5 comerciales) y lanzamiento de producto confirmado. Encaje comercial óptimo para merchandising promocional y textil corporativo."
+              }
+            ],
+            "confidence_delta": -0.01,
+            "writable_changed": false
+          },
+          {
+            "exhibitor": "Envases y Bolsas Garrido",
+            "dataLevel": "rich",
+            "byVersion": [
+              {
+                "version": 1,
+                "relevant": "2/2",
+                "writable": "0/2",
+                "confidence_mean": 0.45,
+                "confidences": [
+                  0.45,
+                  0.45
+                ],
+                "hypothesis": {
+                  "need": "Artículos de merchandising corporativo para su equipo comercial y detalles de cortesía para clientes HORECA que visiten su stand, complementando su oferta sin solaparse con las bolsas que ellos mismos imprimen.",
+                  "why_now": "La feria Expo Alimentaria Ibérica se celebra en noviembre de 2026 y disponen de poco más de seis semanas para encargar material identificativo y de regalo con nuestro taller propio asegurando plazos.",
+                  "quantity_min": 150,
+                  "quantity_max": 400,
+                  "budget_min_eur": 350,
+                  "budget_max_eur": 1200,
+                  "recommended_products": [
+                    "Polos técnicos bordados para el equipo comercial",
+                    "Lanyards e identificadores personalizados",
+                    "Bolígrafos metálicos grabados con láser",
+                    "Libretas corporativas con soporte para bolígrafo"
+                  ],
+                  "timing": "THIS_QUARTER",
+                  "differentiators": [
+                    "TALLER_PROPIO",
+                    "TRATO_CERCANO"
+                  ]
+                },
+                "reason": "Es un distribuidor de envases en stand compartido que además imprime bolsas promocionales, por lo que es un competidor parcial y el encaje comercial es dudoso."
+              },
+              {
+                "version": 3,
+                "relevant": "2/2",
+                "writable": "0/2",
+                "confidence_mean": 0.45,
+                "confidences": [
+                  0.45,
+                  0.45
+                ],
+                "hypothesis": {
+                  "need": "Unas 200 libretas y bolígrafos para clientes HORECA que visiten el stand, y 6 polos bordados para el personal comercial.",
+                  "why_now": "Expo Alimentaria Ibérica 2026 se celebra el 24 de noviembre (en unas 7 semanas); nuestro taller propio asegura plazos ajustados y calidad en textil y papelería técnica.",
+                  "quantity_min": 206,
+                  "quantity_max": 412,
+                  "budget_min_eur": 380,
+                  "budget_max_eur": 850,
+                  "recommended_products": [
+                    "bolígrafos metálicos grabados",
+                    "libretas personalizadas con soporte para bolígrafo",
+                    "polos bordados corporativos",
+                    "lanyards identificativos"
+                  ],
+                  "timing": "THIS_QUARTER",
+                  "differentiators": [
+                    "TALLER_PROPIO",
+                    "TRATO_CERCANO",
+                    "PRECIO"
+                  ]
+                },
+                "reason": "Empresa privada de packaging que expone en stand compartido, pero supone un caso dudoso al ofrecer también impresión de bolsas promocionales (competidor parcial). Asumimos stand pequeño y requerimientos limitados."
+              }
+            ],
+            "confidence_delta": 0,
+            "writable_changed": false
+          },
+          {
+            "exhibitor": "Instituto Regional de Promoción Agroalimentaria",
+            "dataLevel": "rich",
+            "byVersion": [
+              {
+                "version": 1,
+                "relevant": "0/2",
+                "writable": "0/2",
+                "confidence_mean": 0.05,
+                "confidences": [
+                  0.05,
+                  0.05
+                ],
+                "hypothesis": null,
+                "reason": "Se trata de un organismo público autonómico cuyas compras se gestionan mediante licitación pública, quedando fuera del circuito comercial directo de PubliEXPE."
+              },
+              {
+                "version": 3,
+                "relevant": "0/2",
+                "writable": "0/2",
+                "confidence_mean": 0.05,
+                "confidences": [
+                  0.05,
+                  0.05
+                ],
+                "hypothesis": null,
+                "reason": "Se trata de un organismo público autonómico cuyas compras se tramitan por licitación pública, quedando fuera del circuito comercial directo de PubliEXPE."
+              }
+            ],
+            "confidence_delta": 0,
+            "writable_changed": false
+          }
+        ],
+        "stability": [
+          {
+            "version": 1,
+            "confidence_mad": 0.0033,
+            "relevant_flips": 0,
+            "writable_flips": 0
+          },
+          {
+            "version": 3,
+            "confidence_mad": 0,
+            "relevant_flips": 0,
+            "writable_flips": 0
+          }
+        ],
+        "total_cost_eur": 0.023655,
+        "budget_eur": 0.15,
+        "budget_exceeded": false
+      }
+    }
+  ]
+}

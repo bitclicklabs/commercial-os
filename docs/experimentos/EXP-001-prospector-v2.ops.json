@@ -1,0 +1,54 @@
+{
+  "experiment": "EXP-001",
+  "skill": "prospector-event-exhibitors",
+  "base_version": 1,
+  "change_reason": "EXP-001 (ciclo manual de mejora, ver docs/experimentos/EXP-001-prospector-v2.md). 5 operaciones acotadas sobre v1, sin reescritura (texto tocado < 35 %). Patrones en las trazas reales de Gastrónoma 2026, expositores 1-60 del catálogo (ejecuciones e67cba89, 44e35e27, 7eaa0dd4): F1 cantidades y presupuestos de plantilla (en 7eaa0dd4, budget_min 600 € en 27/57 hipótesis; 57/57 con cantidad máx./mín. > 2,5; solo 2/57 'need' con cantidades); F2 confianza que no baja cuando solo llega el nombre (34/46 expositores sin sector con confianza > 0,6, p. ej. INNOVA CHEF 0,75 con la razón 'solo disponemos del nombre comercial'); F3 suposiciones a partir del nombre escritas como hechos (FEGREPPA identificada como dos entidades distintas en dos ejecuciones; GRECARVAL, HOSTELERÍA VALENCIA). Operaciones: OP1 ADD techo de confianza según los datos recibidos (F2); OP2 REPLACE need con desglose de unidades por producto (F1); OP3 REPLACE quantity con estimación desde el desglose y amplitud máx. 2,5 (F1); OP4 REPLACE budget derivado del desglose (F1); OP5 ADD regla de suposiciones a partir del nombre (F3). Validación offline sin contaminar (P5): fixture feria-ejemplo y 8 expositores de Gastrónoma del tramo 61-91 (muestreo sistemático, uno de cada cuatro desde el 62), nunca usados para diseñar. DRAFT: no se activa sin decisión humana.",
+  "design_data": {
+    "traces": [
+      "e67cba89-4252-45bd-bb25-b15ca0268a6c (scout Gastrónoma, expositores 1-20)",
+      "44e35e27-b991-467e-988a-6f0c591669cb (scout Gastrónoma, expositores 1-60)",
+      "7eaa0dd4-930b-4ea6-bdd2-c558c597b97a (scout Gastrónoma, solo expositores 1-60 de 91)"
+    ],
+    "human_evaluations": "5 ACCEPTED sin edición (ARCECARNE, BAUUMAN, BICO DE XEADO, CULLIGAN PREMIUM WATER, DOMINIOS DE MGP), todos del tramo 1-60",
+    "excluded": "expositores 61-91 de Gastrónoma en todas las trazas; trazas del fixture feria-ejemplo"
+  },
+  "validation_data": {
+    "fixtures": [
+      "runtime/agent-runtime/test/fixtures/feria-ejemplo.json",
+      "runtime/agent-runtime/test/fixtures/gastronoma-holdout.json"
+    ],
+    "rule": "Gastrónoma: posiciones 62, 66, 70, 74, 78, 82, 86 y 90 del catálogo (orden alfabético del JSON puisearch), fijadas antes de ejecutar"
+  },
+  "operations": [
+    {
+      "op": "ADD",
+      "anchor": "- 0-0,19: no hay encaje.",
+      "text": "- Techo según los datos recibidos: si del expositor solo tienes el nombre (sin sector, descripción ni dominio), la confianza no pasa de 0,6; con nombre y sector, no pasa de 0,75. Solo superas el techo si la empresa es notoriamente conocida en su sector, y entonces dices en \"reason\" que te basas en conocimiento general y no en los datos recibidos.",
+      "why": "F2: confianza alta sin datos (7eaa0dd4: 34/46 expositores solo con nombre por encima de 0,6; INNOVA CHEF 0,75 en 44e35e27 con 'solo disponemos del nombre comercial'; MEDITERRÁNEO CULINARY CENTER 0,75; BICO DE XEADO 0,85 solo con nombre y sector)."
+    },
+    {
+      "op": "REPLACE",
+      "find": "- need: necesidad concreta de merchandising ligada al evento (qué y para qué), 1-3 frases.",
+      "text": "- need: necesidad concreta de merchandising ligada al evento (qué, cuántas unidades aproximadas de cada producto y para qué), 1-3 frases. Ejemplo de desglose: «unas 300 bolsas tote para visitantes y 15 polos bordados para el equipo del stand».",
+      "why": "F1: solo 2/57 'need' con cantidades en 7eaa0dd4 (2/56 en 44e35e27, 2/20 en e67cba89); la necesidad no explica de dónde salen las unidades."
+    },
+    {
+      "op": "REPLACE",
+      "find": "- quantity_min / quantity_max: unidades totales estimadas, coherentes con el tamaño de la empresa y del evento.",
+      "text": "- quantity_min / quantity_max: unidades totales que salen del desglose de \"need\", ajustado a lo que sabes de este expositor (sector, tipo de entidad, presencia en la feria). Si no conoces su tamaño, calcula para un stand pequeño o mediano y dilo en \"reason\". quantity_max no supera 2,5 veces quantity_min.",
+      "why": "F1: rangos de plantilla (44e35e27: 250-800 u / 600-2.200 € repetido en 10 de 56 hipótesis; 7eaa0dd4: 57/57 hipótesis con máx./mín. > 2,5 y amplitud media 3,6)."
+    },
+    {
+      "op": "REPLACE",
+      "find": "- budget_min_eur / budget_max_eur: presupuesto en euros sin IVA, coherente con las cantidades y con precios unitarios competitivos (de 0,50 € a 15 € por unidad según producto).",
+      "text": "- budget_min_eur / budget_max_eur: presupuesto en euros sin IVA calculado a partir de ese desglose (unidades × precio unitario orientativo de cada producto, de 0,50 € a 15 € por unidad), no una horquilla genérica.",
+      "why": "F1: presupuestos repetidos sin relación con el expositor (7eaa0dd4: budget_min 600 € en 27/57 hipótesis, budget_max 2.200 € en 21/57 y 1.800 € en 15/57)."
+    },
+    {
+      "op": "ADD",
+      "anchor": "- No inventes hechos sobre la empresa: usa solo los datos recibidos y conocimiento general del sector; si supones algo, dilo en \"reason\" y baja la confianza.",
+      "text": "- Lo que deduces solo a partir del nombre (actividad, tipo de entidad, tamaño, a qué grupo pertenece) es una suposición: escríbelo en \"reason\" como tal («por el nombre, parece…») y nunca como un hecho.",
+      "why": "F3: suposiciones escritas como hechos: FEGREPPA es 'el Gremio de Panaderos y Pasteleros de Valencia' en 44e35e27 y 'la Federación Gremial y Empresarial de Panadería y Pastelería de la C.V.' en 7eaa0dd4, con el mismo nombre de entrada y otro expositor distinto (GREMIO DE PANADEROS Y PASTELEROS DE VALENCIA) en el catálogo; GRECARVAL '(Gremio de Carniceros y Charcuteros de Valencia)' y HOSTELERÍA VALENCIA 'se identifica como la Federación Empresarial de Hostelería de Valencia' sin ningún dato de entrada que lo diga."
+    }
+  ]
+}

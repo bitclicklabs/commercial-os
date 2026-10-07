@@ -62,14 +62,14 @@ describe('render_url: guards and answer validation', () => {
       ],
       final_url: 'https://catalogo.example/app#/home',
     });
-    const r = await renderPublicUrl('https://catalogo.example/app', fake.deps(), signal(), { maxChars: 1_000, waitMs: 500 });
+    const r = await renderPublicUrl('https://catalogo.example/app', fake.deps(), signal(), { maxChars: 1_000, waitMs: 500, minTextChars: 300, waitUntil: 'networkidle' });
     expect(r.status).toBe('ok');
     if (r.status !== 'ok') return;
     expect(r.output).toMatchObject({ content_kind: 'rendered', finalUrl: 'https://catalogo.example/app', title: 'Catálogo 2027', truncated: true, redirects: [] });
     expect(r.output.text.length).toBe(1_000);
     expect(r.output.text.startsWith('Expositores')).toBe(true);
     expect(r.output.links).toEqual([{ url: 'https://www.conservasortiz.com/', text: 'Conservas Ortiz' }]);
-    expect(fake.requests[0]).toEqual({ url: 'https://catalogo.example/app', max_chars: 1_000, wait_ms: 500 });
+    expect(fake.requests[0]).toEqual({ url: 'https://catalogo.example/app', max_chars: 1_000, wait_ms: 500, min_text_chars: 300, wait_until: 'networkidle' });
   });
 
   it('maps renderer errors and refuses answers that break the contract', async () => {

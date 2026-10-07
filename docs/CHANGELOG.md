@@ -17,6 +17,13 @@ Cambios notables de PubliEXPE Commercial OS, agrupados por tanda de trabajo. For
 - Skills versionadas (primer paso MVP-1): tablas `skills`/`skill_versions` inmutables por trigger SQL, 4 skills migradas byte a byte como v1 ACTIVE, resolución desde BD con fallback a código, API de versiones con activación/rollback, y el trace registra la versión exacta usada. Migración 0005.
 - PM: journal de migraciones 0005/0006 refechado (el orden por fecha contradecía el de índice: drizzle habría saltado la 0006 en silencio).
 
+## 2026-10-07 — Tanda 8 (PR #8)
+
+- Email-ops en el flujo: al marcar READY, el runtime comprueba la lista de supresión (y destinatario vacío/ inválido) y devuelve a DRAFT con nota ⛔; doble chequeo en SENT para la ventana de carrera; tabla `email_sends` (migración 0007) y eventos `email.*`; bloque Email en métricas/dashboard con las fases del calendario de warm-up y el límite horario de IONOS.
+- Ciclo de mejora de skills (primera vuelta real, LLD §6.4 en manual): análisis de trazas con patrones citables (cantidades de plantilla, confianza inflada sin datos, suposiciones como hechos), v2 del Prospector como DRAFT con 5 operaciones acotadas, tooling `pnpm skill:candidate` (límites de edición 35%/50%) y `pnpm skill:compare`, holdout sin contaminar (P5) y EXP-001 documentado. Veredicto del gate: ITERAR (regresión de semántica de confianza detectada) — la v2 no se activa. Playbook en docs/ciclo-mejora-skills.md.
+- Docs: ADRs 23-31 en el LLD v0.3; guía del comercial y warm-up en presente (envío con un clic operativo desde 2026-10-07); roadmap LLD 0.1 vs construido (docs/ROADMAP.md).
+- Fixes PM: título de la nota de supresión reparado (mojibake de encoding), compose con EXTERNAL_EVENTS_TOKEN, tests alineados con send_from_twenty activo.
+
 ## Sin publicar
 
 ### Documentación y herramientas

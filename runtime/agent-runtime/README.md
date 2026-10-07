@@ -581,6 +581,50 @@ Si una ref no se resuelve (la skill no existe, la versión no existe, no hay ver
 
 Las transiciones son idempotentes: repetir `activate` o `deprecate` devuelve `200` con `changed: false`.
 
+### Ciclo de mejora: `skill:candidate` y `skill:compare`
+
+Dos herramientas de desarrollo (en `scripts/`, fuera de la imagen del runtime) para mejorar una skill con datos reales. El procedimiento completo está en [Ciclo de mejora de skills](../../docs/ciclo-mejora-skills.md) y el primer ejemplo en [EXP-001](../../docs/experimentos/EXP-001-prospector-v2.md).
+
+**`pnpm skill:candidate`** construye una candidata como la versión base más una lista de operaciones acotadas (`ADD`, `REMOVE`, `REPLACE`, `MOVE`, `REORDER`; `src/skills/edit-ops.ts`), cada una anclada en texto único y con su justificación (`why`). Rechaza la candidata si borra o sustituye más del 35 % del texto base o añade más del 50 %: eso sería reescribir la skill.
+
+```sh
+# Simulación: imprime el diff y el tamaño de la edición. No escribe nada.
+pnpm skill:candidate prospector-event-exhibitors --ops ../../docs/experimentos/EXP-001-prospector-v2.ops.json
+# Crea la versión DRAFT por la API (nunca la activa).
+pnpm skill:candidate prospector-event-exhibitors --ops ../../docs/experimentos/EXP-001-prospector-v2.ops.json --post --created-by "jesus"
+```
+
+El fichero de operaciones lleva `base_version`, `change_reason` (máximo 2.000 caracteres) y `operations`; opcionalmente `experiment`, `design_data` y `validation_data`, que se guardan en `skill_versions.metadata` junto con las operaciones y el tamaño de la edición.
+
+**`pnpm skill:compare`** ejecuta la misma entrada con dos versiones de la skill y compara las salidas:
+
+```sh
+pnpm skill:compare prospector-event-exhibitors --versions 1,2 \
+  --fixture test/fixtures/feria-ejemplo.json --fixture test/fixtures/gastronoma-holdout.json \
+  --repeat 2 --max-cost-eur 0.15 --today 2026-10-07 --out ../../docs/experimentos/EXP-001/compare-v1-v2
+```
+
+| Opción | Por defecto | Descripción |
+|---|---|---|
+| `--versions a,b` | — | Las dos versiones (cualquier estado; se leen con `GET /skills/:id`) |
+| `--fixture <ruta>` | — | Entrada del modo directo (`{ event, exhibitors[] }`). Repetible: una comparación por fixture |
+| `--repeat N` | `1` | Ejecuciones por versión (1-5); el orden alterna entre repeticiones |
+| `--max-cost-eur` | `0.15` | Presupuesto total: al alcanzarlo no se hacen más llamadas y el informe queda marcado como incompleto (código de salida `3`) |
+| `--today AAAA-MM-DD` | hoy | Fecha que ve el agente |
+| `--out <prefijo>` | — | Escribe `<prefijo>.md` y `<prefijo>.json` |
+| `--provider` | `gemini` | `gemini` (necesita `GEMINI_API_KEY`) o `stub` (prueba en seco) |
+| `--rerender <informe.json>` | — | Recalcula métricas e informe de una comparación guardada sin llamar al modelo |
+
+Garantías:
+
+- Proveedor real y configuración del agente del seed (`desiredProspectorVersion()`), con la versión de la skill inyectada exactamente (se comprueba su `content_hash`).
+- CRM en memoria: un FakeTwenty nuevo por ejecución. Nada llega a Twenty y no se escribe en la BD.
+- El informe incluye relevantes y escribibles, confianza por nivel de datos (solo nombre, sector, descripción o dominio), no relevantes con confianza > 0,19, forma de la hipótesis (horquillas repetidas, amplitud, cantidades en `need`, precio unitario implícito), estabilidad entre repeticiones, tokens y coste por versión, y la tabla lado a lado por expositor.
+
+> **Importante:** la herramienta no puede saber si los fixtures se usaron para diseñar la candidata (P5). Usa datos que no aparezcan en el análisis y dilo en el experimento.
+
+Hoy solo hay *harness* para `prospector-event-exhibitors` (modo directo del Prospector). Los tests unitarios (`test/unit/skill-edit-ops.test.ts`, `test/unit/skill-compare.test.ts`) usan un `StubProvider` guionizado y no llaman a ningún servicio.
+
 ## Tools
 
 Capa de tools del LLD v0.2 (secciones 5.2, 5.7 y 10). Los agentes no llaman a Twenty directamente: reciben un `AgentToolbox` (`ctx.tools`) que solo ejecuta las tools permitidas por la versión del agente.

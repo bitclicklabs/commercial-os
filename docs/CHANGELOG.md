@@ -36,6 +36,8 @@ Cambios notables de PubliEXPE Commercial OS, agrupados por tanda de trabajo. For
 - Se documenta el workaround de Windows en el runbook y en el README de la Twenty App.
 - Se añade la [guía del equipo comercial](guia-comercial.md) y la sección "Operación diaria" del runbook, y se cierra el hueco del seed con `pnpm seed`.
 - Se añade el [plan de warm-up del canal de email](email-warmup.md) (calendario de cuatro semanas desde el 2026-10-06, vigilancia DMARC y Postmaster, hito DMARC `p=quarantine` del 2026-11-03, bajas y checklists), la sección "Borradores de email" de la guía comercial y su enlace desde el runbook y el README.
+- Se amplía el [plan de warm-up](email-warmup.md) con la sección "Alta en Microsoft SNDS" (SNDS no es accesible con IONOS correo compartido; se documenta la alternativa manual: prueba de colocación con cuentas Outlook propias, cabeceras, rebotes y señales indirectas) y con el procedimiento de la lista de supresión: nota de Twenty "Lista de supresión — NO contactar", una línea `email — fecha — motivo` por baja y comprobación obligatoria antes de cada envío en frío.
+- La [guía del equipo comercial](guia-comercial.md) resume el procedimiento de la lista de supresión en la sección de borradores y documenta que una hipótesis editada y validada también genera borrador, con los datos corregidos.
 
 ## 2026-10-06 — Tanda 1: bootstrap del MVP-0 (PR #1)
 

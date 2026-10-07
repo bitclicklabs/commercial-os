@@ -113,8 +113,8 @@ Secuenciada: datasets y evaluadores primero; Experiments + Release Gate cuando a
 
 | Pieza | Rama | Agente | Estado |
 |---|---|---|---|
-| Datasets de evaluación desde trazas y veredictos reales (train/val/test sin contaminación, P5) | `feat/eval-datasets` | Opus | 🔄 en curso |
+| Datasets de evaluación desde trazas y veredictos reales (train/val/test sin contaminación, P5) | `feat/eval-datasets` | Opus | ✅ fusionado (prospeccion-v1: 94 casos, P5 operativo con markUsed; hallazgo honesto: 0 etiquetados limpios en VAL/TEST — los 5 veredictos reales están quemados como diseño del EXP-001) |
 | Evaluadores RULE + LLM_JUDGE (juez con modelo distinto al ejecutor) + score COMPOSITE con restricciones duras (§11.3) | `feat/evaluators` | Opus | ✅ fusionado (11 evaluadores; composite reproduce el EXP-002: v1 0,706 / v3 0,978; juez ciego a versiones; 0,08 € de juez; 643 tests) |
-| Experiments + Release Gate automático (§11.5-11.6, seesaw) integrado con la activación de skills | `feat/experiments-gate` | Opus | ⏸️ espera a datasets+evaluadores |
+| Experiments + Release Gate automático (§11.5-11.6, seesaw) integrado con la activación de skills | `feat/experiments-gate` | Opus | 🔄 en curso (sobre la integración, con los contratos reales) |
 | Docs de cierre (ADRs, guía, runbook) | — | Sonnet (al final) | ⏸️ |
 | Integración, e2e y PR | `feat/tanda10` (worktree wt10-integracion) | PM | ⏸️ |

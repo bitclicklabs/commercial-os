@@ -11,6 +11,11 @@
  * of truth; a stale registration is dropped), applies the filter and the anti-loop guard and
  * calls `requestTaskRun` with `taskrun:{task_id}:event:{event_id}`: the same event delivered
  * twice never creates a second TaskRun.
+ *
+ * Observers (`observers` option, e.g. the outbound WebhookDispatcher) run after the
+ * triggers for every event of the queue. An observer that throws fails the job, so BullMQ
+ * retries it: triggers (idempotency key per task and event) and observers must be
+ * idempotent.
  */
 import { Worker, type ConnectionOptions, type Queue } from 'bullmq';
 import { and, eq } from 'drizzle-orm';
@@ -18,6 +23,7 @@ import type { Db } from '../db/client.js';
 import { agents, taskDefinitions, type TaskDefinition } from '../db/schema.js';
 import { EventEnvelopeSchema, type EventEnvelope } from '../events/envelope.js';
 import type { EventPublisher } from '../events/event-bus.js';
+import type { EventObserver } from '../events/webhook-delivery.js';
 import {
   DEFAULT_MAX_CHAIN_DEPTH,
   deepEqual,
@@ -105,6 +111,8 @@ export interface EventTriggerConsumerOptions {
   maxChainDepth?: number;
   concurrency?: number;
   logger?: ProcessorLogger;
+  /** Called with every event after the triggers (outbound webhooks). */
+  observers?: EventObserver[];
 }
 
 /** What the consumer needs from the scheduler: drop stale registrations. */
@@ -195,6 +203,7 @@ export class EventTriggerConsumer {
         const outcomes = await this.handleEvent(job.data);
         const fired = outcomes.filter((o) => o.outcome === 'created');
         if (fired.length > 0) this.logger.info({ eventId: job.data.id, type: job.data.type, fired }, 'event triggers fired');
+        for (const observer of this.opts.observers ?? []) await observer.onEvent(job.data);
         return outcomes;
       },
       {

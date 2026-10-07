@@ -4,6 +4,7 @@ import { buildServer } from './api/server.js';
 import { loadConfig } from './config.js';
 import { createDb } from './db/client.js';
 import { BullEventQueue, EventBus, eventsQueueName } from './events/event-bus.js';
+import { BullWebhookDeliveryQueue, WebhookDeliveryWorker, WebhookDispatcher, webhooksQueueName } from './events/webhook-delivery.js';
 import { createProviderRegistry } from './providers/index.js';
 import { BullRunQueue } from './queue/run-queue.js';
 import { EventTriggerConsumer } from './scheduler/event-triggers.js';
@@ -42,6 +43,8 @@ async function main(): Promise<void> {
       })
     : undefined;
   let eventConsumer: EventTriggerConsumer | undefined;
+  let webhookQueue: BullWebhookDeliveryQueue | undefined;
+  let webhookWorker: WebhookDeliveryWorker | undefined;
 
   if (has('api')) {
     app = await buildServer(
@@ -83,6 +86,19 @@ async function main(): Promise<void> {
   if (has('scheduler') && scheduler) {
     scheduler.start({ syncIntervalMs: config.schedulerSyncIntervalMs });
     logger.info({ queue: scheduleQueueName(config.queueName) }, 'scheduler started');
+    // Outbound webhooks (event_subscriptions): fan-out from the events consumer to the
+    // {QUEUE_NAME}-webhooks queue, delivered with retries by a worker of this role.
+    const webhooksQueue = webhooksQueueName(config.queueName);
+    webhookQueue = new BullWebhookDeliveryQueue(webhooksQueue, config.redisUrl, { backoffMs: config.webhookDeliveryBackoffMs });
+    webhookWorker = new WebhookDeliveryWorker(dbHandle.db, {
+      queueName: webhooksQueue,
+      redisUrl: config.redisUrl,
+      allowPrivate: config.externalWebhookAllowPrivate,
+      concurrency: config.webhookDeliveryConcurrency,
+      timeoutMs: config.webhookDeliveryTimeoutMs,
+      logger,
+    });
+    webhookWorker.start();
     // EVENT triggers + re-publisher of undispatched events live with the scheduler.
     eventConsumer = new EventTriggerConsumer(dbHandle.db, queue, scheduler, {
       queueName: eventsQueue,
@@ -91,17 +107,19 @@ async function main(): Promise<void> {
       maxChainDepth: config.eventChainMaxDepth,
       concurrency: config.eventConsumerConcurrency,
       logger,
+      observers: [new WebhookDispatcher(dbHandle.db, webhookQueue, { logger })],
     });
     eventConsumer.start();
     eventBus.startRepublisher(config.eventRepublishIntervalMs);
     logger.info({ queue: eventsQueue, maxChainDepth: config.eventChainMaxDepth }, 'event consumer started');
+    logger.info({ queue: webhooksQueue, allowPrivate: config.externalWebhookAllowPrivate.length }, 'event webhook delivery started');
   }
 
   const shutdown = async (signal: string) => {
     console.log(`received ${signal}, shutting down`);
     reconciler?.stop();
-    await Promise.allSettled([app?.close(), worker?.close(), eventConsumer?.close()]);
-    await Promise.allSettled([scheduler?.close(), eventBus.close(), queue.close()]);
+    await Promise.allSettled([app?.close(), worker?.close(), eventConsumer?.close(), webhookWorker?.close()]);
+    await Promise.allSettled([scheduler?.close(), eventBus.close(), queue.close(), webhookQueue?.close()]);
     await dbHandle.close();
     process.exit(0);
   };

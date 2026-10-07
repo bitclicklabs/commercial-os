@@ -103,6 +103,6 @@ En paralelo, en sesiones aparte del usuario: desglose por versión de skill en m
 |---|---|---|---|
 | Skill v3 del Prospector (EXP-002): corrige la semántica de confianza de la v2, holdout fresco | `feat/skill-v3` | Opus | ✅ fusionado y ACTIVADA por el PM (todos los criterios pre-declarados cumplidos; need con cantidades 20/20, confianza de descartes 0,05, +10,9% coste; rollback: deprecate v3) |
 | Harness versionado v1: políticas consolidadas en `harness/harness_versions`, resolución con fallback y registro en el trace | `feat/harness-v1` | Opus | ✅ fusionado (semántica de techo sobre límites por agente; 7 fallbacks probados; comportamiento idéntico verificado; 577 tests) |
-| Memoria semántica (KnowledgeEntry) + el Prospector escribe Research | `feat/knowledge-research` | Opus | 🔄 en curso |
+| Memoria semántica (KnowledgeEntry) + el Prospector escribe Research | `feat/knowledge-research` | Opus | ✅ fusionado (3 entries ACTIVE con evidencia del EXP-001 y tu feedback; MEMORY_READ en el trace; research real de ARCECARNE en Twenty; 597 tests) |
 | Dashboard dentro de Twenty (estudio de viabilidad + implementación si procede) | `feat/twenty-dashboard` | Opus | 🔄 en curso |
 | Integración, e2e y PR | `feat/tanda9` (worktree wt9-integracion) | PM | ⏸️ |

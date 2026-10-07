@@ -90,7 +90,7 @@ Contexto: el usuario conectó el SMTP, activó el workflow y el primer email rea
 
 | Pieza | Rama | Agente | Estado |
 |---|---|---|---|
-| Email-ops en el flujo: chequeo automático de la lista de supresión al marcar READY, tracking de envíos (SENT) y contadores de warm-up en el dashboard | `feat/email-ops-flujo` | Opus | 🔄 en curso |
+| Email-ops en el flujo: chequeo automático de la lista de supresión al marcar READY, tracking de envíos (SENT) y contadores de warm-up en el dashboard | `feat/email-ops-flujo` | Opus | ✅ fusionado (probado en vivo: READY-suprimido vuelve a DRAFT con nota ⛔; doble chequeo en SENT; dashboard con fases del calendario; + fix PM: título de la nota de supresión reparado) |
 | Ciclo de mejora de skills: playbook, tooling de comparación, y una v2 real del Prospector en DRAFT a partir de trazas/evaluaciones (sin activar: decide el humano) | `feat/skill-cycle` | Opus | 🔄 en curso |
 | Docs: ADRs de la tanda 7 al LLD v0.3, guía del comercial con el envío ya activo, runbook | `docs/adrs-tanda7` | Sonnet | ✅ fusionado (ADRs 23-31; guía y warm-up en presente; + fixes PM: guía de envío, README runtime, compose con token de eventos) |
 | Integración, e2e y PR | `feat/tanda8` | PM | ⏸️ |

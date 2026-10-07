@@ -20,6 +20,10 @@ export const TWENTY_OBJECTS = {
   research: 'researches',
   commercialHypothesis: 'commercialHypotheses',
   agentRunSummary: 'agentRunSummaries',
+  /** Standard Twenty objects. */
+  person: 'people',
+  note: 'notes',
+  noteTarget: 'noteTargets',
 } as const;
 
 export const SIGNAL_TYPES = [
@@ -147,6 +151,49 @@ export interface TwentyAgentRunSummary extends TwentySystemFields {
   finishedAt: string | null;
   tenantId: string | null;
   companyId: string | null;
+}
+
+/** Standard `person` (decision maker of a hypothesis). Only the fields the runtime reads. */
+export interface TwentyPerson extends TwentySystemFields {
+  name: { firstName: string | null; lastName: string | null } | null;
+  jobTitle?: string | null;
+  emails?: { primaryEmail: string | null; additionalEmails?: string[] | null } | null;
+  companyId?: string | null;
+}
+
+/** `commercialHypothesis` read with depth 1 (relations expanded). */
+export interface TwentyCommercialHypothesisExpanded extends TwentyCommercialHypothesis {
+  company?: TwentyCompany | null;
+  commercialSignal?: TwentyCommercialSignal | null;
+  decisionMaker?: TwentyPerson | null;
+}
+
+/**
+ * Standard `note` (Twenty 2.45). The body is the RICH_TEXT_V2 composite `bodyV2`
+ * `{ markdown, blocknote }`: writing only `markdown` is enough, the server derives the
+ * BlockNote JSON from it (`transformRichTextValue`).
+ */
+export interface TwentyNote extends TwentySystemFields {
+  title: string | null;
+  bodyV2: { markdown: string | null; blocknote: string | null } | null;
+  noteTargets?: TwentyNoteTarget[];
+}
+
+/**
+ * Standard `noteTarget`: join row between a note and ONE record. Each target object has
+ * its own nullable join column (`targetCompanyId`, `targetPersonId`, `targetOpportunityId`
+ * and, for the App objects, `targetCommercialHypothesisId`, `targetCommercialSignalId`,
+ * `targetResearchId`, `targetAgentRunSummaryId`). A note on N records has N rows.
+ */
+export interface TwentyNoteTarget extends TwentySystemFields {
+  noteId: string | null;
+  targetCompanyId: string | null;
+  targetPersonId?: string | null;
+  targetOpportunityId?: string | null;
+  targetCommercialHypothesisId?: string | null;
+  targetCommercialSignalId?: string | null;
+  targetResearchId?: string | null;
+  targetAgentRunSummaryId?: string | null;
 }
 
 export function links(url: string, label = ''): TwentyLinks {

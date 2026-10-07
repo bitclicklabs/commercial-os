@@ -42,7 +42,7 @@ export function desiredEmailDrafterVersion(): AgentVersionSpec {
       // Send from Twenty (docs/twenty-envio-email.md): OFF until the Twenty App fields
       // emailTo / emailSubject / emailBody / emailStatus are synced. Turning it on only adds
       // the draft to those fields; sending is always a person clicking the Twenty workflow.
-      send_from_twenty: { enabled: false },
+      send_from_twenty: { enabled: true },
       sender: {
         name: DEFAULT_SENDER.name,
         company: DEFAULT_SENDER.company,

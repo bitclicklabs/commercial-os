@@ -94,3 +94,15 @@ Contexto: el usuario conectó el SMTP, activó el workflow y el primer email rea
 | Ciclo de mejora de skills: playbook, tooling de comparación, y una v2 real del Prospector en DRAFT a partir de trazas/evaluaciones (sin activar: decide el humano) | `feat/skill-cycle` | Opus | ✅ fusionado (EXP-001: v2 mejora F1-F3 pero regresión de semántica de confianza en el holdout → veredicto ITERAR; v2 queda DRAFT; 0,09 € de validación) |
 | Docs: ADRs de la tanda 7 al LLD v0.3, guía del comercial con el envío ya activo, runbook | `docs/adrs-tanda7` | Sonnet | ✅ fusionado (ADRs 23-31; guía y warm-up en presente; + fixes PM: guía de envío, README runtime, compose con token de eventos) |
 | Integración, e2e y PR | `feat/tanda8` | PM | ✅ 560 tests; redeploy con 0007; bloque Email en métricas verificado (fase Semana 1 detectada); nota de supresión reparada; v2 NO activada siguiendo el gate |
+
+## Tanda 9 — Cierre de MVP-1 y dashboard en Twenty 🔄 (en curso, 2026-10-07)
+
+En paralelo, en sesiones aparte del usuario: desglose por versión de skill en métricas y fix del reconciliador con runs largos del scout. Esta tanda NO toca `src/metrics/queries.ts` ni `src/worker/recovery.ts`, y el checkout principal del repo queda para esa sesión (la integración de la tanda vive en el worktree wt9-integracion).
+
+| Pieza | Rama | Agente | Estado |
+|---|---|---|---|
+| Skill v3 del Prospector (EXP-002): corrige la semántica de confianza de la v2, holdout fresco | `feat/skill-v3` | Opus | 🔄 en curso |
+| Harness versionado v1: políticas consolidadas en `harness/harness_versions`, resolución con fallback y registro en el trace | `feat/harness-v1` | Opus | 🔄 en curso |
+| Memoria semántica (KnowledgeEntry) + el Prospector escribe Research | `feat/knowledge-research` | Opus | 🔄 en curso |
+| Dashboard dentro de Twenty (estudio de viabilidad + implementación si procede) | `feat/twenty-dashboard` | Opus | 🔄 en curso |
+| Integración, e2e y PR | `feat/tanda9` (worktree wt9-integracion) | PM | ⏸️ |

@@ -9,9 +9,10 @@ El host ejecuta otras instancias Docker. Antes de exponer un puerto nuevo, compr
 | 3020 | Twenty (UI + API) | pxos-twenty |
 | 5440 | PostgreSQL + pgvector (Agent OS) | pxos-postgres |
 | 6391 | Redis (Agent OS) | pxos-redis |
-| 4020 | Agent Runtime API (reservado) | pxos-runtime |
+| 4020 | Agent Runtime API | pxos-runtime |
+| 4030 | Renderer (solo desarrollo; sin él, interno) | pxos-renderer |
 
-Servicios internos sin puerto al host: `pxos-twenty-worker`, `pxos-twenty-db` (Postgres de Twenty) y `pxos-twenty-redis`. Ver [deployments/README.md](../deployments/README.md).
+Servicios internos sin puerto al host: `pxos-twenty-worker`, `pxos-twenty-db` (Postgres de Twenty) y `pxos-twenty-redis`. `pxos-renderer` solo publica 4030 en desarrollo local. Ver [deployments/README.md](../deployments/README.md).
 
 ## Ocupados por otros proyectos del host (2026-10-06 — NO usar)
 

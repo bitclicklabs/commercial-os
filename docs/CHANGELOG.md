@@ -2,6 +2,19 @@
 
 Cambios notables de PubliEXPE Commercial OS, agrupados por tanda de trabajo. Formato basado en [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/). Las fechas usan el formato `AAAA-MM-DD`.
 
+## Sin publicar
+
+### Documentación y herramientas
+
+- Se completa el [runbook de operación local](runbook-local.md) con el comando de migraciones de Drizzle, las variables del runtime, el arranque del stack completo (incluido `pxos-runtime` en el `4020`), los logs por contenedor, el flujo de prueba end-to-end, las credenciales de desarrollo y la rotación de la API key de Twenty.
+- Se añade `scripts/sync-twenty-app.ps1`, que sincroniza la Twenty App desde Windows. Ejecuta `yarn twenty apply` en un contenedor efímero `node:24` conectado a `pxos-net`, con `socat` reenviando `127.0.0.1:3020` a `pxos-twenty:3000`. Evita el error `Resource path must not contain backslashes` y el fallo de subida de archivos por `SERVER_URL`.
+- Se documenta el workaround de Windows en el runbook y en el README de la Twenty App.
+- Se añade la [guía del equipo comercial](guia-comercial.md) y la sección "Operación diaria" del runbook, y se cierra el hueco del seed con `pnpm seed`.
+- Se añade el [plan de warm-up del canal de email](email-warmup.md) (calendario de cuatro semanas desde el 2026-10-06, vigilancia DMARC y Postmaster, hito DMARC `p=quarantine` del 2026-11-03, bajas y checklists), la sección "Borradores de email" de la guía comercial y su enlace desde el runbook y el README.
+- Se amplía el [plan de warm-up](email-warmup.md) con la sección "Alta en Microsoft SNDS" (SNDS no es accesible con IONOS correo compartido; se documenta la alternativa manual: prueba de colocación con cuentas Outlook propias, cabeceras, rebotes y señales indirectas) y con el procedimiento de la lista de supresión: nota de Twenty "Lista de supresión — NO contactar", una línea `email — fecha — motivo` por baja y comprobación obligatoria antes de cada envío en frío.
+- La [guía del equipo comercial](guia-comercial.md) resume el procedimiento de la lista de supresión en la sección de borradores y documenta que una hipótesis editada y validada también genera borrador, con los datos corregidos.
+- Se añade el [LLD v0.3 — estado real del sistema](LLD-0.3-estado-real.md): resumen de lo que corre hoy, registro de 22 decisiones (ADR) de las tandas 1 a 5, tabla «LLD 0.2 → realidad» sobre los 34 puntos del v0.2, métricas de línea base a 2026-10-07 y mapa honesto de pendientes hacia MVP-1 y MVP-2. Marca como `[TANDA 6, EN CURSO]` el descriptor de PubliEXPE en los borradores.
+
 ## 2026-10-06 — Tanda 2 (PR #2)
 
 - Scheduler (CRON/INTERVAL/ONCE, timezone Europe/Madrid) sobre BullMQ, con deduplicación por slot, `max_concurrency` por tarea, locks por entidad (`entity_locks`) y recuperación de runs huérfanos.
@@ -35,18 +48,6 @@ Cambios notables de PubliEXPE Commercial OS, agrupados por tanda de trabajo. For
 - Sandbox de Chromium activo en pxos-renderer (perfil seccomp de Playwright + `cap_add SYS_CHROOT`).
 - Email: documentado que SNDS no aplica con IP compartida de IONOS (alternativa manual para Outlook) y procedimiento de la lista de supresión (nota en Twenty, ya creada).
 
-## Sin publicar
-
-### Documentación y herramientas
-
-- Se completa el [runbook de operación local](runbook-local.md) con el comando de migraciones de Drizzle, las variables del runtime, el arranque del stack completo (incluido `pxos-runtime` en el `4020`), los logs por contenedor, el flujo de prueba end-to-end, las credenciales de desarrollo y la rotación de la API key de Twenty.
-- Se añade `scripts/sync-twenty-app.ps1`, que sincroniza la Twenty App desde Windows. Ejecuta `yarn twenty apply` en un contenedor efímero `node:24` conectado a `pxos-net`, con `socat` reenviando `127.0.0.1:3020` a `pxos-twenty:3000`. Evita el error `Resource path must not contain backslashes` y el fallo de subida de archivos por `SERVER_URL`.
-- Se documenta el workaround de Windows en el runbook y en el README de la Twenty App.
-- Se añade la [guía del equipo comercial](guia-comercial.md) y la sección "Operación diaria" del runbook, y se cierra el hueco del seed con `pnpm seed`.
-- Se añade el [plan de warm-up del canal de email](email-warmup.md) (calendario de cuatro semanas desde el 2026-10-06, vigilancia DMARC y Postmaster, hito DMARC `p=quarantine` del 2026-11-03, bajas y checklists), la sección "Borradores de email" de la guía comercial y su enlace desde el runbook y el README.
-- Se amplía el [plan de warm-up](email-warmup.md) con la sección "Alta en Microsoft SNDS" (SNDS no es accesible con IONOS correo compartido; se documenta la alternativa manual: prueba de colocación con cuentas Outlook propias, cabeceras, rebotes y señales indirectas) y con el procedimiento de la lista de supresión: nota de Twenty "Lista de supresión — NO contactar", una línea `email — fecha — motivo` por baja y comprobación obligatoria antes de cada envío en frío.
-- La [guía del equipo comercial](guia-comercial.md) resume el procedimiento de la lista de supresión en la sección de borradores y documenta que una hipótesis editada y validada también genera borrador, con los datos corregidos.
-- Se añade el [LLD v0.3 — estado real del sistema](LLD-0.3-estado-real.md): resumen de lo que corre hoy, registro de 22 decisiones (ADR) de las tandas 1 a 5, tabla «LLD 0.2 → realidad» sobre los 34 puntos del v0.2, métricas de línea base a 2026-10-07 y mapa honesto de pendientes hacia MVP-1 y MVP-2. Marca como `[TANDA 6, EN CURSO]` el descriptor de PubliEXPE en los borradores.
 
 ## 2026-10-06 — Tanda 1: bootstrap del MVP-0 (PR #1)
 

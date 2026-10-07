@@ -31,7 +31,7 @@ Al terminar, deja un **resumen de la ejecución** (*Agent run*) con lo que ha he
 
 El sistema solo registra hipótesis con una confianza igual o superior a 0,50. Los expositores dudosos o sin encaje no llegan a Twenty.
 
-> **Nota:** el Prospector no busca por su cuenta en internet. Trabaja con la lista de expositores que recibe. El scouting de los lunes (consulta [el apartado siguiente](#los-lunes-a-las-0730)) busca las ferias por su cuenta; la tarea diaria trabaja con la lista configurada, que hoy incluye datos de demostración. Los registros de demostración se reconocen porque el dominio de la empresa termina en `.example`. Ignóralos o recházalos.
+> **Nota:** la tarea diaria trabaja con la lista de expositores configurada (hoy incluye datos de demostración, reconocibles por dominios `.example`). El scouting de los lunes sí busca por su cuenta: localiza ferias reales del sector, lee sus catálogos de expositores y crea empresas reales con su señal e hipótesis. Los registros de demostración se reconocen porque el dominio de la empresa termina en `.example`. Ignóralos o recházalos.
 
 ### Los lunes a las 07:30
 

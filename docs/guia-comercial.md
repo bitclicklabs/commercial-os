@@ -183,6 +183,21 @@ Para el detalle del procedimiento, consulta [Gestión de bajas y lista de supres
 
 > **Importante:** la nota es un borrador. No significa que el correo se haya enviado ni que se vaya a enviar. Si no lo envías tú, no sale.
 
+### Cuando tu buzón esté conectado en Twenty
+
+> **Todavía no está activo.** Esta forma de trabajar estará disponible cuando conectes tu buzón en Twenty y el equipo técnico active el flujo (consulta [Enviar los borradores desde Twenty](twenty-envio-email.md)). Hasta entonces, sigue los pasos de [Qué haces](#qué-haces).
+
+Cuando esté activo, además de la nota, el borrador aparecerá en la propia hipótesis, en los campos **Email to** (destinatario), **Email subject** (asunto) y **Email body** (cuerpo), con **Email status** = `Draft`. Podrás revisarlo y enviarlo sin salir de Twenty:
+
+1. Abre la hipótesis y lee el asunto y el cuerpo. Corrige lo que haga falta **en la hipótesis**, no en la nota.
+1. Si **Email to** está vacío, escribe la dirección del destinatario.
+1. Comprueba que el destinatario no está en la lista de supresión y que no superas el ritmo del [plan de warm-up](email-warmup.md).
+1. Cambia **Email status** a `Reviewed`. Significa «lo he leído y se puede enviar».
+1. En el menú de acciones de la hipótesis (Cmd/Ctrl+K), pulsa **Enviar borrador de email**. El correo sale desde **tu** buzón conectado.
+1. Comprueba que **Email status** pasa a `Sent`. Si se queda en `Sending`, no vuelvas a pulsar: avisa al equipo técnico.
+
+El sistema sigue sin enviar nada por su cuenta: si no pones `Reviewed` y pulsas tú el envío, el correo no sale. Las reglas de [Qué no haces](#qué-no-haces) se aplican igual.
+
 ## Estados: cuándo usar cada uno
 
 ### Hipótesis

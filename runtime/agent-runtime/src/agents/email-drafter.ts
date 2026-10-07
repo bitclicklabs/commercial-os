@@ -15,7 +15,15 @@
  * Flow: get_hypothesis (hypothesis + signal + company + decision maker, one READ) ->
  * get_company only if the company was not expanded -> ONE Gemini call returning
  * `{asunto, cuerpo}` -> `finalizeDraft` (signature and unsubscribe line by code) ->
+ * [set_hypothesis_draft, only with `configuration.send_from_twenty.enabled`] ->
  * create_note (idempotent per company + title).
+ *
+ * Send from Twenty (`send_from_twenty.enabled`, off by default): the same final draft is
+ * also written into the hypothesis fields emailTo / emailSubject / emailBody with
+ * emailStatus = DRAFT. A PERSON then edits it in place, marks it READY and clicks the manual
+ * Twenty workflow "Commercial OS · Enviar borrador de email", which sends it through the
+ * mailbox that person connected. The runtime still sends nothing: the tool only PATCHes
+ * fields, and a failure there never fails the run (the note is always written).
  */
 import { z } from 'zod';
 import { HYPOTHESIS_STATUSES } from '../integrations/twenty/index.js';
@@ -36,7 +44,7 @@ import { EMAIL_DRAFT_JSON_SCHEMA, EMAIL_DRAFTER_SKILL_ID, EMAIL_DRAFTER_SYSTEM_P
 import { useSkill } from '../skills/resolver.js';
 import { DIFFERENTIATORS, ProspectorRun, issues, readConfig, round6, toolError } from './prospector-core.js';
 
-export const EMAIL_DRAFTER_TOOLS = ['find_company', 'get_company', 'get_hypothesis', 'create_note'] as const;
+export const EMAIL_DRAFTER_TOOLS = ['find_company', 'get_company', 'get_hypothesis', 'create_note', 'set_hypothesis_draft'] as const;
 
 const Guid = z.guid();
 
@@ -123,6 +131,11 @@ export interface DrafterConfig {
   wordRange: { min: number; max: number };
   /** `configuration.company_descriptor`: what the company is, said at its first mention in the body. */
   companyDescriptor: string;
+  /**
+   * `configuration.send_from_twenty.enabled`: also write the draft into the hypothesis email
+   * fields. Turn it on only once the Twenty App version with those fields is synced.
+   */
+  sendFromTwenty: boolean;
 }
 
 export function readDrafterConfig(configuration: Record<string, unknown>): DrafterConfig {
@@ -141,6 +154,7 @@ export function readDrafterConfig(configuration: Record<string, unknown>): Draft
     },
     wordRange: { min: int(range.min, WORD_RANGE.min), max: int(range.max, WORD_RANGE.max) },
     companyDescriptor: str(configuration.company_descriptor, DEFAULT_COMPANY_DESCRIPTOR),
+    sendFromTwenty: ((configuration.send_from_twenty ?? {}) as Record<string, unknown>).enabled === true,
   };
 }
 
@@ -250,7 +264,25 @@ export class EmailDrafterAgent implements AgentImplementation {
       companyDescriptor: cfg.companyDescriptor,
     });
 
-    // 4. Note on the company (+ hypothesis). Idempotent per company + title.
+    // 4. Optional: the draft in the hypothesis fields, for the send-from-Twenty workflow.
+    //    Never fatal: the note below is the draft of record.
+    let hypothesisDraft: Record<string, unknown> | null = null;
+    if (cfg.sendFromTwenty) {
+      const set = await run.callTool('set_hypothesis_draft', {
+        hypothesisId: h.id,
+        to: contact?.email ?? '',
+        subject: draft.subject,
+        body: draft.body,
+      });
+      if (set.result.status === 'ok') {
+        hypothesisDraft = set.result.output as Record<string, unknown>;
+      } else {
+        hypothesisDraft = { written: false, error: toolError(set) };
+        notes.push('no se pudo guardar el borrador en los campos Email de la hipótesis (¿está sincronizada la versión de la Twenty App con esos campos?)');
+      }
+    }
+
+    // 5. Note on the company (+ hypothesis). Idempotent per company + title.
     const title = draftNoteTitle(h.name);
     const note = await run.callTool('create_note', {
       companyId,
@@ -264,6 +296,7 @@ export class EmailDrafterAgent implements AgentImplementation {
         feedback: req.feedback,
         evaluatedAt: req.evaluatedAt,
         executionId: ctx.executionId,
+        inHypothesisFields: hypothesisDraft?.written === true,
       }),
     });
     const result = {
@@ -274,6 +307,7 @@ export class EmailDrafterAgent implements AgentImplementation {
       evaluation_id: req.evaluationId,
       event_id: req.eventId,
       draft: { subject: draft.subject, body: draft.body, word_count: draft.wordCount, fixes: draft.fixes, warnings: draft.warnings },
+      ...(hypothesisDraft ? { hypothesis_draft: hypothesisDraft } : {}),
       ...(notes.length > 0 ? { notes } : {}),
     };
     if (note.result.status !== 'ok') return { outcome: 'FAILED', ...result, error: toolError(note) };

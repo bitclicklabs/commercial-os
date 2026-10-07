@@ -136,6 +136,49 @@ export default defineObject({
         { value: CommercialHypothesisStatus.EXPIRED, label: 'Expired', position: 3, color: 'gray' },
       ],
     },
+    // Email draft (send-from-Twenty flow, docs/twenty-envio-email.md). The EmailDrafter
+    // writes them with emailStatus DRAFT; a person edits them, sets READY and runs the manual
+    // workflow "Commercial OS · Enviar borrador de email", which sets SENDING and then SENT.
+    {
+      universalIdentifier: COMMERCIAL_HYPOTHESIS_FIELD_IDS.emailTo,
+      type: FieldType.TEXT,
+      name: 'emailTo',
+      label: 'Email to',
+      description: 'Recipient(s) of the first email, comma separated. Fill it in when empty.',
+      icon: 'IconMailForward',
+    },
+    {
+      universalIdentifier: COMMERCIAL_HYPOTHESIS_FIELD_IDS.emailSubject,
+      type: FieldType.TEXT,
+      name: 'emailSubject',
+      label: 'Email subject',
+      icon: 'IconMail',
+    },
+    {
+      universalIdentifier: COMMERCIAL_HYPOTHESIS_FIELD_IDS.emailBody,
+      type: FieldType.TEXT,
+      name: 'emailBody',
+      label: 'Email body',
+      description:
+        'Plain-text draft of the first email (signature and unsubscribe line included). Review and edit it before sending; keep the unsubscribe line.',
+      icon: 'IconFileText',
+      universalSettings: { displayedMaxRows: 12 },
+    },
+    {
+      universalIdentifier: COMMERCIAL_HYPOTHESIS_FIELD_IDS.emailStatus,
+      type: FieldType.SELECT,
+      name: 'emailStatus',
+      label: 'Email status',
+      description:
+        'Draft: prepared by the system. Reviewed: you read it and it can be sent. Sending / Sent: set by the send workflow.',
+      icon: 'IconMailCheck',
+      options: [
+        { value: 'DRAFT', label: 'Draft', position: 0, color: 'gray' },
+        { value: 'READY', label: 'Reviewed', position: 1, color: 'blue' },
+        { value: 'SENDING', label: 'Sending', position: 2, color: 'orange' },
+        { value: 'SENT', label: 'Sent', position: 3, color: 'green' },
+      ],
+    },
     {
       universalIdentifier: COMMERCIAL_HYPOTHESIS_FIELD_IDS.tenantId,
       type: FieldType.TEXT,

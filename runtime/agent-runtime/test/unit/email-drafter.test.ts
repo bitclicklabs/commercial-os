@@ -386,7 +386,7 @@ describe('EmailDrafterAgent', () => {
   it('is resolved from configuration.implementation = "email_drafter"; seed policy has no mail tool', () => {
     expect(resolveAgentImplementation({ implementation: 'email_drafter' }).kind).toBe('email_drafter');
     const policy = parseToolPolicy(desiredEmailDrafterVersion().configuration);
-    expect([...policy.allow].sort()).toEqual(['create_note', 'find_company', 'get_company', 'get_hypothesis']);
+    expect([...policy.allow].sort()).toEqual(['create_note', 'find_company', 'get_company', 'get_hypothesis', 'set_hypothesis_draft']);
     expect(policy.maxRiskLevel).toBe('LOW_WRITE');
     expect(policy.allow.some((t) => /mail|send/.test(t))).toBe(false);
   });

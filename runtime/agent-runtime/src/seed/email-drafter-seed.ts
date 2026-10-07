@@ -9,8 +9,9 @@
  * Same rules as the Prospector seed: a changed agent version is added as a NEW version,
  * a changed task gets a new TaskDefinitionVersion; a second run changes nothing.
  *
- * The agent only writes internal Notes in Twenty: its tool policy has no mail tool
- * (none exists) and its risk ceiling is LOW_WRITE.
+ * The agent only writes internal Notes in Twenty (and, with `send_from_twenty.enabled`, the
+ * draft fields of the hypothesis): its tool policy has no mail tool (none exists) and its
+ * risk ceiling is LOW_WRITE.
  */
 import type { Db } from '../db/client.js';
 import { EMAIL_DRAFTER_TOOLS } from '../agents/email-drafter.js';
@@ -36,8 +37,12 @@ export function desiredEmailDrafterVersion(): AgentVersionSpec {
         allow: [...EMAIL_DRAFTER_TOOLS],
         max_risk_level: 'LOW_WRITE',
         max_calls_per_execution: 6,
-        max_calls_per_tool: { create_note: 1 },
+        max_calls_per_tool: { create_note: 1, set_hypothesis_draft: 1 },
       },
+      // Send from Twenty (docs/twenty-envio-email.md): OFF until the Twenty App fields
+      // emailTo / emailSubject / emailBody / emailStatus are synced. Turning it on only adds
+      // the draft to those fields; sending is always a person clicking the Twenty workflow.
+      send_from_twenty: { enabled: false },
       sender: {
         name: DEFAULT_SENDER.name,
         company: DEFAULT_SENDER.company,

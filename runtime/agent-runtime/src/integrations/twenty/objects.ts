@@ -135,6 +135,14 @@ export interface TwentyCommercialHypothesis extends TwentySystemFields {
   companyId: string | null;
   commercialSignalId: string | null;
   decisionMakerId: string | null;
+  /**
+   * Email draft fields (Twenty App, send-from-Twenty flow). Optional: they only exist once
+   * the App version that declares them is synced (docs/twenty-envio-email.md).
+   */
+  emailTo?: string | null;
+  emailSubject?: string | null;
+  emailBody?: string | null;
+  emailStatus?: 'DRAFT' | 'READY' | 'SENDING' | 'SENT' | null;
 }
 
 export interface TwentyAgentRunSummary extends TwentySystemFields {

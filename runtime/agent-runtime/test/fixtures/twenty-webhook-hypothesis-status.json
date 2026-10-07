@@ -1,0 +1,71 @@
+{
+  "_comment": "Payload real capturado de Twenty v2.45.6 (CallWebhookJob) el 2026-10-07. targetUrl redactado y cabecera X-Twenty-Webhook-Signature omitida: los tests la recalculan con un secreto de prueba.",
+  "headers": {
+    "content-type": "application/json",
+    "user-agent": "axios/1.20.0",
+    "x-twenty-webhook-timestamp": "1791355184270",
+    "x-twenty-webhook-nonce": "e879e5615a01ecac52e8a0a1cf6e921e"
+  },
+  "body": {
+    "targetUrl": "http://host.docker.internal:4023/webhooks/twenty",
+    "eventName": "commercialHypothesis.updated",
+    "objectMetadata": {
+      "id": "9994b775-f816-48c5-868a-3ce6388a797a",
+      "nameSingular": "commercialHypothesis"
+    },
+    "workspaceId": "36d3d8e2-2016-4673-a810-c89b735a8f17",
+    "webhookId": "be4bd4df-caf3-4a75-b800-314d79ce4ea7",
+    "eventDate": "2026-10-07T06:39:44.257Z",
+    "record": {
+      "name": "[TEST] pxos-feedback captura webhook",
+      "need": "[TEST] 250 lanyards impresos",
+      "whyNow": "Captura de payload",
+      "quantityMin": 100,
+      "quantityMax": 250,
+      "budgetMin": {
+        "amountMicros": 600000000,
+        "currencyCode": "EUR"
+      },
+      "budgetMax": {
+        "amountMicros": null,
+        "currencyCode": "EUR"
+      },
+      "recommendedProducts": [
+        "SKU-TEST-1"
+      ],
+      "timing": "THIS_QUARTER",
+      "confidence": 0.5,
+      "evidence": [
+        {
+          "claim": "test"
+        }
+      ],
+      "decisionMakerId": null,
+      "status": "PROPOSED",
+      "tenantId": "publiexpe",
+      "id": "0a6e5044-faa3-49f6-ae23-89084dbc594e",
+      "createdAt": "2026-10-07T06:33:26.539Z",
+      "createdBy": {
+        "source": "API",
+        "workspaceMemberId": null,
+        "name": "agent-runtime",
+        "context": {}
+      },
+      "deletedAt": null,
+      "position": -10,
+      "updatedAt": "2026-10-07T06:39:44.182Z",
+      "updatedBy": {
+        "source": "API",
+        "workspaceMemberId": null,
+        "name": "agent-runtime",
+        "context": {}
+      },
+      "searchVector": "'250':8 'captura':5 'feedback':4 'impresos':10 'lanyards':9 'pxos':3 'pxos-feedback':2 'test':1,7 'webhook':6",
+      "companyId": "0ceea9c7-d0b3-40ad-bd5b-1928f902418e",
+      "commercialSignalId": null
+    },
+    "updatedFields": [
+      "status"
+    ]
+  }
+}

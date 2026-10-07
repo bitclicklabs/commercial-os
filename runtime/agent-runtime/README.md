@@ -34,8 +34,9 @@ runtime/agent-runtime/
 │   ├── providers/            ModelProvider, StubProvider, AnthropicProvider, GeminiProvider y tabla de precios
 │   ├── queue/                RunQueue (BullMQ y en memoria)
 │   ├── scheduler/            TaskScheduler sobre BullMQ, parseo de schedules y rutas
-│   ├── seed/                 Seed idempotente de las skills, el Prospector, el EmailDrafter, el BajasAgent y sus tareas (pnpm seed)
+│   ├── seed/                 Seed idempotente del harness default-commercial, las skills, el Prospector, el EmailDrafter, el BajasAgent y sus tareas (pnpm seed)
 │   ├── skills/               Skills versionadas (MVP-1): render, resolución desde la BD con fallback a las constantes, ciclo de estados
+│   ├── harness/              Harness versionado (MVP-1): config v1 por dimensiones, precedencia, resolución desde la BD con fallback y ciclo de estados
 │   ├── services/             Lanzamiento idempotente de TaskRuns
 │   └── worker/               RunProcessor, worker BullMQ, locks por entidad y reconciliador
 └── test/
@@ -149,6 +150,7 @@ El esquema vive en `src/db/schema.ts`. Todas las tablas llevan `tenant_id` (C6).
 | `0005_skills` | Tablas `skills` y `skill_versions` (triggers anti-`DELETE` y de contenido inmutable) y columna `traces.skill_versions`. SQL idempotente |
 | `0006_event_subscriptions` | Tabla `event_subscriptions` (webhooks salientes del event bus, trigger anti-`DELETE`). SQL idempotente. La `0005` la reclama otra rama: el journal salta del idx 4 al 6 hasta la fusión, y la `0006` debe quedar con fecha (`when`) posterior a la `0005` |
 | `0007_email_sends` | Tabla `email_sends` (envíos observados desde Twenty, append-only con trigger anti-`DELETE`, dedupe `(tenant_id, hypothesis_id, sent_at)`). SQL idempotente |
+| `0008_harness` | Tablas `harnesses` y `harness_versions` (triggers anti-`DELETE` y de contenido inmutable) y columnas `agent_versions.harness_ref` y `traces.harness`. SQL idempotente. La `0009` la reclama otra rama: la `0008` lleva `when` = `1791375700000`, entre la `0007` y la `0009` ([ADR-31](../../docs/LLD-0.3-estado-real.md#adr-31)) |
 
 Importante: el migrador de Drizzle aplica solo las migraciones con fecha posterior a la última aplicada. Si dos ramas generan migraciones en paralelo contra la misma BD de desarrollo, aplica primero la más antigua o regenera la nueva tras el merge.
 
@@ -624,6 +626,113 @@ Garantías:
 > **Importante:** la herramienta no puede saber si los fixtures se usaron para diseñar la candidata (P5). Usa datos que no aparezcan en el análisis y dilo en el experimento.
 
 Hoy solo hay *harness* para `prospector-event-exhibitors` (modo directo del Prospector). Los tests unitarios (`test/unit/skill-edit-ops.test.ts`, `test/unit/skill-compare.test.ts`) usan un `StubProvider` guionizado y no llaman a ningún servicio.
+
+## Harness
+
+El harness es un objeto versionado en la BD con las políticas con las que se ejecuta un agente (LLD v0.1 §7.1, MVP-1). Sigue el mismo patrón que las skills: resolución al arrancar, fallback total, versiones inmutables y API sin `DELETE`. La v1 **no** implementa el processor graph (§7.3): solo agrupa políticas que antes estaban repartidas entre la tarea, el entorno y la versión del agente. El código está en `src/harness/`.
+
+### Tablas
+
+- `harnesses`: `id`, `tenant_id`, `name` (kebab-case, único por tenant), `description`, `status` (`DRAFT` hasta que se activa una versión, `ACTIVE`, `DEPRECATED`), `active_version_id`, `created_at`, `updated_at`.
+- `harness_versions`: `id`, `tenant_id`, `harness_id`, `version` (1, 2, 3… por harness), `status` (`DRAFT`, `ACTIVE`, `DEPRECATED`), `config` (jsonb), `metadata` (jsonb), `content_hash` (sha256 de `config` normalizado), `activated_at`, `deprecated_at`, `created_at`, `created_by`.
+- `agent_versions.harness_ref` (jsonb, nullable) y `traces.harness` (jsonb, nullable).
+
+La BD aplica las mismas reglas que en las skills: sin `DELETE` físico (trigger), contenido de una versión inmutable (trigger; solo cambian `status`, `activated_at` y `deprecated_at`) y como mucho una versión `ACTIVE` por harness (índice único parcial).
+
+### Dimensiones de `config`
+
+`config` se normaliza al guardar: todas las claves existen y `null` significa «el harness no lo fija», así que el run mantiene la fuente de hoy. Las claves desconocidas se rechazan con `400` para que una errata no quede ignorada en silencio.
+
+| Dimensión | Campo | Estado | Sustituye a | Regla |
+|---|---|---|---|---|
+| `execution` | `timeout_seconds` | Viva | `task_definitions.timeout_ms` (300 s en `POST /executions`) | Gana el harness |
+| `execution` | `retry` (`{max_attempts, backoff_ms}`) | Viva | `task_definitions.retry_policy` | Gana el harness |
+| `execution` | `max_turns` | Placeholder | — | Los agentes orquestan su propio bucle |
+| `tools` | `max_calls_per_execution` | Viva | `tool_policy.max_calls_per_execution` de la versión | Techo: el menor de los dos |
+| `tools` | `max_risk_level` | Viva | `tool_policy.max_risk_level` de la versión | Techo: el menos permisivo. `DESTRUCTIVE` no se acepta |
+| `tools` | `parallel_calls` | Placeholder | — | Las tools se llaman en secuencia |
+| `context` | `max_output_tokens` | Viva | `configuration.max_output_tokens` de la versión | Techo; si la versión no lo fija, se aplica el del harness |
+| `safety` | `twenty_wait_max_ms` | Viva | Variable de entorno `TWENTY_WAIT_MAX_MS` | Gana el harness. Si el gate está desactivado, sigue desactivado |
+| `safety` | `verify_before_commit` | Placeholder | — | No hay validador semántico |
+
+Los placeholders se guardan, pero no tienen efecto en la v1. Si traen un valor, la API lo acepta y devuelve un aviso en `warnings`.
+
+**Precedencia.** Un valor no nulo del harness gana sobre el equivalente de la tarea o del entorno. Los valores que hoy salen de la propia versión del agente (política de tools, tokens de salida) son más específicos que un harness compartido. En esos casos el harness actúa como **techo**: puede endurecer la política del agente, pero nunca relajarla.
+
+Quedan fuera del harness: el modelo y el proveedor (D1 MODEL), que siguen en la versión del agente, y `WORKER_CONCURRENCY`, porque es un ajuste del proceso y no una política por run. Memoria, evaluación, observabilidad y entrenamiento (D3, D6, D8 y D9) no tienen campos todavía.
+
+### Referencias desde `agent_versions.harness_ref`
+
+| Ref | Resolución |
+|---|---|
+| `null` (por defecto) | Sin harness: las políticas de hoy |
+| `{"name": "x"}` | Versión `ACTIVE` del harness `x`, leída al arrancar cada intento |
+| `{"name": "x", "version": 3}` | Exactamente la versión 3, sea cual sea su estado (sirve para probar un `DRAFT`) |
+
+`POST /agents` acepta `version.harness_ref`. Activar una versión no toca los intentos en marcha: el siguiente intento la recoge.
+
+Los reintentos son la excepción: BullMQ fija los intentos al encolar, así que `requestTaskRun` lee el `retry` del harness al encolar. Al arrancar, el processor vuelve a leer el harness y nunca reintenta por encima de ninguno de los dos límites. La recuperación de huérfanos (`src/worker/recovery.ts` y el job re-entregado tras un *stall*) sigue usando el `retry_policy` de la tarea.
+
+### Fallback
+
+Si la ref no se resuelve (harness o versión inexistente, sin versión `ACTIVE`, `config` guardado inválido, ref mal formada o error de BD), el run usa exactamente las políticas de hoy y el runtime registra un aviso (`harness not found in the database; running without harness (current policies)`). Un harness que falta no hace fallar ninguna ejecución.
+
+> **Importante:** el código necesita la migración `0008_harness`, que añade `traces.harness` y `agent_versions.harness_ref`. Con `RUN_MIGRATIONS=true` se aplica al arrancar. Si aplicas las migraciones a mano en la BD compartida, aplica la `0008` antes de desplegar.
+
+### Qué guarda la ejecución
+
+- `task_runs.harness_version` y `traces.harness_version`: `name@version` exacto (por ejemplo, `default-commercial@1`). Sin harness, el valor opaco anterior (`agent_versions.harness_version_id`, normalmente `null`).
+- `traces.harness`: `name`, `version`, `harness_version_id`, `content_hash`, `source` (`db` o `none`), `requested` (la ref), `fallback_reason` (solo con `source: "none"`), `effective` (valores efectivos del run: `timeout_ms`, `retry`, `twenty_wait_max_ms`, `max_calls_per_execution`, `max_risk_level`, `max_output_tokens`) y `overrides` (campos que fijó o recortó el harness).
+
+### Seed: `default-commercial`
+
+`pnpm seed` crea el harness `default-commercial` con su v1 `ACTIVE` (`DEFAULT_COMMERCIAL_CONFIG`) antes que las skills y los agentes. Si ya existe, no lo toca. Las versiones de agente que crea el seed (Prospector, EmailDrafter y BajasAgent) lo referencian sin versión (`{"name": "default-commercial"}`). Como `harness_ref` forma parte de la comparación del seed, el primer `pnpm seed` tras desplegar añade una versión nueva a cada agente, idéntica salvo por la ref.
+
+La v1 contiene **los valores vigentes**, así que el comportamiento no cambia. Solo fija los valores que hoy son globales:
+
+| Campo | Valor | De dónde sale hoy |
+|---|---|---|
+| `tools.max_risk_level` | `LOW_WRITE` | Techo por defecto de `parseToolPolicy` y el que declaran los tres agentes |
+| `safety.twenty_wait_max_ms` | `600000` | Valor por defecto de `TWENTY_WAIT_MAX_MS` (el compose y `deployments/.env` no lo cambian) |
+| Resto | `null` | Varía por tarea o por agente (timeouts de 120 s a 1.800 s, reintentos, límites de llamadas, tokens): se hereda |
+
+> **Nota:** con el harness, `TWENTY_WAIT_MAX_MS` deja de afectar a los agentes que lo referencian. Para cambiar la espera, crea y activa una versión nueva del harness.
+
+### Ciclo de vida por API
+
+`:id` acepta el uuid o el nombre del harness.
+
+| Método y ruta | Qué hace |
+|---|---|
+| `GET /harnesses` | Lista los harnesses del tenant con su `active_version` (`?status=` opcional) |
+| `GET /harnesses/:id` | Harness y todas sus versiones |
+| `POST /harnesses` | Crea el harness y su v1 en `DRAFT`. Cuerpo: `name`, `config` y, opcionalmente, `description`, `metadata` y `created_by` |
+| `POST /harnesses/:id/versions` | Versión `DRAFT` nueva. Cuerpo: `config` o `copy_from` (`"active"` o un número; las dimensiones enviadas se fusionan sobre la copia) y `change_reason` |
+| `POST /harnesses/:id/versions/:v/activate` | `ACTIVE` esa versión y `DEPRECATED` la anterior, en una transacción |
+| `POST /harnesses/:id/versions/:v/deprecate` | Descarta un `DRAFT` o hace rollback de la `ACTIVE`: se reactiva la versión anterior activada más recientemente. Sin versión que restaurar: `409` |
+
+Por ejemplo, para probar un timeout común de 10 minutos en los agentes del seed y volver atrás:
+
+```sh
+curl -s -X POST localhost:4020/harnesses/default-commercial/versions \
+  -H 'content-type: application/json' \
+  -d '{"copy_from": "active", "config": {"execution": {"timeout_seconds": 600}}, "change_reason": "Timeout común de 10 min", "created_by": "jesus"}'
+curl -s -X POST localhost:4020/harnesses/default-commercial/versions/2/activate
+# Rollback: vuelve la v1
+curl -s -X POST localhost:4020/harnesses/default-commercial/versions/2/deprecate
+```
+
+Las transiciones son idempotentes: repetir `activate` o `deprecate` devuelve `200` con `changed: false`. No hay `DELETE`.
+
+### Tests del harness
+
+- `test/unit/harness.test.ts`: validación y normalización, precedencia y techos, resolución exacta, `ACTIVE` y todos los fallbacks, registro del trace, planes de `activate` y `deprecate` y el tope por run del gate de Twenty. No usa BD.
+- `test/integration/harness.test.ts`: seed, triggers, API y runs reales con `RunProcessor`. Una v2 con timeout de 1 s hace expirar un run lento y el trace registra `default-commercial@2`; tras `deprecate`, el mismo run se completa con la v1. Usa su propia base `agentos_wt9_harness`, nunca la compartida (`HARNESS_DATABASE_URL` la cambia):
+
+  ```sh
+  docker exec pxos-postgres psql -U agentos -d postgres -c "create database agentos_wt9_harness"   # una vez
+  pnpm vitest run test/unit/harness.test.ts test/integration/harness.test.ts
+  ```
 
 ## Tools
 

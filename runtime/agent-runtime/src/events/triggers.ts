@@ -6,7 +6,14 @@
  *
  * - `event_type` (alias `event`) must equal the envelope `type`.
  * - `filter` is optional: every key is a dot path into the envelope `data` ("funnel.out",
- *   "$.funnel.out" is accepted too) and the value must be deep-equal. No operators.
+ *   "$.funnel.out" is accepted too). Every entry must match (AND between keys). The value is
+ *   either a literal (deep-equal, as before) or `{"in": [v1, v2, ...]}` (OR: the value at the
+ *   path deep-equals one of the listed values). Example:
+ *     { "feedback": { "in": ["ACCEPTED", "EDITED"] }, "subjectType": "hypothesis" }
+ *   An object whose ONLY key is "in" is always the operator; it needs a non-empty array of at
+ *   most MAX_IN_VALUES values (else 400 invalid_schedule). To compare against a literal
+ *   object `{"in": x}`, filter on the path "field.in" instead. Objects with other keys besides
+ *   "in" keep the literal deep-equal meaning.
  *
  * Anti-loop guard:
  * - An event about a run of task T (`data.taskDefinitionId === T`) never fires T again.
@@ -32,6 +39,24 @@ export class EventTriggerValidationError extends Error {
 }
 
 const MAX_FILTER_KEYS = 20;
+export const MAX_IN_VALUES = 50;
+
+const isPlainObject = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v);
+
+/** True for `{ in: ... }` with no other key: the OR operator (validated by parseEventTrigger). */
+export function isInCondition(v: unknown): v is { in: unknown[] } {
+  if (!isPlainObject(v)) return false;
+  const keys = Object.keys(v);
+  return keys.length === 1 && keys[0] === 'in';
+}
+
+function validateCondition(key: string, value: unknown): void {
+  if (!isInCondition(value)) return; // literal: deep-equal
+  const list = value.in;
+  if (!Array.isArray(list)) throw new EventTriggerValidationError(`filter "${key}": "in" must be an array of values`);
+  if (list.length === 0) throw new EventTriggerValidationError(`filter "${key}": "in" needs at least one value`);
+  if (list.length > MAX_IN_VALUES) throw new EventTriggerValidationError(`filter "${key}": "in" allows at most ${MAX_IN_VALUES} values`);
+}
 
 /** Normalises an EVENT schedule. Returns null for other types; throws when an EVENT is malformed. */
 export function parseEventTrigger(spec: ScheduleSpec | null | undefined): EventTrigger | null {
@@ -43,12 +68,13 @@ export function parseEventTrigger(spec: ScheduleSpec | null | undefined): EventT
   }
   const filter = spec.filter ?? {};
   if (typeof filter !== 'object' || filter === null || Array.isArray(filter)) {
-    throw new EventTriggerValidationError('EVENT filter must be an object of {path: value}');
+    throw new EventTriggerValidationError('EVENT filter must be an object of {path: value | {"in": [values]}}');
   }
   const keys = Object.keys(filter);
   if (keys.length > MAX_FILTER_KEYS) throw new EventTriggerValidationError(`EVENT filter allows at most ${MAX_FILTER_KEYS} keys`);
   for (const key of keys) {
     if (splitPath(key).length === 0) throw new EventTriggerValidationError(`invalid filter path "${key}"`);
+    validateCondition(key, (filter as Record<string, unknown>)[key]);
   }
   return { eventType, filter };
 }
@@ -96,9 +122,18 @@ export function deepEqual(a: unknown, b: unknown): boolean {
   );
 }
 
-/** True when every filter entry equals the value at its path in `data` (empty filter = match). */
+/** One filter entry against the actual value: `{in: [...]}` = any of them; otherwise deep-equal. */
+export function matchesCondition(actual: unknown, expected: unknown): boolean {
+  if (isInCondition(expected)) {
+    // A malformed operator never matches (parseEventTrigger rejects it at the API).
+    return Array.isArray(expected.in) && expected.in.some((candidate) => deepEqual(actual, candidate));
+  }
+  return deepEqual(actual, expected);
+}
+
+/** True when every filter entry matches the value at its path in `data` (AND; empty filter = match). */
 export function matchesFilter(data: Record<string, unknown>, filter: Record<string, unknown>): boolean {
-  return Object.entries(filter).every(([path, expected]) => deepEqual(getPath(data, path), expected));
+  return Object.entries(filter).every(([path, expected]) => matchesCondition(getPath(data, path), expected));
 }
 
 export function chainDepthOfEvent(envelope: Pick<EventEnvelope, 'data'>): number {

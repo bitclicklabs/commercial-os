@@ -1,6 +1,11 @@
 /**
  * Idempotent seed of the EmailDrafter agent and its task `draft-email-on-validated`
- * (EVENT trigger: `evaluation.recorded` with `feedback = ACCEPTED` on a hypothesis).
+ * (EVENT trigger: `evaluation.recorded` with `feedback` ACCEPTED or EDITED on a hypothesis
+ * that ends VALIDATED: `{"feedback":{"in":["ACCEPTED","EDITED"]},"subjectType":"hypothesis",
+ * "toStatus":"VALIDATED"}`). `toStatus` keeps out the EDITED verdicts recorded while the
+ * hypothesis is still PROPOSED (an in-place edit is not a validation). The drafter reads the
+ * hypothesis from Twenty when it runs, so an edited-and-validated one is drafted with the
+ * corrected data.
  * Same rules as the Prospector seed: a changed agent version is added as a NEW version,
  * a changed task gets a new TaskDefinitionVersion; a second run changes nothing.
  *
@@ -52,12 +57,12 @@ export function desiredEmailDrafterVersion(): AgentVersionSpec {
 export function desiredEmailDraftTask(): TaskSpec {
   return {
     description:
-      'Cuando un comercial valida una hipótesis (veredicto ACCEPTED), el EmailDrafter prepara un BORRADOR del primer email y lo deja como nota en Twenty sobre la empresa y la hipótesis. El sistema no envía nada: el comercial revisa el borrador y lo envía desde su buzón.',
+      'Cuando un comercial valida una hipótesis (veredicto ACCEPTED, o EDITED si la corrigió antes de validarla), el EmailDrafter prepara un BORRADOR del primer email y lo deja como nota en Twenty sobre la empresa y la hipótesis. El sistema no envía nada: el comercial revisa el borrador y lo envía desde su buzón.',
     defaultInput: {},
     schedule: {
       type: 'EVENT',
       event_type: 'evaluation.recorded',
-      filter: { feedback: 'ACCEPTED', subjectType: 'hypothesis' },
+      filter: { feedback: { in: ['ACCEPTED', 'EDITED'] }, subjectType: 'hypothesis', toStatus: 'VALIDATED' },
     },
     timezone: 'Europe/Madrid',
     enabled: true,

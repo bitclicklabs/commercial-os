@@ -19,6 +19,14 @@ Cambios notables de PubliEXPE Commercial OS, agrupados por tanda de trabajo. For
 - Guía del equipo comercial (`docs/guia-comercial.md`) y runbook actualizado.
 - Infra: allowlist de webhooks internos de Twenty (`OUTBOUND_HTTP_ALLOWED_INTERNAL_HOSTS`), `TWENTY_WEBHOOK_SECRET`, `TWENTY_WAIT_MAX_MS` y claves de Gemini en el compose.
 
+## 2026-10-07 — Tanda 4 (PR #4)
+
+- Lector de catálogos: PDF en `fetch_url` (unpdf, +2,5 MB) y servicio `pxos-renderer` (Playwright/Chromium, red interna, doble barrera anti-SSRF: interceptación + proxy muerto) con tool `render_url` y espera de hidratación. E2E real: 20 expositores del catálogo JS de Gastrónoma donde antes salían 0.
+- Borradores de email HITL: `evaluation.recorded` → trigger EVENT → EmailDrafter → nota "Borrador email — ..." en Twenty (empresa + hipótesis). Línea de baja y firma garantizadas por código. Sin ningún código de envío. ~0,002 €/borrador.
+- Métricas: `GET /metrics/summary|agents|evaluations|runs` + dashboard local en `/dashboard` (tasa de aceptación humana por versión de agente, coste, embudo, AC-15/16/17).
+- Plan operativo del warm-up (`docs/email-warmup.md`) con calendario hasta el hito DMARC del 2026-11-03, y sección de borradores en la guía del comercial.
+- Infra: servicio pxos-renderer en el compose (sin puerto público; 127.0.0.1:4030 solo desarrollo), `RENDERER_URL` al runtime. Prospector v4 (render_url) y agente EmailDrafter sembrados.
+
 ## Sin publicar
 
 ### Documentación y herramientas
@@ -27,6 +35,7 @@ Cambios notables de PubliEXPE Commercial OS, agrupados por tanda de trabajo. For
 - Se añade `scripts/sync-twenty-app.ps1`, que sincroniza la Twenty App desde Windows. Ejecuta `yarn twenty apply` en un contenedor efímero `node:24` conectado a `pxos-net`, con `socat` reenviando `127.0.0.1:3020` a `pxos-twenty:3000`. Evita el error `Resource path must not contain backslashes` y el fallo de subida de archivos por `SERVER_URL`.
 - Se documenta el workaround de Windows en el runbook y en el README de la Twenty App.
 - Se añade la [guía del equipo comercial](guia-comercial.md) y la sección "Operación diaria" del runbook, y se cierra el hueco del seed con `pnpm seed`.
+- Se añade el [plan de warm-up del canal de email](email-warmup.md) (calendario de cuatro semanas desde el 2026-10-06, vigilancia DMARC y Postmaster, hito DMARC `p=quarantine` del 2026-11-03, bajas y checklists), la sección "Borradores de email" de la guía comercial y su enlace desde el runbook y el README.
 
 ## 2026-10-06 — Tanda 1: bootstrap del MVP-0 (PR #1)
 

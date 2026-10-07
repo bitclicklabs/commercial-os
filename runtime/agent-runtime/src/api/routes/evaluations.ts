@@ -130,7 +130,7 @@ export async function evaluationRoutes(app: FastifyInstance, ctx: ApiContext): P
         throw new HttpError(401, 'unauthorized', 'invalid webhook credentials');
       }
       if (!isHypothesisPayload(req.body)) throw new HttpError(400, 'invalid_payload', 'not a Twenty record webhook payload');
-      const outcome = await processTwentyWebhook(db, req.body, { defaultTenantId: ctx.config.defaultTenantId, dedupeWindowMs });
+      const outcome = await processTwentyWebhook(db, req.body, { defaultTenantId: ctx.config.defaultTenantId, dedupeWindowMs, events: ctx.events });
       req.log.info({ event: req.body.eventName, outcome, auth: auth.method }, 'twenty webhook processed');
       return reply.status(outcome.status === 'recorded' ? 201 : 200).send(outcome);
     });
@@ -143,6 +143,7 @@ export async function evaluationRoutes(app: FastifyInstance, ctx: ApiContext): P
 
     let agentExecutionId: string | null = null;
     let taskRunId: string | null = null;
+    let companyId: string | null = null;
     let link: Record<string, unknown>;
     if (input.agentExecutionId) {
       const execution = await db.query.agentExecutions.findFirst({
@@ -157,6 +158,9 @@ export async function evaluationRoutes(app: FastifyInstance, ctx: ApiContext): P
       if (resolved.resolved) {
         agentExecutionId = resolved.agentExecutionId;
         taskRunId = resolved.taskRunId;
+        // The agent's create_hypothesis input names the company (goes into evaluation.recorded).
+        const proposedCompany = (resolved.proposal as { companyId?: unknown } | null)?.companyId;
+        if (typeof proposedCompany === 'string') companyId = proposedCompany;
       }
       link = linkDetails(resolved);
     } else {
@@ -185,7 +189,8 @@ export async function evaluationRoutes(app: FastifyInstance, ctx: ApiContext): P
       ...(input.occurredAt ? { occurredAt: new Date(input.occurredAt) } : {}),
       idempotencyKey: idempotencyKey ?? null,
       dedupeWindowMs,
-    });
+      companyId,
+    }, { events: ctx.events });
     const e = result.evaluation;
     return reply.status(result.deduplicated ? 200 : 201).send({
       evaluatorId: HUMAN_EVALUATOR_ID,
@@ -193,6 +198,7 @@ export async function evaluationRoutes(app: FastifyInstance, ctx: ApiContext): P
       scores: { TASK_SUCCESS: scoreOf(input.feedback) },
       passed: passedOf(input.feedback),
       deduplicated: result.deduplicated,
+      event_id: result.eventId,
       evaluation: serialize(e),
     });
   });

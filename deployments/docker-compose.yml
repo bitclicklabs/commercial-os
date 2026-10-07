@@ -176,6 +176,7 @@ services:
       TWENTY_API_KEY: ${TWENTY_API_KEY:-}
       TWENTY_WAIT_MAX_MS: ${TWENTY_WAIT_MAX_MS:-600000}
       TWENTY_WEBHOOK_SECRET: ${TWENTY_WEBHOOK_SECRET:-}
+      RENDERER_URL: ${RENDERER_URL:-http://pxos-renderer:3000}
     depends_on:
       pxos-postgres:
         condition: service_healthy
@@ -187,6 +188,38 @@ services:
       timeout: 5s
       retries: 12
       start_period: 30s
+    restart: unless-stopped
+    networks: [pxos-net]
+
+  pxos-renderer:
+    build:
+      context: ../services/renderer
+    image: pxos/renderer:0.1.0
+    container_name: pxos-renderer
+    init: true
+    # Solo desarrollo local: permite probar el renderer desde el host. Quitar fuera de local.
+    ports:
+      - "127.0.0.1:4030:3000"
+    environment:
+      HOST: 0.0.0.0
+      PORT: "3000"
+      LOG_LEVEL: ${RENDERER_LOG_LEVEL:-info}
+      RENDER_MAX_CONCURRENCY: "2"
+      HOME: /tmp
+      FETCH_URL_ALLOWLIST: ${FETCH_URL_ALLOWLIST:-}
+      FETCH_URL_DENYLIST: ${FETCH_URL_DENYLIST:-}
+      FETCH_URL_ALLOWED_PORTS: ${FETCH_URL_ALLOWED_PORTS:-}
+    expose:
+      - "3000"
+    read_only: true
+    tmpfs:
+      - /tmp:size=512m
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 1536m
+    cpus: 1.5
+    pids_limit: 512
     restart: unless-stopped
     networks: [pxos-net]
 

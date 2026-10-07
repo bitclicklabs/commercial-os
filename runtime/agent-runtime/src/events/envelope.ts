@@ -24,6 +24,10 @@ export const RUNTIME_EVENT_TYPES = [
 ] as const;
 export type RuntimeEventType = (typeof RUNTIME_EVENT_TYPES)[number];
 
+/** Domain events of the HUMAN evaluator (one per verdict stored in `evaluations`). */
+export const EVALUATION_EVENT_TYPES = ['evaluation.recorded'] as const;
+export type EvaluationEventType = (typeof EVALUATION_EVENT_TYPES)[number];
+
 export const EVENT_TYPE_RE = /^[a-z]+(\.[a-z_]+)+$/;
 const SCHEMA_VERSION_RE = /^[a-z.]+\.v[0-9]+$/;
 

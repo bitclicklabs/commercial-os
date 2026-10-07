@@ -12,7 +12,16 @@
  */
 import { and, desc, eq, ne } from 'drizzle-orm';
 import type { Db } from '../db/client.js';
-import { agents, agentVersions, taskDefinitions, taskDefinitionVersions, type SkillRef, type TaskDefinition } from '../db/schema.js';
+import {
+  agents,
+  agentVersions,
+  taskDefinitions,
+  taskDefinitionVersions,
+  type RetryPolicy,
+  type ScheduleSpec,
+  type SkillRef,
+  type TaskDefinition,
+} from '../db/schema.js';
 import { PROSPECTOR_TOOLS } from '../agents/prospector-agent.js';
 import { PROSPECTOR_SKILL_ID, PROSPECTOR_SKILL_VERSION, PROSPECTOR_SYSTEM_PROMPT } from '../agents/prospector-prompt.js';
 import { SCOUT_SKILL_ID, SCOUT_SKILL_VERSION } from '../agents/event-scout-prompt.js';
@@ -56,9 +65,10 @@ export function desiredProspectorVersion() {
         allow: [...PROSPECTOR_TOOLS],
         max_risk_level: 'LOW_WRITE',
         // Direct: 50 exhibitors x (upsert + signal + hypothesis, or find) + summary.
-        // Scout: 3 fairs x 20 exhibitors x 3 + fetches + event signals + summary.
+        // Scout: 3 fairs x 20 exhibitors x 3 + fetches + renders + event signals + summary.
         max_calls_per_execution: 240,
-        max_calls_per_tool: { fetch_url: 15 },
+        // fetch_url: 18 pages/PDFs + 3 grounding redirects (+1); render_url: 4 renders (+1).
+        max_calls_per_tool: { fetch_url: 22, render_url: 5 },
       },
       min_confidence: 0.5,
       usd_to_eur: DEFAULT_USD_TO_EUR,
@@ -68,8 +78,10 @@ export function desiredProspectorVersion() {
         task_name: SCOUT_TASK_NAME,
         max_events: 3,
         max_exhibitors_per_event: 20,
-        max_fetches: 12,
-        max_pages_per_event: 2,
+        max_fetches: 18,
+        max_pages_per_event: 3,
+        max_renders: 4,
+        max_pdfs_per_event: 2,
         max_redirect_resolutions: 3,
         event_signal_confidence: 0.5,
         verify_unsourced_by_fetch: true,
@@ -156,16 +168,71 @@ export async function seedProspector(db: Db, opts: SeedOptions): Promise<SeedRes
   const want = desiredProspectorVersion();
 
   // ---------------------------------------------------------------- agent
-  const agentState = await db.transaction(async (tx) => {
-    const existing = await tx.query.agents.findFirst({ where: and(eq(agents.tenantId, tenantId), eq(agents.name, PROSPECTOR_AGENT_NAME)) });
+  const agentState = await upsertAgent(db, {
+    tenantId,
+    createdBy,
+    name: PROSPECTOR_AGENT_NAME,
+    description: 'Evalúa expositores de eventos y propone hipótesis de merchandising para PubliEXPE.',
+    role: 'prospector',
+    want,
+    log,
+  });
+  log(`agent ${PROSPECTOR_AGENT_NAME}: ${agentState.action} (id ${agentState.agentId}, version ${agentState.version})`);
+
+  // ---------------------------------------------------------------- tasks
+  const daily = await upsertTask(db, { tenantId, createdBy, agentId: agentState.agentId, name: PROSPECTOR_TASK_NAME, want: desiredTask(opts.defaultInput) });
+  log(`task ${PROSPECTOR_TASK_NAME}: ${daily.action} (id ${daily.taskId}, version ${daily.version})`);
+  const scout = await upsertTask(db, { tenantId, createdBy, agentId: agentState.agentId, name: SCOUT_TASK_NAME, want: desiredScoutTask() });
+  log(`task ${SCOUT_TASK_NAME}: ${scout.action} (id ${scout.taskId}, version ${scout.version})`);
+
+  return {
+    agentId: agentState.agentId,
+    agentVersionId: agentState.versionId,
+    agentVersion: agentState.version,
+    agentAction: agentState.action,
+    taskId: daily.taskId,
+    taskVersion: daily.version,
+    taskAction: daily.action,
+    scoutTaskId: scout.taskId,
+    scoutTaskVersion: scout.version,
+    scoutTaskAction: scout.action,
+  };
+}
+
+export interface AgentVersionSpec {
+  model: string;
+  modelProvider: string;
+  systemPrompt: string;
+  configuration: Record<string, unknown>;
+  skillRefs: SkillRef[];
+}
+
+export interface UpsertAgentResult {
+  agentId: string;
+  versionId: string;
+  version: number;
+  action: 'created' | 'version_added' | 'unchanged';
+}
+
+/**
+ * Creates the agent with version 1 if missing; if its ACTIVE version differs from `want`,
+ * adds a new ACTIVE version and deprecates the previous one (versions are immutable).
+ */
+export async function upsertAgent(
+  db: Db,
+  args: { tenantId: string; createdBy: string; name: string; description: string; role: string; want: AgentVersionSpec; log: (msg: string) => void },
+): Promise<UpsertAgentResult> {
+  const { tenantId, createdBy, name, description, role, want, log } = args;
+  return db.transaction(async (tx) => {
+    const existing = await tx.query.agents.findFirst({ where: and(eq(agents.tenantId, tenantId), eq(agents.name, name)) });
     if (!existing) {
       const [agent] = await tx
         .insert(agents)
         .values({
           tenantId,
-          name: PROSPECTOR_AGENT_NAME,
-          description: 'Evalúa expositores de eventos y propone hipótesis de merchandising para PubliEXPE.',
-          role: 'prospector',
+          name,
+          description,
+          role,
           riskLevel: 'LOW',
           owner: createdBy,
           status: 'ACTIVE',
@@ -181,7 +248,7 @@ export async function seedProspector(db: Db, opts: SeedOptions): Promise<SeedRes
       return { agentId: agent.id, versionId: version.id, version: 1, action: 'created' as const };
     }
 
-    if (existing.status === 'ARCHIVED') throw new Error(`agent "${PROSPECTOR_AGENT_NAME}" is ARCHIVED in tenant ${tenantId}; archived agents are immutable`);
+    if (existing.status === 'ARCHIVED') throw new Error(`agent "${name}" is ARCHIVED in tenant ${tenantId}; archived agents are immutable`);
     const active = existing.activeVersionId
       ? await tx.query.agentVersions.findFirst({ where: eq(agentVersions.id, existing.activeVersionId) })
       : undefined;
@@ -220,35 +287,25 @@ export async function seedProspector(db: Db, opts: SeedOptions): Promise<SeedRes
         updatedAt: new Date(),
       })
       .where(eq(agents.id, existing.id));
-    if (existing.status === 'PAUSED') log(`agent "${PROSPECTOR_AGENT_NAME}" is PAUSED: the new version is active but the agent stays paused`);
+    if (existing.status === 'PAUSED') log(`agent "${name}" is PAUSED: the new version is active but the agent stays paused`);
     return { agentId: existing.id, versionId: version.id, version: nextVersion, action: 'version_added' as const };
   });
-  log(`agent ${PROSPECTOR_AGENT_NAME}: ${agentState.action} (id ${agentState.agentId}, version ${agentState.version})`);
-
-  // ---------------------------------------------------------------- tasks
-  const daily = await upsertTask(db, { tenantId, createdBy, agentId: agentState.agentId, name: PROSPECTOR_TASK_NAME, want: desiredTask(opts.defaultInput) });
-  log(`task ${PROSPECTOR_TASK_NAME}: ${daily.action} (id ${daily.taskId}, version ${daily.version})`);
-  const scout = await upsertTask(db, { tenantId, createdBy, agentId: agentState.agentId, name: SCOUT_TASK_NAME, want: desiredScoutTask() });
-  log(`task ${SCOUT_TASK_NAME}: ${scout.action} (id ${scout.taskId}, version ${scout.version})`);
-
-  return {
-    agentId: agentState.agentId,
-    agentVersionId: agentState.versionId,
-    agentVersion: agentState.version,
-    agentAction: agentState.action,
-    taskId: daily.taskId,
-    taskVersion: daily.version,
-    taskAction: daily.action,
-    scoutTaskId: scout.taskId,
-    scoutTaskVersion: scout.version,
-    scoutTaskAction: scout.action,
-  };
 }
 
-type TaskSpec = ReturnType<typeof desiredTask>;
+export interface TaskSpec {
+  description: string;
+  defaultInput: Record<string, unknown>;
+  schedule: ScheduleSpec;
+  timezone: string;
+  enabled: boolean;
+  priority: number;
+  maxConcurrency: number;
+  retryPolicy: RetryPolicy;
+  timeoutMs: number;
+}
 
 /** Creates or updates one TaskDefinition (with a TaskDefinitionVersion snapshot per change). */
-async function upsertTask(
+export async function upsertTask(
   db: Db,
   args: { tenantId: string; createdBy: string; agentId: string; name: string; want: TaskSpec },
 ): Promise<{ taskId: string; version: number; action: 'created' | 'updated' | 'unchanged' }> {

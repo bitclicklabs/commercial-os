@@ -1,0 +1,251 @@
+/**
+ * Pure pieces of the EmailDrafter (no I/O, unit tested): the zod contract of the model
+ * answer, the post-processing that GUARANTEES the sender identification and the LSSI
+ * unsubscribe line, and the markdown of the Twenty note.
+ *
+ * Nothing here sends email. The draft is text for a human to copy into their mailbox.
+ */
+import { z } from 'zod';
+import { parseWith, type Parsed } from './prospector-core.js';
+
+// ---------------------------------------------------------------------------
+// Model answer
+// ---------------------------------------------------------------------------
+
+export const EmailDraftAnswer = z.object({
+  asunto: z.string().trim().min(3).max(200),
+  cuerpo: z.string().trim().min(40).max(5000),
+});
+export type EmailDraftAnswer = z.infer<typeof EmailDraftAnswer>;
+
+export function parseEmailDraft(text: string): Parsed<EmailDraftAnswer> {
+  return parseWith(EmailDraftAnswer, text);
+}
+
+// ---------------------------------------------------------------------------
+// Sender and compliance constants
+// ---------------------------------------------------------------------------
+
+export interface SenderConfig {
+  name: string;
+  company: string;
+  /** Main cold-outreach mailbox (LLD v0.1 section 10.1). */
+  email: string;
+  /** Second identity of the same real sender. */
+  altEmail: string | null;
+  /** Signature lines after the name (company line, web). */
+  signatureLines: string[];
+  /** Unsubscribe mailbox (LSSI art. 21). */
+  unsubscribeEmail: string;
+}
+
+export const DEFAULT_SENDER: SenderConfig = {
+  name: 'Jesús Abril',
+  company: 'PubliEXPE',
+  email: 'jesus.abril@publiexpe.info',
+  altEmail: 'j.abril@publiexpe.info',
+  signatureLines: ['PubliEXPE · Merchandising y regalo promocional personalizado', 'www.publiexpe.com'],
+  unsubscribeEmail: 'baja@publiexpe.info',
+};
+
+/** The mandatory last line of every draft (LSSI art. 21: a simple way to opt out). */
+export function unsubscribeLine(sender: Pick<SenderConfig, 'unsubscribeEmail'>): string {
+  return `Si no quieres recibir más mensajes, respóndeme o escribe a ${sender.unsubscribeEmail}`;
+}
+
+export const WORD_RANGE = { min: 120, max: 180 } as const;
+
+// ---------------------------------------------------------------------------
+// Post-processing
+// ---------------------------------------------------------------------------
+
+export interface FinalizeOptions {
+  sender: SenderConfig;
+  companyName: string;
+  /** Known contact (decision maker of the hypothesis), or null. */
+  contact: { firstName: string | null; lastName: string | null } | null;
+  wordRange?: { min: number; max: number };
+}
+
+export interface FinalDraft {
+  subject: string;
+  /** Full body ready to paste: text + signature + unsubscribe line. */
+  body: string;
+  /** Words of the text written by the model (without signature and unsubscribe line). */
+  wordCount: number;
+  /** What the code fixed or added. */
+  fixes: Array<'unsubscribe_line_added' | 'unsubscribe_line_replaced' | 'signature_added' | 'farewell_added' | 'greeting_name_removed' | 'markdown_removed'>;
+  warnings: string[];
+}
+
+const FAREWELL_RE = /^(un saludo|saludos|un abrazo|atentamente|muchas gracias|gracias|quedo a tu disposición|un cordial saludo|cordialmente)\b/i;
+/** Lines that look like an opt-out / privacy line the model wrote on its own. */
+const OPT_OUT_RE = /(baja@|darte de baja|darse de baja|dar de baja|no quieres recibir|no deseas recibir|unsubscribe|protección de datos|rgpd|lssi)/i;
+const GREETING_RE = /^(hola|buenos días|buenas tardes|buenas|estimad[oa]s?|querid[oa]s?)([\s,]+)(.*)$/i;
+const NAME_TOKEN_RE = /^([A-ZÁÉÍÓÚÑÜ][a-záéíóúñü]+)/;
+
+export function countWords(text: string): number {
+  return text.split(/\s+/).filter((w) => /[\p{L}\p{N}]/u.test(w)).length;
+}
+
+function normaliseText(raw: string): { text: string; markdownRemoved: boolean } {
+  let text = raw.replace(/\r\n?/g, '\n').trim();
+  const before = text;
+  text = text
+    .replace(/\*\*(.+?)\*\*/g, '$1')
+    .replace(/__(.+?)__/g, '$1')
+    .replace(/^#{1,6}\s+/gm, '')
+    .replace(/^\s*[-*•]\s+/gm, '');
+  text = text.replace(/[ \t]+\n/g, '\n').replace(/\n{3,}/g, '\n\n');
+  return { text, markdownRemoved: text !== before };
+}
+
+function tokens(...names: Array<string | null | undefined>): Set<string> {
+  const out = new Set<string>();
+  for (const n of names) for (const t of (n ?? '').split(/[\s,.;:()-]+/)) if (t.length > 0) out.add(t.toLowerCase());
+  return out;
+}
+
+/** Without a known contact, a capitalised word right after the greeting is an invented name. */
+function fixGreeting(lines: string[], opts: FinalizeOptions): boolean {
+  const idx = lines.findIndex((l) => l.trim().length > 0);
+  if (idx < 0) return false;
+  const line = lines[idx]!.trim();
+  const m = GREETING_RE.exec(line);
+  if (!m) return false;
+  const rest = m[3] ?? '';
+  const name = NAME_TOKEN_RE.exec(rest)?.[1];
+  if (!name) return false;
+  const allowed = tokens(opts.companyName, opts.contact?.firstName, opts.contact?.lastName, 'equipo', 'PubliEXPE');
+  if (allowed.has(name.toLowerCase())) return false;
+  const first = opts.contact?.firstName?.trim();
+  lines[idx] = first ? `Hola, ${first}:` : 'Hola:';
+  return true;
+}
+
+/** A signature line is the sender name on its own (optionally followed by a short tail), near the end. */
+function hasSignature(lines: string[], sender: SenderConfig): boolean {
+  const name = sender.name.toLowerCase();
+  return lines
+    .slice(-6)
+    .map((l) => l.trim().toLowerCase())
+    .some((l) => l.startsWith(name) && l.length <= name.length + 20 && !/[.?!]$/.test(l));
+}
+
+/**
+ * Builds the final body. Guarantees, whatever the model returned:
+ * - the last line is exactly `unsubscribeLine(sender)` (any opt-out line the model wrote is
+ *   removed first, so it appears once and with the canonical wording);
+ * - the sender is identified: signature with name, company and web before that line;
+ * - without a known contact, no invented person name in the greeting.
+ */
+export function finalizeDraft(answer: EmailDraftAnswer, opts: FinalizeOptions): FinalDraft {
+  const fixes: FinalDraft['fixes'] = [];
+  const warnings: string[] = [];
+  const range = opts.wordRange ?? WORD_RANGE;
+
+  const { text, markdownRemoved } = normaliseText(answer.cuerpo);
+  if (markdownRemoved) fixes.push('markdown_removed');
+  let lines = text.split('\n');
+
+  const optOut = lines.filter((l) => OPT_OUT_RE.test(l));
+  if (optOut.length > 0) {
+    lines = lines.filter((l) => !OPT_OUT_RE.test(l));
+    fixes.push('unsubscribe_line_replaced');
+  } else {
+    fixes.push('unsubscribe_line_added');
+  }
+  while (lines.length > 0 && lines[lines.length - 1]!.trim() === '') lines.pop();
+
+  if (fixGreeting(lines, opts)) {
+    fixes.push('greeting_name_removed');
+    warnings.push('el saludo nombraba a una persona que no consta en la hipótesis; se ha sustituido por un saludo genérico');
+  }
+
+  const wordCount = countWords(lines.join('\n'));
+  if (wordCount < range.min || wordCount > range.max) warnings.push(`el cuerpo tiene ${wordCount} palabras (objetivo ${range.min}-${range.max})`);
+
+  if (!hasSignature(lines, opts.sender)) {
+    const last = [...lines].reverse().find((l) => l.trim().length > 0) ?? '';
+    if (!FAREWELL_RE.test(last.trim())) {
+      lines.push('', 'Un saludo,');
+      fixes.push('farewell_added');
+    }
+    lines.push('', opts.sender.name, ...opts.sender.signatureLines);
+    fixes.push('signature_added');
+  }
+
+  lines.push('', unsubscribeLine(opts.sender));
+  const body = lines.join('\n').replace(/\n{3,}/g, '\n\n').trim();
+
+  const subject = answer.asunto
+    .replace(/\s+/g, ' ')
+    .replace(/^(asunto|subject)\s*:\s*/i, '')
+    .replace(/[.\s]+$/, '')
+    .replace(/^["'«“]+|["'»”]+$/g, '')
+    .trim()
+    .slice(0, 120);
+  if (subject.length > 70) warnings.push(`el asunto tiene ${subject.length} caracteres (objetivo máx. 70)`);
+
+  return { subject, body, wordCount, fixes, warnings };
+}
+
+// ---------------------------------------------------------------------------
+// Twenty note
+// ---------------------------------------------------------------------------
+
+export const DRAFT_NOTE_HEADER = 'BORRADOR — revísalo y envíalo desde tu correo; el sistema no envía nada.';
+
+export function draftNoteTitle(hypothesisName: string): string {
+  return `Borrador email — ${hypothesisName}`;
+}
+
+/** Backslash-escapes what markdown would interpret in plain text (rendered back as the same characters). */
+export function escapeMarkdown(text: string): string {
+  return text
+    .split('\n')
+    .map((line) =>
+      line
+        .replace(/([\\`*_[\]<>~|])/g, '\\$1')
+        .replace(/^(\s*)([#+-])/, '$1\\$2')
+        .replace(/^(\s*\d+)([.)])/, '$1\\$2'),
+    )
+    .join('\n');
+}
+
+export interface DraftNoteInput {
+  draft: Pick<FinalDraft, 'subject' | 'body' | 'warnings'>;
+  sender: SenderConfig;
+  contact: { firstName: string | null; lastName: string | null; jobTitle: string | null; email: string | null } | null;
+  hypothesisName: string;
+  feedback: string | null;
+  evaluatedAt: string | null;
+  executionId: string;
+}
+
+export function buildDraftNoteMarkdown(input: DraftNoteInput): string {
+  const { draft, sender, contact } = input;
+  const from = `${sender.name} <${sender.email}>${sender.altEmail ? ` (o ${sender.altEmail})` : ''}`;
+  const contactName = contact ? [contact.firstName, contact.lastName].filter(Boolean).join(' ') : '';
+  const to = contact
+    ? `${escapeMarkdown(contactName || 'Contacto')}${contact.jobTitle ? `, ${escapeMarkdown(contact.jobTitle)}` : ''}${contact.email ? ` <${contact.email}>` : ' (sin email en el CRM: añádelo tú)'}`
+    : 'añade tú el destinatario (la hipótesis no tiene persona de contacto; usa una dirección corporativa de rol)';
+  const verdict = input.feedback ? `veredicto ${input.feedback}${input.evaluatedAt ? ` del ${input.evaluatedAt.slice(0, 10)}` : ''}` : 'petición manual';
+  const lines = [
+    `> **${DRAFT_NOTE_HEADER}**`,
+    '',
+    `**De:** ${escapeMarkdown(from)}`,
+    `**Para:** ${to}`,
+    `**Asunto:** ${escapeMarkdown(draft.subject)}`,
+    '',
+    '---',
+    '',
+    escapeMarkdown(draft.body),
+    '',
+    '---',
+    '',
+    `_Borrador preparado a partir de la hipótesis «${escapeMarkdown(input.hypothesisName)}» (${verdict}). Lo ha redactado un modelo de lenguaje: comprueba los datos antes de enviarlo. Ejecución ${input.executionId}._`,
+  ];
+  if (draft.warnings.length > 0) lines.push('', `_Avisos: ${escapeMarkdown(draft.warnings.join('; '))}._`);
+  return lines.join('\n');
+}

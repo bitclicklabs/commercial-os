@@ -6,7 +6,7 @@
  * Every task/execution event carries `taskDefinitionId` (anti-loop guard) and `chainDepth`
  * (depth of the run in an event chain, see src/events/triggers.ts).
  */
-import type { AgentExecution, TaskRun } from '../db/schema.js';
+import type { AgentExecution, Evaluation, TaskRun } from '../db/schema.js';
 import type { EventProducer } from './envelope.js';
 import type { PublishEventInput } from './event-bus.js';
 import { chainDepthOfRunInput } from './triggers.js';
@@ -159,6 +159,42 @@ export function executionFinishedEvent(
       outputTokens: result.outputTokens ?? 0,
       latencyMs: result.latencyMs ?? null,
       ...(completed ? outputSummary(result.output) : { error: compactError(result.error) }),
+    },
+  };
+}
+
+/**
+ * `evaluation.recorded`: a human verdict was stored (HUMAN evaluator, `evaluations` row).
+ * Compact payload: ids, verdict and score, plus `companyId` when the caller could resolve
+ * the subject's company (Twenty webhook record or the agent's original proposal).
+ * Not about a run: no `taskDefinitionId`, `chainDepth` 0.
+ */
+export function evaluationRecordedEvent(
+  evaluation: Pick<
+    Evaluation,
+    'id' | 'tenantId' | 'subjectType' | 'subjectId' | 'feedback' | 'score' | 'agentExecutionId' | 'taskRunId' | 'source' | 'details' | 'occurredAt' | 'evaluatorId'
+  >,
+  opts: { companyId?: string | null } = {},
+): PublishEventInput {
+  const toStatus = typeof evaluation.details?.to_status === 'string' ? evaluation.details.to_status : null;
+  return {
+    tenantId: evaluation.tenantId,
+    type: 'evaluation.recorded',
+    correlationId: evaluation.taskRunId ?? evaluation.agentExecutionId ?? evaluation.id,
+    idempotencyKey: `evt:evaluation.recorded:${evaluation.id}`,
+    data: {
+      evaluationId: evaluation.id,
+      evaluatorId: evaluation.evaluatorId,
+      subjectType: evaluation.subjectType,
+      subjectId: evaluation.subjectId,
+      feedback: evaluation.feedback,
+      score: evaluation.score,
+      toStatus,
+      source: evaluation.source,
+      agentExecutionId: evaluation.agentExecutionId ?? null,
+      taskRunId: evaluation.taskRunId ?? null,
+      companyId: opts.companyId ?? null,
+      occurredAt: iso(evaluation.occurredAt),
     },
   };
 }

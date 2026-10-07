@@ -5,10 +5,17 @@
  * - `idempotency_key` (unique per tenant): exact replays of the same delivery/request;
  * - window: the same (subject, feedback, target status) recorded less than
  *   `dedupeWindowMs` before `occurred_at` is not recorded again.
+ *
+ * After the transaction commits, `evaluation.recorded` is emitted (best-effort, when an
+ * event publisher is given). The event idempotency key is the evaluation id, so it is
+ * also emitted on a deduplicated call: a replay re-dispatches an event whose first
+ * publish failed, and is a no-op otherwise.
  */
 import { and, desc, eq, gte, sql, type SQL } from 'drizzle-orm';
 import type { Db } from '../db/client.js';
 import { evaluations, type Evaluation } from '../db/schema.js';
+import type { EventPublisher } from '../events/event-bus.js';
+import { evaluationRecordedEvent } from '../events/runtime-events.js';
 import { HUMAN_EVALUATOR_ID, scoreOf, type HumanFeedback } from './human-feedback.js';
 
 export interface RecordHumanEvaluationInput {
@@ -26,15 +33,40 @@ export interface RecordHumanEvaluationInput {
   occurredAt?: Date;
   idempotencyKey?: string | null;
   dedupeWindowMs: number;
+  /** Twenty company of the subject, when known (goes into `evaluation.recorded`). Falls back to `details.company_id`. */
+  companyId?: string | null;
+}
+
+export interface RecordOptions {
+  /** Publisher of `evaluation.recorded`; without it nothing is emitted. */
+  events?: EventPublisher | undefined;
 }
 
 export interface RecordResult {
   evaluation: Evaluation;
   deduplicated: boolean;
   dedupedBy: 'idempotency_key' | 'window' | null;
+  /** Id of the `evaluation.recorded` event, or null when not emitted (no publisher or publish failed). */
+  eventId: string | null;
 }
 
-export async function recordHumanEvaluation(db: Db, input: RecordHumanEvaluationInput): Promise<RecordResult> {
+function companyIdOf(input: RecordHumanEvaluationInput, evaluation: Evaluation): string | null {
+  if (typeof input.companyId === 'string' && input.companyId.length > 0) return input.companyId;
+  const fromDetails = evaluation.details?.company_id;
+  return typeof fromDetails === 'string' && fromDetails.length > 0 ? fromDetails : null;
+}
+
+export async function recordHumanEvaluation(db: Db, input: RecordHumanEvaluationInput, opts: RecordOptions = {}): Promise<RecordResult> {
+  const result = await insertHumanEvaluation(db, input);
+  let eventId: string | null = null;
+  if (opts.events) {
+    const published = await opts.events.emit(evaluationRecordedEvent(result.evaluation, { companyId: companyIdOf(input, result.evaluation) }));
+    eventId = published?.event.id ?? null;
+  }
+  return { ...result, eventId };
+}
+
+async function insertHumanEvaluation(db: Db, input: RecordHumanEvaluationInput): Promise<Omit<RecordResult, 'eventId'>> {
   const occurredAt = input.occurredAt ?? new Date();
   return db.transaction(async (tx) => {
     await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${`evaluations:${input.tenantId}:${input.subjectType}:${input.subjectId}`}))`);

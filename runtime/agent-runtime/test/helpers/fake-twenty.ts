@@ -16,6 +16,9 @@ const SINGULAR: Record<string, string> = {
   researches: 'Research',
   commercialHypotheses: 'CommercialHypothesis',
   agentRunSummaries: 'AgentRunSummary',
+  people: 'Person',
+  notes: 'Note',
+  noteTargets: 'NoteTarget',
 };
 const SELECTS: Record<string, Record<string, string[]>> = {
   commercialSignals: {
@@ -66,14 +69,22 @@ function json(status: number, body: unknown): Response {
 }
 
 export class FakeTwenty {
-  readonly tables: Record<'companies' | 'commercialSignals' | 'researches' | 'commercialHypotheses' | 'agentRunSummaries', Rec[]> &
+  readonly tables: Record<
+    'companies' | 'commercialSignals' | 'researches' | 'commercialHypotheses' | 'agentRunSummaries' | 'people' | 'notes' | 'noteTargets',
+    Rec[]
+  > &
     Record<string, Rec[] | undefined> = {
     companies: [],
     commercialSignals: [],
     researches: [],
     commercialHypotheses: [],
     agentRunSummaries: [],
+    people: [],
+    notes: [],
+    noteTargets: [],
   };
+  /** Makes the next POST to `plural` fail with a non-retryable 400 (once). */
+  failNextCreate: string | null = null;
   readonly requests: Array<{ method: string; path: string; body?: Rec }> = [];
 
   seed(plural: string, rec: Rec): Rec {
@@ -100,6 +111,16 @@ export class FakeTwenty {
       if (!rec) return json(404, { statusCode: 404, error: 'NotFoundException', messages: ['Record not found'] });
       const singular = SINGULAR[plural]!;
       let out: Rec = rec;
+      if (plural === 'commercialHypotheses' && url.searchParams.get('depth') === '1') {
+        const byId = (t: string, v: unknown) => this.tables[t]!.find((r) => r.id === v) ?? null;
+        out = {
+          ...rec,
+          company: byId('companies', rec.companyId),
+          commercialSignal: byId('commercialSignals', rec.commercialSignalId),
+          decisionMaker: byId('people', rec.decisionMakerId),
+          noteTargets: this.tables.noteTargets!.filter((t) => t.targetCommercialHypothesisId === id),
+        };
+      }
       if (plural === 'companies' && url.searchParams.get('depth') === '1') {
         out = {
           ...rec,
@@ -116,6 +137,10 @@ export class FakeTwenty {
       const limit = Number(url.searchParams.get('limit') ?? 60);
       const rows = filter ? table.filter((r) => matches(r, filter)) : table;
       return json(200, { data: { [plural]: rows.slice(0, limit) }, totalCount: rows.length, pageInfo: { hasNextPage: rows.length > limit } });
+    }
+    if (method === 'POST' && body && this.failNextCreate === plural) {
+      this.failNextCreate = null;
+      return json(400, { statusCode: 400, error: 'BadRequestException', messages: ['simulated failure'] });
     }
     if (method === 'POST' && body) {
       for (const [field, allowed] of Object.entries(SELECTS[plural] ?? {})) {
@@ -138,7 +163,18 @@ export class FakeTwenty {
           }
         }
       }
-      const rec = this.seed(plural, { companyId: null, commercialSignalId: null, ...body });
+      if (plural === 'notes') {
+        const v2 = body.bodyV2 as Rec | undefined;
+        // Twenty derives blocknote from markdown (transformRichTextValue).
+        if (v2) body.bodyV2 = { markdown: v2.markdown ?? null, blocknote: v2.blocknote ?? (v2.markdown ? '[blocknote]' : null) };
+      }
+      const defaults: Rec =
+        plural === 'noteTargets'
+          ? { noteId: null, targetCompanyId: null, targetPersonId: null, targetOpportunityId: null, targetCommercialHypothesisId: null }
+          : plural === 'notes' || plural === 'people'
+            ? {}
+            : { companyId: null, commercialSignalId: null };
+      const rec = this.seed(plural, { ...defaults, ...body });
       return json(201, { data: { [`create${SINGULAR[plural]}`]: rec } });
     }
     return json(405, { messages: ['Method not supported by fake'] });

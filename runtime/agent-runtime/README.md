@@ -2,7 +2,7 @@
 
 Servicio del Agent OS de PubliEXPE Commercial OS (LLD v0.1, sección 8). Expone la API HTTP del runtime, planifica tareas (`ONCE`, `CRON`, `INTERVAL`) y ejecuta un worker BullMQ que lanza agentes y persiste `TaskRun`, `AgentExecution`, `Trace` y `TraceStep` en PostgreSQL.
 
-Estado: MVP. Además de `StubAgent` (sin LLM) y `SmokeAgent` (tools reales contra Twenty, consulta [Tools](#tools)), el runtime ejecuta el **Prospector** con Gemini (consulta [Prospector](#prospector)), que también trabaja sobre ferias reales con búsqueda de Google y `fetch_url` ([modo scout](#modo-scout-ferias-reales)). `AnthropicProvider` existe como esqueleto y no se llama en los tests.
+Estado: MVP. Además de `StubAgent` (sin LLM) y `SmokeAgent` (tools reales contra Twenty, consulta [Tools](#tools)), el runtime ejecuta el **Prospector** con Gemini (consulta [Prospector](#prospector)), que también trabaja sobre ferias reales con búsqueda de Google, `fetch_url` (HTML y PDF) y `render_url` (catálogos JavaScript, con el servicio [`pxos-renderer`](../../services/renderer/README.md)) ([modo scout](#modo-scout-ferias-reales)). `AnthropicProvider` existe como esqueleto y no se llama en los tests.
 
 ## Stack
 
@@ -21,23 +21,24 @@ runtime/agent-runtime/
 │   ├── main.ts               Entrada: API, worker y/o scheduler según RUNTIME_ROLE o --role=
 │   ├── config.ts             Configuración desde variables de entorno
 │   ├── api/                  Servidor Fastify, contratos zod y rutas
-│   ├── agents/               Interfaz de agente, StubAgent, SmokeAgent y ProspectorAgent (modos directo y scout, prompts, SourceLedger)
+│   ├── agents/               Interfaz de agente, StubAgent, SmokeAgent, ProspectorAgent (modos directo y scout, prompts, SourceLedger) y EmailDrafterAgent (borradores, nunca envía)
 │   ├── integrations/twenty/  TwentyClient REST tipado y mapeo de objetos de la App
-│   ├── tools/                Interfaz Tool, registry, tool_policy, executor, tools de Twenty y web/ (fetch_url y guarda SSRF)
+│   ├── tools/                Interfaz Tool, registry, tool_policy, executor, tools de Twenty y web/ (fetch_url con texto de PDF, render_url y guarda SSRF)
 │   ├── db/                   Esquema Drizzle, cliente y migrador
 │   ├── events/               Event bus: sobre event.envelope.v1, EventBus, payloads, triggers EVENT y GET /events
 │   ├── domain/               Estados, máquina de estados e idempotency keys
-│   ├── evaluations/          Evaluador HUMAN: mapeo de feedback, vínculo con la ejecución de origen y webhook de Twenty
+│   ├── evaluations/          Evaluador HUMAN: mapeo de feedback, vínculo con la ejecución de origen, webhook de Twenty y evento evaluation.recorded
+│   ├── metrics/              Consultas SQL de métricas (solo lectura) y HTML del dashboard
 │   ├── providers/            ModelProvider, StubProvider, AnthropicProvider, GeminiProvider y tabla de precios
 │   ├── queue/                RunQueue (BullMQ y en memoria)
 │   ├── scheduler/            TaskScheduler sobre BullMQ, parseo de schedules y rutas
-│   ├── seed/                 Seed idempotente del Prospector y sus tareas (pnpm seed)
+│   ├── seed/                 Seed idempotente del Prospector, el EmailDrafter y sus tareas (pnpm seed)
 │   ├── services/             Lanzamiento idempotente de TaskRuns
 │   └── worker/               RunProcessor, worker BullMQ, locks por entidad y reconciliador
 └── test/
     ├── unit/                 Corren siempre, sin BD ni Redis
     ├── integration/          API, worker, scheduler, locks y tools (PostgreSQL, Redis y Twenty); se saltan si falta el servicio
-    ├── helpers/              FakeTwenty (API REST de Twenty en memoria) y FakeWeb (DNS y HTTP simulados)
+    ├── helpers/              FakeTwenty (API REST de Twenty en memoria), FakeWeb (DNS y HTTP simulados), FakeRenderer (pxos-renderer simulado) y makePdf (PDF de prueba en memoria)
     ├── fixtures/             feria-ejemplo.json (evento de demo) y payloads reales de webhooks de Twenty 2.45
     └── setup-env.ts          Carga .env (si existe) antes de los tests
 ```
@@ -108,6 +109,7 @@ Requisitos: Node.js 22, pnpm, y los contenedores `pxos-postgres` (127.0.0.1:5440
 | `FETCH_URL_ALLOWLIST` | vacío | Dominios que `fetch_url` puede descargar, separados por comas (incluye subdominios). Vacío = cualquier host público |
 | `FETCH_URL_DENYLIST` | vacío | Dominios que `fetch_url` nunca descarga. Gana sobre la allowlist |
 | `FETCH_URL_ALLOWED_PORTS` | `80,443,8080,8443` | Puertos permitidos en las URL de `fetch_url` |
+| `RENDERER_URL` | `http://pxos-renderer:3000` | Servicio de render JavaScript de `render_url`. En desarrollo, `http://127.0.0.1:4030` si el renderer está publicado ahí. Vacío u `off` = desactivado (`render_url` devuelve `RENDERER_NOT_CONFIGURED`) |
 
 ## Migraciones
 
@@ -200,6 +202,11 @@ Cabecera opcional `x-tenant-id` en todas las rutas. Las respuestas usan `snake_c
 | `POST /webhooks/twenty` | Webhook de Twenty firmado. Convierte cambios de `commercialHypothesis` en evaluaciones HUMAN |
 | `POST /evaluations/human` | Registra un veredicto manual: `201` nuevo, `200` duplicado |
 | `GET /evaluations` | Lista evaluaciones. Filtros: `subject_id`, `subject_type`, `feedback`, `agent_execution_id`, `since`, `limit` |
+| `GET /metrics/summary` | Runs por estado, tarea y outcome; coste, tokens, latencia, embudo comercial y feedback. Filtros `since`, `until` |
+| `GET /metrics/agents` | Por agente y versión: runs, coste medio, outcome y tasa de aceptación humana. Filtros `since`, `until` |
+| `GET /metrics/evaluations` | Veredictos por día y por sujeto. Filtros `since`, `until`, `tz`, `subject_limit` |
+| `GET /metrics/runs` | Últimos `TaskRun` (`limit`, 10 por defecto) con coste, duración y enlace al trace |
+| `GET /dashboard` | Mini dashboard HTML. Solo para peticiones locales |
 
 ### Idempotencia
 
@@ -321,8 +328,11 @@ Todos los eventos viajan con este sobre. Los campos del sobre y de `data` usan `
 | `task.failed` | Processor, al cerrar el run en `FAILED` o `TIMED_OUT` (no en un reintento) | Igual, con `error` (`name`, `code`, `message`) en lugar de coste |
 | `agent.execution.started` | Processor, al arrancar cada intento o ejecución directa | `executionId`, `taskRunId`, `taskDefinitionId`, `agentId`, `agentVersionId`, `agentVersion`, `stage`, `chainDepth` |
 | `agent.execution.completed` / `.failed` | Processor, al persistir el resultado (si no se canceló antes) | Lo anterior más `status`, `costEur`, `inputTokens`, `outputTokens`, `latencyMs` y `outcome` o `error` |
+| `evaluation.recorded` | Servicio de evaluaciones, tras guardar un veredicto humano (webhook de Twenty o `POST /evaluations/human`) | `evaluationId`, `evaluatorId`, `subjectType`, `subjectId`, `feedback`, `score`, `toStatus`, `source`, `agentExecutionId`, `taskRunId`, `companyId` (o `null` si no se pudo resolver), `occurredAt` |
 
-Cada evento del runtime lleva una `idempotencyKey` (`evt:{type}:{task_run_id}`, `evt:task.started:{task_run_id}:{attempt}`, `evt:{type}:{execution_id}`): publicar dos veces el mismo hecho devuelve la fila existente.
+Cada evento del runtime lleva una `idempotencyKey` (`evt:{type}:{task_run_id}`, `evt:task.started:{task_run_id}:{attempt}`, `evt:{type}:{execution_id}`, `evt:evaluation.recorded:{evaluation_id}`): publicar dos veces el mismo hecho devuelve la fila existente.
+
+`evaluation.recorded` no habla de un run: no lleva `taskDefinitionId` y su `chainDepth` es 0. Su `correlationId` es el `TaskRun` de origen de la hipótesis, o la evaluación si no se resolvió. `companyId` sale del registro del webhook o, en `POST /evaluations/human`, de la propuesta original del agente (entrada de `create_hypothesis` en el trace). Se emite también cuando la llamada se deduplica: la clave es la de la evaluación existente, así que no crea otro evento y vuelve a despachar uno que no llegó a la cola.
 
 ### Publicación
 
@@ -434,7 +444,7 @@ El `ToolRegistry` rechaza al registrar:
 
 ### Tools disponibles
 
-Las de Twenty usan `TWENTY_BASE_URL` y `TWENTY_API_KEY` y tienen `outputTrust = trusted`. `fetch_url` descarga de la web y su salida es `untrusted`.
+Las de Twenty usan `TWENTY_BASE_URL` y `TWENTY_API_KEY` y tienen `outputTrust = trusted`. `fetch_url` y `render_url` leen la web y su salida es `untrusted`.
 
 | Tool | Riesgo | Efectos | Idempotencia |
 |---|---|---|---|
@@ -445,7 +455,10 @@ Las de Twenty usan `TWENTY_BASE_URL` y `TWENTY_API_KEY` y tienen `outputTrust = 
 | `create_research` | `LOW_WRITE` | Sí | Ejecución + empresa + `researchType` |
 | `create_hypothesis` | `LOW_WRITE` | Sí | Empresa + `name` (por defecto `{empresa} — {need}`) |
 | `create_agent_run_summary` | `LOW_WRITE` | Sí | `agentExecutionId` |
+| `get_hypothesis` | `READ` | No | — (hipótesis con empresa, señal y decision maker, `depth=1`) |
+| `create_note` | `LOW_WRITE` | Sí | Empresa + título; adopta una nota huérfana con el mismo título |
 | `fetch_url` | `READ` | No | — (consulta [Seguridad del contenido web](#seguridad-del-contenido-web)) |
+| `render_url` | `READ` | No | — (consulta [Render de JavaScript](#render-de-javascript-render_url)) |
 
 `create_signal` acepta `companyId` opcional: sin él crea una **señal a nivel de evento** (una feria sin empresa asociada todavía), deduplicada entre las señales sin empresa por tipo + `eventDate` + `sourceDomain`.
 
@@ -534,7 +547,7 @@ El `StubAgent` sigue usando su tool simulada (`stub.lookup`), que no pasa por el
 | Directo | `{ event, exhibitors[] }` | `daily-event-prospecting` | Evalúa los expositores ya extraídos (fixture de demo) |
 | Scout | `{ sector, region?, horizon_months? }` o `{ event_url }` | `weekly-event-scouting` | Busca ferias reales, descarga su página de expositores y evalúa los expositores reales. Consulta [Modo scout](#modo-scout-ferias-reales) |
 
-El modo scout es un modo del mismo agente, no un agente hermano: el LLD v0.2 asigna al Prospector tanto el descubrimiento de eventos (`search_web`, `fetch_url`) como la evaluación de expositores, y así los dos modos comparten versión, prompt de evaluación, pipeline por expositor, tool policy y trazas.
+El modo scout es un modo del mismo agente, no un agente hermano: el LLD v0.2 asigna al Prospector tanto el descubrimiento de eventos (`search_web`, `fetch_url`, `render_url`) como la evaluación de expositores, y así los dos modos comparten versión, prompt de evaluación, pipeline por expositor, tool policy y trazas.
 
 ### Entrada
 
@@ -580,12 +593,19 @@ Flujo:
    - si el grounding devuelve fuentes, solo se descargan URL cuyo dominio está en esas fuentes (si una fuente solo trae la URL de redirección de `vertexaisearch`, se resuelve con `fetch_url` para conocer su dominio);
    - si el modelo ejecutó búsquedas pero la API no devolvió fuentes (comportamiento observado con `gemini-3.8-flash` el 2026-10-07), la URL se descarga y **la página tiene que corroborar la feria** (el nombre aparece en el dominio o en el título y el texto); si no, se descarta sin escribir nada. `scout.verify_unsourced_by_fetch = false` desactiva esta vía (modo estricto);
    - con `event_url`, la URL la da el operador.
-1. **`fetch_url`** de la página de expositores (o de la portada y, después, del enlace de expositores que aparezca entre sus enlaces). Máximo `max_pages_per_event` páginas por feria y `max_fetches` descargas por ejecución.
-1. **Extracción**: el LLM extrae `{name, domain?, description?, sector?}` solo del texto descargado. El código descarta los nombres que no aparecen en la página y los dominios que no están en su texto o sus enlaces (ni el de la propia feria ni redes sociales).
-1. **Pipeline por expositor**, el mismo del modo directo, con `source_url` = la página de expositores visitada.
-1. **Sin lista de expositores** (catálogo dinámico, PDF, página vacía): la feria se registra como señal `FAIR` a nivel de evento (`create_signal` sin `companyId`, con la URL visitada) y el `outcome` es `PARTIAL` con el motivo en `partial_reasons` y en el `agentRunSummary`.
+1. **Lectura de cada página** de la feria (la de expositores; o la portada y, después, el enlace de expositores que aparezca entre sus enlaces), en tres pasos:
+   1. **`fetch_url`**. Lee HTML, texto y **PDF** (si la URL de expositores es directamente un PDF, se lee su texto). Si la página es el esqueleto vacío de una app JavaScript (`js_app_likely` y menos de 200 caracteres), no se gasta una llamada al LLM en ella (`code: JS_APP_SHELL`).
+   1. **`render_url`** si la página parece una app JavaScript (`js_app_likely`: poco texto, mucho script, punto de montaje de SPA vacío o aviso `<noscript>`) o si la extracción no da expositores y no hay un enlace de expositores que seguir antes (o el modelo la clasifica como lista de expositores). El texto renderizado pasa por la misma extracción. El scout pide al renderer `min_text_chars = 300` (espera a que la app pinte su contenido y deje de crecer); si el render vuelve casi vacío (menos de 200 caracteres: la app no hidrató a tiempo), lo repite **una** vez con `wait_ms = 8000`, `wait_until = networkidle` y `min_text_chars = 400`, si queda presupuesto. Si sigue vacío, no se llama al LLM sobre él (`code: RENDER_EMPTY`) y el motivo de la señal de feria lo indica. Los enlaces de la página renderizada también sirven para seguir al enlace de expositores (cadena real de Gastrónoma: `gastronoma.es` → app del catálogo en `apps.feriavalencia.com` → `/exhibitors`). Si el renderer no está desplegado (`RENDERER_NOT_CONFIGURED`) o `render_url` no está en la tool policy, el render se desactiva para toda la ejecución y el flujo sigue sin él.
+   1. **PDF de catálogo enlazados**: hasta `max_pdfs_per_event` enlaces a `.pdf` de la página (estática o renderizada) cuyo texto o URL sugiere catálogo o listado (`expositores`, `exhibitors`, `catálogo`, `listado`, `participantes`, `marcas`, `directorio`, `plano`…) se descargan con `fetch_url` y se extraen también, aunque la página ya haya dado expositores.
 
-`outcome`: `FAILED` si falla la búsqueda o todos los expositores; `PARTIAL` si hay errores, ninguna feria verificable o alguna feria sin lista de expositores; `SUCCESS` en otro caso. La salida incluye `events[]` (páginas leídas, verificación, expositores descartados), `discarded_events[]` con el motivo, `sources` (URL visitadas y fuentes de grounding) y el coste de búsqueda.
+   Máximo `max_pages_per_event` páginas por feria (sin contar renders ni PDF enlazados), `max_fetches` descargas y `max_renders` renders por ejecución.
+1. **Extracción**: el LLM extrae `{name, domain?, description?, sector?}` solo del texto leído (HTML, página renderizada o PDF; el prompt indica el tipo). El código descarta los nombres que no aparecen en **esa** página y los dominios que no están en su texto o sus enlaces (ni el de la propia feria ni redes sociales). Los expositores de varias páginas de la misma feria se fusionan sin duplicados (por nombre), hasta `max_exhibitors_per_event`.
+1. **Pipeline por expositor**, el mismo del modo directo, con `source_url` = la página de la que sale cada expositor (página de expositores, página renderizada o PDF), siempre una URL visitada.
+1. **Sin lista de expositores** (catálogo ilegible, página vacía, renderer no disponible): la feria se registra como señal `FAIR` a nivel de evento (`create_signal` sin `companyId`, con la URL visitada) y el `outcome` es `PARTIAL` con el motivo en `partial_reasons` y en el `agentRunSummary` (incluye `render JavaScript no disponible (…)` cuando el render se necesitaba y no se pudo hacer).
+
+`outcome`: `FAILED` si falla la búsqueda o todos los expositores; `PARTIAL` si hay errores, ninguna feria verificable o alguna feria sin lista de expositores; `SUCCESS` en otro caso. La salida incluye `events[]` (páginas leídas con `via` = `fetch` | `render` | `pdf`, `content_kind`, `js_app_likely`, expositores extraídos y verificados por página; verificación; expositores descartados), `discarded_events[]` con el motivo, `sources` (URL visitadas y fuentes de grounding), `render` (`calls`, `ok`, `retries`, `max`, `disabled` con el motivo si se desactivó), los contadores `fetches`, `renders`, `renders_ok`, `render_retries` y `pdfs_read`, y el coste de búsqueda.
+
+Limitación observada el 2026-10-07: el catálogo JavaScript de Gastrónoma lista nombres, sector y país, pero no la web de cada expositor (está en la ficha `/exhibitors/{id}`, que el scout no abre). Esos expositores se evalúan, pero los relevantes acaban como `skipped_no_domain`: el pipeline nunca crea una empresa sin dominio verificado.
 
 ### Seguridad del contenido web
 
@@ -594,8 +614,9 @@ Regla del LLD v0.1 §22 y v0.2 §10.4: `WEB CONTENT ≠ INSTRUCTIONS`.
 - **Separación de canales.** El contenido web (páginas descargadas, respuesta de la búsqueda, datos extraídos de ellas) entra **solo** en mensajes `user`, nunca en `systemInstruction`.
 - **Delimitación.** Siempre va dentro de un bloque `<<<DATOS_NO_CONFIABLES id=… origen="…">>> … <<<FIN_DATOS_NO_CONFIABLES id=…>>>` con un id aleatorio por bloque, precedido de la instrucción de ignorar cualquier orden que contenga. Las secuencias que imitan los marcadores se neutralizan, así que el contenido no puede cerrar el bloque. Los prompts de sistema (texto fijo, de confianza) repiten la regla.
 - **El modelo no elige tools.** El código decide qué tool llamar y con qué argumentos; el modelo solo devuelve JSON validado con zod. Una instrucción inyectada no puede provocar una llamada.
-- **Fuentes verificadas.** Todo `sourceUrl` que se escribe en Twenty se comprueba contra el registro de fuentes de la ejecución (`SourceLedger`): URL visitadas por `fetch_url` o devueltas por el grounding. Las URL propuestas por el modelo solo se descargan si su dominio está respaldado por el grounding, si son enlaces de una página ya descargada o, sin fuentes, si la página corrobora la feria. Los textos libres que van a Twenty (descripción, necesidad, por qué ahora, evidencias) pierden cualquier URL que no sea una fuente conocida (`[enlace omitido]`).
-- **Elementos ocultos.** `fetch_url` elimina `script`, `style`, `template`, `svg`, `iframe` y los elementos con `hidden`, `aria-hidden="true"` o `display:none`, vehículos habituales de inyección.
+- **Fuentes verificadas.** Todo `sourceUrl` que se escribe en Twenty se comprueba contra el registro de fuentes de la ejecución (`SourceLedger`): URL visitadas por `fetch_url` o `render_url`, o devueltas por el grounding. Las URL propuestas por el modelo solo se descargan si su dominio está respaldado por el grounding, si son enlaces de una página ya descargada o, sin fuentes, si la página corrobora la feria. Los textos libres que van a Twenty (descripción, necesidad, por qué ahora, evidencias) pierden cualquier URL que no sea una fuente conocida (`[enlace omitido]`).
+- **Elementos ocultos.** `fetch_url` elimina `script`, `style`, `template`, `svg`, `iframe` y los elementos con `hidden`, `aria-hidden="true"` o `display:none`, vehículos habituales de inyección. El renderer hace lo mismo sobre el DOM final (`innerText` ya excluye lo que no se ve).
+- **Mismas reglas para todo el texto.** El texto de un PDF o de una página renderizada entra igual que el HTML: en bloques `DATOS_NO_CONFIABLES`, sin elegir tools, con la verificación de nombres y dominios contra esa misma página y con el `SourceLedger`.
 
 Controles de egreso de `fetch_url` (protección SSRF), aplicados a la primera petición **y a cada redirección**:
 
@@ -610,10 +631,27 @@ Controles de egreso de `fetch_url` (protección SSRF), aplicados a la primera pe
 | Tiempo | 15 s en total |
 | Tamaño | 2 MB, contado tras descomprimir (gzip, deflate, br) |
 | Texto devuelto | 40 000 caracteres como máximo; también título y enlaces absolutos |
-| Tipos | Solo texto (HTML, XHTML, XML, JSON, `text/*`); un PDF devuelve `UNSUPPORTED_CONTENT_TYPE` |
+| Tipos | Texto (HTML, XHTML, XML, JSON, `text/*`) y **PDF** (`application/pdf` o firma `%PDF-`, también como `application/octet-stream`). El resto devuelve `UNSUPPORTED_CONTENT_TYPE` |
+| PDF | Texto extraído en memoria con `unpdf` (PDF.js sin binarios nativos, sin `eval`, sin fuentes del sistema ni peticiones externas), máximo 300 páginas, dentro de los mismos 2 MB / 40 000 caracteres / 15 s. Salida con `content_kind = "pdf"`, `pdf_pages`, título de los metadatos y enlaces `http(s)` de las anotaciones |
+| Detección de app JS | `js_app_likely` en las páginas HTML: poco texto visible con scripts, mucho más script que texto, punto de montaje de SPA vacío (`#app`, `#root`, `app-root`…), aviso `<noscript>` de JavaScript o marcadores de framework con poco texto |
 | Cabeceras | `User-Agent: PubliexpeCommercialOS/0.1` (solo ASCII: un carácter no ASCII provocaba 403 en ifema.es y alimentaria.com), sin cookies ni cabeceras de autenticación |
 
-Códigos de error de `fetch_url`: `URL_NOT_ALLOWED`, `REDIRECT_NOT_ALLOWED`, `SSRF_BLOCKED`, `DNS_ERROR`, `TOO_MANY_REDIRECTS`, `FETCH_TIMEOUT`, `HTTP_ERROR`, `UNSUPPORTED_CONTENT_TYPE`, `NETWORK_ERROR`.
+Códigos de error de `fetch_url`: `URL_NOT_ALLOWED`, `REDIRECT_NOT_ALLOWED`, `SSRF_BLOCKED`, `DNS_ERROR`, `TOO_MANY_REDIRECTS`, `FETCH_TIMEOUT`, `HTTP_ERROR`, `UNSUPPORTED_CONTENT_TYPE`, `NETWORK_ERROR`, `PDF_UNREADABLE`, `PDF_ENCRYPTED` y `PDF_TOO_LARGE` (PDF cortado por el límite de 2 MB que no se puede leer).
+
+### Render de JavaScript (`render_url`)
+
+`render_url` no ejecuta un navegador en el runtime: llama por HTTP al servicio interno `pxos-renderer` (`services/renderer/`, Playwright + Chromium en su propio contenedor), así que la imagen del runtime no crece. Consulta [services/renderer/README.md](../../services/renderer/README.md) para la API, los controles de seguridad del navegador y la integración en Docker.
+
+| Aspecto | Comportamiento |
+|---|---|
+| Destino | `RENDERER_URL` + `/render` (por defecto `http://pxos-renderer:3000`, dentro de `pxos-net`). Es configuración de confianza: no pasa por la guarda SSRF |
+| Antes de llamar | La URL a renderizar pasa `checkUrl` con la misma política de hosts que `fetch_url` (esquema, credenciales, puertos, allow/denylist, nombres internos, IP literales). El renderer repite la comprobación con DNS y la aplica a cada petición del navegador |
+| Entrada | `url`, y opcionales `waitMs`, `maxChars`, `minTextChars` (espera de hidratación) y `waitUntil` (`domcontentloaded`, `load`, `networkidle`) |
+| Respuesta | Validada con zod: texto recortado a 40 000 caracteres, título, hasta 200 enlaces `http(s)`, `finalUrl` comprobada otra vez con `checkUrl`, `content_kind = "rendered"`, `renderMs`, `hydrated` |
+| Tiempo | 25 s de JavaScript en el renderer; 40 s de espera en el cliente (`RENDER_TIMEOUT`) |
+| Sin renderer | `RENDERER_URL` vacío u `off`, o el servicio no responde (DNS, conexión rechazada): `RENDERER_NOT_CONFIGURED`. El scout lo trata como "sin render" y sigue |
+
+Códigos de error de `render_url`: `RENDERER_NOT_CONFIGURED`, `INVALID_URL`, `URL_NOT_ALLOWED`, `REDIRECT_NOT_ALLOWED`, `RENDER_TIMEOUT`, `RENDERER_BAD_RESPONSE` y los del renderer (`SSRF_BLOCKED`, `NAVIGATION_BLOCKED`, `DOWNLOAD_BLOCKED`, `HTTP_ERROR`, `RENDERER_BUSY`…).
 
 ### Trace y coste
 
@@ -624,7 +662,7 @@ Cada llamada al LLM es un paso `MODEL` con `model` (el modelo real que respondi�
 | Clave de `configuration` | Por defecto | Uso |
 |---|---|---|
 | `implementation` | — | `prospector` |
-| `tool_policy` | — | `find_company`, `upsert_company`, `create_signal`, `create_hypothesis`, `create_agent_run_summary`, `fetch_url` (máximo 15 llamadas); techo `LOW_WRITE`; 240 llamadas por ejecución |
+| `tool_policy` | — | `find_company`, `upsert_company`, `create_signal`, `create_hypothesis`, `create_agent_run_summary`, `fetch_url` (máximo 22 llamadas) y `render_url` (máximo 5); techo `LOW_WRITE`; 240 llamadas por ejecución |
 | `min_confidence` | `0.5` | Umbral para escribir en Twenty |
 | `usd_to_eur` | `0.86` | Conversión del coste para Twenty |
 | `model_options` | `{}` | `thinking_level` (Gemini 3.x), `thinking_budget` (Gemini 2.5), `temperature` |
@@ -633,8 +671,10 @@ Cada llamada al LLM es un paso `MODEL` con `model` (el modelo real que respondi�
 | `scout.task_name` | `weekly-event-scouting` | Campo `task` del `agentRunSummary` (modo scout) |
 | `scout.max_events` | `3` | Ferias por ejecución (máximo 3) |
 | `scout.max_exhibitors_per_event` | `20` | Expositores evaluados por feria |
-| `scout.max_fetches` | `12` | Descargas por ejecución |
-| `scout.max_pages_per_event` | `2` | Páginas leídas por feria |
+| `scout.max_fetches` | `18` | Descargas por ejecución (páginas y PDF) |
+| `scout.max_pages_per_event` | `3` | Páginas leídas por feria (portada → catálogo → lista); los renders y los PDF enlazados no cuentan |
+| `scout.max_renders` | `4` | Renders JavaScript (`render_url`) por ejecución. `0` = nunca renderizar |
+| `scout.max_pdfs_per_event` | `2` | PDF de catálogo o listado enlazados que se leen por feria (máximo 2) |
 | `scout.max_redirect_resolutions` | `3` | Redirecciones de grounding resueltas para conocer su dominio |
 | `scout.event_signal_confidence` | `0.5` | Confianza de la señal de evento sin expositores |
 | `scout.verify_unsourced_by_fetch` | `true` | Sin fuentes de grounding, aceptar la URL si la página corrobora la feria. `false` = estricto |
@@ -653,6 +693,8 @@ Es idempotente:
 - **Tarea `weekly-event-scouting`** (modo scout): `CRON 30 7 * * 1` (lunes 07:30) en `Europe/Madrid`, `timeout_ms = 1800000`, sin reintentos, `default_input = { "sector": "alimentación y bebidas", "region": "España", "horizon_months": 6 }`.
 
 Las dos tareas usan la misma versión del agente. La versión del seed añade `fetch_url` a la tool policy, la configuración `scout` y la skill `event-source-discovery` v1, y sube la skill `prospector-event-exhibitors` a v2 (datos en bloques `DATOS_NO_CONFIABLES`): al ejecutar el seed sobre una BD existente se crea una versión nueva del agente.
+
+La versión actual del seed añade `render_url` a la tool policy, sube los límites del scout (`max_fetches` 18, `max_pages_per_event` 3, `max_renders` 4, `max_pdfs_per_event` 2) y la skill `event-source-discovery` a v2 (PDF y páginas renderizadas): ejecuta `pnpm seed` después de desplegar para crear la versión nueva. Hasta entonces, la versión activa no tiene `render_url` en su política: el scout lee PDF pero no renderiza (`render.disabled = TOOL_NOT_ALLOWED`).
 
 > **Importante:** ejecuta el seed después de desplegar este código. Un runtime anterior trataría la entrada de `weekly-event-scouting` como entrada directa no válida y cerraría la ejecución del lunes como `FAILED`.
 
@@ -695,9 +737,11 @@ Observado el 2026-10-07 con `gemini-3.8-flash`: el modelo ejecuta las búsquedas
 - `test/unit/prospector-agent.test.ts` y `test/unit/gemini-provider.test.ts`: con `StubProvider` (respuestas guionizadas) y `FakeTwenty`. Cubren el parseo, el reintento por JSON inválido, el flujo de tools, la idempotencia y la agregación de coste.
 - `test/integration/prospector-live.test.ts`: **en vivo**. Ejecuta el seed y un `TaskRun` con la fixture contra Gemini, Twenty y PostgreSQL reales, y comprueba empresa, señal, hipótesis y `agentRunSummary` en Twenty. Se salta si falta `GEMINI_API_KEY`, `TWENTY_API_KEY`, Twenty o PostgreSQL, o si `SKIP_LLM_TESTS=1`. Usa los nombres de la fixture (datos de demo, sin prefijo `[TEST]`) en el tenant `publiexpe`; como todas las escrituras son idempotentes, repetirlo solo añade un `agentRunSummary`. Cuesta unos 0,005 € por ejecución.
 
-- `test/unit/fetch-url.test.ts`: guardas SSRF (rangos IPv4/IPv6, URL internas, allow/denylist, IP privada en DNS, DNS mixto, redirección a IP privada o a host privado, límite de redirecciones), truncado de texto y de bytes (también tras gzip, con un servidor local real), timeout, tipos de contenido, charset y `htmlToText`.
+- `test/unit/fetch-url.test.ts`: guardas SSRF (rangos IPv4/IPv6, URL internas, allow/denylist, IP privada en DNS, DNS mixto, redirección a IP privada o a host privado, límite de redirecciones), truncado de texto y de bytes (también tras gzip, con un servidor local real), timeout, tipos de contenido, charset y `htmlToText`; PDF (detección por tipo y por firma, texto, título y enlaces de una fixture generada con `test/helpers/make-pdf.ts`, recorte, PDF corrupto o cortado) y detección de app JavaScript.
+- `test/unit/render-url.test.ts`: `render_url` con `FakeRenderer` y con un servidor HTTP local: configuración (`RENDERER_URL`), renderer no configurado o caído, URL rechazadas antes de llamar (privadas, internas, puertos, denylist), validación y recorte de la respuesta, mapeo de errores y timeout.
 - `test/unit/gemini-grounding.test.ts`: cuerpo con `google_search`, parseo de `groundingMetadata` y de las partes `toolCall` / `toolResponse`, y precio por consulta.
-- `test/unit/event-scout.test.ts`: modo scout con `StubProvider`, `FakeWeb` (DNS y transporte simulados) y `FakeTwenty`: extracción y verificación de expositores, delimitación del contenido web e intento de inyección, validación de `source_url`, URL no respaldadas, señal de evento, redirecciones de grounding, verificación por corroboración, horizonte y fallos.
+- `test/unit/event-scout.test.ts`: modo scout con `StubProvider`, `FakeWeb` (DNS y transporte simulados), `FakeRenderer` y `FakeTwenty`: extracción y verificación de expositores, delimitación del contenido web e intento de inyección, validación de `source_url`, URL no respaldadas, señal de evento, redirecciones de grounding, verificación por corroboración, horizonte y fallos; catálogo JavaScript renderizado (y cadena portada → app → lista de Gastrónoma), renderer no configurado o fuera de la tool policy, PDF de catálogo enlazado (inyección incluida) y fusión de expositores de HTML y PDF.
+- Integración del renderer (Chromium real): consulta [services/renderer/README.md](../../services/renderer/README.md#tests).
 - `test/integration/event-scout-live.test.ts`: **en vivo**, con grounding real. No ejecuta el seed: usa su propio agente (`Prospector Scout (live test)`) y una tarea `MANUAL` (`event-scouting-live-test`), así no programa nada. Limitado a 1 feria y 5 expositores; cuesta unos 0,10 USD (casi todo, búsquedas). `SKIP_LLM_TESTS=1` lo salta. Con `SCOUT_LIVE_EVENT_URL=https://…` (y `-t event_url`) ejecuta el modo `event_url`, sin grounding.
 
 Para ejecutarlo en local, copia también la clave de Gemini a tu `.env`:
@@ -745,6 +789,8 @@ Quien mantenga `deployments/` puede añadir este servicio a la red `pxos-net`:
     restart: unless-stopped
     networks: [pxos-net]
 ```
+
+`render_url` necesita el servicio `pxos-renderer` en la misma red (fragmento y pasos en [services/renderer/README.md](../../services/renderer/README.md#integración-en-deploymentsdocker-composeyml)). El runtime no necesita ninguna variable nueva: `RENDERER_URL` vale por defecto `http://pxos-renderer:3000`. Sin el servicio, el scout funciona como antes.
 
 Para escalar, separa roles: un servicio con `RUNTIME_ROLE=api`, N réplicas con `RUNTIME_ROLE=worker` y `RUN_MIGRATIONS=false`, y un servicio con `RUNTIME_ROLE=scheduler`. Puedes tener varias réplicas del scheduler: los disparos se deduplican por idempotency key.
 
@@ -830,7 +876,7 @@ curl -s -X POST localhost:4020/evaluations/human -H 'content-type: application/j
   -d '{"hypothesisId":"<id en Twenty>","feedback":"ACCEPTED","reviewerId":"twenty-user-3f2a"}'
 ```
 
-Si no envías `agent_execution_id` (o `agentExecutionId`), el runtime resuelve el vínculo como en el webhook. Si lo envías, debe existir en el tenant (si no, `404`). Responde con `evaluatorId`, `executionId`, `scores.TASK_SUCCESS`, `passed`, `deduplicated` y la evaluación guardada.
+Si no envías `agent_execution_id` (o `agentExecutionId`), el runtime resuelve el vínculo como en el webhook. Si lo envías, debe existir en el tenant (si no, `404`). Responde con `evaluatorId`, `executionId`, `scores.TASK_SUCCESS`, `passed`, `deduplicated`, `event_id` (el `evaluation.recorded`, o `null` si no se pudo publicar) y la evaluación guardada.
 
 ### Tabla `evaluations`
 
@@ -846,6 +892,133 @@ Si no envías `agent_execution_id` (o `agentExecutionId`), el runtime resuelve e
 
 Índices: `(tenant_id, subject_type, subject_id, occurred_at)`, `(tenant_id, agent_execution_id)` y único `(tenant_id, idempotency_key)`. La tabla es solo de inserción.
 
+## Métricas y dashboard
+
+Primeras métricas del sistema (LLD v0.1 secciones 17.2 y 17.3, criterios AC-15 a AC-20 del LLD v0.2). Son consultas SQL de solo lectura sobre las tablas del runtime (`src/metrics/queries.ts`): no hay almacén nuevo ni escrituras. Todas filtran por el tenant de `x-tenant-id`.
+
+### Endpoints
+
+`since` y `until` son fechas ISO 8601 con zona (`2026-10-07T00:00:00+02:00`). `since` es inclusivo y `until` exclusivo. Cada respuesta indica en `window.field` la columna que filtra.
+
+- **`GET /metrics/summary`** filtra por `task_runs.created_at` y devuelve:
+  - `runs`: total, `by_status`, `by_outcome` (`SUCCESS`, `PARTIAL`, `FAILED` del `output.outcome` del agente, o `NONE`) y `by_task`.
+  - `cost`: total, medio y máximo por run en EUR, y `cost_model_currency` (la suma de `total_cost` en la moneda del proveedor).
+  - `tokens` y `latency_ms` (media, p95 y máximo de `finished_at - started_at`).
+  - `funnel`: suma de los `output.counters` de los resúmenes de ejecución (`exhibitors`, `evaluated`, `relevant`, `hypotheses_created`, `hypotheses_existing`...). `counters` incluye todas las claves numéricas.
+  - `human_feedback`: veredictos del periodo (por `evaluations.occurred_at`), con `acceptance_rate` y `useful_rate`.
+  - `acceptance`: AC-15 (coste por run, umbral 3,00 EUR), AC-16 (duración, umbral 30 min) y AC-17 (coste por hipótesis nueva).
+  - `direct_executions` (ejecuciones sin `TaskRun`) y `last_run`.
+- **`GET /metrics/agents`** filtra por `agent_executions.created_at` y agrupa por agente y versión (`version_label` `v1`, `v2`...): runs, estados, `completion_rate`, outcome y `success_rate`, coste medio, tokens, latencia y `human_feedback` de los sujetos que produjeron esas ejecuciones (cruce por `evaluations.agent_execution_id`). Es la métrica para comparar versiones: «¿el agente mejora?».
+- **`GET /metrics/evaluations`** filtra por `evaluations.occurred_at`: `totals`, `by_day` (serie diaria en la zona `tz`, `Europe/Madrid` por defecto), `by_subject_type` y `subjects` (último veredicto, historial y ejecución vinculada de cada sujeto, hasta `subject_limit`).
+- **`GET /metrics/runs`** devuelve los últimos `TaskRun` con tarea, agente, versión, estado, outcome, coste, duración y `trace_url` (`/task-runs/:id`).
+
+Ejemplo:
+
+```sh
+curl -s "http://127.0.0.1:4020/metrics/agents?since=2026-10-01T00:00:00%2B02:00" -H 'x-tenant-id: publiexpe'
+```
+
+### Definiciones
+
+| Métrica | Cálculo |
+|---|---|
+| Coste de una ejecución en EUR | `output.cost.eur` si el agente lo informa; si no, `total_cost × output.cost.usd_to_eur` o `× 0.86` (`DEFAULT_USD_TO_EUR`). Si `output.cost.currency` es `EUR`, `total_cost` tal cual |
+| Coste de un `TaskRun` | Suma de sus `agent_executions`, todos los intentos incluidos (AC-15). La columna `task_runs.cost` solo guarda el último intento correcto |
+| Duración de un `TaskRun` | `finished_at - started_at` (AC-16) |
+| `acceptance_rate` | `ACCEPTED / (ACCEPTED + EDITED + DISCARDED)` |
+| `useful_rate` | `(ACCEPTED + EDITED) / revisadas` (AC-20) |
+| `avg_score` | Media del `score` (1.0, 0.5, 0.0) |
+
+Las tasas usan el **último veredicto de cada sujeto** (`subject_type`, `subject_id`): una hipótesis editada y después descartada cuenta una vez, como `DISCARDED`. `verdicts` cuenta todas las filas. En `/metrics/agents` solo cuentan los veredictos vinculados a una ejecución; en `/metrics/summary` cuentan todos.
+
+### Dashboard
+
+Abre `http://127.0.0.1:4020/dashboard`. Para otro tenant, añade `?tenant=<id>`. Muestra:
+
+- Tarjetas: runs de hoy y de los últimos 7 días (desde la medianoche local del navegador), coste acumulado en EUR, tasa de aceptación y última ejecución.
+- Tabla por agente y versión: runs, éxito, coste medio, latencia, veredictos, aceptación, utilidad (AC-20) y score medio.
+- Últimos 10 runs, con enlace a su trace JSON (`GET /task-runs/:id`).
+
+La página es HTML, CSS y JavaScript inline, sin frameworks ni CDN. Todas sus llamadas usan rutas relativas (`metrics/...`, `task-runs/...`). Sigue el tema claro u oscuro del sistema (`prefers-color-scheme`).
+
+Solo se sirve a peticiones locales: la IP del cliente es loopback o privada (el puerto que Docker publica en `127.0.0.1` llega desde la pasarela del bridge) **y** la cabecera `Host` es `localhost`, `127.0.0.1`, `[::1]` o `*.localhost`, para cortar el DNS rebinding. Si no, responde `403`. No añade autenticación: el runtime sigue escuchando solo en `127.0.0.1`.
+
+> **Nota:** el enlace al trace es un enlace normal y no envía `x-tenant-id`, así que con `?tenant=` distinto del tenant por defecto devuelve `404`.
+
+### Índices
+
+No hace falta migración. Con `EXPLAIN ANALYZE` sobre la BD de desarrollo (219 `task_runs`, 280 `agent_executions`, 16 `evaluations`) todas las consultas tardan menos de 1 ms. El coste por run usa `agent_executions_task_run_idx`, el filtro por tenant usa `agent_executions_tenant_status_idx` y el último veredicto por sujeto usa `evaluations_tenant_subject_idx`. `task_runs` se recorre entero (seq scan) porque es pequeña. Con una ejecución diaria por tarea, el volumen tardará en importar. Cuando `task_runs` o `agent_executions` superen unas decenas de miles de filas por tenant, añade `(tenant_id, created_at)` a ambas.
+
+### Tests
+
+`test/integration/metrics.test.ts` siembra dos tenants (versiones `v1` y `v2` de un mismo agente, un run con reintento y veredictos encadenados) y comprueba la tasa de aceptación por versión, el coste medio, la serie diaria por zona horaria, el aislamiento entre tenants y el HTML del dashboard. Usa por defecto su propia base `agentos_wt4_metrics`:
+
+```sh
+docker exec pxos-postgres psql -U agentos -d postgres -c "create database agentos_wt4_metrics"   # una vez
+pnpm vitest run test/integration/metrics.test.ts test/unit/metrics-local.test.ts
+```
+
+## Borradores de email
+
+> **Importante:** el sistema **no envía emails**. No hay dependencia SMTP, ni API de correo, ni tool de envío en el registro. Solo genera **borradores** que el comercial revisa y envía a mano desde su buzón (modelo HITL del LLD v0.1, sección 10, y *human gates* de la sección 15: las notas internas son automáticas; enviar un email exige a una persona).
+
+Cuando un comercial valida una hipótesis, el agente `EmailDrafter` prepara un borrador del primer email y lo deja en Twenty como nota sobre la empresa y sobre la hipótesis.
+
+```
+veredicto ACCEPTED (webhook de Twenty o POST /evaluations/human)
+  -> evaluation.recorded
+  -> tarea draft-email-on-validated (trigger EVENT)
+  -> EmailDrafter: get_hypothesis -> 1 llamada a Gemini {asunto, cuerpo} -> create_note
+  -> Note "Borrador email — {hipótesis}" en la empresa y en la hipótesis
+```
+
+### Tarea y agente
+
+- **Tarea `draft-email-on-validated`**: `{"type": "EVENT", "event_type": "evaluation.recorded", "filter": {"feedback": "ACCEPTED", "subjectType": "hypothesis"}}`, `timeout_ms = 120000`, 2 intentos y `max_concurrency = 2`. Un veredicto `EDITED` (validada con cambios) no dispara la tarea: el filtro no tiene operador OR.
+- **Agente `EmailDrafter`** (`implementation = "email_drafter"`, `gemini-flash-latest`, `thinking_level = low`): tool policy `find_company`, `get_company`, `get_hypothesis` y `create_note`, techo `LOW_WRITE`, máximo 6 llamadas y una sola `create_note` por ejecución.
+- Entrada: el sobre del evento bajo `input.event`, o `{ "hypothesis_id": "<id en Twenty>" }` para lanzarlo a mano con `POST /tasks/:id/run`.
+- `pnpm seed` crea o actualiza el agente y la tarea (idempotente, igual que el Prospector).
+
+### Flujo
+
+1. Lee la hipótesis con `get_hypothesis` (empresa, señal y decision maker en una sola petición). Si la hipótesis no existe o está `REJECTED` o `EXPIRED`, si el veredicto no es `ACCEPTED` ni `EDITED` o si el sujeto no es una hipótesis, termina con `outcome = SKIPPED` sin llamar al modelo.
+1. Hace **una** llamada a Gemini con la necesidad, el porqué ahora, el evento, los productos recomendados y los diferenciales que anotó el Prospector. Los datos del CRM entran en un bloque `DATOS_NO_CONFIABLES`. La respuesta se valida con zod (`{asunto, cuerpo}`); si no es válida, el run termina con `outcome = FAILED` y sin nota (no hay ronda de reparación).
+1. Post-procesa el texto por código (`finalizeDraft`).
+1. Guarda la nota con `create_note`.
+
+El prompt pide español de España, tuteo, tono cercano y sin humo comercial, de 120 a 180 palabras, 1 o 2 diferenciales (taller propio, ofertas, trato cercano, precios) y nada inventado: sin nombres de contacto si la hipótesis no tiene decision maker, sin presupuestos ni cantidades estimadas y sin mencionar el CRM ni la IA.
+
+### Cumplimiento (LSSI art. 21)
+
+El modelo **no** escribe la firma ni la línea de baja: las añade el código siempre.
+
+- Quita cualquier línea de baja o de privacidad que haya escrito el modelo y termina el cuerpo con exactamente `Si no quieres recibir más mensajes, respóndeme o escribe a baja@publiexpe.info`.
+- Añade la firma (`Jesús Abril`, `PubliEXPE · Merchandising y regalo promocional personalizado`, `www.publiexpe.com`) si no está, y la despedida si falta.
+- Sin decision maker, sustituye un nombre propio inventado en el saludo por `Hola:`.
+- Cuenta las palabras y avisa (en la nota y en la salida) si el cuerpo sale de 120-180 palabras o el asunto pasa de 70 caracteres.
+
+El remitente, los buzones (`jesus.abril@publiexpe.info` y `j.abril@publiexpe.info`) y el buzón de baja salen de `configuration.sender` y `configuration.unsubscribe_email` de la versión del agente.
+
+### La nota en Twenty
+
+Título `Borrador email — {nombre de la hipótesis}`. El cuerpo empieza con la cabecera **BORRADOR — revísalo y envíalo desde tu correo; el sistema no envía nada.**, sigue con `De`, `Para` (el decision maker si existe; si no, un aviso para que el comercial ponga una dirección corporativa de rol) y `Asunto`, el cuerpo listo para copiar y un pie con la hipótesis, el veredicto y la ejecución.
+
+Formato de Twenty 2.45 (verificado contra la API REST):
+
+```http
+POST /rest/notes        { "title": "...", "bodyV2": { "markdown": "..." } }
+POST /rest/noteTargets  { "noteId": "<note>", "targetCompanyId": "<company>" }
+POST /rest/noteTargets  { "noteId": "<note>", "targetCommercialHypothesisId": "<hypothesis>" }
+```
+
+- `bodyV2` es un campo `RICH_TEXT_V2` (`{ markdown, blocknote }`). Basta con enviar `markdown`: el servidor genera `blocknote`.
+- Cada registro enlazado es una fila de `noteTarget` con su columna (`targetCompanyId`, `targetPersonId`, `targetOpportunityId` y, para los objetos de la App, `targetCommercialHypothesisId`, `targetCommercialSignalId`, `targetResearchId` y `targetAgentRunSummaryId`).
+- `create_note` es idempotente por empresa + título: busca notas con ese título (`title[eq]`) y sus `noteTargets` (`noteId[eq]`). Si una ya apunta a la empresa, la devuelve con `created: false` y crea solo los targets que falten. Si encuentra una con ese título y sin ningún target (una llamada que murió entre los dos `POST`), la adopta. Las comillas y barras invertidas del título se eliminan porque los filtros de Twenty no las escapan.
+
+### Coste
+
+Una llamada a Gemini por borrador. En la prueba en vivo: 0,0021 USD (0,0018 €) y unos 5 s por run.
+
 ## Pendiente
 
 - Triggers `DEPENDENCY` y `CONDITION` (hoy no registran nada).
@@ -853,9 +1026,12 @@ Si no envías `agent_execution_id` (o `agentExecutionId`), el runtime resuelve e
 - Exponer `EntityLocks` a las tools (el helper está listo en `RunProcessor.locks`).
 - Política de catch-up si el scheduler estuvo parado: hoy, al volver, se procesa el slot pendiente (tarde, con su `scheduled_at` original) y los demás slots perdidos se omiten.
 - Tools pendientes del registro del MVP-0: `search_web` (hoy la búsqueda es el grounding de Gemini, un paso `MODEL`; el LLD prevé fuentes ligadas a pasos `TOOL`), `create_activity` y las del Catalog Service.
-- Modo scout: muchas ferias publican el catálogo de expositores como aplicación JavaScript o PDF, que `fetch_url` no lee (queda como señal de evento). Falta extracción de PDF o render de JavaScript.
+- Modo scout: los catálogos JavaScript paginados solo se leen en su primera página (Gastrónoma: 20 de 91) y sin la web de cada expositor, que está en su ficha. Falta paginar y abrir fichas con un presupuesto propio, o leer la API JSON del catálogo cuando la haya.
+- Integrar `pxos-renderer` en `deployments/docker-compose.yml` (fragmento en `services/renderer/docker-compose.renderer.yml`) y, opcionalmente, el perfil seccomp de Playwright para el sandbox de Chromium.
 - `GeminiProvider.stream()` no es incremental: devuelve la respuesta completa en un solo fragmento.
 - Validación de URL en campos de texto libre contra las fuentes del trace (LLD v0.2 sección 10.4, punto 4) en el modo directo: el modo scout ya la aplica con su `SourceLedger`.
-- Eventos aún no emitidos: `task.failed` cuando el reconciliador cierra un huérfano, cancelaciones, `signal.detected` y `evaluation.completed`. Entrada de eventos externos (Twenty, n8n) por HTTP y entrega a n8n por webhook.
+- Eventos aún no emitidos: `task.failed` cuando el reconciliador cierra un huérfano, cancelaciones y `signal.detected`.
+- Borradores de email: disparar también con `EDITED` (necesita una segunda tarea o un operador OR en el filtro), plantillas por sector y registro de si el comercial envió el borrador. Entrada de eventos externos (Twenty, n8n) por HTTP y entrega a n8n por webhook.
 - Harness, skills, memoria y verificador reales; promote, rollback y evaluate.
 - Export de los contratos zod a JSON Schema versionado en `schemas/`.
+- Métricas: AC-17 y AC-18 piden hipótesis `HOT`, pero el resumen de ejecución solo cuenta hipótesis creadas; falta el desglose por prioridad (en Twenty o en `output.counters`). El dashboard no filtra los agentes de prueba (`[TEST] …`) del tenant.

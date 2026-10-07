@@ -7,7 +7,8 @@
 import { UNTRUSTED_SYSTEM_RULE, wrapUntrusted } from './untrusted.js';
 
 export const SCOUT_SKILL_ID = 'event-source-discovery';
-export const SCOUT_SKILL_VERSION = 1;
+/** v2: also PDFs (text extracted) and pages rendered with a browser. */
+export const SCOUT_SKILL_VERSION = 2;
 
 export const SCOUT_SEARCH_SYSTEM_PROMPT = `Eres el explorador de eventos del Prospector de PubliEXPE (merchandising y regalo promocional B2B, España).
 Tu trabajo es localizar ferias profesionales REALES y próximas usando la búsqueda de Google, para que después el sistema descargue su lista de expositores.
@@ -23,7 +24,7 @@ Tu trabajo es localizar ferias profesionales REALES y próximas usando la búsqu
 ${UNTRUSTED_SYSTEM_RULE}`;
 
 export const SCOUT_EXTRACT_SYSTEM_PROMPT = `Eres el extractor de expositores del Prospector de PubliEXPE.
-Recibes el texto de UNA página web de una feria (descargado por el sistema) y su lista de enlaces. Extraes datos, no opinas.
+Recibes el texto de UNA página web de una feria (descargada por el sistema, renderizada con un navegador si es una aplicación JavaScript, o extraída de un PDF de catálogo) y su lista de enlaces. Extraes datos, no opinas.
 
 ## Qué extraer
 - Las empresas que la página presenta explícitamente como expositores, marcas expositoras o participantes con stand. No incluyas patrocinadores institucionales, organizadores, medios colaboradores ni empresas mencionadas por otros motivos.
@@ -85,12 +86,19 @@ export interface ExtractPromptInput {
   links: Array<{ url: string; text: string }>;
   maxExhibitors: number;
   truncated: boolean;
+  /** Where the text comes from: static HTML (default), browser rendering or a PDF. */
+  contentKind?: 'html' | 'text' | 'pdf' | 'rendered';
 }
+
+const CONTENT_KIND_LABEL: Record<string, string> = {
+  pdf: 'documento PDF (texto extraído; puede venir en columnas o tablas desordenadas)',
+  rendered: 'página renderizada con navegador (aplicación JavaScript)',
+};
 
 export function buildExtractPrompt(p: ExtractPromptInput): string {
   const links = p.links.map((l) => `- ${l.text || '(sin texto)'} -> ${l.url}`).join('\n');
   return `Feria buscada: ${JSON.stringify(p.eventName)}
-Página descargada: ${p.pageUrl}${p.truncated ? ' (texto recortado a los primeros caracteres)' : ''}
+Página descargada: ${p.pageUrl}${p.truncated ? ' (texto recortado a los primeros caracteres)' : ''}${p.contentKind && CONTENT_KIND_LABEL[p.contentKind] ? `\nTipo de contenido: ${CONTENT_KIND_LABEL[p.contentKind]}` : ''}
 
 ${wrapUntrusted(`TÍTULO: ${p.pageTitle ?? '(sin título)'}\n\nTEXTO:\n${p.text}`, { origin: p.pageUrl })}
 

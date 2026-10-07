@@ -31,6 +31,11 @@ x-twenty-env: &twenty-env
   FALLBACK_ENCRYPTION_KEY: ${FALLBACK_ENCRYPTION_KEY:-}
   APP_SECRET: ${APP_SECRET:-}
 
+  # Twenty bloquea por defecto los webhooks hacia IPs privadas (anti-SSRF).
+  # Allowlist mínima para que entregue al runtime (misma red pxos-net) y, en
+  # desarrollo, al host. Revisar antes de cualquier despliegue no local.
+  OUTBOUND_HTTP_ALLOWED_INTERNAL_HOSTS: ${OUTBOUND_HTTP_ALLOWED_INTERNAL_HOSTS:-pxos-runtime,host.docker.internal}
+
 services:
   # ---------------------------------------------------------------- Twenty
   pxos-twenty:
@@ -169,6 +174,8 @@ services:
       GEMINI_MODEL: ${GEMINI_MODEL:-}
       TWENTY_BASE_URL: http://pxos-twenty:3000
       TWENTY_API_KEY: ${TWENTY_API_KEY:-}
+      TWENTY_WAIT_MAX_MS: ${TWENTY_WAIT_MAX_MS:-600000}
+      TWENTY_WEBHOOK_SECRET: ${TWENTY_WEBHOOK_SECRET:-}
     depends_on:
       pxos-postgres:
         condition: service_healthy

@@ -2,7 +2,7 @@
 
 Servicio del Agent OS de PubliEXPE Commercial OS (LLD v0.1, sección 8). Expone la API HTTP del runtime, planifica tareas (`ONCE`, `CRON`, `INTERVAL`) y ejecuta un worker BullMQ que lanza agentes y persiste `TaskRun`, `AgentExecution`, `Trace` y `TraceStep` en PostgreSQL.
 
-Estado: MVP. Además de `StubAgent` (sin LLM) y `SmokeAgent` (tools reales contra Twenty, consulta [Tools](#tools)), el runtime ejecuta el **Prospector v1** con Gemini (consulta [Prospector](#prospector)). `AnthropicProvider` existe como esqueleto y no se llama en los tests.
+Estado: MVP. Además de `StubAgent` (sin LLM) y `SmokeAgent` (tools reales contra Twenty, consulta [Tools](#tools)), el runtime ejecuta el **Prospector** con Gemini (consulta [Prospector](#prospector)), que también trabaja sobre ferias reales con búsqueda de Google y `fetch_url` ([modo scout](#modo-scout-ferias-reales)). `AnthropicProvider` existe como esqueleto y no se llama en los tests.
 
 ## Stack
 
@@ -21,25 +21,24 @@ runtime/agent-runtime/
 │   ├── main.ts               Entrada: API, worker y/o scheduler según RUNTIME_ROLE o --role=
 │   ├── config.ts             Configuración desde variables de entorno
 │   ├── api/                  Servidor Fastify, contratos zod y rutas
-│   ├── agents/               Interfaz de agente, StubAgent, SmokeAgent y ProspectorAgent (+ prompt)
+│   ├── agents/               Interfaz de agente, StubAgent, SmokeAgent y ProspectorAgent (modos directo y scout, prompts, SourceLedger)
 │   ├── integrations/twenty/  TwentyClient REST tipado y mapeo de objetos de la App
-│   ├── tools/                Interfaz Tool, registry, tool_policy, executor y tools de Twenty
+│   ├── tools/                Interfaz Tool, registry, tool_policy, executor, tools de Twenty y web/ (fetch_url y guarda SSRF)
 │   ├── db/                   Esquema Drizzle, cliente y migrador
+│   ├── events/               Event bus: sobre event.envelope.v1, EventBus, payloads, triggers EVENT y GET /events
 │   ├── domain/               Estados, máquina de estados e idempotency keys
+│   ├── evaluations/          Evaluador HUMAN: mapeo de feedback, vínculo con la ejecución de origen y webhook de Twenty
 │   ├── providers/            ModelProvider, StubProvider, AnthropicProvider, GeminiProvider y tabla de precios
 │   ├── queue/                RunQueue (BullMQ y en memoria)
-<<<<<<< HEAD
 │   ├── scheduler/            TaskScheduler sobre BullMQ, parseo de schedules y rutas
-=======
-│   ├── seed/                 Seed idempotente del Prospector y su tarea (pnpm seed)
->>>>>>> feat/prospector
+│   ├── seed/                 Seed idempotente del Prospector y sus tareas (pnpm seed)
 │   ├── services/             Lanzamiento idempotente de TaskRuns
 │   └── worker/               RunProcessor, worker BullMQ, locks por entidad y reconciliador
 └── test/
     ├── unit/                 Corren siempre, sin BD ni Redis
     ├── integration/          API, worker, scheduler, locks y tools (PostgreSQL, Redis y Twenty); se saltan si falta el servicio
-    ├── helpers/              FakeTwenty: API REST de Twenty en memoria para los unitarios
-    ├── fixtures/             feria-ejemplo.json: evento de demo con 3 expositores
+    ├── helpers/              FakeTwenty (API REST de Twenty en memoria) y FakeWeb (DNS y HTTP simulados)
+    ├── fixtures/             feria-ejemplo.json (evento de demo) y payloads reales de webhooks de Twenty 2.45
     └── setup-env.ts          Carga .env (si existe) antes de los tests
 ```
 
@@ -90,6 +89,10 @@ Requisitos: Node.js 22, pnpm, y los contenedores `pxos-postgres` (127.0.0.1:5440
 | `CONCURRENCY_DEFER_MS` | `2000` | Espera antes de reintentar un job aplazado por `max_concurrency` |
 | `STALLED_INTERVAL_MS` | `30000` | Frecuencia del chequeo de jobs stalled de BullMQ |
 | `MAX_STALLED_COUNT` | `1` | Veces que un job puede quedar stalled antes de que BullMQ lo marque `failed` |
+| `EVENT_CHAIN_MAX_DEPTH` | `5` | Profundidad máxima de una cadena de tareas disparadas por eventos |
+| `EVENT_REPUBLISH_INTERVAL_MS` | `30000` | Cada cuánto el re-publicador encola los eventos sin despachar |
+| `EVENT_REPUBLISH_GRACE_MS` | `15000` | Antigüedad mínima de un evento sin despachar para re-publicarlo |
+| `EVENT_CONSUMER_CONCURRENCY` | `4` | Eventos simultáneos que procesa el consumidor de triggers `EVENT` |
 | `DEFAULT_TENANT_ID` | `publiexpe` | Tenant si la petición no envía `x-tenant-id` |
 | `DEFAULT_MODEL_PROVIDER` | `stub` | Proveedor para agentes creados sin `model_provider`: `stub`, `anthropic` o `gemini` |
 | `ANTHROPIC_API_KEY` | vacío | Solo para agentes con `model_provider=anthropic` |
@@ -98,6 +101,13 @@ Requisitos: Node.js 22, pnpm, y los contenedores `pxos-postgres` (127.0.0.1:5440
 | `TWENTY_BASE_URL` | `http://localhost:3020` | API REST de Twenty. En el contenedor: `http://pxos-twenty:3000` |
 | `TWENTY_API_KEY` | vacío | API key de Twenty. Sin ella, las tools de Twenty responden `TWENTY_NOT_CONFIGURED` |
 | `TWENTY_TIMEOUT_MS` | `10000` | Timeout por petición a Twenty |
+| `TWENTY_WAIT_MAX_MS` | `600000` | Tiempo máximo que el worker retiene un run que usa tools de Twenty mientras Twenty no responde a `/healthz`. `0` desactiva la espera |
+| `TWENTY_WEBHOOK_SECRET` | vacío | Secreto del webhook de Twenty (mínimo 16 caracteres). Sin él, `POST /webhooks/twenty` responde `503` |
+| `TWENTY_WEBHOOK_TARGET_URL` | `http://pxos-runtime:4020/webhooks/twenty` | Destino que registra `pnpm register:webhook` si no pasas `--url` |
+| `EVALUATION_DEDUPE_WINDOW_MS` | `600000` | Ventana en la que no se repite el mismo veredicto (sujeto, feedback y estado destino) |
+| `FETCH_URL_ALLOWLIST` | vacío | Dominios que `fetch_url` puede descargar, separados por comas (incluye subdominios). Vacío = cualquier host público |
+| `FETCH_URL_DENYLIST` | vacío | Dominios que `fetch_url` nunca descarga. Gana sobre la allowlist |
+| `FETCH_URL_ALLOWED_PORTS` | `80,443,8080,8443` | Puertos permitidos en las URL de `fetch_url` |
 
 ## Migraciones
 
@@ -119,6 +129,8 @@ El esquema vive en `src/db/schema.ts`. Todas las tablas llevan `tenant_id` (C6).
 |---|---|
 | `0000_init` | Esquema inicial (agentes, tareas, runs, ejecuciones, traces) |
 | `0001_scheduler_locks` | Tabla `entity_locks` e índice `task_runs (status, updated_at)` para el reconciliador |
+| `0002_events` | Tabla `events` (log de eventos de dominio, *append-only* con trigger anti-`DELETE`) |
+| `0003_evaluations` | Tabla `evaluations` del evaluador HUMAN. SQL idempotente (`IF NOT EXISTS`) |
 
 Importante: el migrador de Drizzle aplica solo las migraciones con fecha posterior a la última aplicada. Si dos ramas generan migraciones en paralelo contra la misma BD de desarrollo, aplica primero la más antigua o regenera la nueva tras el merge.
 
@@ -177,13 +189,17 @@ Cabecera opcional `x-tenant-id` en todas las rutas. Las respuestas usan `snake_c
 | `POST /tasks/:id/run` | Lanza un `TaskRun` idempotente: `202` nuevo, `200` duplicado |
 | `POST /tasks/:id/pause`, `/resume`, `/archive` | Ciclo de vida. No hay `DELETE`. Registran o retiran el schedule |
 | `GET /tasks/:id/schedule` | Schedule deseado frente al registrado en BullMQ y próximos disparos |
-| `GET /scheduler/status` | Job schedulers y jobs `ONCE` registrados del tenant, y contadores de la cola |
+| `GET /scheduler/status` | Job schedulers, jobs `ONCE` y triggers `EVENT` registrados del tenant, y contadores de la cola |
+| `GET /events` | Eventos de dominio del tenant (filtros `type`, `since`, `correlation_id`, `limit`, `order`) |
 | `GET /tasks/:id/runs` | Historial de ejecuciones de la tarea |
 | `GET /task-runs/:id` | `TaskRun` con su ejecución, trace y pasos |
 | `POST /executions` | Ejecuta un agente sin tarea (idempotente con `idempotency_key`) |
 | `GET /executions`, `GET /executions/:id` | Lista o detalle con trace y pasos |
 | `POST /executions/:id/cancel` | `QUEUED` o `RUNNING` a `CANCELLED` |
 | `POST /executions/:id/{pause,resume}` | `501`, requiere harness con checkpoints |
+| `POST /webhooks/twenty` | Webhook de Twenty firmado. Convierte cambios de `commercialHypothesis` en evaluaciones HUMAN |
+| `POST /evaluations/human` | Registra un veredicto manual: `201` nuevo, `200` duplicado |
+| `GET /evaluations` | Lista evaluaciones. Filtros: `subject_id`, `subject_type`, `feedback`, `agent_execution_id`, `since`, `limit` |
 
 ### Idempotencia
 
@@ -213,7 +229,7 @@ Cada intento crea una `AgentExecution` nueva. `task_runs.execution_id` apunta al
 | `CRON` | `expression` (o `cron`), 5 o 6 campos; `timezone` opcional | `{"type":"CRON","expression":"0 8 * * 1-5"}` |
 | `INTERVAL` | `every_seconds` (o `interval_seconds`) | `{"type":"INTERVAL","every_seconds":900}` |
 
-`MANUAL`, `EVENT`, `DEPENDENCY` y `CONDITION` no registran nada en el scheduler. La zona horaria de `CRON` es `schedule.timezone`, si existe, o `task.timezone` (por defecto `Europe/Madrid`). `POST /tasks` y `PATCH /tasks/:id` devuelven `400 invalid_schedule` si el schedule no es válido.
+`EVENT` se registra como trigger de eventos (consulta [Tareas disparadas por evento](#tareas-disparadas-por-evento)). `MANUAL`, `DEPENDENCY` y `CONDITION` no registran nada en el scheduler. La zona horaria de `CRON` es `schedule.timezone`, si existe, o `task.timezone` (por defecto `Europe/Madrid`). `POST /tasks` y `PATCH /tasks/:id` devuelven `400 invalid_schedule` si el schedule no es válido.
 
 ### Funcionamiento
 
@@ -258,6 +274,100 @@ El rol `worker` (o `all`) ejecuta `OrphanReconciler` al arrancar y cada `RECONCI
 La ejecución (`AgentExecution`) del intento muerto pasa a `FAILED` con `error.name = "OrphanedRun"`. Todas las transiciones son `UPDATE` guardados por estado en SQL, así que el reconciliador nunca pisa a un worker que haya terminado entre medias.
 
 Los jobs `active` de un worker caído los gestiona el chequeo de stalled de BullMQ (`STALLED_INTERVAL_MS`, `MAX_STALLED_COUNT`): los devuelve a `wait`. Cuando el processor recibe un job cuyo run sigue `RUNNING`, sabe que el intento anterior murió y aplica la misma recuperación antes de continuar. Si BullMQ lo marca `failed` por superar `MAX_STALLED_COUNT`, lo recoge el reconciliador.
+
+### Espera a Twenty al arrancar
+
+Al encender el host, Docker arranca todos los contenedores a la vez y el catch-up del scheduler puede encolar el slot pendiente mientras `pxos-twenty` aún está en `health: starting`. Para que ese run no gaste sus tools en `TWENTY_NETWORK_ERROR`, el worker aplica una espera antes de pasar un `TaskRun` de `QUEUED` a `RUNNING`:
+
+1. Si la `tool_policy` de la versión del agente permite alguna tool de Twenty (las que declaran permisos `twenty:*`), el worker llama a `TwentyClient.health()`: un `GET /healthz` sin API key, con timeout de 3 s y sin reintentos. El resultado se cachea 5 s y se comparte entre jobs concurrentes del mismo proceso.
+1. Si Twenty no responde, el run sigue `QUEUED` y el job pasa a `delayed` con `moveToDelayed` + `DelayedError`, igual que con `max_concurrency`. No consume intentos. Las esperas crecen: 5 s, 15 s, 30 s y luego 60 s. Cada aplazamiento queda en el log (`Twenty not healthy; deferring task run`) y la ventana de espera viaja en los datos del job (`twentyWait`), así que sobrevive a un reinicio del worker.
+1. Si pasa `TWENTY_WAIT_MAX_MS` (10 min por defecto) y Twenty sigue sin responder, el run arranca igualmente con un aviso en el log. Las tools fallan y el agente reporta `PARTIAL`, que es el resultado honesto.
+
+Los agentes sin tools de Twenty y las instalaciones sin `TWENTY_API_KEY` no esperan. Las ejecuciones directas (`POST /executions`) tampoco pasan por esta espera.
+
+## Eventos
+
+El runtime publica eventos de dominio (LLD v0.1 sección 21, LLD v0.2 sección 7) y permite disparar tareas con ellos. El código vive en `src/events/` (sobre, bus, payloads, matching y ruta) y en `src/scheduler/event-triggers.ts` (registro y consumidor de triggers `EVENT`).
+
+### Sobre `event.envelope.v1`
+
+Todos los eventos viajan con este sobre. Los campos del sobre y de `data` usan `camelCase` (convención del LLD v0.2 para payloads).
+
+```json
+{
+  "id": "2f6c1e9a-8b34-4d0f-b5a1-93d7c0e2a611",
+  "type": "task.completed",
+  "schemaVersion": "task.completed.v1",
+  "tenantId": "publiexpe",
+  "occurredAt": "2026-10-07T08:00:20.512Z",
+  "producer": "agent-runtime",
+  "correlationId": "5d2f9c1e-3b6a-4e8f-a1c7-2f9e0b4d6a33",
+  "idempotencyKey": "evt:task.completed:5d2f9c1e-3b6a-4e8f-a1c7-2f9e0b4d6a33",
+  "data": { "taskRunId": "5d2f9c1e-...", "taskDefinitionId": "a41c7e20-...", "status": "COMPLETED", "costEur": 0.0431, "chainDepth": 0 }
+}
+```
+
+- `producer`: `agent-runtime`, `scheduler`, `twenty-app` o `n8n`. Se guarda también como `source` (`runtime`, `twenty`, `n8n`).
+- `correlationId`: el `TaskRun` raíz, o la ejecución si es directa (`POST /executions`).
+- `schemaVersion`: `{type}.v1`. Los payloads son compactos; nunca incluyen el trace ni la salida completa del agente.
+
+### Catálogo emitido
+
+| Evento | Dónde se emite | `data` |
+|---|---|---|
+| `task.scheduled` | `requestTaskRun`, solo si crea el `TaskRun` (API, ticks del scheduler y triggers `EVENT`) | `taskRunId`, `taskDefinitionId`, `scheduledAt`, `trigger` (`MANUAL`, `SCHEDULE`, `EVENT`), `chainDepth` |
+| `task.started` | Processor, tras `QUEUED -> RUNNING` y crear la ejecución del intento | `taskRunId`, `taskDefinitionId`, `executionId`, `attempt`, `startedAt`, `chainDepth` |
+| `task.completed` | Processor, al cerrar el run en `COMPLETED` | `taskRunId`, `taskDefinitionId`, `executionId`, `status`, `costEur`, `latencyMs`, `attempts`, `finishedAt`, `outcome` y `funnel` si la salida los trae, `chainDepth` |
+| `task.failed` | Processor, al cerrar el run en `FAILED` o `TIMED_OUT` (no en un reintento) | Igual, con `error` (`name`, `code`, `message`) en lugar de coste |
+| `agent.execution.started` | Processor, al arrancar cada intento o ejecución directa | `executionId`, `taskRunId`, `taskDefinitionId`, `agentId`, `agentVersionId`, `agentVersion`, `stage`, `chainDepth` |
+| `agent.execution.completed` / `.failed` | Processor, al persistir el resultado (si no se canceló antes) | Lo anterior más `status`, `costEur`, `inputTokens`, `outputTokens`, `latencyMs` y `outcome` o `error` |
+
+Cada evento del runtime lleva una `idempotencyKey` (`evt:{type}:{task_run_id}`, `evt:task.started:{task_run_id}:{attempt}`, `evt:{type}:{execution_id}`): publicar dos veces el mismo hecho devuelve la fila existente.
+
+### Publicación
+
+`EventBus.publish(event)` hace dos pasos (outbox mínimo):
+
+1. `INSERT` en la tabla `events`.
+1. Añade un job a la cola `{QUEUE_NAME}-events` con `jobId` igual al id del evento y marca `dispatched_at`.
+
+La publicación es *best-effort*: si Redis falla, la fila queda con `dispatched_at = null` y el re-publicador (rol `scheduler` o `all`, cada `EVENT_REPUBLISH_INTERVAL_MS`) la encola cuando han pasado `EVENT_REPUBLISH_GRACE_MS`. Los puntos de emisión usan `emit()`, que nunca lanza: un fallo del bus no rompe un run. Los consumidores deben tolerar duplicados.
+
+Tabla `events` (migración `0002_events`): `id`, `tenant_id`, `type`, `schema_version`, `occurred_at`, `payload` (el `data` del sobre), `source`, `producer`, `correlation_id`, `idempotency_key` (única por tenant), `dispatched_at`, `dispatch_attempts`, `created_at`. Índices por `(tenant_id, type, occurred_at)`, `(tenant_id, occurred_at)`, `(tenant_id, correlation_id)` y parcial sobre las filas sin despachar. Un trigger rechaza `DELETE`: el log es *append-only*.
+
+### Tareas disparadas por evento
+
+```json
+{ "type": "EVENT", "event_type": "task.completed", "filter": { "taskDefinitionId": "a41c7e20-...", "status": "COMPLETED" } }
+```
+
+- `event_type` (alias `event`) debe coincidir con el `type` del evento.
+- `filter` es opcional. Cada clave es una ruta con puntos dentro de `data` (`funnel.out`, `results.0.status`; se acepta el prefijo `$.`) y el valor se compara por igualdad estricta (objetos y arrays, en profundidad). No hay operadores.
+- El registro sigue el mismo camino que `CRON`: la API sincroniza tras `POST /tasks`, `PATCH`, `pause`, `resume` y `archive`, y `syncAll` lo corrige periódicamente. Solo se registran tareas `ACTIVE`, `enabled` y con un `EVENT` válido, en el hash de Redis `pxos:{QUEUE_NAME}-events:triggers`. `GET /tasks/:id/schedule` devuelve `event_trigger` (deseado y registrado) y `GET /scheduler/status` lista los triggers con `kind = "event"`.
+- El consumidor (rol `scheduler` o `all`) recibe cada evento, busca los triggers del mismo tenant y tipo, vuelve a leer la tarea en PostgreSQL (un registro obsoleto se retira), aplica el filtro y la guardia anti-bucle y llama a `requestTaskRun` con la clave `taskrun:{task_id}:event:{event_id}`. El mismo evento entregado dos veces devuelve el `TaskRun` existente.
+- El `input` del run es `default_input` más el sobre completo bajo la clave `event` (`input.event.data` es el payload).
+- `POST /tasks` y `PATCH /tasks/:id` devuelven `400 invalid_schedule` si falta `event_type`, tiene un formato inválido o el filtro no es un objeto.
+
+### Guardia anti-bucle
+
+- Un evento sobre un run de la tarea T (`data.taskDefinitionId = T`) nunca vuelve a disparar T. Aplica a `task.*` y a `agent.execution.*`.
+- Profundidad de cadena: un run que no viene de un evento tiene profundidad 0. Un run disparado por un evento tiene `event.data.chainDepth + 1`, y todos los eventos sobre ese run llevan esa profundidad en `chainDepth`. Un evento con `chainDepth >= EVENT_CHAIN_MAX_DEPTH` (por defecto 5) no dispara nada y deja un aviso en el log. Los eventos externos sin `chainDepth` cuentan como 0.
+
+### Consulta
+
+`GET /events` devuelve los eventos del tenant (`x-tenant-id`) como sobres, más `source`, `dispatched_at` y `dispatch_attempts`.
+
+| Parámetro | Uso |
+|---|---|
+| `type` | Tipo exacto (`task.completed`) o prefijo (`task.*`) |
+| `since` | ISO 8601: `occurred_at >= since` |
+| `correlation_id` | Eventos de un `TaskRun` o de una ejecución |
+| `limit` | 1 a 500, por defecto 50 |
+| `order` | `desc` (por defecto) o `asc`, útil para sondear con `since` |
+
+```sh
+curl -s "http://127.0.0.1:4020/events?type=task.*&limit=10" -H 'x-tenant-id: publiexpe'
+```
 
 ## Ejemplo end-to-end con curl
 
@@ -324,7 +434,7 @@ El `ToolRegistry` rechaza al registrar:
 
 ### Tools disponibles
 
-Todas usan Twenty (`TWENTY_BASE_URL`, `TWENTY_API_KEY`) y tienen `outputTrust = trusted`.
+Las de Twenty usan `TWENTY_BASE_URL` y `TWENTY_API_KEY` y tienen `outputTrust = trusted`. `fetch_url` descarga de la web y su salida es `untrusted`.
 
 | Tool | Riesgo | Efectos | Idempotencia |
 |---|---|---|---|
@@ -335,6 +445,9 @@ Todas usan Twenty (`TWENTY_BASE_URL`, `TWENTY_API_KEY`) y tienen `outputTrust = 
 | `create_research` | `LOW_WRITE` | Sí | Ejecución + empresa + `researchType` |
 | `create_hypothesis` | `LOW_WRITE` | Sí | Empresa + `name` (por defecto `{empresa} — {need}`) |
 | `create_agent_run_summary` | `LOW_WRITE` | Sí | `agentExecutionId` |
+| `fetch_url` | `READ` | No | — (consulta [Seguridad del contenido web](#seguridad-del-contenido-web)) |
+
+`create_signal` acepta `companyId` opcional: sin él crea una **señal a nivel de evento** (una feria sin empresa asociada todavía), deduplicada entre las señales sin empresa por tipo + `eventDate` + `sourceDomain`.
 
 Los objetos de la App no tienen campo `idempotencyKey`, así que cada tool de escritura busca primero un registro con su clave natural. Si existe, devuelve `created: false` y el registro existente en vez de crear un duplicado. Todos los `create_*` escriben `tenantId` (el tenant de la ejecución, `publiexpe` por defecto) y aceptan `companyId` y, según el objeto, `signalId` o `decisionMakerId`.
 
@@ -378,7 +491,7 @@ El `ToolExecutor` (uno por ejecución) aplica, en orden: allowlist, registro, `e
 
 ### TwentyClient
 
-`src/integrations/twenty/client.ts` es un cliente REST tipado sobre `/rest/{objeto}` con `list`, `get`, `create`, `update` y `ping`. **No tiene método de borrado.**
+`src/integrations/twenty/client.ts` es un cliente REST tipado sobre `/rest/{objeto}` con `list`, `get`, `create`, `update`, `ping` y `health` (`GET /healthz`, sin API key, para la espera al arrancar). **No tiene método de borrado.**
 
 - Timeout por petición (`TWENTY_TIMEOUT_MS`) combinado con la cancelación de la ejecución.
 - Reintentos con backoff exponencial para `429` y `5xx`; respeta `Retry-After`.
@@ -414,7 +527,14 @@ El `StubAgent` sigue usando su tool simulada (`stub.lookup`), que no pasa por el
 
 ## Prospector
 
-`ProspectorAgent` (`configuration.implementation = "prospector"`) evalúa los expositores de un evento y propone hipótesis de merchandising para PubliEXPE. Es la versión 1: recibe el evento y los expositores ya extraídos (todavía no busca en la web).
+`ProspectorAgent` (`configuration.implementation = "prospector"`) evalúa los expositores de un evento y propone hipótesis de merchandising para PubliEXPE. Tiene dos modos, que elige por la forma de la entrada:
+
+| Modo | Entrada | Tarea | Qué hace |
+|---|---|---|---|
+| Directo | `{ event, exhibitors[] }` | `daily-event-prospecting` | Evalúa los expositores ya extraídos (fixture de demo) |
+| Scout | `{ sector, region?, horizon_months? }` o `{ event_url }` | `weekly-event-scouting` | Busca ferias reales, descarga su página de expositores y evalúa los expositores reales. Consulta [Modo scout](#modo-scout-ferias-reales) |
+
+El modo scout es un modo del mismo agente, no un agente hermano: el LLD v0.2 asigna al Prospector tanto el descubrimiento de eventos (`search_web`, `fetch_url`) como la evaluación de expositores, y así los dos modos comparten versión, prompt de evaluación, pipeline por expositor, tool policy y trazas.
 
 ### Entrada
 
@@ -442,21 +562,82 @@ El `StubAgent` sigue usando su tool simulada (`stub.lookup`), que no pasa por el
 
 Un error en un expositor (modelo o Twenty) no detiene la ejecución: queda en `output.results[]` y cuenta como error. El agente devuelve su resultado aunque el `outcome` sea `FAILED`, para que el trace conserve todos los pasos y el coste; el estado de negocio está en `output.outcome` y en el `agentRunSummary` de Twenty.
 
+### Modo scout (ferias reales)
+
+Entrada (`ScoutInput`):
+
+```json
+{ "sector": "alimentación y bebidas", "region": "España", "horizon_months": 6 }
+{ "event_url": "https://www.gastronoma.es", "event_name": "Mediterránea Gastrónoma 2026" }
+```
+
+`max_events` (1-3) y `max_exhibitors` (1-50) bajan los límites de la configuración para una ejecución; nunca los suben. Se elige este modo si `mode = "scout"` o si la entrada tiene `sector` o `event_url` y no tiene `event` ni `exhibitors`.
+
+Flujo:
+
+1. **Búsqueda con grounding** (solo con `sector`): una llamada a Gemini con la tool nativa `google_search`. El modelo devuelve hasta `max_events` ferias con `website_url` y `exhibitors_url`. Se descartan las que caen fuera del horizonte.
+1. **Verificación de las URL** antes de descargarlas:
+   - si el grounding devuelve fuentes, solo se descargan URL cuyo dominio está en esas fuentes (si una fuente solo trae la URL de redirección de `vertexaisearch`, se resuelve con `fetch_url` para conocer su dominio);
+   - si el modelo ejecutó búsquedas pero la API no devolvió fuentes (comportamiento observado con `gemini-3.8-flash` el 2026-10-07), la URL se descarga y **la página tiene que corroborar la feria** (el nombre aparece en el dominio o en el título y el texto); si no, se descarta sin escribir nada. `scout.verify_unsourced_by_fetch = false` desactiva esta vía (modo estricto);
+   - con `event_url`, la URL la da el operador.
+1. **`fetch_url`** de la página de expositores (o de la portada y, después, del enlace de expositores que aparezca entre sus enlaces). Máximo `max_pages_per_event` páginas por feria y `max_fetches` descargas por ejecución.
+1. **Extracción**: el LLM extrae `{name, domain?, description?, sector?}` solo del texto descargado. El código descarta los nombres que no aparecen en la página y los dominios que no están en su texto o sus enlaces (ni el de la propia feria ni redes sociales).
+1. **Pipeline por expositor**, el mismo del modo directo, con `source_url` = la página de expositores visitada.
+1. **Sin lista de expositores** (catálogo dinámico, PDF, página vacía): la feria se registra como señal `FAIR` a nivel de evento (`create_signal` sin `companyId`, con la URL visitada) y el `outcome` es `PARTIAL` con el motivo en `partial_reasons` y en el `agentRunSummary`.
+
+`outcome`: `FAILED` si falla la búsqueda o todos los expositores; `PARTIAL` si hay errores, ninguna feria verificable o alguna feria sin lista de expositores; `SUCCESS` en otro caso. La salida incluye `events[]` (páginas leídas, verificación, expositores descartados), `discarded_events[]` con el motivo, `sources` (URL visitadas y fuentes de grounding) y el coste de búsqueda.
+
+### Seguridad del contenido web
+
+Regla del LLD v0.1 §22 y v0.2 §10.4: `WEB CONTENT ≠ INSTRUCTIONS`.
+
+- **Separación de canales.** El contenido web (páginas descargadas, respuesta de la búsqueda, datos extraídos de ellas) entra **solo** en mensajes `user`, nunca en `systemInstruction`.
+- **Delimitación.** Siempre va dentro de un bloque `<<<DATOS_NO_CONFIABLES id=… origen="…">>> … <<<FIN_DATOS_NO_CONFIABLES id=…>>>` con un id aleatorio por bloque, precedido de la instrucción de ignorar cualquier orden que contenga. Las secuencias que imitan los marcadores se neutralizan, así que el contenido no puede cerrar el bloque. Los prompts de sistema (texto fijo, de confianza) repiten la regla.
+- **El modelo no elige tools.** El código decide qué tool llamar y con qué argumentos; el modelo solo devuelve JSON validado con zod. Una instrucción inyectada no puede provocar una llamada.
+- **Fuentes verificadas.** Todo `sourceUrl` que se escribe en Twenty se comprueba contra el registro de fuentes de la ejecución (`SourceLedger`): URL visitadas por `fetch_url` o devueltas por el grounding. Las URL propuestas por el modelo solo se descargan si su dominio está respaldado por el grounding, si son enlaces de una página ya descargada o, sin fuentes, si la página corrobora la feria. Los textos libres que van a Twenty (descripción, necesidad, por qué ahora, evidencias) pierden cualquier URL que no sea una fuente conocida (`[enlace omitido]`).
+- **Elementos ocultos.** `fetch_url` elimina `script`, `style`, `template`, `svg`, `iframe` y los elementos con `hidden`, `aria-hidden="true"` o `display:none`, vehículos habituales de inyección.
+
+Controles de egreso de `fetch_url` (protección SSRF), aplicados a la primera petición **y a cada redirección**:
+
+| Control | Valor |
+|---|---|
+| Esquemas | Solo `http` y `https`; sin credenciales en la URL |
+| Puertos | `FETCH_URL_ALLOWED_PORTS` (por defecto 80, 443, 8080, 8443) |
+| Hosts | Allowlist y denylist (`FETCH_URL_ALLOWLIST`, `FETCH_URL_DENYLIST`); siempre bloqueados `localhost`, `*.local`, `*.internal`, `metadata.google.internal` y nombres de una sola etiqueta |
+| DNS | **Todas** las IP resueltas deben ser públicas. Se rechazan loopback, privadas, link-local (169.254.169.254 incluida), CGNAT, multicast, documentación, benchmark y reservadas, también incrustadas en IPv6 (`::ffff:`, NAT64, 6to4, Teredo) |
+| Rebinding | El socket se conecta a la IP ya comprobada (`lookup` fijado): no hay segunda resolución DNS |
+| Redirecciones | Máximo 3 |
+| Tiempo | 15 s en total |
+| Tamaño | 2 MB, contado tras descomprimir (gzip, deflate, br) |
+| Texto devuelto | 40 000 caracteres como máximo; también título y enlaces absolutos |
+| Tipos | Solo texto (HTML, XHTML, XML, JSON, `text/*`); un PDF devuelve `UNSUPPORTED_CONTENT_TYPE` |
+| Cabeceras | `User-Agent: PubliexpeCommercialOS/0.1` (solo ASCII: un carácter no ASCII provocaba 403 en ifema.es y alimentaria.com), sin cookies ni cabeceras de autenticación |
+
+Códigos de error de `fetch_url`: `URL_NOT_ALLOWED`, `REDIRECT_NOT_ALLOWED`, `SSRF_BLOCKED`, `DNS_ERROR`, `TOO_MANY_REDIRECTS`, `FETCH_TIMEOUT`, `HTTP_ERROR`, `UNSUPPORTED_CONTENT_TYPE`, `NETWORK_ERROR`.
+
 ### Trace y coste
 
-Cada llamada al LLM es un paso `MODEL` con `model` (el modelo real que respondió, por ejemplo `gemini-3.8-flash`), tokens y `output.cost` (`amount`, `currency`). Cada tool es un paso `TOOL` con `output.costEur`. `AgentExecution.model_cost` y `TaskRun.cost` acumulan el coste del proveedor en USD; `output.cost.eur` y el `agentRunSummary` lo convierten a EUR con `configuration.usd_to_eur` (por defecto `0.86`).
+Cada llamada al LLM es un paso `MODEL` con `model` (el modelo real que respondió, por ejemplo `gemini-3.8-flash`), tokens y `output.cost` (`amount`, `currency` y, con grounding, `grounding` y `grounding_units`). La llamada con búsqueda guarda además `output.grounding` (consultas, fuentes, `source_trust = untrusted`). Cada tool es un paso `TOOL` con `output.costEur`. `AgentExecution.model_cost` y `TaskRun.cost` acumulan el coste del proveedor en USD; `output.cost.eur` y el `agentRunSummary` lo convierten a EUR con `configuration.usd_to_eur` (por defecto `0.86`).
 
 ### Configuración de la versión
 
 | Clave de `configuration` | Por defecto | Uso |
 |---|---|---|
 | `implementation` | — | `prospector` |
-| `tool_policy` | — | `find_company`, `upsert_company`, `create_signal`, `create_hypothesis`, `create_agent_run_summary`; techo `LOW_WRITE` |
+| `tool_policy` | — | `find_company`, `upsert_company`, `create_signal`, `create_hypothesis`, `create_agent_run_summary`, `fetch_url` (máximo 15 llamadas); techo `LOW_WRITE`; 240 llamadas por ejecución |
 | `min_confidence` | `0.5` | Umbral para escribir en Twenty |
 | `usd_to_eur` | `0.86` | Conversión del coste para Twenty |
 | `model_options` | `{}` | `thinking_level` (Gemini 3.x), `thinking_budget` (Gemini 2.5), `temperature` |
 | `max_output_tokens` | `4096` | Por llamada; incluye los tokens de razonamiento |
-| `task_name` | `daily-event-prospecting` | Campo `task` del `agentRunSummary` |
+| `task_name` | `daily-event-prospecting` | Campo `task` del `agentRunSummary` (modo directo) |
+| `scout.task_name` | `weekly-event-scouting` | Campo `task` del `agentRunSummary` (modo scout) |
+| `scout.max_events` | `3` | Ferias por ejecución (máximo 3) |
+| `scout.max_exhibitors_per_event` | `20` | Expositores evaluados por feria |
+| `scout.max_fetches` | `12` | Descargas por ejecución |
+| `scout.max_pages_per_event` | `2` | Páginas leídas por feria |
+| `scout.max_redirect_resolutions` | `3` | Redirecciones de grounding resueltas para conocer su dominio |
+| `scout.event_signal_confidence` | `0.5` | Confianza de la señal de evento sin expositores |
+| `scout.verify_unsourced_by_fetch` | `true` | Sin fuentes de grounding, aceptar la URL si la página corrobora la feria. `false` = estricto |
 
 ### Seed
 
@@ -468,7 +649,12 @@ pnpm seed -- --tenant=otro --input=evento.json
 Es idempotente:
 
 - **Agente `Prospector`**: si no existe, lo crea con la versión 1 `ACTIVE` (`model_provider = gemini`, `model = gemini-flash-latest`, `thinking_level = low`, la tool policy anterior y el prompt en español con los diferenciales de PubliEXPE: ofertas, trato cercano, taller propio y precio). Si existe y su versión activa es distinta, añade una versión nueva, la activa y pasa la anterior a `DEPRECATED`. Si es igual, no cambia nada.
-- **Tarea `daily-event-prospecting`**: `CRON 0 8 * * *` en `Europe/Madrid`, `timeout_ms = 900000`, sin reintentos, con `test/fixtures/feria-ejemplo.json` como `default_input`. Si cambia, se actualiza y se guarda una `TaskDefinitionVersion` nueva. El scheduler que la dispara a las 08:00 llega en otra rama; mientras tanto, lánzala con `POST /tasks/:id/run`.
+- **Tarea `daily-event-prospecting`**: `CRON 0 8 * * *` en `Europe/Madrid`, `timeout_ms = 900000`, sin reintentos, con `test/fixtures/feria-ejemplo.json` como `default_input`. Si cambia, se actualiza y se guarda una `TaskDefinitionVersion` nueva.
+- **Tarea `weekly-event-scouting`** (modo scout): `CRON 30 7 * * 1` (lunes 07:30) en `Europe/Madrid`, `timeout_ms = 1800000`, sin reintentos, `default_input = { "sector": "alimentación y bebidas", "region": "España", "horizon_months": 6 }`.
+
+Las dos tareas usan la misma versión del agente. La versión del seed añade `fetch_url` a la tool policy, la configuración `scout` y la skill `event-source-discovery` v1, y sube la skill `prospector-event-exhibitors` a v2 (datos en bloques `DATOS_NO_CONFIABLES`): al ejecutar el seed sobre una BD existente se crea una versión nueva del agente.
+
+> **Importante:** ejecuta el seed después de desplegar este código. Un runtime anterior trataría la entrada de `weekly-event-scouting` como entrada directa no válida y cerraría la ejecución del lunes como `FAILED`.
 
 La fixture tiene tres expositores ficticios: uno claramente relevante (fabricante de conservas con stand propio), uno dudoso (distribuidor de envases que también imprime bolsas promocionales) y uno irrelevante (organismo público que compra por licitación).
 
@@ -493,10 +679,26 @@ El coste se calcula con la tabla editable de `src/providers/gemini-pricing.ts`, 
 
 Cuando Google cambie un precio, añade un periodo nuevo con su fecha `from` en vez de sobrescribir el anterior.
 
+**Grounding con Google Search.** `options.grounding = true` (por llamada, desactivado por defecto) añade `tools: [{ google_search: {} }]` y `toolConfig.includeServerSideToolInvocations = true`. El resultado trae `grounding` con las consultas ejecutadas y las fuentes web, leídas de `groundingMetadata` (`webSearchQueries`, `groundingChunks[].web`) y de las partes `toolCall` / `toolResponse` de tipo `GOOGLE_SEARCH_WEB`. El coste de búsqueda se suma a `cost.modelCost` y se desglosa en `cost.groundingCost` y `cost.groundingUnits`. Tabla `GEMINI_GROUNDING_PRICING`, consultada el 2026-10-07 en la misma página de precios:
+
+| Familia | Precio (capa de pago) | Unidad facturada |
+|---|---|---|
+| Gemini 3.x (3.8, 3.7, 3.6, 3.5 Flash, Flash-Lite, 3 Flash Preview) | 5 000 búsquedas gratis al mes compartidas entre modelos 3.x; después **14 USD por 1 000 búsquedas** | Cada consulta a Google que ejecuta el modelo (una llamada puede lanzar varias) |
+| Gemini 2.5 Flash / Flash-Lite | 1 500 RPD gratis; después 35 USD por 1 000 prompts con grounding | Cada prompt con grounding |
+
+El runtime cobra al precio de lista y no descuenta la cuota gratuita (no la puede ver): el coste registrado es una cota superior. En la capa gratuita el grounding de Gemini 3.x no está disponible.
+
+Observado el 2026-10-07 con `gemini-3.8-flash`: el modelo ejecuta las búsquedas (7 consultas en una llamada, 0,098 USD) pero la respuesta no incluye `groundingMetadata` y la `toolResponse` solo trae las sugerencias de búsqueda (HTML con enlaces a google.com), sin URL de resultados. Por eso existe la verificación por descarga del modo scout.
+
 ### Tests del Prospector
 
 - `test/unit/prospector-agent.test.ts` y `test/unit/gemini-provider.test.ts`: con `StubProvider` (respuestas guionizadas) y `FakeTwenty`. Cubren el parseo, el reintento por JSON inválido, el flujo de tools, la idempotencia y la agregación de coste.
 - `test/integration/prospector-live.test.ts`: **en vivo**. Ejecuta el seed y un `TaskRun` con la fixture contra Gemini, Twenty y PostgreSQL reales, y comprueba empresa, señal, hipótesis y `agentRunSummary` en Twenty. Se salta si falta `GEMINI_API_KEY`, `TWENTY_API_KEY`, Twenty o PostgreSQL, o si `SKIP_LLM_TESTS=1`. Usa los nombres de la fixture (datos de demo, sin prefijo `[TEST]`) en el tenant `publiexpe`; como todas las escrituras son idempotentes, repetirlo solo añade un `agentRunSummary`. Cuesta unos 0,005 € por ejecución.
+
+- `test/unit/fetch-url.test.ts`: guardas SSRF (rangos IPv4/IPv6, URL internas, allow/denylist, IP privada en DNS, DNS mixto, redirección a IP privada o a host privado, límite de redirecciones), truncado de texto y de bytes (también tras gzip, con un servidor local real), timeout, tipos de contenido, charset y `htmlToText`.
+- `test/unit/gemini-grounding.test.ts`: cuerpo con `google_search`, parseo de `groundingMetadata` y de las partes `toolCall` / `toolResponse`, y precio por consulta.
+- `test/unit/event-scout.test.ts`: modo scout con `StubProvider`, `FakeWeb` (DNS y transporte simulados) y `FakeTwenty`: extracción y verificación de expositores, delimitación del contenido web e intento de inyección, validación de `source_url`, URL no respaldadas, señal de evento, redirecciones de grounding, verificación por corroboración, horizonte y fallos.
+- `test/integration/event-scout-live.test.ts`: **en vivo**, con grounding real. No ejecuta el seed: usa su propio agente (`Prospector Scout (live test)`) y una tarea `MANUAL` (`event-scouting-live-test`), así no programa nada. Limitado a 1 feria y 5 expositores; cuesta unos 0,10 USD (casi todo, búsquedas). `SKIP_LLM_TESTS=1` lo salta. Con `SCOUT_LIVE_EVENT_URL=https://…` (y `-t event_url`) ejecuta el modo `event_url`, sin grounding.
 
 Para ejecutarlo en local, copia también la clave de Gemini a tu `.env`:
 
@@ -546,23 +748,114 @@ Quien mantenga `deployments/` puede añadir este servicio a la red `pxos-net`:
 
 Para escalar, separa roles: un servicio con `RUNTIME_ROLE=api`, N réplicas con `RUNTIME_ROLE=worker` y `RUN_MIGRATIONS=false`, y un servicio con `RUNTIME_ROLE=scheduler`. Puedes tener varias réplicas del scheduler: los disparos se deduplican por idempotency key.
 
+## Evaluador HUMAN
+
+Primera señal de calidad del MVP-0 (LLD v0.2 secciones 5.5 y 6.4, decisión D14). Cuando un comercial acepta, edita o descarta una hipótesis en Twenty, el runtime guarda una evaluación en la tabla `evaluations` ligada a la ejecución que generó la hipótesis.
+
+| Cambio en `commercialHypothesis` | `feedback` | `score` (`TASK_SUCCESS`) |
+|---|---|---|
+| `PROPOSED` a `VALIDATED` sin cambios de contenido | `ACCEPTED` | 1.0 |
+| `PROPOSED` a `VALIDATED` tras editar (o en la misma edición) | `EDITED` | 0.5 |
+| Edición de `need`, `whyNow`, `budget*`, `quantity*`, `recommendedProducts` o `timing` en `PROPOSED` | `EDITED` | 0.5 |
+| `PROPOSED` o `VALIDATED` a `REJECTED` | `DISCARDED` | 0.0 |
+
+Se ignoran (respuesta `200` con `status: "ignored"`): el paso a `EXPIRED` o de vuelta a `PROPOSED`, las transiciones desde `EXPIRED`, las ediciones de campos que no son de negocio y las ediciones después de validar.
+
+### Webhook de Twenty
+
+Twenty 2.45 envía un `POST` por cada registro cambiado (`CallWebhookJob`). Payload real capturado en `test/fixtures/twenty-webhook-hypothesis-*.json`:
+
+```json
+{
+  "targetUrl": "http://pxos-runtime:4020/webhooks/twenty",
+  "eventName": "commercialHypothesis.updated",
+  "objectMetadata": { "id": "9994b775-...", "nameSingular": "commercialHypothesis" },
+  "workspaceId": "36d3d8e2-...",
+  "webhookId": "be4bd4df-...",
+  "eventDate": "2026-10-07T06:39:44.257Z",
+  "record": { "id": "0a6e5044-...", "status": "PROPOSED", "need": "...", "budgetMin": { "amountMicros": 600000000, "currencyCode": "EUR" }, "tenantId": "publiexpe", "updatedBy": { "source": "API", "workspaceMemberId": null, "name": "agent-runtime" } },
+  "updatedFields": ["need", "budgetMax", "recommendedProducts"]
+}
+```
+
+- `record` es el registro **después** del cambio. `userId` y `workspaceMemberId` solo aparecen si el cambio lo hizo un usuario de la interfaz (no con API key).
+- `updatedFields` trae **solo los nombres** de los campos cambiados, **nunca los valores anteriores**. Por eso:
+  - el estado origen sale de la última evaluación guardada para esa hipótesis; si no hay ninguna, se asume `PROPOSED` (`details.from_status_source = "assumed"`);
+  - el "antes" del diff de `EDITED` es la propuesta original del agente: el input de la llamada a `create_hypothesis` en el trace (`details.edited_fields_before_source = "agent_proposal"`). Si la hipótesis no tiene trace, el diff lista los campos cambiados con `before: null` (`"unknown"`), y una validación cuenta como `EDITED` si antes se registró una edición.
+- Seguridad: si el webhook tiene `secret`, Twenty firma cada envío. `X-Twenty-Webhook-Signature` es el HMAC-SHA256 en hexadecimal de `` `${X-Twenty-Webhook-Timestamp}:${body}` `` (timestamp en milisegundos), y también envía `X-Twenty-Webhook-Nonce`. El runtime comprueba la firma sobre el cuerpo crudo y rechaza timestamps con más de 5 minutos de desfase. Como alternativa para emisores que no firman, acepta el secreto en la cabecera `x-pxos-webhook-secret` o en `?secret=`. Evita la forma `?secret=` con Twenty: Twenty escribe la URL completa en sus logs (`SecureHttpClientService`). Sin credenciales válidas responde `401`, y sin `TWENTY_WEBHOOK_SECRET` responde `503`.
+- Twenty no reintenta: un fallo de entrega se pierde. Para recuperar un veredicto perdido, usa `POST /evaluations/human`.
+
+Importante: Twenty bloquea por protección SSRF los webhooks hacia IPs privadas, y `pxos-runtime` y `host.docker.internal` lo son. Para que entregue los webhooks, el servidor y el worker de Twenty necesitan `OUTBOUND_HTTP_ALLOWED_INTERNAL_HOSTS=pxos-runtime,host.docker.internal`. Sin esa variable, Twenty descarta el envío sin registrar ningún error.
+
+### Registrar el webhook
+
+```sh
+pnpm register:webhook                                                   # http://pxos-runtime:4020/webhooks/twenty
+pnpm register:webhook --url http://host.docker.internal:4024/webhooks/twenty   # runtime en el host
+pnpm register:webhook --pause                                           # operations = [], no se entrega nada
+pnpm register:webhook --dry-run
+```
+
+- Desde los contenedores de Twenty, el runtime se alcanza como `http://pxos-runtime:4020` (misma red `pxos-net`). Es el destino por defecto.
+- Si el runtime corre en el host (`pnpm dev`), usa `http://host.docker.internal:<puerto>/webhooks/twenty` y escucha en `RUNTIME_HOST=0.0.0.0`.
+- El script es idempotente: identifica el webhook por la marca `pxos-runtime:human-feedback` en la descripción, lo crea si no existe y si no lo actualiza. Suscribe solo `commercialHypothesis.updated`. Guarda `TWENTY_WEBHOOK_SECRET` como `secret` del webhook (Twenty firma con él) y nunca lo pone en la URL.
+- Twenty no tiene un estado "inactivo" para los webhooks: `--pause` deja `operations` vacío. El script nunca borra webhooks.
+- El runtime que recibe el webhook necesita el mismo `TWENTY_WEBHOOK_SECRET` en su entorno.
+
+### Vínculo con la ejecución de origen
+
+La hipótesis no guarda `agentExecutionId` en Twenty, así que el runtime lo busca en las trazas del Agent OS, en este orden:
+
+1. `trace_output`: el paso `create_hypothesis` cuyo `tool_output.record.id` es la hipótesis. Las re-ejecuciones idempotentes devuelven el mismo id con `created: false`; gana el paso con `created: true` y, después, el más antiguo.
+2. `execution_output`: una ejecución cuyo `output` final contiene el id.
+3. `company_name`: una llamada a `create_hypothesis` de la misma empresa cuyo nombre (explícito o `{empresa} — {need}`) coincide. Cubre la tool que expiró después de que Twenty aplicase la escritura.
+
+Si nada coincide, la evaluación se guarda sin `agent_execution_id` y con `details.link.resolved = false`. Las hipótesis creadas a mano en Twenty o por tests que llaman a las tools sin ejecución nunca se vinculan, y es lo correcto.
+
+### Deduplicación
+
+- Por `idempotency_key`: en el webhook, `twenty:{webhookId}:{evento}:{recordId}:{record.updatedAt}`; en `POST /evaluations/human`, la cabecera `Idempotency-Key`.
+- Por ventana: no se repite el mismo `(subject_id, feedback, estado destino)` dentro de `EVALUATION_DEDUPE_WINDOW_MS`. Así, el webhook y una llamada manual (o la futura logic function de la App) que informan del mismo veredicto cuentan una vez. En `POST /evaluations/human` el estado destino es `details.to_status` o, para hipótesis, `VALIDATED` (`ACCEPTED`, `EDITED`) o `REJECTED` (`DISCARDED`).
+
+### `POST /evaluations/human`
+
+Acepta la forma del runtime o la del LLD v0.2 (sección 6.4):
+
+```sh
+curl -s -X POST localhost:4020/evaluations/human -H 'content-type: application/json' \
+  -H 'Idempotency-Key: fb-123' \
+  -d '{"subject_type":"hypothesis","subject_id":"<id en Twenty>","feedback":"EDITED","details":{"note":"Cambié el decisor"}}'
+
+curl -s -X POST localhost:4020/evaluations/human -H 'content-type: application/json' \
+  -d '{"hypothesisId":"<id en Twenty>","feedback":"ACCEPTED","reviewerId":"twenty-user-3f2a"}'
+```
+
+Si no envías `agent_execution_id` (o `agentExecutionId`), el runtime resuelve el vínculo como en el webhook. Si lo envías, debe existir en el tenant (si no, `404`). Responde con `evaluatorId`, `executionId`, `scores.TASK_SUCCESS`, `passed`, `deduplicated` y la evaluación guardada.
+
+### Tabla `evaluations`
+
+| Columna | Contenido |
+|---|---|
+| `kind`, `evaluator_id` | `HUMAN`, `human-v1` |
+| `subject_type`, `subject_id` | `hypothesis` e id del registro en Twenty |
+| `agent_execution_id`, `task_run_id` | Ejecución y `TaskRun` de origen, o `null` |
+| `feedback`, `score` | `ACCEPTED` 1.0, `EDITED` 0.5, `DISCARDED` 0.0 |
+| `details` | `from_status`, `to_status`, `edited_fields` (`{campo: {before, after}}`, presupuestos en EUR), `updated_fields`, `link`, `actor` y metadatos del evento de Twenty |
+| `source` | `twenty_webhook` o `api` |
+| `idempotency_key`, `evaluated_by`, `occurred_at`, `created_at` | |
+
+Índices: `(tenant_id, subject_type, subject_id, occurred_at)`, `(tenant_id, agent_execution_id)` y único `(tenant_id, idempotency_key)`. La tabla es solo de inserción.
+
 ## Pendiente
 
-<<<<<<< HEAD
-- Triggers `EVENT`, `DEPENDENCY` y `CONDITION` (hoy no registran nada).
+- Triggers `DEPENDENCY` y `CONDITION` (hoy no registran nada).
 - Columna `trigger` (`SCHEDULE`, `MANUAL`...) en `task_runs` para distinguir el origen de cada run (LLD v0.2, AC-04).
 - Exponer `EntityLocks` a las tools (el helper está listo en `RunProcessor.locks`).
 - Política de catch-up si el scheduler estuvo parado: hoy, al volver, se procesa el slot pendiente (tarde, con su `scheduled_at` original) y los demás slots perdidos se omiten.
-- Tools pendientes del registro del MVP-0: `search_web`, `fetch_url`, `create_activity` y las del Catalog Service.
-=======
-- Scheduler (`CRON`, `INTERVAL`, `EVENT`...): hoy solo hay lanzamiento manual con `POST /tasks/:id/run`.
-- `max_concurrency` por tarea y locks por entidad (LLD sección 21).
-- Recuperación de jobs atascados (`RUNNING` tras caída del worker).
-- Harness, skills, memoria y verificador reales; promote, rollback y evaluate.
-- Tools pendientes del registro del MVP-0: `search_web`, `fetch_url`, `create_activity` y las del Catalog Service. Con ellas, el Prospector descubrirá eventos y expositores por sí mismo y recomendará productos reales del catálogo.
+- Tools pendientes del registro del MVP-0: `search_web` (hoy la búsqueda es el grounding de Gemini, un paso `MODEL`; el LLD prevé fuentes ligadas a pasos `TOOL`), `create_activity` y las del Catalog Service.
+- Modo scout: muchas ferias publican el catálogo de expositores como aplicación JavaScript o PDF, que `fetch_url` no lee (queda como señal de evento). Falta extracción de PDF o render de JavaScript.
 - `GeminiProvider.stream()` no es incremental: devuelve la respuesta completa en un solo fragmento.
->>>>>>> feat/prospector
-- Validación de URL en campos de texto libre contra las fuentes del trace (LLD v0.2 sección 10.4, punto 4).
+- Validación de URL en campos de texto libre contra las fuentes del trace (LLD v0.2 sección 10.4, punto 4) en el modo directo: el modo scout ya la aplica con su `SourceLedger`.
+- Eventos aún no emitidos: `task.failed` cuando el reconciliador cierra un huérfano, cancelaciones, `signal.detected` y `evaluation.completed`. Entrada de eventos externos (Twenty, n8n) por HTTP y entrega a n8n por webhook.
 - Harness, skills, memoria y verificador reales; promote, rollback y evaluate.
-- Publicación de eventos (`task.started`, `task.completed`...) en el event bus.
 - Export de los contratos zod a JSON Schema versionado en `schemas/`.

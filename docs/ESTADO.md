@@ -25,9 +25,17 @@ Notas:
 - Decisión (2026-10-06): el proveedor LLM de trabajo es **Gemini** (`gemini-flash-latest`, clave verificada en vivo), con arquitectura multi-proveedor intacta: `ModelProvider` conmutable por agente/entorno (stub | gemini | anthropic) y evaluador con proveedor distinto al ejecutor cuando llegue MVP-2 (LLD §18). `GEMINI_API_KEY`/`GEMINI_MODEL` cableadas en el compose.
 - Alcance del Prospector en esta tanda: clasificación y generación de hipótesis desde datos de entrada (fixture/manual). La búsqueda web real es de la tanda 3.
 
-## Tanda 3 — previsto
+## Tanda 3 — Web real, event bus y feedback humano ✅ (PR #3, 2026-10-07)
 
-- Búsqueda web del Prospector (fuentes de ferias/expositores) y deduplicación
-- Event bus + AgentRunSummary automático en Twenty
-- Catalog Service (conector con el backend de publiexpe — contrato por definir con su equipo)
-- Evaluador HUMAN (feedback aceptar/editar/descartar desde Twenty)
+| Pieza | Rama | Agente | Estado |
+|---|---|---|---|
+| Fix carrera de arranque: gate de salud de Twenty antes de runs con tools | `fix/boot-health-gate` | Opus | ✅ fusionado (espera 5/15/30/60s sin gastar intentos, tope 10 min; 138 tests OK) |
+| Búsqueda web real: Gemini grounding + `fetch_url` (contenido untrusted) + Prospector sobre ferias reales | `feat/web-search` | Opus | ✅ fusionado (riesgos abiertos: grounding sin metadatos de fuentes en Gemini 3.8 → fallback por descarga; catálogos JS/PDF ilegibles → señal a nivel de feria) |
+| Event bus: tabla `events`, publicación task.*/execution.* y trigger EVENT del scheduler | `feat/event-bus` | Opus | ✅ fusionado (anti-bucle con chainDepth≤5; integración combinada 170/170) |
+| Evaluador HUMAN: webhook de Twenty → tabla `evaluations` (ACCEPTED/EDITED/DISCARDED) | `feat/human-feedback` | Opus | ✅ fusionado (probado en vivo con HMAC; suite combinada 201/201) |
+| Guía del comercial (Twenty: señales, hipótesis, estados y feedback) + runbook | `docs/guia-comercial` | Sonnet | ✅ fusionado (+ fix PM: marcadores de conflicto en el README del runtime que venían de main) |
+| Integración, e2e y PR | `feat/tanda3` | PM | ✅ 278 tests; contenedor redesplegado; seed v3; webhook ACCEPTED vía contenedor; eventos publicados; scout programado lunes 07:30 |
+
+Contexto del fix de arranque: el 2026-10-07 el catch-up disparó el slot de las 08:00 al encender el host antes de que `pxos-twenty` estuviera healthy → `TWENTY_NETWORK_ERROR` y run `PARTIAL`.
+
+Fuera de esta tanda: Catalog Service (a la espera del contrato del conector con el equipo del backend de publiexpe).

@@ -79,3 +79,64 @@ export function resolveGeminiPricing(
 export function priceGeminiUsage(model: string, usage: TokenUsage, at?: Date): number {
   return priceUsage(resolveGeminiPricing(model, at), usage);
 }
+
+// ---------------------------------------------------------------------------
+// Grounding with Google Search (tool `google_search`)
+// ---------------------------------------------------------------------------
+
+/**
+ * Grounding with Google Search, paid tier, USD.
+ * Source: https://ai.google.dev/gemini-api/docs/pricing ("Last updated 2026-10-07 UTC"),
+ * checked on 2026-10-07:
+ *
+ * - Gemini 3.x (3.8 / 3.7 / 3.6 / 3.5 Flash, 3.5 / 3.1 Flash-Lite, 3 Flash Preview):
+ *   "5,000 free search requests per month (shared across all Gemini 3.x models), then
+ *   $14 per 1,000 requests". Billed PER SEARCH QUERY: one request to Gemini may run
+ *   several Google searches and each one is charged. Not available on the free tier.
+ * - Gemini 2.5 Flash / Flash-Lite: 1,500 RPD free, then "$35 / 1,000 grounded prompts"
+ *   (billed per grounded prompt, whatever the number of queries).
+ *
+ * The runtime prices at list price and does NOT deduct the monthly free quota (it is
+ * shared per billing account and the runtime cannot see it): reported costs are an
+ * upper bound. EDITABLE like `GEMINI_PRICING`: add a period with `from` instead of
+ * overwriting.
+ */
+export interface GroundingPricingPeriod {
+  from?: string;
+  /** `search_query`: each executed query is billed; `grounded_prompt`: one unit per grounded request. */
+  unit: 'search_query' | 'grounded_prompt';
+  perThousand: number;
+}
+
+export const GEMINI_GROUNDING_PRICING_SOURCE = 'https://ai.google.dev/gemini-api/docs/pricing (consultado 2026-10-07)';
+
+/** Keyed by model family prefix; the longest matching prefix wins. */
+export const GEMINI_GROUNDING_PRICING: Readonly<Record<string, readonly GroundingPricingPeriod[]>> = {
+  'gemini-3': [{ unit: 'search_query', perThousand: 14 }],
+  'gemini-2.5': [{ unit: 'grounded_prompt', perThousand: 35 }],
+};
+
+export function resolveGroundingPricing(model: string, at: Date = new Date()): GroundingPricingPeriod {
+  let id = canonical(model);
+  if (GEMINI_MODEL_ALIASES[id]) id = GEMINI_MODEL_ALIASES[id]!;
+  const prefix = Object.keys(GEMINI_GROUNDING_PRICING)
+    .filter((p) => id.startsWith(p))
+    .sort((a, b) => b.length - a.length)[0];
+  // Unknown family: price as Gemini 3.x (per query), the current default family.
+  const periods = GEMINI_GROUNDING_PRICING[prefix ?? 'gemini-3']!;
+  const day = at.toISOString().slice(0, 10);
+  let chosen: GroundingPricingPeriod | undefined;
+  for (const p of periods) if (!p.from || p.from <= day) chosen = p;
+  return chosen ?? periods[0]!;
+}
+
+/**
+ * Grounding cost of one response. `queries` = `webSearchQueries.length`; a response
+ * that ran no search is not billed (per-query families) and counts as grounded only
+ * when it actually ran searches or returned sources (per-prompt families).
+ */
+export function priceGrounding(model: string, grounding: { queries: number; sources: number }, at?: Date): { cost: number; units: number } {
+  const p = resolveGroundingPricing(model, at);
+  const units = p.unit === 'search_query' ? grounding.queries : grounding.queries > 0 || grounding.sources > 0 ? 1 : 0;
+  return { cost: Math.round(((units * p.perThousand) / 1000) * 1_000_000) / 1_000_000, units };
+}

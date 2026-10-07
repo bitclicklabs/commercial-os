@@ -56,6 +56,7 @@ Detalles en el [runbook](docs/runbook-local.md#windows-workaround-del-cli-de-twe
 - [LLD v0.1 — arquitectura](docs/LLD-0.1-publiexpe-commercial-os.md)
 - [LLD v0.2 — especificación del MVP-0](docs/LLD-0.2-especificacion.md)
 - [Guía de contribución](docs/CONTRIBUTING.md)
+- [Guía del equipo comercial](docs/guia-comercial.md)
 - [Runbook de operación local](docs/runbook-local.md)
 - [Estado del proyecto por tandas](docs/ESTADO.md)
 - [Registro de cambios](docs/CHANGELOG.md)

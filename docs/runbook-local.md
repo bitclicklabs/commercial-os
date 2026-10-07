@@ -55,9 +55,12 @@ Todos los comandos `docker compose` de este runbook se ejecutan desde `deploymen
    ```bash
    TWENTY_API_KEY=
    ANTHROPIC_API_KEY=
+   GEMINI_API_KEY=
    ```
 
-   Déjalas vacías en el primer arranque. Rellena `TWENTY_API_KEY` después de crear el workspace (paso 5 de [Arranque](#arranque)). `ANTHROPIC_API_KEY` solo hace falta si un agente usa `model_provider=anthropic`; con el proveedor `stub` (valor por defecto) puedes dejarla vacía.
+   Déjalas vacías en el primer arranque. Rellena `TWENTY_API_KEY` después de crear el workspace (paso 5 de [Arranque](#arranque)). `GEMINI_API_KEY` (clave de Google AI Studio) hace falta para el Prospector, que usa `model_provider=gemini`. `ANTHROPIC_API_KEY` solo hace falta si un agente usa `model_provider=anthropic`; con el proveedor `stub` (valor por defecto) puedes dejarla vacía.
+
+   Si `deployments/.env.example` ya incluye alguna de estas variables, no las dupliques.
 
 ### Variables del runtime
 
@@ -76,6 +79,7 @@ Todos los comandos `docker compose` de este runbook se ejecutan desde `deploymen
 | `RUN_MIGRATIONS` | `true` | El contenedor aplica las migraciones de Drizzle al arrancar |
 | `LOG_LEVEL` | `info` | Nivel de log |
 | `ANTHROPIC_API_KEY` | `${ANTHROPIC_API_KEY:-}` | Solo para agentes con `model_provider=anthropic` |
+| `GEMINI_API_KEY` / `GEMINI_MODEL` | `${GEMINI_API_KEY:-}` / `${GEMINI_MODEL:-}` | Proveedor del Prospector (`model_provider=gemini`). `GEMINI_MODEL` vacío usa `gemini-flash-latest` |
 | `TWENTY_BASE_URL` | `http://pxos-twenty:3000` | URL de Twenty por la red `pxos-net` |
 | `TWENTY_API_KEY` | `${TWENTY_API_KEY:-}` | API key de Twenty para que el runtime escriba en el CRM |
 
@@ -160,9 +164,22 @@ Las contraseñas de Postgres solo se aplican al crear el volumen por primera vez
 
 6. Instala la Twenty App con los objetos comerciales. Consulta [Sincronizar la Twenty App](#sincronizar-la-twenty-app).
 
-7. Registra los agentes y la tarea `daily-event-prospecting`:
+7. Registra el agente Prospector y la tarea `daily-event-prospecting` con el seed. Ejecútalo desde `runtime/agent-runtime/`, con las migraciones aplicadas y `DATABASE_URL` apuntando a `127.0.0.1:5440` (valor por defecto de `.env.example`):
 
-   `[POR COMPLETAR]` Script de *seed* con los agentes y la tarea reales. Mientras tanto, usa las llamadas a `POST /agents` y `POST /tasks` del [flujo de prueba](#flujo-de-prueba-end-to-end), que crean un agente con proveedor `stub`.
+   ```bash
+   cd runtime/agent-runtime
+   pnpm install    # solo si no lo has hecho
+   pnpm seed
+   ```
+
+   El seed es idempotente: puedes repetirlo sin duplicar nada.
+
+   - Crea el agente `Prospector` (versión 1 `ACTIVE`, proveedor `gemini`). Si ya existe y su versión activa difiere, añade una versión nueva y depreca la anterior.
+   - Crea o actualiza la tarea `daily-event-prospecting`: `CRON 0 8 * * *` en `Europe/Madrid`, con `test/fixtures/feria-ejemplo.json` (tres expositores ficticios) como entrada por defecto.
+
+   Opciones: `pnpm seed -- --tenant=otro --input=evento.json`. Detalles en el [README del runtime](../runtime/agent-runtime/README.md#seed).
+
+   > **Nota:** el seed solo escribe en la base del Agent OS. Para que la tarea de las 08:00 produzca hipótesis, el runtime necesita `GEMINI_API_KEY` y `TWENTY_API_KEY` en `deployments/.env`, y el proceso con rol `scheduler` (o `all`, que es el valor por defecto) debe estar en marcha.
 
 ### Runtime fuera de Docker
 
@@ -230,6 +247,18 @@ El paso 3 imprime `200` en la segunda llamada. El paso 4 debe devolver:
 
 Si el paso 4 devuelve `QUEUED` de forma sostenida, el worker no está procesando la cola. Revisa `docker compose logs pxos-runtime` y que `pxos-redis` esté `healthy`.
 
+## Operación diaria
+
+Una vez desplegado el stack y hecho el seed, la operación del día a día es automática: el scheduler lanza la tarea `daily-event-prospecting` cada día a las 08:00 (Europe/Madrid) y deja señales, hipótesis y un resumen de ejecución en Twenty. El equipo comercial trabaja con ese resultado según la [guía del equipo comercial](guia-comercial.md).
+
+Tu parte como operador es comprobar que la ejecución ha ocurrido:
+
+1. Abre Twenty y revisa **Commercial OS → Agent runs**. Debe haber una ejecución de hoy con `Outcome` `Success`.
+1. Si no la hay o es `Failed` o `Partial`, consulta la run con `curl "http://127.0.0.1:4020/tasks/<TASK_ID>/runs" -H 'x-tenant-id: publiexpe'` y los [logs](#dónde-mirar-los-logs) del runtime. Causas habituales: falta `GEMINI_API_KEY` o `TWENTY_API_KEY`, o el proceso `scheduler` no está en marcha. Consulta [Problemas frecuentes](#problemas-frecuentes).
+1. El coste de cada ejecución aparece en el campo **Cost** del resumen. El valor esperado con la entrada de ejemplo es de unos 0,006 €.
+
+> **Nota:** la tarea usa por defecto la entrada de ejemplo del seed (expositores ficticios con dominio `.example`). Los registros que genera son de demostración. El scouting semanal de ferias reales (lunes 07:30) y la captura del feedback del comercial están en despliegue.
+
 ## Sincronizar la Twenty App
 
 La Twenty App vive en `apps/twenty-app/` y añade los objetos `commercialSignal`, `research`, `commercialHypothesis` y `agentRunSummary` (criterio AC-01 del LLD v0.2). Necesitas una API key de Twenty (paso 5 de [Arranque](#arranque)).
@@ -292,7 +321,7 @@ Rota la clave si se filtra, caduca o el runtime recibe `401` de Twenty.
 
 `scripts/sync-twenty-app.ps1` lee la clave de `deployments/.env`, así que usa la nueva automáticamente. Si tienes un remote guardado en `~/.twenty/config.json` (por ejemplo `pxos-local`), actualízalo con `yarn twenty remote:add ... --as pxos-local` y la clave nueva.
 
-> **Nota:** la versión actual del runtime recibe `TWENTY_BASE_URL` y `TWENTY_API_KEY` pero todavía no escribe en Twenty. El procedimiento ya es válido para cuando lo haga.
+> **Nota:** el runtime usa `TWENTY_API_KEY` en cada escritura (tools de Twenty del Prospector). Si la clave es inválida, la ejecución registra el error `TWENTY_NOT_CONFIGURED` (sin clave) o `TWENTY_UNAUTHORIZED` (clave rechazada) en el trace.
 
 ## Parada segura
 
@@ -403,7 +432,7 @@ ORDER BY created_at DESC;
 | `apply` falla subiendo archivos a `localhost:3020` desde un contenedor | La `SERVER_URL` de Twenty no resuelve dentro del contenedor | Usa el script, que reenvía `127.0.0.1:3020` con `socat`. |
 | `sync-twenty-app.ps1` dice que no existe la red `pxos-net` | El stack no está levantado | `docker compose up -d` en `deployments/`. |
 | Una ejecución se queda en `RUNNING` | Llamada colgada o límite de tiempo no aplicado | Cancela con `POST /executions/:id/cancel` y revisa el trace. |
-| La tarea de las 08:00 no se ejecutó | En esta versión no hay scheduler: las runs son manuales | Lanza una run con `POST /tasks/:id/run`. Revisa `GET /tasks` y los logs del runtime. |
+| La tarea de las 08:00 no se ejecutó | No se ha hecho el seed, la tarea no está `ACTIVE`/`enabled`, el agente no está `ACTIVE` o el proceso con rol `scheduler` (o `all`) no está en marcha | Haz `pnpm seed`, revisa `GET /tasks` y los logs del runtime, y lanza una run manual con `POST /tasks/:id/run` si necesitas el resultado ya. |
 | Hipótesis duplicadas en Twenty | Fallo de idempotencia | Conserva los datos, anota las `idempotencyKey` afectadas y abre una incidencia. No borres registros sin revisión. |
 
 ## Backup

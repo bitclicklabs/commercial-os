@@ -6,6 +6,8 @@ import { agentRoutes } from './routes/agents.js';
 import { executionRoutes } from './routes/executions.js';
 import { taskRoutes } from './routes/tasks.js';
 import { schedulerRoutes } from '../scheduler/routes.js';
+import { eventRoutes } from '../events/routes.js';
+import { evaluationRoutes } from './routes/evaluations.js';
 
 export async function buildServer(
   ctx: ApiContext,
@@ -27,5 +29,7 @@ export async function buildServer(
   await taskRoutes(app, ctx);
   await executionRoutes(app, ctx);
   await schedulerRoutes(app, ctx);
+  await eventRoutes(app, ctx);
+  await evaluationRoutes(app, ctx);
   return app;
 }

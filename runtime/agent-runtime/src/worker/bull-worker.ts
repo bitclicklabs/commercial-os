@@ -1,6 +1,10 @@
-import { DelayedError, UnrecoverableError, Worker, type ConnectionOptions } from 'bullmq';
+import { DelayedError, UnrecoverableError, Worker, type ConnectionOptions, type Job } from 'bullmq';
 import { redisConnectionFromUrl, type RunJob } from '../queue/run-queue.js';
-import { ConcurrencyLimitError, RetryableRunError, type ProcessorLogger, type RunProcessor } from './processor.js';
+import { ConcurrencyLimitError, RetryableRunError, TwentyUnavailableError, type ProcessorLogger, type RunProcessor } from './processor.js';
+import type { TwentyWaitState } from './twenty-gate.js';
+
+/** Job data plus the Twenty wait window, persisted across TwentyUnavailableError deferrals. */
+type GatedRunJob = RunJob & { twentyWait?: TwentyWaitState };
 
 export interface BullWorkerOptions {
   queueName: string;
@@ -19,15 +23,34 @@ export interface BullWorkerOptions {
 
 export const DEFAULT_CONCURRENCY_DEFER_MS = 2_000;
 
+async function clearTwentyWait(job: Job<RunJob>, logger: ProcessorLogger): Promise<void> {
+  try {
+    const { twentyWait: _drop, ...rest } = job.data as GatedRunJob;
+    await job.updateData(rest as RunJob);
+  } catch (err) {
+    logger.warn({ jobId: job.id, err: err instanceof Error ? err.message : String(err) }, 'could not clear twentyWait from job data');
+  }
+}
+
 export function startBullWorker(processor: RunProcessor, opts: BullWorkerOptions): Worker<RunJob> {
   const deferMs = opts.concurrencyDeferMs ?? DEFAULT_CONCURRENCY_DEFER_MS;
   const worker = new Worker<RunJob>(
     opts.queueName,
     async (job, token) => {
       const maxAttempts = job.opts.attempts ?? 1;
+      const { twentyWait } = job.data as GatedRunJob;
       try {
-        await processor.process(job.data, { attempt: job.attemptsMade + 1, maxAttempts });
+        await processor.process(job.data, { attempt: job.attemptsMade + 1, maxAttempts, twentyWait });
       } catch (err) {
+        if (err instanceof TwentyUnavailableError) {
+          // Twenty still booting: keep the run QUEUED, remember the wait window in the job
+          // data and park the job without consuming an attempt (same as max_concurrency).
+          await job.updateData({ ...job.data, twentyWait: err.state } as GatedRunJob);
+          await job.moveToDelayed(Date.now() + err.delayMs, token);
+          throw new DelayedError();
+        }
+        // The gate let the run through: a later deferral (retry) opens a fresh wait window.
+        if (twentyWait) await clearTwentyWait(job, opts.logger);
         if (err instanceof ConcurrencyLimitError) {
           // No slot: keep the run QUEUED and park the job without consuming an attempt.
           // Small jitter so deferred jobs of the same task do not wake up in lockstep.

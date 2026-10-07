@@ -2,6 +2,7 @@ import type {
   CompletionRequest,
   CompletionResult,
   CostBreakdown,
+  GroundingResult,
   ModelProvider,
   StreamChunk,
   TokenUsage,
@@ -14,18 +15,26 @@ export interface StubProviderOptions {
    * Scripted texts returned in order, one per completion (tests). When exhausted,
    * `responseText` is returned.
    */
-  responses?: string[];
+  responses?: Array<string | StubResponse>;
   /** Usage reported by every completion (defaults to zero, as required for MVP traces). */
   usage?: TokenUsage;
   /** Cost reported by every completion (defaults to 0). */
   costPerCall?: number;
 }
 
+/** Scripted response with optional grounding metadata (only returned when the request asks for `grounding`). */
+export interface StubResponse {
+  text: string;
+  grounding?: GroundingResult;
+  /** Overrides `costPerCall` for this response. */
+  cost?: number;
+}
+
 /** Deterministic provider without network access. Zero tokens and zero cost by default. */
 export class StubProvider implements ModelProvider {
   readonly name = 'stub';
   private readonly responseText: string;
-  private readonly responses: string[];
+  private readonly responses: Array<string | StubResponse>;
   private readonly usage: TokenUsage;
   private readonly costPerCall: number;
   /** Requests received, in order (tests). */
@@ -45,14 +54,20 @@ export class StubProvider implements ModelProvider {
   async complete(request: CompletionRequest): Promise<CompletionResult> {
     request.signal?.throwIfAborted();
     this.requests.push(request);
+    const next = this.responses.shift() ?? this.responseText;
+    const scripted: StubResponse = typeof next === 'string' ? { text: next } : next;
+    const wantsGrounding = (request.options as { grounding?: unknown } | undefined)?.grounding === true;
+    const cost = this.estimateCost(request.model, this.usage);
+    if (scripted.cost !== undefined) cost.modelCost = scripted.cost;
     return {
-      text: this.responses.shift() ?? this.responseText,
+      text: scripted.text,
       model: request.model,
       provider: this.name,
       stopReason: 'end_turn',
       usage: { ...this.usage },
-      cost: this.estimateCost(request.model, this.usage),
+      cost,
       latencyMs: 0,
+      ...(wantsGrounding ? { grounding: scripted.grounding ?? { queries: [], sources: [] } } : {}),
     };
   }
 

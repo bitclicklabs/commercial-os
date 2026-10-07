@@ -15,12 +15,21 @@ import {
   type AgentVersion,
 } from '../db/schema.js';
 import { allowedSources } from '../domain/run-state.js';
+import { NOOP_EVENT_PUBLISHER, type EventPublisher } from '../events/event-bus.js';
+import {
+  executionFinishedEvent,
+  executionStartedEvent,
+  taskFinishedEvent,
+  taskStartedEvent,
+  type ExecutionEventContext,
+} from '../events/runtime-events.js';
 import type { RunStatus } from '../domain/statuses.js';
 import type { ProviderFactory } from '../providers/index.js';
 import type { RunJob } from '../queue/run-queue.js';
 import { createDefaultToolRegistry, parseToolPolicy, ToolExecutor, type ToolRegistry } from '../tools/index.js';
 import { EntityLocks } from './entity-locks.js';
 import { recoverOrphanRun } from './recovery.js';
+import { policyRequiresTwenty, twentyGateFromEnv, type TwentyGate, type TwentyWaitState } from './twenty-gate.js';
 
 export interface ProcessorLogger {
   info(obj: object, msg?: string): void;
@@ -34,6 +43,8 @@ export interface AttemptInfo {
   /** 1-based attempt number. */
   attempt: number;
   maxAttempts: number;
+  /** Twenty wait window of this job from earlier TwentyUnavailableError deferrals. */
+  twentyWait?: TwentyWaitState | undefined;
 }
 
 /** Thrown to ask the queue to retry (BullMQ re-runs the job with backoff). */
@@ -58,6 +69,21 @@ export class ConcurrencyLimitError extends Error {
   }
 }
 
+/**
+ * Thrown when the agent version needs Twenty and Twenty does not answer `/healthz` yet (e.g.
+ * the host just booted). Like ConcurrencyLimitError: the run stays QUEUED and the BullMQ
+ * worker parks the job in `delayed` for `delayMs` without consuming an attempt.
+ */
+export class TwentyUnavailableError extends Error {
+  constructor(
+    readonly delayMs: number,
+    readonly state: TwentyWaitState,
+  ) {
+    super(`Twenty not healthy; run deferred ${delayMs} ms (deferral ${state.deferrals})`);
+    this.name = 'TwentyUnavailableError';
+  }
+}
+
 class TimeoutError extends Error {
   constructor(ms: number) {
     super(`Execution timed out after ${ms} ms`);
@@ -79,6 +105,8 @@ function errorPayload(err: unknown): Record<string, unknown> {
 
 export class RunProcessor {
   readonly locks: EntityLocks;
+  /** Domain events (task.*, agent.execution.*). Best-effort: emission never fails a run. */
+  events: EventPublisher = NOOP_EVENT_PUBLISHER;
 
   constructor(
     private readonly db: Db,
@@ -86,6 +114,8 @@ export class RunProcessor {
     private readonly logger: ProcessorLogger = silentLogger,
     /** Tool registry; defaults to the MVP-0 tools with the Twenty client from env. */
     private readonly tools: ToolRegistry = createDefaultToolRegistry(),
+    /** Holds runs that need Twenty until it is healthy; null disables it. Defaults to env. */
+    private readonly twentyGate: TwentyGate | null = twentyGateFromEnv(),
   ) {
     this.locks = new EntityLocks(db);
   }
@@ -127,6 +157,7 @@ export class RunProcessor {
     }
     const resolved = task ? await this.resolveActiveVersion(tenantId, task.agentId) : null;
     const queuedRun = run;
+    if (resolved) await this.gateOnTwenty(taskRunId, resolved.version, attempt.twentyWait);
 
     // max_concurrency gate + guarded QUEUED -> RUNNING, serialised per task by a transaction-
     // scoped advisory lock so two workers cannot both see a free slot.
@@ -183,6 +214,8 @@ export class RunProcessor {
       .returning();
     if (!execution) throw new Error('failed to create agent execution');
     await this.db.update(taskRuns).set({ executionId: execution.id }).where(eq(taskRuns.id, run.id));
+    await this.events.emit(taskStartedEvent(started, execution.id));
+    await this.events.emit(executionStartedEvent(execution, this.eventContext(resolved.agent, resolved.version, run.id, task.id)));
 
     let outcome: Outcome;
     try {
@@ -246,14 +279,43 @@ export class RunProcessor {
       ? await this.db.query.agentVersions.findFirst({ where: eq(agentVersions.id, execution.agentVersionId) })
       : undefined;
     if (!agent || !version) {
-      await this.finishExecution(execution.id, 'FAILED', { error: { message: 'agent or agent version not found' } });
+      const error = { message: 'agent or agent version not found' };
+      await this.finishExecution(execution.id, 'FAILED', { error });
+      const ctx: ExecutionEventContext = { taskRunId: null, taskDefinitionId: null, stage: null, agentVersion: null };
+      await this.events.emit(executionFinishedEvent(execution, ctx, { status: 'FAILED', error }));
       return;
     }
+    await this.events.emit(executionStartedEvent(execution, this.eventContext(agent, version, null, null)));
     try {
       const outcome = await this.runAgent(execution, agent, version, 300_000);
       await this.persistOutcome(execution, agent, version, outcome, {});
     } finally {
       await this.releaseLocks(execution.id);
+    }
+  }
+
+  /**
+   * Twenty health gate before QUEUED -> RUNNING. Throws TwentyUnavailableError to defer the
+   * job; past TWENTY_WAIT_MAX_MS it lets the run go (tools fail, agent reports PARTIAL).
+   */
+  private async gateOnTwenty(taskRunId: string, version: AgentVersion, state: TwentyWaitState | undefined): Promise<void> {
+    if (!this.twentyGate) return;
+    const requires = policyRequiresTwenty(this.tools, parseToolPolicy(version.configuration));
+    const decision = await this.twentyGate.check(requires, state);
+    if (decision.action === 'defer') {
+      this.logger.warn(
+        { taskRunId, deferral: decision.state.deferrals, delayMs: decision.delayMs, waitedMs: decision.waitedMs, maxWaitMs: this.twentyGate.maxWaitMs },
+        'Twenty not healthy; deferring task run',
+      );
+      throw new TwentyUnavailableError(decision.delayMs, decision.state);
+    }
+    if (decision.reason === 'wait_exceeded') {
+      this.logger.warn(
+        { taskRunId, waitedMs: decision.waitedMs, deferrals: decision.deferrals, maxWaitMs: this.twentyGate.maxWaitMs },
+        'Twenty still not healthy after TWENTY_WAIT_MAX_MS; running anyway',
+      );
+    } else if (state) {
+      this.logger.info({ taskRunId, waitedMs: Date.now() - state.since, deferrals: state.deferrals }, 'Twenty healthy again; starting deferred task run');
     }
   }
 
@@ -270,6 +332,14 @@ export class RunProcessor {
   // -------------------------------------------------------------------------
   // helpers
   // -------------------------------------------------------------------------
+  private eventContext(agent: Agent, version: AgentVersion, taskRunId: string | null, taskDefinitionId: string | null): ExecutionEventContext {
+    return { taskRunId, taskDefinitionId, stage: this.stageOf(agent, version), agentVersion: version.version };
+  }
+
+  private stageOf(agent: Agent, version: AgentVersion): string | null {
+    return typeof version.configuration.stage === 'string' ? version.configuration.stage : (agent.role?.toUpperCase() ?? null);
+  }
+
   async resolveActiveVersion(tenantId: string, agentId: string): Promise<{ agent: Agent; version: AgentVersion } | null> {
     const agent = await this.db.query.agents.findFirst({
       where: and(eq(agents.tenantId, tenantId), eq(agents.id, agentId)),
@@ -304,7 +374,7 @@ export class RunProcessor {
           tenantId: execution.tenantId,
           executionId: execution.id,
           agentId: agent.id,
-          stage: typeof version.configuration.stage === 'string' ? version.configuration.stage : (agent.role?.toUpperCase() ?? null),
+          stage: this.stageOf(agent, version),
           logger: toolLogger,
         },
         controller.signal,
@@ -350,7 +420,7 @@ export class RunProcessor {
     const r = outcome.result;
     const toolSteps = r?.steps.filter((s) => s.type === 'TOOL') ?? [];
     const totalCost = (r?.modelCost ?? 0) + (r?.toolCost ?? 0);
-    await this.db.transaction(async (tx) => {
+    const closed = await this.db.transaction(async (tx) => {
       const [trace] = await tx
         .insert(traces)
         .values({
@@ -396,7 +466,7 @@ export class RunProcessor {
           })),
         );
       }
-      await tx
+      const [row] = await tx
         .update(agentExecutions)
         .set({
           status: outcome.status,
@@ -414,8 +484,22 @@ export class RunProcessor {
           updatedAt: new Date(),
         })
         // Guarded: a concurrent cancel (RUNNING -> CANCELLED) wins.
-        .where(and(eq(agentExecutions.id, execution.id), eq(agentExecutions.status, 'RUNNING')));
+        .where(and(eq(agentExecutions.id, execution.id), eq(agentExecutions.status, 'RUNNING')))
+        .returning({ id: agentExecutions.id });
+      return Boolean(row);
     });
+    if (!closed) return;
+    await this.events.emit(
+      executionFinishedEvent(execution, this.eventContext(agent, version, link.taskRunId ?? null, link.taskDefinitionId ?? null), {
+        status: outcome.status,
+        output: r?.output ?? null,
+        error: outcome.error ?? null,
+        costEur: totalCost,
+        inputTokens: r?.usage.inputTokens ?? 0,
+        outputTokens: r?.usage.outputTokens ?? 0,
+        latencyMs: outcome.latencyMs,
+      }),
+    );
   }
 
   private async finishExecution(id: string, status: RunStatus, patch: { error?: Record<string, unknown> }) {
@@ -438,9 +522,11 @@ export class RunProcessor {
       latencyMs: number;
     }>,
   ): Promise<void> {
-    await this.db
+    const [row] = await this.db
       .update(taskRuns)
       .set({ ...patch, status, finishedAt: new Date(), updatedAt: new Date() })
-      .where(and(eq(taskRuns.id, id), inArray(taskRuns.status, allowedSources(status))));
+      .where(and(eq(taskRuns.id, id), inArray(taskRuns.status, allowedSources(status))))
+      .returning();
+    if (row) await this.events.emit(taskFinishedEvent(row));
   }
 }

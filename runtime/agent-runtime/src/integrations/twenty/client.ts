@@ -151,6 +151,25 @@ export class TwentyClient {
     }
   }
 
+  /**
+   * Cheap liveness probe against Twenty's `/healthz` (unauthenticated: the API key is not sent).
+   * One attempt, short timeout, no retries. True only on a 2xx. Never throws.
+   * Used by the worker to hold runs while Twenty is still booting (`health: starting`).
+   */
+  async health(timeoutMs = 3_000): Promise<boolean> {
+    try {
+      const res = await this.fetchImpl(`${this.baseUrl}/healthz`, {
+        headers: { Accept: 'application/json' },
+        signal: AbortSignal.timeout(timeoutMs),
+      });
+      // Drain the body so the connection can be reused.
+      await res.text().catch(() => undefined);
+      return res.ok;
+    } catch {
+      return false;
+    }
+  }
+
   async list<T>(objectPlural: string, opts: ListOptions = {}): Promise<ListResult<T>> {
     const query: Record<string, string> = {};
     if (opts.filter) query.filter = opts.filter;

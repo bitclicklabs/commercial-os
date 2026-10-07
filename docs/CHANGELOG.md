@@ -10,6 +10,15 @@ Cambios notables de PubliEXPE Commercial OS, agrupados por tanda de trabajo. For
 - Prospector v1: clasifica expositores de un evento y escribe en Twenty empresa + señal (NEW) + hipótesis (PROPOSED) + resumen de ejecución, con coste real por paso (~0,005 €/run). Seed de agente y tarea `daily-event-prospecting` (CRON 08:00).
 - Runbook completo, `scripts/sync-twenty-app.ps1` (workaround Windows del CLI de Twenty) y fixes de `deployments/`.
 
+## 2026-10-07 — Tanda 3 (PR #3)
+
+- Fix de arranque: el worker espera a que Twenty esté sano antes de ejecutar runs con sus tools (sin gastar reintentos, tope configurable).
+- Modo scout del Prospector: grounding de Google Search vía Gemini + tool `fetch_url` con guardias SSRF; contenido web tratado como no confiable (LLD §76) y URLs validadas contra fuentes reales. Tarea `weekly-event-scouting` (lunes 07:30). Limitaciones conocidas: Gemini 3.8 no devuelve metadatos de fuentes del grounding (fallback por descarga) y los catálogos JS/PDF no se leen (señal a nivel de feria).
+- Event bus: tabla `events` append-only, publicación de `task.*` y `agent.execution.*`, trigger `EVENT` del scheduler con guardia anti-bucle y `GET /events`.
+- Evaluador HUMAN: webhook de Twenty firmado (HMAC) → tabla `evaluations` (ACCEPTED 1.0 / EDITED 0.5 con diff / DISCARDED 0.0), vinculado a la ejecución de origen; `pnpm register:webhook` y `POST/GET /evaluations`.
+- Guía del equipo comercial (`docs/guia-comercial.md`) y runbook actualizado.
+- Infra: allowlist de webhooks internos de Twenty (`OUTBOUND_HTTP_ALLOWED_INTERNAL_HOSTS`), `TWENTY_WEBHOOK_SECRET`, `TWENTY_WAIT_MAX_MS` y claves de Gemini en el compose.
+
 ## Sin publicar
 
 ### Documentación y herramientas
@@ -17,6 +26,7 @@ Cambios notables de PubliEXPE Commercial OS, agrupados por tanda de trabajo. For
 - Se completa el [runbook de operación local](runbook-local.md) con el comando de migraciones de Drizzle, las variables del runtime, el arranque del stack completo (incluido `pxos-runtime` en el `4020`), los logs por contenedor, el flujo de prueba end-to-end, las credenciales de desarrollo y la rotación de la API key de Twenty.
 - Se añade `scripts/sync-twenty-app.ps1`, que sincroniza la Twenty App desde Windows. Ejecuta `yarn twenty apply` en un contenedor efímero `node:24` conectado a `pxos-net`, con `socat` reenviando `127.0.0.1:3020` a `pxos-twenty:3000`. Evita el error `Resource path must not contain backslashes` y el fallo de subida de archivos por `SERVER_URL`.
 - Se documenta el workaround de Windows en el runbook y en el README de la Twenty App.
+- Se añade la [guía del equipo comercial](guia-comercial.md) y la sección "Operación diaria" del runbook, y se cierra el hueco del seed con `pnpm seed`.
 
 ## 2026-10-06 — Tanda 1: bootstrap del MVP-0 (PR #1)
 

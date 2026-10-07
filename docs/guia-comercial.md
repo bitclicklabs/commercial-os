@@ -2,7 +2,7 @@
 
 Esta guía explica cómo trabajar cada día con PubliEXPE Commercial OS desde Twenty, sin necesidad de conocimientos técnicos. En unos 10 minutos al día revisas las oportunidades que el sistema ha preparado para ti, y decides cuáles merecen tu tiempo.
 
-El sistema propone; tú decides. El sistema nunca contacta con nadie.
+El sistema propone; tú decides. El sistema nunca contacta con nadie por su cuenta: todo envío lo lanzas tú.
 
 ## Contenido
 
@@ -37,16 +37,16 @@ El sistema solo registra hipótesis con una confianza igual o superior a 0,50. L
 
 > **Activo desde el 2026-10-07.** La primera ejecución automática es el lunes siguiente a las 07:30.
 
-Cada lunes, el sistema debería buscar ferias y eventos reales relevantes para PubliEXPE y dejarlos en Twenty para que el Prospector los analice durante la semana. Cuando esté activo, lo verás reflejado en **Commercial OS → Signals** y en **Commercial OS → Agent runs**. Esta guía se actualizará con los detalles.
+Cada lunes, el sistema busca ferias y eventos reales relevantes para PubliEXPE, lee el catálogo de expositores completo y deja en Twenty las empresas con encaje, con su señal y su hipótesis en `Proposed`. Lo verás reflejado en **Commercial OS → Signals**, en **Commercial OS → Hypotheses** y en **Commercial OS → Agent runs**. La ejecución tiene un límite de 20 minutos: si un catálogo es muy grande, el resumen de la ejecución (*Agent run*) sale como `Partial` e indica en qué fase se cortó. Lo ya evaluado se guarda igualmente.
 
 ### Lo que el sistema no hace
 
-- **No envía emails ni mensajes** a nadie.
+- **No envía emails ni mensajes por su cuenta.** Un correo solo sale cuando tú revisas el borrador y pulsas el envío.
 - **No contacta con decisores.** Elegir a quién escribir y cuándo es cosa tuya.
 - **No cambia etapas de oportunidad ni crea presupuestos.**
 - **No borra nada.**
 
-El sistema sí prepara **borradores de email** cuando validas una hipótesis, pero nunca los envía: los revisas y los envías tú a mano. Consulta [Borradores de email](#borradores-de-email).
+El sistema sí prepara **borradores de email** cuando validas una hipótesis, pero nunca los envía: los revisas y los envías tú, con un clic desde Twenty o a mano desde tu correo. Consulta [Borradores de email](#borradores-de-email).
 
 ## Dónde mirar en Twenty
 
@@ -151,28 +151,78 @@ Dos ejemplos:
 
 ## Borradores de email
 
-Cuando validas una hipótesis, el sistema prepara un borrador del primer email para esa empresa. Esto ocurre tanto si la validas tal cual como si la editas antes de validarla: en ese segundo caso, el borrador usa los datos que has corregido (cantidades, presupuesto, productos o enfoque). El borrador es solo una propuesta de texto: **el sistema no envía nada, nunca**. Lo envías tú, a mano, desde tu buzón.
+Cuando validas una hipótesis, el sistema prepara un borrador del primer email para esa empresa. Esto ocurre tanto si la validas tal cual como si la editas antes de validarla: en ese segundo caso, el borrador usa los datos que has corregido (cantidades, presupuesto, productos o enfoque).
+
+El borrador es solo una propuesta de texto: **el sistema no envía nada por su cuenta, nunca**. El correo sale cuando tú lo revisas y lo lanzas, y puedes hacerlo de dos formas:
+
+| Forma | Cuándo la usas |
+|---|---|
+| [Enviar desde Twenty con un clic](#enviar-desde-twenty-con-un-clic) | Es la forma habitual. El correo sale desde tu buzón `jesus.abril@publiexpe.info`, conectado a Twenty. |
+| [Enviar a mano desde tu correo](#alternativa-enviar-a-mano-desde-tu-correo) | Si el envío desde Twenty no está disponible, o si prefieres escribir desde el webmail (por ejemplo, para usar el otro buzón). |
+
+En las dos formas se aplican las mismas reglas: [lista de supresión](#lista-de-supresión-qué-haces-antes-de-enviar) y [Qué no haces](#qué-no-haces).
 
 ### Dónde aparece el borrador
 
-El borrador aparece como una nota en la empresa en Twenty. Su título empieza por "Borrador email — ". Ábrela desde la ficha de la empresa de la hipótesis que acabas de validar.
+El borrador aparece en dos sitios:
 
-### Qué haces
+- **En la hipótesis**, en los campos **Email to** (destinatario), **Email subject** (asunto) y **Email body** (cuerpo), con **Email status** = `Draft`. Es donde lo revisas y lo envías.
+- **Como una nota en la empresa**, con el título "Borrador email — ...". Es una copia de referencia: se crea siempre, aunque no uses el envío desde Twenty.
 
-1. Abre la nota "Borrador email — ..." de la empresa.
+> **Nota:** edita el borrador **en la hipótesis**, no en la nota. Lo que envía Twenty son los campos de la hipótesis.
+
+### Enviar desde Twenty con un clic
+
+> **Activo desde el 2026-10-07.** Tu buzón está conectado a Twenty y el flujo de envío está activado. Los detalles técnicos están en [Enviar los borradores desde Twenty](twenty-envio-email.md).
+
+En cada hipótesis validada:
+
+1. Abre la hipótesis y lee **Email subject** y **Email body**. Corrige lo que haga falta **en la hipótesis**, no en la nota. No quites la línea de baja ni la firma.
+1. Comprueba **Email to**. Si está vacío, escribe la dirección del destinatario (una dirección de rol, como `compras@`, si no hay un decisor identificado).
+1. Comprueba que ni la dirección ni el dominio del destinatario están en la nota `Lista de supresión — NO contactar` (consulta [Lista de supresión](#lista-de-supresión-qué-haces-antes-de-enviar)). El sistema además lo comprueba y devuelve el borrador a `Draft` si la dirección está en la lista.
+1. Comprueba que no superas el ritmo del día del [plan de warm-up](email-warmup.md). Los envíos desde Twenty cuentan igual que los del webmail.
+1. Cambia **Email status** a `Reviewed`. Significa «lo he leído y se puede enviar».
+1. Abre el menú de acciones de la hipótesis (Cmd/Ctrl+K o el botón de acciones) y pulsa **Enviar borrador de email**. Twenty lo lanza sin otra confirmación: tu confirmación es el `Reviewed`. El correo sale desde **tu** buzón conectado, con tu nombre como remitente.
+1. Comprueba que **Email status** pasa a `Sent` (recarga la ficha si no cambia).
+
+Cómo cambia **Email status**:
+
+| Estado | Significa | Quién lo cambia |
+|---|---|---|
+| `Draft` | Borrador escrito por el sistema, sin revisar. | El sistema |
+| `Reviewed` | Lo has leído y se puede enviar. | Tú |
+| `Sending` | El envío está en curso. | Twenty, al pulsar el botón |
+| `Sent` | El correo ha salido. | Twenty, al terminar el envío |
+
+Qué debes saber:
+
+- **Un clic envía un solo correo.** El botón no admite selección múltiple, a propósito: no sirve para envíos masivos.
+- **Sin `Reviewed`, no sale nada.** Si pulsas el botón con otro estado, Twenty se detiene sin enviar. Tampoco envía si la hipótesis no está en `Validated` o si faltan destinatario, asunto o cuerpo.
+- **No vuelvas a pulsar si se queda en `Sending`.** El envío ha fallado o sigue en curso. Avisa al equipo técnico, que lo revisa en **Workflows → Runs**. Pulsar otra vez podría duplicar el correo.
+- **El correo enviado no aparece en la carpeta *Enviados* de IONOS**, porque Twenty solo se conecta a tu buzón para enviar. Las respuestas de los clientes llegan a tu correo como siempre.
+- **No tienes histórico del correo en la ficha de la empresa.** Queda `Sent` en la hipótesis y el registro del envío en **Workflows → Runs**.
+- **Cuenta tus envíos del día.** En **Hypotheses**, filtra por **Email status** = `Sent` y por fecha de actualización.
+
+### Alternativa: enviar a mano desde tu correo
+
+Usa esta forma si el envío desde Twenty no está disponible. El sistema deja el mismo borrador en la nota de la empresa.
+
+1. Abre la nota "Borrador email — ..." de la empresa de la hipótesis que acabas de validar.
 1. **Lee el borrador completo.** Revísalo siempre, aunque la hipótesis te parezca buena.
 1. Personaliza lo que haga falta: saludo, nombre de la persona, referencia al evento, cantidades o tono. Comprueba que los datos son correctos.
+1. Antes de enviar, comprueba que el destinatario no está en la lista de supresión (consulta el apartado siguiente).
 1. Copia el texto a un correo nuevo. Envíalo desde `jesus.abril@publiexpe.info` o `j.abril@publiexpe.info`.
 1. Comprueba que el correo lleva tu identificación y la línea de baja con `baja@publiexpe.info`.
-1. Antes de enviar, comprueba que el destinatario no está en la lista de supresión (consulta el apartado siguiente).
 
 ### Lista de supresión: qué haces antes de enviar
 
 1. **Antes de enviar cualquier correo en frío**, abre en Twenty la nota `Lista de supresión — NO contactar` (búscala por "supresión") y comprueba que ni la dirección ni el dominio del destinatario aparecen. Si aparecen, no envíes ni vuelvas a contactar nunca.
-1. **Toda petición de baja** (una respuesta a tu correo o un mensaje a `baja@publiexpe.info`) se añade **el mismo día** como una línea nueva al final de la nota, con el formato `email — fecha — motivo`.
+1. **Toda petición de baja** (una respuesta a tu correo o un mensaje a `baja@publiexpe.info`) acaba como una línea nueva al final de la nota, con el formato `email — fecha — motivo`. El sistema revisa el buzón cada 2 horas y añade las bajas que detecta. Si recibes una petición de baja y todavía no está en la nota, añádela tú **el mismo día**.
 1. **No borres ni edites** las líneas existentes de la nota.
 
 Para el detalle del procedimiento, consulta [Gestión de bajas y lista de supresión](email-warmup.md#gestión-de-bajas-y-lista-de-supresión).
+
+> **Importante:** la comprobación antes de enviar sigue siendo tuya. El sistema la repite como red de seguridad, pero no la sustituye.
 
 ### Qué no haces
 
@@ -180,23 +230,9 @@ Para el detalle del procedimiento, consulta [Gestión de bajas y lista de supres
 - **No envíes sin leer.** El borrador lo ha escrito un modelo de IA y puede contener errores o cifras que no encajan.
 - **No envíes prospección en frío desde una dirección `@publiexpe.com`.** El frío sale solo desde `@publiexpe.info`, para proteger la reputación del dominio principal.
 - **No superes el ritmo de envío del [plan de warm-up](email-warmup.md)** mientras los buzones se están calentando.
+- **No pongas `Reviewed` sin haber comprobado la lista de supresión.**
 
-> **Importante:** la nota es un borrador. No significa que el correo se haya enviado ni que se vaya a enviar. Si no lo envías tú, no sale.
-
-### Cuando tu buzón esté conectado en Twenty
-
-> **Todavía no está activo.** Esta forma de trabajar estará disponible cuando conectes tu buzón en Twenty y el equipo técnico active el flujo (consulta [Enviar los borradores desde Twenty](twenty-envio-email.md)). Hasta entonces, sigue los pasos de [Qué haces](#qué-haces).
-
-Cuando esté activo, además de la nota, el borrador aparecerá en la propia hipótesis, en los campos **Email to** (destinatario), **Email subject** (asunto) y **Email body** (cuerpo), con **Email status** = `Draft`. Podrás revisarlo y enviarlo sin salir de Twenty:
-
-1. Abre la hipótesis y lee el asunto y el cuerpo. Corrige lo que haga falta **en la hipótesis**, no en la nota.
-1. Si **Email to** está vacío, escribe la dirección del destinatario.
-1. Comprueba que el destinatario no está en la lista de supresión y que no superas el ritmo del [plan de warm-up](email-warmup.md).
-1. Cambia **Email status** a `Reviewed`. Significa «lo he leído y se puede enviar».
-1. En el menú de acciones de la hipótesis (Cmd/Ctrl+K), pulsa **Enviar borrador de email**. El correo sale desde **tu** buzón conectado.
-1. Comprueba que **Email status** pasa a `Sent`. Si se queda en `Sending`, no vuelvas a pulsar: avisa al equipo técnico.
-
-El sistema sigue sin enviar nada por su cuenta: si no pones `Reviewed` y pulsas tú el envío, el correo no sale. Las reglas de [Qué no haces](#qué-no-haces) se aplican igual.
+> **Importante:** el borrador no es un correo enviado. Si no pones `Reviewed` y pulsas tú el envío (o lo envías a mano), el correo no sale.
 
 ## Estados: cuándo usar cada uno
 
@@ -248,7 +284,7 @@ Para que el feedback sea útil:
 
 ### ¿Validar una hipótesis envía un email al cliente?
 
-No. Validar solo cambia el estado de la hipótesis. El sistema no envía emails ni mensajes. Tú decides si contactas, a quién y cómo.
+No. Validar solo cambia el estado de la hipótesis. El sistema no envía emails por su cuenta: un correo solo sale cuando tú pones `Reviewed` en **Email status** y pulsas **Enviar borrador de email**, o cuando lo envías a mano desde tu correo. Tú decides si contactas, a quién y cómo.
 
 ### El sistema se equivocó de contacto
 

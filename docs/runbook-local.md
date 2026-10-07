@@ -17,6 +17,7 @@ Los huecos que siguen abiertos están marcados con `[POR COMPLETAR]`. Cuando cie
 | PostgreSQL del Agent OS (BD `agentos`) | `pxos-postgres` | `127.0.0.1:5440` |
 | Redis del Agent OS (BullMQ) | `pxos-redis` | `127.0.0.1:6391` |
 | Agent Runtime (API + worker) | `pxos-runtime` | `127.0.0.1:4020` |
+| Renderer (Playwright + Chromium, lee catálogos JavaScript) | `pxos-renderer` | interno; `127.0.0.1:4030` en desarrollo |
 
 Red: `pxos-net`. Volúmenes: `pxos-twenty-db-data`, `pxos-twenty-local-data`, `pxos-postgres-data`, `pxos-redis-data`. Puertos reservados y ocupados por otros proyectos: [PORTS.md](PORTS.md).
 
@@ -62,6 +63,8 @@ Todos los comandos `docker compose` de este runbook se ejecutan desde `deploymen
 
    Si `deployments/.env.example` ya incluye alguna de estas variables, no las dupliques.
 
+   Para que el BajasAgent lea el buzón de bajas, rellena también `IONOS_IMAP_USER` y `IONOS_IMAP_PASSWORD` (ya figuran en `.env.example`; la contraseña del buzón no se sube al repositorio).
+
 ### Variables del runtime
 
 `pxos-runtime` recibe su configuración del bloque `environment` de `deployments/docker-compose.yml`. Para el runtime fuera de Docker, las mismas variables viven en `runtime/agent-runtime/.env`.
@@ -81,7 +84,11 @@ Todos los comandos `docker compose` de este runbook se ejecutan desde `deploymen
 | `ANTHROPIC_API_KEY` | `${ANTHROPIC_API_KEY:-}` | Solo para agentes con `model_provider=anthropic` |
 | `GEMINI_API_KEY` / `GEMINI_MODEL` | `${GEMINI_API_KEY:-}` / `${GEMINI_MODEL:-}` | Proveedor del Prospector (`model_provider=gemini`). `GEMINI_MODEL` vacío usa `gemini-flash-latest` |
 | `TWENTY_BASE_URL` | `http://pxos-twenty:3000` | URL de Twenty por la red `pxos-net` |
-| `TWENTY_API_KEY` | `${TWENTY_API_KEY:-}` | API key de Twenty para que el runtime escriba en el CRM |
+| `TWENTY_API_KEY` | `${TWENTY_API_KEY:-}` | API key de Twenty para que el runtime escriba en el CRM. Debe tener el rol restringido «Agent runtime» ([Rol de la API key](#rol-de-la-api-key-de-twenty)) |
+| `IONOS_IMAP_HOST` / `IONOS_IMAP_USER` / `IONOS_IMAP_PASSWORD` | `${IONOS_IMAP_*:-}` | Buzón que lee el BajasAgent, **solo lectura**. Sin usuario o contraseña, la tarea `process-unsubscribes` termina `SKIPPED` y no lee nada |
+| `RENDERER_URL` | `http://pxos-renderer:3000` | Servicio de render de JavaScript del scout |
+
+> **Nota:** el puente de eventos con n8n ([`docs/n8n-integracion.md`](n8n-integracion.md)) necesita `EXTERNAL_EVENTS_TOKEN` y, para destinos privados, `EXTERNAL_WEBHOOK_ALLOW_PRIVATE`. El `docker-compose.yml` actual no las pasa a `pxos-runtime`: sin ellas, `POST /events/external` responde `503`. Añádelas al bloque `environment` solo si vas a usar el puente.
 
 ## Credenciales de desarrollo
 
@@ -138,6 +145,30 @@ Las contraseñas de Postgres solo se aplican al crear el volumen por primera vez
 
    En el contenedor no tienes que hacer nada: `pxos-runtime` las aplica al arrancar porque `RUN_MIGRATIONS=true`. Las migraciones son idempotentes (journal de Drizzle).
 
+   Hoy hay siete migraciones, `0000` a `0006`. Las de las tandas 6 y 7 se aplican solas al arrancar, sin pasos extra:
+
+   | Migración | Qué añade |
+   |---|---|
+   | `0004_inbound` | Tabla `inbound_state` (cursor del BajasAgent) |
+   | `0005_skills` | Tablas `skills` y `skill_versions` (inmutables por trigger) y la columna `traces.skill_versions` |
+   | `0006_event_subscriptions` | Tabla `event_subscriptions` (webhooks salientes hacia n8n) |
+
+   Las migraciones posteriores (`0007` y siguientes, si llegan) se aplican igual. Para comprobar cuáles están aplicadas (la tabla es la que crea Drizzle por defecto `[NO VERIFICADO]` en esta instancia):
+
+   ```bash
+   docker exec pxos-postgres psql -U agentos -d agentos -c "SELECT id, created_at FROM drizzle.__drizzle_migrations ORDER BY id"
+   ```
+
+   > **Importante:** si aplicas las migraciones a mano en una base compartida, aplica la `0005` **antes** de desplegar el código que resuelve skills: usa la columna `traces.skill_versions`.
+
+   > **Precaución:** antes de fusionar una rama con migraciones nuevas, comprueba que las fechas (`when`) del journal crecen con el índice. Si no, Drizzle puede saltarse una migración en silencio (consulta [ADR-31](LLD-0.3-estado-real.md#adr-31)). Desde `runtime/agent-runtime/`:
+
+   ```bash
+   node -e "const j=require('./drizzle/meta/_journal.json').entries;let ok=true;j.forEach((e,i)=>{if(i&&e.when<=j[i-1].when){ok=false;console.error('when no creciente:',e.tag)}});console.log(ok?'OK':'KO');process.exit(ok?0:1)"
+   ```
+
+   Si imprime `KO`, no fusiones: refecha la migración afectada y reencadena su snapshot.
+
    Para aplicarlas a mano, por ejemplo tras añadir una migración o con el runtime fuera de Docker, ejecuta desde `runtime/agent-runtime/`:
 
    ```bash
@@ -172,7 +203,7 @@ Las contraseñas de Postgres solo se aplican al crear el volumen por primera vez
    pnpm seed
    ```
 
-   El seed es idempotente: puedes repetirlo sin duplicar nada.
+   El seed es idempotente: puedes repetirlo sin duplicar nada. Desde la tanda 7 también siembra el `EmailDrafter`, el `BajasAgent` y las 4 skills como v1 `ACTIVE` (consulta [Skills](#skills-comprobar-que-están-activas)).
 
    - Crea el agente `Prospector` (versión 1 `ACTIVE`, proveedor `gemini`). Si ya existe y su versión activa difiere, añade una versión nueva y depreca la anterior.
    - Crea o actualiza la tarea `daily-event-prospecting`: `CRON 0 8 * * *` en `Europe/Madrid`, con `test/fixtures/feria-ejemplo.json` (tres expositores ficticios) como entrada por defecto.
@@ -257,9 +288,48 @@ Tu parte como operador es comprobar que la ejecución ha ocurrido:
 1. Si no la hay o es `Failed` o `Partial`, consulta la run con `curl "http://127.0.0.1:4020/tasks/<TASK_ID>/runs" -H 'x-tenant-id: publiexpe'` y los [logs](#dónde-mirar-los-logs) del runtime. Causas habituales: falta `GEMINI_API_KEY` o `TWENTY_API_KEY`, o el proceso `scheduler` no está en marcha. Consulta [Problemas frecuentes](#problemas-frecuentes).
 1. El coste de cada ejecución aparece en el campo **Cost** del resumen. El valor esperado con la entrada de ejemplo es de unos 0,006 €.
 
-1. El canal de email de prospección en frío (`publiexpe.info`) tiene su propia operación diaria y semanal: checklists, vigilancia de informes DMARC y Postmaster Tools, y el calendario de warm-up. Sigue el [plan de warm-up del canal de email](email-warmup.md). El sistema solo deja borradores en Twenty; los envíos los hace una persona a mano.
+1. El canal de email de prospección en frío (`publiexpe.info`) tiene su propia operación diaria y semanal: checklists, vigilancia de informes DMARC y Postmaster Tools, y el calendario de warm-up. Sigue el [plan de warm-up del canal de email](email-warmup.md). El sistema solo deja borradores en Twenty; los envíos los hace una persona, con un clic desde Twenty ([Enviar los borradores desde Twenty](twenty-envio-email.md)) o a mano desde el webmail.
+
+1. Comprueba que la tarea `process-unsubscribes` (cada 2 horas) se ejecuta: `curl "http://127.0.0.1:4020/tasks/<TASK_ID>/runs" -H 'x-tenant-id: publiexpe'`. Un `outcome` `SKIPPED` con el motivo `IMAP no configurado` indica que faltan `IONOS_IMAP_USER` o `IONOS_IMAP_PASSWORD`.
+1. Si el comercial avisa de que una hipótesis se queda en `Email status` = `Sending`, abre **Workflows → Runs** en Twenty y revisa la ejecución de **Enviar borrador de email**. No relances el envío hasta saber si el correo salió.
 
 > **Nota:** la tarea usa por defecto la entrada de ejemplo del seed (expositores ficticios con dominio `.example`). Los registros que genera son de demostración. El scouting semanal de ferias reales (lunes 07:30) y la captura del feedback del comercial están activos.
+
+## Skills: comprobar que están activas
+
+Los prompts de los agentes viven en la BD como skills versionadas ([ADR-29](LLD-0.3-estado-real.md#adr-29)). Consulta cuáles están activas:
+
+```bash
+curl -s http://127.0.0.1:4020/skills -H 'x-tenant-id: publiexpe' | jq '.items[] | {name, status, active_version}'
+```
+
+Resultado esperado tras el seed: cuatro skills, todas `ACTIVE` y con `active_version` `1` (o la versión que hayas activado después): `prospector-event-exhibitors`, `event-source-discovery`, `exhibitor-list-extraction` y `email-first-contact-draft`.
+
+- **Ver las versiones de una skill:** `curl -s http://127.0.0.1:4020/skills/<nombre> -H 'x-tenant-id: publiexpe'`.
+- **Cambiar una skill:** crea una versión nueva (`POST /skills/<nombre>/versions`) y actívala (`POST /skills/<nombre>/versions/<n>/activate`). Las ejecuciones en marcha no cambian; las nuevas usan la versión activa. Los ejemplos están en el [README del runtime](../runtime/agent-runtime/README.md#ciclo-de-vida-por-api).
+- **Volver atrás:** depreca la versión activa (`POST /skills/<nombre>/versions/<n>/deprecate`) y se reactiva la anterior.
+- **No se puede borrar ni editar el contenido** de una versión: un trigger de la BD lo impide. Para corregir, crea una versión nueva.
+- **Qué versión usó una ejecución:** `GET /task-runs/<id>` o `GET /executions/<id>` incluyen `skill_versions` en el trace.
+
+Si una skill no se resuelve (no existe, no hay versión activa o falla la BD), el agente usa el prompt de código como fallback y el runtime registra el aviso `skill not found in the database; falling back to the code constant`. La ejecución no falla. Si lo ves en los [logs](#dónde-mirar-los-logs), ejecuta `pnpm seed` y vuelve a consultar `GET /skills`.
+
+## Rol de la API key de Twenty
+
+La API key del runtime (`TWENTY_API_KEY`) tiene el rol restringido **Agent runtime** en Twenty: lectura y escritura de objetos, **ninguna tool**. Es lo que impide que el runtime pueda enviar correo a través de las tools MCP de Twenty ([ADR-28](LLD-0.3-estado-real.md#adr-28)).
+
+Comprueba que el rol sigue aplicado. Este comando solo lee el catálogo de tools; no envía nada. El resultado esperado es `0`:
+
+```bash
+curl -s http://localhost:3020/mcp \
+  -H "Authorization: Bearer $TWENTY_API_KEY" \
+  -H 'Content-Type: application/json' -H 'Accept: application/json, text/event-stream' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"get_tool_catalog","arguments":{"categories":["ACTION"]}}}' \
+  | grep -c send_email
+```
+
+> **Importante:** si el resultado es mayor que `0`, la API key tiene permisos de más. Reasígnale el rol **Agent runtime** en **Settings → APIs & Webhooks** antes de seguir enviando desde Twenty.
+
+El procedimiento completo para crear el rol está en [Enviar los borradores desde Twenty](twenty-envio-email.md#paso-1-restringir-la-api-key-del-runtime). `scripts/sync-twenty-app.ps1` y `pnpm twenty:send-workflow` necesitan una API key con permisos de administración: ejecútalos con una key temporal de rol Admin y revócala después.
 
 ## Sincronizar la Twenty App
 
@@ -319,9 +389,12 @@ Rota la clave si se filtra, caduca o el runtime recibe `401` de Twenty.
    ```
 
 4. Comprueba que el runtime arranca sano: `curl http://127.0.0.1:4020/health`.
-5. En Twenty, revoca la clave anterior desde **Settings → APIs & Webhooks**.
+5. **Reasigna el rol restringido «Agent runtime» a la clave nueva.** Hazlo en **Settings → APIs & Webhooks**, dentro de la clave nueva, **antes** de dejarla en producción: la asignación de la clave anterior no se hereda. Comprueba con el comando de [Rol de la API key de Twenty](#rol-de-la-api-key-de-twenty) que `send_email` no aparece (resultado `0`).
+6. En Twenty, revoca la clave anterior desde **Settings → APIs & Webhooks**.
 
 `scripts/sync-twenty-app.ps1` lee la clave de `deployments/.env`, así que usa la nueva automáticamente. Si tienes un remote guardado en `~/.twenty/config.json` (por ejemplo `pxos-local`), actualízalo con `yarn twenty remote:add ... --as pxos-local` y la clave nueva.
+
+> **Precaución:** una clave nueva que conserve el rol Admin permitiría al runtime usar las tools de correo de Twenty en cuanto haya un buzón conectado. No la uses sin reasignar el rol. Con qué rol nace una clave nueva no consta en las fuentes `[NO VERIFICADO]`: comprueba el rol siempre.
 
 > **Nota:** el runtime usa `TWENTY_API_KEY` en cada escritura (tools de Twenty del Prospector). Si la clave es inválida, la ejecución registra el error `TWENTY_NOT_CONFIGURED` (sin clave) o `TWENTY_UNAUTHORIZED` (clave rechazada) en el trace.
 
@@ -380,6 +453,9 @@ Si cambias `SERVER_URL`, reinicia `pxos-twenty` y `pxos-twenty-worker`. Debe coi
 | Salida de la sincronización de la Twenty App | La terminal donde ejecutas `scripts/sync-twenty-app.ps1` (el contenedor es efímero y no deja logs) |
 | Qué hizo un agente en una ejecución | `GET /executions/:id`, que incluye el trace y sus pasos ([LLD v0.2 sección 8](LLD-0.2-especificacion.md#8-trace-schema)) |
 | Resultado de una run y su trace | `GET /task-runs/:id` |
+| Qué skills están activas | `GET /skills` |
+| Envíos desde Twenty (workflow) | **Workflows → Runs** en Twenty |
+| Bajas detectadas por el BajasAgent | `GET /tasks/:id/runs` de `process-unsubscribes` y la nota `Lista de supresión — NO contactar` |
 | Resumen comercial de una ejecución | Objeto `agentRunSummary` en Twenty (**Agent runs**), con enlace al trace |
 | Historial de una tarea | `GET /tasks/:id/runs` |
 
@@ -429,12 +505,17 @@ ORDER BY created_at DESC;
 | `/health` del runtime devuelve `503` con `"db":"unreachable"` | `pxos-postgres` caído o `DATABASE_URL` incorrecta | Comprueba `docker compose ps` y arranca `pxos-postgres`. |
 | `pxos-runtime` se reinicia en bucle | Falla la migración al arrancar o falta una dependencia | Lee `docker compose logs --tail 200 pxos-runtime`. |
 | `docker compose up` falla con "Define ENCRYPTION_KEY en deployments/.env" | Falta `ENCRYPTION_KEY` en `deployments/.env` | Genera el valor con `openssl rand -base64 32`. |
-| El runtime no consigue escribir en Twenty | API key ausente, caducada o con alcance insuficiente | Rota la clave: [Rotar la API key de Twenty](#rotar-la-api-key-de-twenty). |
+| El runtime no consigue escribir en Twenty | API key ausente, caducada o con alcance insuficiente | Rota la clave: [Rotar la API key de Twenty](#rotar-la-api-key-de-twenty). Si la clave es nueva, comprueba que tiene el rol «Agent runtime» con permisos de objetos ([Rol de la API key](#rol-de-la-api-key-de-twenty)). |
 | `yarn twenty apply` falla con `Resource path must not contain backslashes` | Limitación del CLI de Twenty en Windows | Usa `scripts/sync-twenty-app.ps1`: [workaround](#windows-workaround-del-cli-de-twenty). |
 | `apply` falla subiendo archivos a `localhost:3020` desde un contenedor | La `SERVER_URL` de Twenty no resuelve dentro del contenedor | Usa el script, que reenvía `127.0.0.1:3020` con `socat`. |
 | `sync-twenty-app.ps1` dice que no existe la red `pxos-net` | El stack no está levantado | `docker compose up -d` en `deployments/`. |
 | Una ejecución se queda en `RUNNING` | Llamada colgada o límite de tiempo no aplicado | Cancela con `POST /executions/:id/cancel` y revisa el trace. |
 | La tarea de las 08:00 no se ejecutó | No se ha hecho el seed, la tarea no está `ACTIVE`/`enabled`, el agente no está `ACTIVE` o el proceso con rol `scheduler` (o `all`) no está en marcha | Haz `pnpm seed`, revisa `GET /tasks` y los logs del runtime, y lanza una run manual con `POST /tasks/:id/run` si necesitas el resultado ya. |
+| `GET /skills` devuelve una lista vacía, o los logs avisan de `falling back to the code constant` | No se ha hecho el seed tras aplicar la `0005_skills`, o la BD falló al resolver | `pnpm seed` y vuelve a consultar `GET /skills`. El agente sigue funcionando con el prompt de código. |
+| El runtime arranca pero falta una tabla (`event_subscriptions`, `skills`...) | Una migración no se aplicó (por ejemplo, fechas del journal en desorden) | Revisa las migraciones aplicadas y el journal: [Arranque, paso 4](#arranque). No edites tablas a mano. |
+| `POST /events/external` devuelve `503` | `EXTERNAL_EVENTS_TOKEN` no está definido en el runtime (el compose actual no lo pasa) | Añádelo al `environment` de `pxos-runtime` y recrea el servicio. |
+| Una hipótesis se queda en `Email status` = `Sending` | El envío falló o sigue en curso | Revisa **Workflows → Runs**. No pulses de nuevo hasta saber si el correo salió: si salió, pon `Sent` a mano; si falló, corrige la causa y vuelve a poner `Reviewed`. |
+| `process-unsubscribes` termina `SKIPPED` | Faltan `IONOS_IMAP_USER` o `IONOS_IMAP_PASSWORD` en el runtime | Añádelas a `deployments/.env` y recrea `pxos-runtime`. |
 | Hipótesis duplicadas en Twenty | Fallo de idempotencia | Conserva los datos, anota las `idempotencyKey` afectadas y abre una incidencia. No borres registros sin revisión. |
 
 ## Backup
@@ -472,3 +553,6 @@ Guarda los volcados **fuera** del repositorio. `[POR COMPLETAR]` Ubicación y ro
 - [Puertos reservados](PORTS.md)
 - [Guía de contribución](CONTRIBUTING.md)
 - [Plan de warm-up del canal de email](email-warmup.md)
+- [Enviar los borradores desde Twenty](twenty-envio-email.md)
+- [Integración de eventos con n8n](n8n-integracion.md)
+- [LLD v0.3: estado real y ADR](LLD-0.3-estado-real.md)

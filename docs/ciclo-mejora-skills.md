@@ -214,7 +214,7 @@ El rollback no pasa por el Release Gate: deprecar la activa, o activar una versi
 | Paso manual | Qué hace el optimizador |
 |---|---|
 | 1. Fija el reparto de datos | Respeta P5 por construcción: el dataset y `used_by` marcan lo quemado; sin casos etiquetados frescos termina en `BLOCKED_NO_DATA` |
-| 2. Analiza trazas y evaluaciones | Fase `HARVEST` (evaluaciones humanas negativas y fallos duros de las reglas) y `CLUSTERED` (agrupación con LLM) |
+| 2. Analiza trazas y evaluaciones | Fase `HARVESTING` (evaluaciones humanas negativas y fallos duros de las reglas) y `CLUSTERED` (agrupación con LLM) |
 | 3. Escribe la candidata | Fase `CANDIDATE_CREATED`: el LLM propone operaciones `ADD`/`REMOVE`/`REPLACE`/`MOVE`/`REORDER` con los mismos topes del 35 % y el 50 %; crea la `DRAFT` con un changelog que cita los clusters |
 | 4. Ejecuta el experimento | Fase `EXPERIMENT_RUNNING`: el mismo runner de `pnpm experiment:run` |
 | 5. Decide | **Humana**, a partir de la nota «Propuesta de promoción» en Twenty (solo si el gate da `GATE_PASS`) |

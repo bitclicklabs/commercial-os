@@ -33,30 +33,32 @@ No tiene sentido lanzarla "por si acaso": cada vuelta cuesta dinero y quema caso
 
 ## Fases y estados
 
-Cada ejecución del optimizador es una fila de la tabla `optimization_runs` (migración 0012). Avanza por estas fases y deja el estado en cada una, de modo que puedes consultar dónde se quedó.
+Cada ejecución del optimizador es una fila de la tabla `optimization_runs` (migración 0013). Avanza por estas fases y deja el estado en cada una, de modo que puedes consultar dónde se quedó. Solo puede haber un run abierto por skill (un segundo `POST` responde `409`).
 
 ```mermaid
 stateDiagram-v2
-    [*] --> HARVEST: optimize:run / POST /optimizer/skills/:name/run
-    HARVEST --> BLOCKED_NO_DATA: sin casos etiquetados frescos suficientes
-    HARVEST --> CLUSTERED: fallos agrupados (LLM)
+    [*] --> PENDING: optimize:run / POST /optimizer/skills/:name/run (202, encolado)
+    PENDING --> HARVESTING: el worker lo recoge
+    HARVESTING --> BLOCKED_NO_DATA: menos de 3 fallos, o VALIDATION etiquetada fresca insuficiente
+    HARVESTING --> CLUSTERED: fallos agrupados (LLM)
     CLUSTERED --> CANDIDATE_CREATED: edit-ops dentro de topes 35 % / 50 %
-    CANDIDATE_CREATED --> EXPERIMENT_RUNNING: SkillVersion DRAFT + experimento
-    EXPERIMENT_RUNNING --> GATE_PASS: PASS / PASS_FORM
+    CANDIDATE_CREATED --> EXPERIMENT_RUNNING: SkillVersion DRAFT + dataset nuevo + experimento
+    EXPERIMENT_RUNNING --> GATE_PASS: PASS / PASS_FORM → nota "Propuesta de promoción" en Twenty
     EXPERIMENT_RUNNING --> GATE_FAIL: FAIL / INCONCLUSIVE
-    GATE_PASS --> [*]: nota "Propuesta de promoción" en Twenty
-    GATE_FAIL --> [*]: la candidata queda DRAFT; nada se activa
+    GATE_PASS --> PROMOTED: cierre humano tras activar la candidata por el gate
+    GATE_PASS --> DISCARDED: cierre humano sin activar
+    GATE_FAIL --> DISCARDED: cierre humano
     BLOCKED_NO_DATA --> [*]: no se gasta ni un euro de experimento
 ```
 
-Además de estos estados, una ejecución puede terminar con un error técnico (proveedor caído, presupuesto agotado): queda registrado en la fila y no deja ninguna versión activa.
+Además de estos estados existe `ERROR` (proveedor caído, topes rechazados dos veces, presupuesto agotado): queda registrado en la fila, con el detalle en `details`, y no deja ninguna versión activa. Los cierres humanos se hacen con `POST /optimizer/runs/:id/close` (`PROMOTED` exige que la candidata ya sea la versión activa — es decir, que alguien la haya activado pasando por el gate; `DISCARDED` en caso contrario).
 
 | Fase | Qué hace | Qué sale |
 |---|---|---|
-| `HARVEST` | Reúne los fallos de la skill desde dos fuentes: evaluaciones humanas negativas (hipótesis descartadas o editadas) y *hard-fails* de las reglas (RULE) del evaluador. Comprueba además que existan casos etiquetados frescos con los que validar | Lista de fallos con su traza y ejecución de origen; o `BLOCKED_NO_DATA` |
+| `HARVESTING` | Reúne los fallos de la versión activa desde dos fuentes, solo de trazas reales (ni stub ni `[TEST]`): evaluaciones humanas negativas (hipótesis descartadas o editadas, el último veredicto por hipótesis) y *hard-fails* de las reglas (RULE), sin gastar LLM. Comprueba además, **antes de gastar**, que habría suficientes casos de VALIDATION etiquetados y sin quemar (en simulación, descontando las entidades de los fallos) | Lista de fallos con su traza de origen; o `BLOCKED_NO_DATA` (por defecto pide ≥ 3 fallos y ≥ 5 casos frescos) |
 | `CLUSTERED` | Un LLM agrupa los fallos por causa común (por ejemplo, "confianza inflada sin datos" o "suposiciones escritas como hechos") | Clusters con descripción y ejemplos citables |
 | `CANDIDATE_CREATED` | El LLM propone operaciones `ADD`, `REMOVE`, `REPLACE`, `MOVE` y `REORDER` sobre la versión activa. La herramienta valida los topes y crea una `SkillVersion` en `DRAFT` cuyo *changelog* cita los clusters que corrige | Versión `DRAFT` con operaciones y justificación en `metadata` |
-| `EXPERIMENT_RUNNING` | Lanza el [runner de experimentos](../runtime/agent-runtime/README.md#experiments-y-release-gate) existente: versión `ACTIVE` como baseline frente a la candidata | Experimento `EXP-NNN` con su informe |
+| `EXPERIMENT_RUNNING` | Construye la versión siguiente del dataset, marca como `design` (P5) los casos de las entidades que originaron los fallos, y lanza el [runner de experimentos](../runtime/agent-runtime/README.md#experiments-y-release-gate) existente: versión `ACTIVE` como baseline frente a la candidata | Dataset `DRAFT` nuevo + experimento `EXP-NNN` con su informe |
 | `GATE_PASS` / `GATE_FAIL` | Copia la decisión del Release Gate | Con `PASS`: nota en Twenty. Con `FAIL`: nada más |
 
 El optimizador reutiliza las piezas ya existentes: las operaciones acotadas son las de `pnpm skill:candidate`, y el experimento es el mismo que lanzas a mano con `pnpm experiment:run`. Por eso el resultado de una vuelta automática se lee igual que EXP-003.
@@ -91,8 +93,7 @@ El `VALIDATION` de `prospeccion-v1` se quemó en EXP-003, y los cinco veredictos
 Para desbloquearlo:
 
 1. El equipo comercial sigue validando, editando o descartando hipótesis en Twenty como en su [rutina diaria](guia-comercial.md). Cada decisión queda registrada como evaluación humana.
-1. Un responsable técnico reconstruye el dataset para incorporar esos veredictos (`pnpm dataset:build`, que crea la versión siguiente de `prospeccion` en `DRAFT`) y lo activa tras revisarlo.
-1. Se vuelve a lanzar `pnpm optimize:run`.
+1. Se vuelve a lanzar `pnpm optimize:run`: el propio optimizador construye la versión siguiente del dataset con los veredictos nuevos antes del experimento (también puede hacerse a mano con `pnpm dataset:build`). El mensaje del `BLOCKED_NO_DATA` dice cuántos casos faltan y cuántos están quemados.
 
 Los scouts de los lunes (el primero automático, el 2026-10-12) generan hipótesis nuevas; solo se convierten en casos etiquetados cuando una persona las revisa.
 
@@ -142,11 +143,11 @@ El gate decide con un puñado de casos y repeticiones controladas. El canario es
 
 Cómo funciona:
 
-- `POST /skills/:name/versions/:v/canary` con `{ "percent": 20 }` pone la versión en canario. La versión debe haber pasado el gate.
-- El reparto es **determinista**: se decide por un hash del id de ejecución. Una misma ejecución cae siempre en el mismo grupo, aunque se reintente, y la comparación no depende del azar de cada llamada.
-- Solo puede haber **una canaria por skill** a la vez.
-- `GET /skills/:name/canary` devuelve la comparativa entre la versión activa y la canaria (volumen, aceptación y coste de cada una).
-- Al terminar, **promote** convierte la canaria en la versión activa y **rollback** la retira; la versión activa nunca dejó de estar disponible. En ambos casos decide una persona: el sistema no promueve ni retira solo. Las rutas exactas están en el README del runtime.
+- `POST /skills/:name/versions/:v/canary` con `{ "percent": 20 }` (1-99) pone la versión en canario. La versión debe haber pasado el gate (`PASS` o `PASS_FORM`; un rollback no admite canario) y aquí no existe `force`. El porcentaje no se cambia en caliente: para otro porcentaje, rollback y canario nuevo.
+- El reparto es **determinista**: se decide por un hash del id del task run (o de la ejecución directa). Una misma ejecución cae siempre en el mismo grupo, aunque se reintente, y la comparación no depende del azar de cada llamada. La traza registra rama y clave (P4).
+- Solo puede haber **una canaria por skill** a la vez; mientras exista, la activación normal de esa skill responde `409`, y deprecar la canaria o la estable cierra el canario.
+- `GET /skills/:name/canary` devuelve la comparativa entre la versión activa y la canaria (volumen, resultado, coste, latencia, último veredicto humano y el delta canaria − estable).
+- Al terminar, `POST /skills/:name/canary/promote` convierte la canaria en la versión activa (re-verifica el gate) y `POST /skills/:name/canary/rollback` la retira (siempre permitido e idempotente); la versión activa nunca dejó de estar disponible. En ambos casos decide una persona: el sistema no promueve ni retira solo.
 
 Cuándo usarlo:
 

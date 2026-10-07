@@ -1,4 +1,5 @@
 import type { AgentContext, AgentImplementation, AgentResult, AgentStep } from './agent.js';
+import { EmailDrafterAgent } from './email-drafter.js';
 import { ProspectorAgent } from './prospector-agent.js';
 import { SmokeAgent } from './smoke-agent.js';
 
@@ -77,6 +78,8 @@ export function resolveAgentImplementation(configuration: Record<string, unknown
       return new SmokeAgent();
     case 'prospector':
       return new ProspectorAgent();
+    case 'email_drafter':
+      return new EmailDrafterAgent();
     default:
       throw new Error(`Unknown agent implementation: ${kind}`);
   }

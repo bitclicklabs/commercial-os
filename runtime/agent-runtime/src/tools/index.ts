@@ -1,6 +1,8 @@
 import { twentyClientFromEnv, type TwentyClient } from '../integrations/twenty/index.js';
 import { ToolRegistry } from './registry.js';
 import { createFindCompanyTool, createGetCompanyTool, createUpsertCompanyTool } from './twenty/company-tools.js';
+import { createGetHypothesisTool } from './twenty/hypothesis-tools.js';
+import { createCreateNoteTool } from './twenty/note-tools.js';
 import {
   createCreateAgentRunSummaryTool,
   createCreateHypothesisTool,
@@ -15,6 +17,8 @@ export * from './policy.js';
 export * from './executor.js';
 export * from './twenty/company-tools.js';
 export * from './twenty/record-tools.js';
+export * from './twenty/hypothesis-tools.js';
+export * from './twenty/note-tools.js';
 export * from './web/fetch-url.js';
 export * from './web/ip-guard.js';
 export * from './web/html-text.js';
@@ -29,6 +33,8 @@ export function registerTwentyTools(registry: ToolRegistry, twenty: TwentyClient
   registry.register(createCreateResearchTool(deps));
   registry.register(createCreateHypothesisTool(deps));
   registry.register(createCreateAgentRunSummaryTool(deps));
+  registry.register(createGetHypothesisTool(deps));
+  registry.register(createCreateNoteTool(deps));
   return registry;
 }
 

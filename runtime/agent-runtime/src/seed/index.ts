@@ -2,7 +2,8 @@
  * `pnpm seed [--tenant=publiexpe] [--input=path/to/event.json]`
  *
  * Seeds the Prospector agent and its tasks `daily-event-prospecting` and
- * `weekly-event-scouting` (idempotent).
+ * `weekly-event-scouting`, and the EmailDrafter agent with its task
+ * `draft-email-on-validated` (all idempotent).
  * The daily task default input is the demo fixture `test/fixtures/feria-ejemplo.json`
  * unless `--input` points to another file with the same shape.
  */
@@ -12,6 +13,7 @@ import { fileURLToPath } from 'node:url';
 import { ProspectorInput } from '../agents/prospector-agent.js';
 import { loadConfig } from '../config.js';
 import { createDb } from '../db/client.js';
+import { seedEmailDrafter } from './email-drafter-seed.js';
 import { seedProspector } from './prospector-seed.js';
 
 /** Works from src/seed (tsx) and dist/seed (node). */
@@ -32,11 +34,13 @@ if (isMain) {
   const tenantId = arg('tenant') ?? config.defaultTenantId;
   const input = arg('input');
   const handle = createDb(config.databaseUrl);
+  const log = (m: string) => console.log(`[seed] ${m}`);
   seedProspector(handle.db, {
     tenantId,
     defaultInput: loadSeedInput(input ? path.resolve(input) : DEFAULT_FIXTURE),
-    log: (m) => console.log(`[seed] ${m}`),
+    log,
   })
+    .then(async (prospector) => ({ prospector, emailDrafter: await seedEmailDrafter(handle.db, { tenantId, log }) }))
     .then((r) => console.log(JSON.stringify({ tenant: tenantId, ...r }, null, 2)))
     .catch((err: unknown) => {
       console.error('[seed] failed', err);

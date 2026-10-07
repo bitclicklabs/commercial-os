@@ -10,7 +10,7 @@ Principio rector: **el CRM es el system of record; el Agent OS es el system of i
 |---|---|---|
 | Twenty App | `apps/twenty-app/` | Extensión CRM: objetos comerciales, vistas y UI |
 | Agent Runtime | `runtime/` | Ejecución de agentes: harness, memoria, tools, traces |
-| Servicios | `services/` | Catalog Service (catálogo publiexpe) e Inbound Manager |
+| Servicios | `services/` | Catalog Service (catálogo publiexpe), Inbound Manager y [`renderer/`](services/renderer/README.md) (render JavaScript con Playwright para el scout de ferias) |
 | Evaluación | `evaluation/` | Evaluadores, datasets, benchmarks y release gates |
 | Optimización | `optimization/` | Skill/Harness/Router optimizers |
 | Integraciones | `integrations/` | Twenty, n8n, web |

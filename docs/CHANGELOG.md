@@ -2,6 +2,14 @@
 
 Cambios notables de PubliEXPE Commercial OS, agrupados por tanda de trabajo. Formato basado en [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/). Las fechas usan el formato `AAAA-MM-DD`.
 
+## 2026-10-07 — Tanda 6 (PR #6)
+
+- Catálogo completo: paginación hasta el final (parada temprana), presupuesto por TIEMPO (20 min, cortes limpios sin perder evaluaciones pagadas), captura de la API JSON de las SPAs de catálogo (filtrada y untrusted) y fichas en paralelo. Run real: 91/91 expositores, 29 empresas con dominio (23 nuevas), 0,195 €. `max_profile_lookups` por defecto: 100 (gobernado por tiempo).
+- Borradores: la primera mención de PubliEXPE lleva siempre descriptor ("expertos en merchandising para empresas"), por prompt y garantizado por código (`company_descriptor` configurable). Feedback directo del usuario.
+- Inbound de bajas: BajasAgent determinista (sin LLM) lee el buzón por IMAP en SOLO LECTURA (cliente sin métodos de escritura, verificado), clasifica bajas con señales estrictas y las añade (append-only, dedupe) a la nota de supresión de Twenty. Task `process-unsubscribes` cada 2 h. Migración 0004.
+- Flaky de events: diagnóstico (ventana intencionada del patrón outbox; el código es correcto), test robustecido + test determinista del orden.
+- LLD v0.3 (`docs/LLD-0.3-estado-real.md`): 22 ADRs, mapa de los 34 puntos del v0.2 (2 iguales, 21 distintos, 11 pendientes), métricas base y pendientes honestos. 9 contradicciones de documentación reconciliadas.
+
 ## Sin publicar
 
 ### Documentación y herramientas

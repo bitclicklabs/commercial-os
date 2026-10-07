@@ -5,6 +5,7 @@ import { desiredProspectorVersion } from '../../src/seed/prospector-seed.js';
 import {
   BudgetGuardProvider,
   dataLevel,
+  rebuildReport,
   renderComparisonMarkdown,
   runSkillComparison,
   versionMetrics,
@@ -85,7 +86,10 @@ describe('skill:compare core', () => {
 
     expect(m1).toMatchObject({ version: 1, decisions: 3, errors: 0, relevant: 2, writable: 2, hypotheses: 2, need_with_quantities: 0, quantity_ratio_over_2_5: 2 });
     expect(m2).toMatchObject({ version: 2, decisions: 3, relevant: 2, writable: 1, hypotheses: 2, need_with_quantities: 2, quantity_ratio_over_2_5: 0 });
-    expect(m1.confidence_by_level.rich).toEqual({ n: 3, mean: 0.5, max: 0.9 });
+    // By data level: relevant decisions only (the public body's 0,05 does not count).
+    expect(m1.confidence_by_level.rich).toEqual({ n: 2, mean: 0.725, max: 0.9 });
+    expect(m1.confidence_mean).toBe(0.5);
+    expect(m1.irrelevant_high_confidence).toBe(0);
     expect(m1.input_tokens).toBe(3 * 1600);
     expect(m2.output_tokens).toBe(3 * 320);
     expect(m1.cost_eur).toBeGreaterThan(0);
@@ -111,6 +115,18 @@ describe('skill:compare core', () => {
     expect(s1.writable_flips).toBe(1);
     expect(s2).toMatchObject({ relevant_flips: 0, writable_flips: 0, confidence_mad: 0 });
     expect(report.cases[1]!.byVersion[0]!.confidences).toEqual([0.55, 0.45]);
+  });
+
+  it('flags irrelevant decisions with a high confidence (certainty read instead of fit) and re-renders a saved report', async () => {
+    const h = harness([...V1_ANSWERS, V2_ANSWERS[0]!, V2_ANSWERS[1]!, decision(false, 0.95, null, 'Organismo público.')]);
+    const report = await runSkillComparison({ skillName: 'prospector-event-exhibitors', versions: [V1, V2], input: fixture, provider: h.provider, makeTools: h.makeTools, agentVersion: h.agentVersion, now: NOW });
+    expect(report.metrics[1].irrelevant_high_confidence).toBe(1);
+    expect(report.metrics[1].confidence_relevant_mean).toBe(0.625);
+    const saved = JSON.parse(JSON.stringify(report)) as typeof report;
+    saved.metrics = [] as unknown as typeof report.metrics;
+    const rebuilt = rebuildReport(saved);
+    expect(rebuilt.metrics).toEqual(report.metrics);
+    expect(renderComparisonMarkdown(rebuilt)).toContain('| No relevantes con confianza > 0,19 (incoherencia) | 0 | 1 |');
   });
 
   it('stops calling the model once the budget is spent and marks the report incomplete', async () => {

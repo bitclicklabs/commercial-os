@@ -3,6 +3,10 @@
  *                    [--repeat N] [--max-cost-eur 0.15] [--today AAAA-MM-DD]
  *                    [--api http://127.0.0.1:4020] [--tenant publiexpe] [--out <prefijo>]
  *                    [--provider gemini|stub]
+ * pnpm skill:compare --rerender <informe.json> [--out <prefijo>]
+ *
+ * `--rerender` recomputes the metrics of a saved comparison and writes the report again
+ * without calling the model (to refine a measurement; the runs are not changed).
  *
  * Runs the SAME input with two versions of a skill (real provider; Gemini by default) and
  * prints the comparison: side by side, structured differences, tokens and cost per version.
@@ -21,7 +25,7 @@ import { dirname, resolve } from 'node:path';
 import { parseArgs } from 'node:util';
 import { GeminiProvider, StubProvider, type ModelProvider } from '../src/providers/index.js';
 import { desiredProspectorVersion } from '../src/seed/prospector-seed.js';
-import { BudgetGuardProvider, renderComparisonMarkdown, runSkillComparison, type CompareVersion, type ComparisonReport } from '../src/skills/compare.js';
+import { BudgetGuardProvider, rebuildReport, renderComparisonMarkdown, runSkillComparison, type CompareVersion, type ComparisonReport } from '../src/skills/compare.js';
 import { renderSkill } from '../src/skills/render.js';
 import { createDefaultToolRegistry, parseToolPolicy, ToolExecutor } from '../src/tools/index.js';
 import { readConfig } from '../src/agents/prospector-core.js';
@@ -71,8 +75,16 @@ async function main(): Promise<void> {
       tenant: { type: 'string', default: process.env.DEFAULT_TENANT_ID ?? 'publiexpe' },
       out: { type: 'string' },
       provider: { type: 'string', default: 'gemini' },
+      rerender: { type: 'string' },
     },
   });
+  if (values.rerender) {
+    const saved = JSON.parse(readFileSync(resolve(values.rerender), 'utf8')) as SavedComparison;
+    const reports = saved.reports.map(({ fixture, report }) => ({ fixture, report: rebuildReport(report) }));
+    const prefix = values.out ?? values.rerender.replace(/\.json$/, '');
+    writeOutputs({ ...saved, reports }, reports, prefix, `${saved.crm_writes ?? 'n/d'}`);
+    return;
+  }
   const skill = positionals[0];
   if (!skill) fail('falta el nombre de la skill');
   const versions = (values.versions ?? '').split(',').map((s) => Number(s.trim()));
@@ -135,22 +147,37 @@ async function main(): Promise<void> {
 
   // Safety net: the in-memory CRM is the only one the runs could write to.
   const crmWrites = fakes.reduce((n, f) => n + f.tables.companies.length + f.tables.commercialHypotheses.length, 0);
+  const md = writeOutputs({ skill, versions, spent_eur: budget.spentEur, budget_eur: maxCostEur, crm_writes: crmWrites, reports }, reports, values.out, String(crmWrites));
+  console.log(md);
+  if (budget.exceeded) process.exitCode = 3;
+}
+
+interface SavedComparison {
+  skill: string;
+  versions: number[];
+  spent_eur: number;
+  budget_eur: number;
+  crm_writes?: number;
+  reports: Array<{ fixture: string; report: ComparisonReport }>;
+}
+
+function writeOutputs(saved: SavedComparison, reports: SavedComparison['reports'], outPrefix: string | undefined, crmWrites: string): string {
+  const [a, b] = saved.versions;
   const md = [
-    `## skill:compare ${skill} v${tuple[0].version} vs v${tuple[1].version}`,
+    `## skill:compare ${saved.skill} v${a} vs v${b}`,
     '',
-    `Coste total: ${budget.spentEur.toFixed(4)} € de ${maxCostEur} €. Escrituras en el CRM en memoria (FakeTwenty): ${crmWrites}; en Twenty real: 0.`,
+    `Coste total: ${saved.spent_eur.toFixed(4)} € de ${saved.budget_eur} €. Escrituras en el CRM en memoria (FakeTwenty): ${crmWrites}; en Twenty real: 0.`,
     '',
     ...reports.flatMap(({ fixture, report }) => [`Fixture: \`${fixture}\``, '', renderComparisonMarkdown(report), '']),
   ].join('\n');
-  if (values.out) {
-    const out = resolve(values.out);
+  if (outPrefix) {
+    const out = resolve(outPrefix);
     mkdirSync(dirname(out), { recursive: true });
-    writeFileSync(`${out}.json`, JSON.stringify({ skill, versions, spent_eur: budget.spentEur, budget_eur: maxCostEur, reports }, null, 2));
+    writeFileSync(`${out}.json`, JSON.stringify({ ...saved, reports }, null, 2));
     writeFileSync(`${out}.md`, `${md}\n`);
     console.error(`informe: ${out}.md y ${out}.json`);
   }
-  console.log(md);
-  if (budget.exceeded) process.exitCode = 3;
+  return md;
 }
 
 main().catch((err: unknown) => {

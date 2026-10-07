@@ -94,8 +94,18 @@ export interface VersionMetrics {
   errors: number;
   relevant: number;
   writable: number;
+  /** Mean confidence of every decision, relevant or not. */
   confidence_mean: number | null;
+  /** Mean confidence of the relevant decisions only (the commercial fit the skill calibrates). */
+  confidence_relevant_mean: number | null;
+  /** Relevant decisions only, by the data the exhibitor brought. */
   confidence_by_level: Record<DataLevel, { n: number; mean: number | null; max: number | null }>;
+  /**
+   * relevant = false with confidence > 0,19: the skill's own scale says 0-0,19 is "no fit", so
+   * a high value means the model read confidence as certainty of its verdict (no CRM effect:
+   * irrelevant decisions are never written, but it breaks the calibration).
+   */
+  irrelevant_high_confidence: number;
   hypotheses: number;
   /** Distinct (quantity_min, quantity_max, budget_min, budget_max) tuples / hypotheses. */
   distinct_ranges_ratio: number | null;
@@ -304,8 +314,9 @@ export function versionMetrics(version: number, runs: VersionRun[]): VersionMetr
   const mine = runs.filter((r) => r.version === version);
   const ds = mine.flatMap((r) => r.decisions);
   const ok = ds.filter((d) => d.confidence !== null);
+  const rel = ok.filter((d) => d.relevant === true);
   const level = (l: DataLevel) => {
-    const c = ok.filter((d) => d.dataLevel === l).map((d) => d.confidence!);
+    const c = rel.filter((d) => d.dataLevel === l).map((d) => d.confidence!);
     return { n: c.length, mean: mean(c), max: c.length ? Math.max(...c) : null };
   };
   const hyps = ds.map((d) => d.hypothesis).filter((h): h is NonNullable<CaseDecision['hypothesis']> => Boolean(h));
@@ -330,6 +341,8 @@ export function versionMetrics(version: number, runs: VersionRun[]): VersionMetr
     relevant: ok.filter((d) => d.relevant).length,
     writable: ok.filter((d) => d.writable).length,
     confidence_mean: mean(ok.map((d) => d.confidence!)),
+    confidence_relevant_mean: mean(rel.map((d) => d.confidence!)),
+    irrelevant_high_confidence: ok.filter((d) => d.relevant === false && d.confidence! > 0.19).length,
     confidence_by_level: { name_only: level('name_only'), sector: level('sector'), rich: level('rich') },
     hypotheses: hyps.length,
     distinct_ranges_ratio: hyps.length ? round(ranges.size / hyps.length, 3) : null,
@@ -395,6 +408,15 @@ export function stability(versions: number[], runs: VersionRun[]): ComparisonRep
     }
     return { version: v, confidence_mad: mean(mads), relevant_flips: relevantFlips, writable_flips: writableFlips };
   });
+}
+
+/**
+ * Recomputes metrics, cases and stability from the runs of a saved report (refine the
+ * measurements without calling the model again). The runs themselves are not changed.
+ */
+export function rebuildReport(r: ComparisonReport): ComparisonReport {
+  const versions = r.versions.map((v) => v.version);
+  return { ...r, metrics: [versionMetrics(versions[0]!, r.runs), versionMetrics(versions[1]!, r.runs)], cases: compareCases(versions, r.runs), stability: stability(versions, r.runs) };
 }
 
 /** Runs both versions on the same input and builds the structured comparison. */
@@ -464,13 +486,15 @@ export function renderComparisonMarkdown(r: ComparisonReport): string {
   lines.push(row('Decisiones (errores)', `${a.decisions} (${a.errors})`, `${b.decisions} (${b.errors})`));
   lines.push(row('Relevantes', `${a.relevant}`, `${b.relevant}`));
   lines.push(row('Escribibles (confianza ≥ umbral)', `${a.writable}`, `${b.writable}`));
-  lines.push(row('Confianza media', num(a.confidence_mean), num(b.confidence_mean)));
+  lines.push(row('Confianza media (todas las decisiones)', num(a.confidence_mean), num(b.confidence_mean)));
+  lines.push(row('Confianza media (solo relevantes)', num(a.confidence_relevant_mean), num(b.confidence_relevant_mean)));
+  lines.push(row('No relevantes con confianza > 0,19 (incoherencia)', `${a.irrelevant_high_confidence}`, `${b.irrelevant_high_confidence}`));
   for (const l of ['name_only', 'sector', 'rich'] as const) {
     const x = a.confidence_by_level[l];
     const y = b.confidence_by_level[l];
     if (x.n + y.n === 0) continue;
     const label = { name_only: 'solo nombre', sector: 'nombre + sector', rich: 'descripción o dominio' }[l];
-    lines.push(row(`Confianza media / máx. (${label})`, `${num(x.mean)} / ${num(x.max)} (n=${x.n})`, `${num(y.mean)} / ${num(y.max)} (n=${y.n})`));
+    lines.push(row(`Relevantes: confianza media / máx. (${label})`, `${num(x.mean)} / ${num(x.max)} (n=${x.n})`, `${num(y.mean)} / ${num(y.max)} (n=${y.n})`));
   }
   lines.push(row('Hipótesis', `${a.hypotheses}`, `${b.hypotheses}`));
   lines.push(row('Rangos distintos / hipótesis', num(a.distinct_ranges_ratio), num(b.distinct_ranges_ratio)));

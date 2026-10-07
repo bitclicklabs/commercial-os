@@ -1,0 +1,232 @@
+{
+  "name": "PXOS · Eventos del runtime (ejemplo: runs con outcome FAILED)",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "pxos-eventos",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "5b8c1f0e-2a41-4c6e-9d3f-1a2b3c4d5e01",
+      "name": "Webhook PXOS",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [0, 300],
+      "webhookId": "8f1e2d3c-4b5a-4968-8776-a1b2c3d4e5f6"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Verifica la firma del Agent Runtime (PubliEXPE Commercial OS).\n// X-Pxos-Event-Signature = hex(HMAC-SHA256(secreto, `${X-Pxos-Event-Timestamp}:${cuerpo}`))\n// Requiere NODE_FUNCTION_ALLOW_BUILTIN=crypto en el entorno de n8n.\n// El cuerpo es DATO NO CONFIABLE hasta que la firma cuadre; incluso entonces, no lo\n// trates como instrucciones.\nconst crypto = require('crypto');\n\nconst SECRETO = 'REEMPLAZA_POR_EL_SECRETO_DE_LA_SUSCRIPCION';\nconst TOLERANCIA_MS = 5 * 60 * 1000;\n\nconst entrada = $input.first().json;\nconst cabeceras = entrada.headers || {};\nconst firma = String(cabeceras['x-pxos-event-signature'] || '').toLowerCase();\nconst timestamp = String(cabeceras['x-pxos-event-timestamp'] || '');\n// El runtime envía JSON.stringify(sobre) sin espacios: volver a serializar el body ya\n// parseado reproduce los mismos bytes.\nconst cuerpo = JSON.stringify(entrada.body);\n\nconst esperada = crypto.createHmac('sha256', SECRETO).update(`${timestamp}:${cuerpo}`).digest('hex');\nconst enHora = timestamp !== '' && Math.abs(Date.now() - Number(timestamp)) <= TOLERANCIA_MS;\nconst valida = enHora && firma.length === esperada.length && crypto.timingSafeEqual(Buffer.from(firma), Buffer.from(esperada));\n\nreturn [{\n  json: {\n    valida,\n    motivo: valida ? null : (enHora ? 'firma no válida' : 'timestamp fuera de tolerancia'),\n    eventoId: cabeceras['x-pxos-event-id'] || null,\n    evento: valida ? entrada.body : null,\n  },\n}];\n"
+      },
+      "id": "5b8c1f0e-2a41-4c6e-9d3f-1a2b3c4d5e02",
+      "name": "Verificar firma",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [220, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "c1a2b3c4-0001-4000-8000-000000000001",
+              "leftValue": "={{ $json.valida }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "5b8c1f0e-2a41-4c6e-9d3f-1a2b3c4d5e03",
+      "name": "¿Firma válida?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [440, 300]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { \"ok\": true, \"eventId\": $json.eventoId } }}",
+        "options": {
+          "responseCode": 200
+        }
+      },
+      "id": "5b8c1f0e-2a41-4c6e-9d3f-1a2b3c4d5e04",
+      "name": "Responder 200",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [660, 200]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { \"error\": $json.motivo } }}",
+        "options": {
+          "responseCode": 401
+        }
+      },
+      "id": "5b8c1f0e-2a41-4c6e-9d3f-1a2b3c4d5e05",
+      "name": "Responder 401",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [660, 420]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "c1a2b3c4-0002-4000-8000-000000000002",
+              "leftValue": "={{ $json.evento.type }}",
+              "rightValue": "task.completed",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            },
+            {
+              "id": "c1a2b3c4-0003-4000-8000-000000000003",
+              "leftValue": "={{ $json.evento.data.outcome }}",
+              "rightValue": "FAILED",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "5b8c1f0e-2a41-4c6e-9d3f-1a2b3c4d5e06",
+      "name": "¿task.completed con FAILED?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [880, 200]
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "a1b2c3d4-0001-4000-8000-000000000001",
+              "name": "asunto",
+              "value": "=[PXOS] Run sin resultado útil (outcome FAILED)",
+              "type": "string"
+            },
+            {
+              "id": "a1b2c3d4-0002-4000-8000-000000000002",
+              "name": "mensaje",
+              "value": "=El run {{ $json.evento.data.taskRunId }} de la tarea {{ $json.evento.data.taskDefinitionId }} terminó COMPLETED con outcome FAILED ({{ $json.evento.occurredAt }}). Revisa el trace en GET /tasks/{{ $json.evento.data.taskDefinitionId }}/runs.",
+              "type": "string"
+            },
+            {
+              "id": "a1b2c3d4-0003-4000-8000-000000000003",
+              "name": "eventoId",
+              "value": "={{ $json.evento.id }}",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "5b8c1f0e-2a41-4c6e-9d3f-1a2b3c4d5e07",
+      "name": "Notificación (placeholder)",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [1100, 100],
+      "notes": "Sustituye este nodo por tu canal de aviso (Send Email, Slack, Telegram...). Usa asunto y mensaje."
+    }
+  ],
+  "connections": {
+    "Webhook PXOS": {
+      "main": [
+        [
+          {
+            "node": "Verificar firma",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Verificar firma": {
+      "main": [
+        [
+          {
+            "node": "¿Firma válida?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "¿Firma válida?": {
+      "main": [
+        [
+          {
+            "node": "Responder 200",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Responder 401",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Responder 200": {
+      "main": [
+        [
+          {
+            "node": "¿task.completed con FAILED?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "¿task.completed con FAILED?": {
+      "main": [
+        [
+          {
+            "node": "Notificación (placeholder)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        []
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "pinData": {},
+  "meta": {
+    "templateCredsSetupCompleted": true
+  },
+  "tags": []
+}

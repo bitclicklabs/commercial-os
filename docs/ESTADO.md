@@ -61,3 +61,13 @@ Canal de email (recordatorio operativo): warm-up iniciado el 2026-10-06; DMARC p
 | Sandbox seccomp de Chromium en pxos-renderer | `feat/tanda5` | PM | ✅ activo (perfil Playwright + cap_add SYS_CHROOT; render real verificado con sandbox) |
 | SNDS, procedimiento de lista de supresión y actualización de guía/changelog | `docs/email-ops` | Sonnet | ✅ fusionado (SNDS no aplica con IP compartida de IONOS: documentada la alternativa; lista de supresión decidida como nota en Twenty) |
 | Integración, e2e y PR | `feat/tanda5` | PM | ✅ 364 tests×2; desplegado; seed v5 (lookups 20); ciclo real con el usuario: 5 validaciones → 5 borradores; tenant limpio (solo Prospector y EmailDrafter) |
+
+## Tanda 6 — Catálogo completo, inbound de bajas y LLD v0.3 🔄 (en curso, 2026-10-07)
+
+| Pieza | Rama | Agente | Estado |
+|---|---|---|---|
+| Catálogo completo: paginación hasta el final (91) y fichas de todos los relevantes con presupuesto por tiempo | `feat/catalog-full` | Opus | 🔄 en curso |
+| Afinado: el borrador presenta qué es PubliEXPE (garantizado por código) + fix del flaky de events | `fix/afinado` | Opus | 🔄 en curso |
+| Inbound de bajas: lector IMAP del buzón → alta automática en la lista de supresión (HITL para el resto) | `feat/inbound-bajas` | Opus | 🔄 en curso (necesita credenciales IMAP en .env) |
+| LLD v0.3: consolidación de todas las decisiones de implementación | `docs/lld-0.3` | Sonnet | 🔄 en curso |
+| Integración, e2e y PR | `feat/tanda6` | PM | ⏸️ |

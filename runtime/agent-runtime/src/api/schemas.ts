@@ -200,6 +200,31 @@ export const ListSkillsQuery = z.object({ status: z.enum(['DRAFT', 'ACTIVE', 'DE
 export const SkillParams = z.object({ id: z.string().min(1).max(100) });
 export const SkillVersionParams = z.object({ id: z.string().min(1).max(100), v: z.coerce.number().int().positive() });
 
+/**
+ * Body of `POST /skills/:id/versions/:v/activate` (and the harness one). Without it the
+ * Release Gate decides; `force: true` with a `reason` (>= 10 characters) is a human override
+ * of a blocked gate (LLD v0.1 section 19), logged and returned in the response.
+ */
+export const ActivateVersionBody = z
+  .object({
+    force: z.boolean().optional(),
+    reason: z.string().trim().max(2_000).optional(),
+    by: z.string().trim().max(200).optional(),
+  })
+  .refine((b) => b.force !== true || (b.reason ?? '').length >= 10, { message: 'force requires a reason (at least 10 characters)', path: ['reason'] });
+
+// ---------------------------------------------------------------------------
+// Experiments (MVP-2, LLD v0.1 sections 11.5-11.6): read only, `pnpm experiment:run` writes
+// ---------------------------------------------------------------------------
+export const ListExperimentsQuery = z.object({
+  subject_type: z.enum(['skill', 'harness']).optional(),
+  subject_name: z.string().min(1).max(100).optional(),
+  candidate_version: z.coerce.number().int().positive().optional(),
+  status: z.enum(['DRAFT', 'RUNNING', 'COMPLETED', 'FAILED', 'CANCELLED']).optional(),
+  limit: z.coerce.number().int().min(1).max(200).optional(),
+});
+export const ExperimentParams = z.object({ id: z.string().min(1).max(100) });
+
 // ---------------------------------------------------------------------------
 // Harnesses (MVP-1, LLD v0.1 section 7.1): the config is validated by src/harness/config.ts
 // ---------------------------------------------------------------------------

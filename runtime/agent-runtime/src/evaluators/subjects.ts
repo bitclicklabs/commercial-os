@@ -153,6 +153,12 @@ export interface ComparisonLoadOptions {
   baseDir?: string;
   /** Agent threshold (configuration.min_confidence) the comparison ran with. */
   minConfidence?: number;
+  /**
+   * Fixture inputs already in memory, by the `fixture` name of each report (the experiment
+   * runner builds them from dataset cases). Used instead of reading the file; the hash check
+   * against `input_sha256` still applies.
+   */
+  fixtureInputs?: Readonly<Record<string, unknown>>;
 }
 
 /** Parses a `skill:compare` JSON (multi-fixture `{ reports: [...] }` or a single report). */
@@ -172,7 +178,8 @@ export function subjectsFromComparison(json: unknown, ref: string, opts: Compari
   for (const { fixture, report } of reports) {
     let input: FixtureInput | null = null;
     if (fixture) {
-      const f = readFixture(fixture, baseDirs);
+      const inMemory = opts.fixtureInputs?.[fixture];
+      const f = inMemory !== undefined ? { input: inMemory as FixtureInput, raw: inMemory, path: fixture } : readFixture(fixture, baseDirs);
       if (!f) warnings.push(`no encuentro el fixture ${fixture}: se usan solo el nombre y el nivel de datos del informe`);
       else if (sha256(JSON.stringify(f.raw)) !== report.input_sha256) warnings.push(`el fixture ${fixture} no coincide con input_sha256 del informe (${report.input_sha256.slice(0, 12)}…): no se usan sus datos`);
       else input = f.input;

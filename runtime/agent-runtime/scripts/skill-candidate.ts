@@ -134,7 +134,8 @@ async function main(): Promise<void> {
   console.log(`\ncreada v${created.version.version} (${created.version.status}) id=${created.version.id} hash=${created.version.content_hash}`);
   if (created.version.content_hash !== candidateHash) throw new Error('el content_hash devuelto no coincide con el de la candidata');
   for (const w of created.warnings ?? []) console.log(`aviso: ${w}`);
-  console.log('No se ha activado. Para activarla (decisión humana): POST /skills/' + skill + '/versions/' + created.version.version + '/activate');
+  console.log(`No se ha activado. Siguiente paso: pnpm experiment:run --subject skill:${skill} --candidate ${created.version.version}`);
+  console.log(`Activarla es decisión humana y pasa por el Release Gate: POST /skills/${skill}/versions/${created.version.version}/activate (exige un experimento PASS o PASS_FORM, o force + reason).`);
 }
 
 main().catch((err: unknown) => {

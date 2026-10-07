@@ -48,6 +48,8 @@ const dbAvailable = await databaseReachable(DATABASE_URL);
 
 const fixture = JSON.parse(readFileSync(new URL('../fixtures/feria-ejemplo.json', import.meta.url), 'utf8')) as Record<string, unknown>;
 const IRRELEVANT = JSON.stringify({ relevant: false, confidence: 0.05, reason: 'Sin encaje.', hypothesis: null });
+/** Human override of the Release Gate (these tests are about the skill lifecycle, not the gate: test/integration/experiments.test.ts). */
+const FORCE = { force: true, reason: 'prueba de integración del ciclo de vida', by: 'it' };
 const V2_TEXT = `${PROSPECTOR_SYSTEM_PROMPT}\n\n## Prueba v2\nPrioriza expositores con lanzamientos de producto.`;
 
 describe.skipIf(!dbAvailable)('versioned skills (PostgreSQL)', () => {
@@ -150,8 +152,10 @@ describe.skipIf(!dbAvailable)('versioned skills (PostgreSQL)', () => {
     expect((await app.inject({ method: 'POST', url: '/skills/it-borrador/versions', headers, payload: {} })).statusCode).toBe(400);
     expect((await app.inject({ method: 'POST', url: '/skills/it-borrador/versions', headers, payload: { copy_from: 'active' } })).statusCode).toBe(409);
     expect((await app.inject({ method: 'POST', url: '/skills/it-borrador/versions/7/activate', headers })).statusCode).toBe(404);
+    // Release Gate: a version that was never ACTIVE needs an experiment or a human override.
+    expect((await app.inject({ method: 'POST', url: '/skills/it-borrador/versions/1/activate', headers })).statusCode).toBe(409);
     // Deprecating the only (ACTIVE) version would leave the skill without one: rejected.
-    expect((await app.inject({ method: 'POST', url: '/skills/it-borrador/versions/1/activate', headers })).statusCode).toBe(200);
+    expect((await app.inject({ method: 'POST', url: '/skills/it-borrador/versions/1/activate', headers, payload: FORCE })).statusCode).toBe(200);
     expect((await app.inject({ method: 'POST', url: '/skills/it-borrador/versions/1/deprecate', headers })).statusCode).toBe(409);
     expect((await app.inject({ method: 'DELETE', url: '/skills/it-borrador', headers })).statusCode).toBe(404);
   });
@@ -190,9 +194,9 @@ describe.skipIf(!dbAvailable)('versioned skills (PostgreSQL)', () => {
     expect(v2.metadata).toMatchObject({ copied_from: { version: 1, skill_version_id: v1!.id }, change_reason: 'prueba de integración' });
     expect((await prospectorRun(tenant)).systems.every((s) => s === PROSPECTOR_SYSTEM_PROMPT)).toBe(true);
 
-    const act = await app.inject({ method: 'POST', url: `/skills/${PROSPECTOR_SKILL_ID}/versions/2/activate`, headers });
+    const act = await app.inject({ method: 'POST', url: `/skills/${PROSPECTOR_SKILL_ID}/versions/2/activate`, headers, payload: FORCE });
     expect(act.statusCode).toBe(200);
-    expect(act.json()).toMatchObject({ changed: true, version: { version: 2, status: 'ACTIVE' }, previous_version: { version: 1, status: 'DEPRECATED' }, skill: { active_version_id: v2.id } });
+    expect(act.json()).toMatchObject({ changed: true, version: { version: 2, status: 'ACTIVE' }, previous_version: { version: 1, status: 'DEPRECATED' }, skill: { active_version_id: v2.id }, gate: { mode: 'override' } });
     const again = await app.inject({ method: 'POST', url: `/skills/${PROSPECTOR_SKILL_ID}/versions/2/activate`, headers });
     expect(again.json()).toMatchObject({ changed: false });
 
@@ -256,9 +260,9 @@ describe.skipIf(!dbAvailable)('versioned skills (PostgreSQL)', () => {
 
   it('a version pinned in skill_refs is kept after another version is activated (direct execution, StubAgent)', async () => {
     await app.inject({ method: 'POST', url: '/skills', headers, payload: { name: 'it-pinned', instructions: 'PIN V1' } });
-    await app.inject({ method: 'POST', url: '/skills/it-pinned/versions/1/activate', headers });
+    await app.inject({ method: 'POST', url: '/skills/it-pinned/versions/1/activate', headers, payload: FORCE });
     await app.inject({ method: 'POST', url: '/skills/it-pinned/versions', headers, payload: { instructions: 'PIN V2' } });
-    await app.inject({ method: 'POST', url: '/skills/it-pinned/versions/2/activate', headers });
+    await app.inject({ method: 'POST', url: '/skills/it-pinned/versions/2/activate', headers, payload: FORCE });
     const agentRes = await app.inject({
       method: 'POST',
       url: '/agents',

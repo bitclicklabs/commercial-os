@@ -266,20 +266,29 @@ async function applyPlan(tx: Tx, skill: Skill, plan: TransitionPlan): Promise<{ 
 }
 
 /**
+ * Check run inside the activation transaction, after the skill row is locked and before any
+ * change (the Release Gate, src/experiments/release-gate.ts). Throwing aborts the activation;
+ * the returned value travels back in `TransitionResult.gate`.
+ */
+export type ActivationGuard<G> = (tx: Tx, ctx: { skill: Skill; versions: SkillVersion[]; target: SkillVersion; active: SkillVersion | null }) => Promise<G>;
+
+/**
  * Makes `version` the ACTIVE one and deprecates the previous ACTIVE one, in one transaction.
  * Running agents are not touched: new runs resolve the new version when they start.
  */
-export async function activateVersion(db: Db, args: { tenantId: string; skillKey: string; version: number }): Promise<TransitionResult> {
+export async function activateVersion<G = undefined>(db: Db, args: { tenantId: string; skillKey: string; version: number; guard?: ActivationGuard<G> }): Promise<TransitionResult & { gate?: G }> {
   return db.transaction(async (tx) => {
     const skill = await lockSkill(tx, args.tenantId, args.skillKey);
     if (skill.status === 'DEPRECATED') throw new SkillServiceError('conflict', 'skill is DEPRECATED');
     const versions = await listVersions(tx, skill.id);
     const plan = planActivate(versions, args.version);
     const t = versions.find((v) => v.version === args.version)!;
-    if (!plan.changed) return { skill, version: t, changed: false, previous: null };
+    const gate = args.guard ? await args.guard(tx, { skill, versions, target: t, active: versions.find((v) => v.status === 'ACTIVE') ?? null }) : undefined;
+    const withGate = gate === undefined ? {} : { gate };
+    if (!plan.changed) return { skill, version: t, changed: false, previous: null, ...withGate };
     const applied = await applyPlan(tx, skill, plan);
     const previous = plan.deprecate[0] ? (applied.byId.get(plan.deprecate[0]) ?? null) : null;
-    return { skill: applied.skill, version: applied.byId.get(t.id)!, changed: true, previous };
+    return { skill: applied.skill, version: applied.byId.get(t.id)!, changed: true, previous, ...withGate };
   });
 }
 

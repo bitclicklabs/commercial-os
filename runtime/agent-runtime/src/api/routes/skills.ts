@@ -16,11 +16,13 @@ import {
   listVersions,
   SkillServiceError,
 } from '../../skills/service.js';
+import { checkActivationGate, logGate, ReleaseGateBlockedError } from '../../experiments/release-gate.js';
 import type { ApiContext } from '../context.js';
 import { HttpError, notFound, parse, serialize, tenantOf } from '../http.js';
-import { CreateSkillBody, CreateSkillVersionBody, ListSkillsQuery, SkillParams, SkillVersionParams } from '../schemas.js';
+import { ActivateVersionBody, CreateSkillBody, CreateSkillVersionBody, ListSkillsQuery, SkillParams, SkillVersionParams } from '../schemas.js';
 
 function toHttp(err: unknown): unknown {
+  if (err instanceof ReleaseGateBlockedError) return new HttpError(409, err.code, err.message, err.details);
   if (!(err instanceof SkillServiceError)) return err;
   if (err.code === 'not_found') return new HttpError(404, 'not_found', err.message, err.details);
   if (err.code === 'conflict') return new HttpError(409, 'conflict', err.message, err.details);
@@ -103,12 +105,34 @@ export async function skillRoutes(app: FastifyInstance, ctx: ApiContext): Promis
     return reply.status(201).send({ skill: serialize(result.skill), version: versionOut(result.version), warnings: contentWarnings(result.version) });
   });
 
-  /** ACTIVE the version and DEPRECATED the previous ACTIVE one, in one transaction. Idempotent. */
+  /**
+   * ACTIVE the version and DEPRECATED the previous ACTIVE one, in one transaction. Idempotent.
+   * Release Gate (LLD v0.1 section 19): a version that was never ACTIVE needs a COMPLETED
+   * experiment with decision PASS or PASS_FORM against the current ACTIVE version, or a human
+   * override `{ force: true, reason }`. Blocked: 409 `release_gate_blocked`.
+   */
   app.post('/skills/:id/versions/:v/activate', async (req) => {
     const tenantId = tenantOf(req, ctx.config.defaultTenantId);
     const { id, v } = parse(SkillVersionParams, req.params);
-    const r = await mapped(() => activateVersion(db, { tenantId, skillKey: id, version: v }));
-    return { skill: serialize(r.skill), version: versionOut(r.version), changed: r.changed, previous_version: versionOut(r.previous) };
+    const body = parse(ActivateVersionBody, req.body ?? {});
+    const r = await mapped(() =>
+      activateVersion(db, {
+        tenantId,
+        skillKey: id,
+        version: v,
+        guard: (tx, g) =>
+          checkActivationGate(tx, {
+            tenantId,
+            subjectType: 'skill',
+            subjectName: g.skill.name,
+            target: g.target,
+            activeVersion: g.active?.version ?? null,
+            override: body,
+          }),
+      }),
+    );
+    logGate(req, 'skill', id, v, r.gate);
+    return { skill: serialize(r.skill), version: versionOut(r.version), changed: r.changed, previous_version: versionOut(r.previous), gate: r.gate ?? null };
   });
 
   /**

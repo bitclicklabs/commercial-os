@@ -175,6 +175,7 @@ services:
       TWENTY_BASE_URL: http://pxos-twenty:3000
       TWENTY_API_KEY: ${TWENTY_API_KEY:-}
       TWENTY_WAIT_MAX_MS: ${TWENTY_WAIT_MAX_MS:-600000}
+      TWENTY_WEBHOOK_SECRET: ${TWENTY_WEBHOOK_SECRET:-}
     depends_on:
       pxos-postgres:
         condition: service_healthy

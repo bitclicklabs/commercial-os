@@ -3,6 +3,7 @@
  * in CONTRACTS so they can be exported as JSON Schema later (z.toJSONSchema).
  */
 import { z } from 'zod';
+import { HarnessConfigInput } from '../harness/config.js';
 import { RUN_STATUSES, SCHEDULE_TYPES, TASK_DEFINITION_STATUSES, AGENT_STATUSES } from '../domain/statuses.js';
 
 const JsonObject = z.record(z.string(), z.unknown());
@@ -16,6 +17,9 @@ export const SkillRefSchema = z.union([
   z.object({ skill_id: z.string().min(1), version: z.number().int().positive() }),
 ]);
 
+/** `{ name, version? }`: database harness (exact version, or the ACTIVE one without version). */
+export const HarnessRefSchema = z.object({ name: z.string().regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/), version: z.number().int().positive().optional() }).strict();
+
 export const AgentVersionInput = z.object({
   model: z.string().min(1).optional(),
   model_provider: z.enum(['stub', 'anthropic', 'gemini']).optional(),
@@ -23,6 +27,8 @@ export const AgentVersionInput = z.object({
   configuration: JsonObject.default({}),
   skill_refs: z.array(SkillRefSchema).default([]),
   harness_version_id: z.string().optional(),
+  /** MVP-1: `{ name }` (ACTIVE version) or `{ name, version }` of a harness in the database. */
+  harness_ref: HarnessRefSchema.nullable().optional(),
   router_version_id: z.string().optional(),
   tool_policy_id: z.string().optional(),
   memory_policy_id: z.string().optional(),
@@ -193,3 +199,29 @@ export const ListSkillsQuery = z.object({ status: z.enum(['DRAFT', 'ACTIVE', 'DE
 
 export const SkillParams = z.object({ id: z.string().min(1).max(100) });
 export const SkillVersionParams = z.object({ id: z.string().min(1).max(100), v: z.coerce.number().int().positive() });
+
+// ---------------------------------------------------------------------------
+// Harnesses (MVP-1, LLD v0.1 section 7.1): the config is validated by src/harness/config.ts
+// ---------------------------------------------------------------------------
+export const CreateHarnessBody = z.object({
+  name: z.string().min(1).max(100).regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/, 'kebab-case (a-z, 0-9, -)'),
+  description: z.string().max(2_000).optional(),
+  config: HarnessConfigInput,
+  metadata: JsonObject.optional(),
+  created_by: z.string().optional(),
+});
+
+export const CreateHarnessVersionBody = z
+  .object({
+    /** Copy the ACTIVE version ("active") or a given version number; the dimensions sent override it. */
+    copy_from: z.union([z.literal('active'), z.number().int().positive()]).optional(),
+    config: HarnessConfigInput.optional(),
+    metadata: JsonObject.optional(),
+    change_reason: z.string().max(2_000).optional(),
+    created_by: z.string().optional(),
+  })
+  .refine((b) => b.copy_from !== undefined || b.config !== undefined, { message: 'config or copy_from is required' });
+
+export const ListHarnessesQuery = z.object({ status: z.enum(['DRAFT', 'ACTIVE', 'DEPRECATED']).optional() });
+export const HarnessParams = z.object({ id: z.string().min(1).max(100) });
+export const HarnessVersionParams = z.object({ id: z.string().min(1).max(100), v: z.coerce.number().int().positive() });

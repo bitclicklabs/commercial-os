@@ -57,6 +57,7 @@ export async function agentRoutes(app: FastifyInstance, ctx: ApiContext): Promis
           configuration: body.version.configuration,
           skillRefs: body.version.skill_refs,
           harnessVersionId: body.version.harness_version_id ?? null,
+          harnessRef: body.version.harness_ref ?? null,
           routerVersionId: body.version.router_version_id ?? null,
           toolPolicyId: body.version.tool_policy_id ?? null,
           memoryPolicyId: body.version.memory_policy_id ?? null,

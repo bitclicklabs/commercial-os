@@ -111,9 +111,10 @@ export class TwentyGate {
    * Decides whether a run may start now.
    * @param requiresTwenty the agent version can call Twenty tools (`policyRequiresTwenty`).
    * @param state wait window of this job from previous deferrals, if any.
+   * @param maxWaitMs per-run cap (harness `safety.twenty_wait_max_ms`); defaults to the env one.
    */
-  async check(requiresTwenty: boolean, state?: TwentyWaitState | null): Promise<TwentyGateDecision> {
-    if (!requiresTwenty || this.maxWaitMs <= 0) return { action: 'proceed', reason: 'not_required' };
+  async check(requiresTwenty: boolean, state?: TwentyWaitState | null, maxWaitMs: number = this.maxWaitMs): Promise<TwentyGateDecision> {
+    if (!requiresTwenty || maxWaitMs <= 0) return { action: 'proceed', reason: 'not_required' };
     // Without an API key the tools answer TWENTY_NOT_CONFIGURED anyway: waiting is pointless.
     if (!this.probe.isConfigured()) return { action: 'proceed', reason: 'not_configured' };
     if (await this.cache.healthy()) return { action: 'proceed', reason: 'healthy' };
@@ -122,7 +123,7 @@ export class TwentyGate {
     const since = state?.since ?? now;
     const deferrals = state?.deferrals ?? 0;
     const waitedMs = Math.max(0, now - since);
-    const remaining = this.maxWaitMs - waitedMs;
+    const remaining = maxWaitMs - waitedMs;
     if (remaining <= 0) return { action: 'proceed', reason: 'wait_exceeded', waitedMs, deferrals };
 
     const step = this.steps[Math.min(deferrals, this.steps.length - 1)]!;

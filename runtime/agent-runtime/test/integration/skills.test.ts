@@ -21,6 +21,7 @@ import { StubProvider } from '../../src/providers/index.js';
 import { MemoryRunQueue } from '../../src/queue/run-queue.js';
 import { PROSPECTOR_TASK_NAME, seedProspector } from '../../src/seed/prospector-seed.js';
 import { seedSkills } from '../../src/seed/skills-seed.js';
+import { seedHarnesses } from '../../src/seed/harness-seed.js';
 import { requestTaskRun } from '../../src/services/task-runs.js';
 import { CODE_SKILLS } from '../../src/skills/code-skills.js';
 import { sha256 } from '../../src/skills/render.js';
@@ -84,6 +85,8 @@ describe.skipIf(!dbAvailable)('versioned skills (PostgreSQL)', () => {
       createDefaultToolRegistry({ twenty: fake.client() }),
       null,
     );
+    // As `pnpm seed`: the seeded agent versions reference this harness (0008_harness).
+    await seedHarnesses(handle.db, { tenantId: tenant });
   });
 
   afterAll(async () => {

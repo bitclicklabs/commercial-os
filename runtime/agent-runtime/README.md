@@ -21,17 +21,17 @@ runtime/agent-runtime/
 │   ├── main.ts               Entrada: API, worker y/o scheduler según RUNTIME_ROLE o --role=
 │   ├── config.ts             Configuración desde variables de entorno
 │   ├── api/                  Servidor Fastify, contratos zod y rutas
-│   ├── agents/               Interfaz de agente, StubAgent, SmokeAgent y ProspectorAgent (modos directo y scout, prompts, SourceLedger)
+│   ├── agents/               Interfaz de agente, StubAgent, SmokeAgent, ProspectorAgent (modos directo y scout, prompts, SourceLedger) y EmailDrafterAgent (borradores, nunca envía)
 │   ├── integrations/twenty/  TwentyClient REST tipado y mapeo de objetos de la App
 │   ├── tools/                Interfaz Tool, registry, tool_policy, executor, tools de Twenty y web/ (fetch_url y guarda SSRF)
 │   ├── db/                   Esquema Drizzle, cliente y migrador
 │   ├── events/               Event bus: sobre event.envelope.v1, EventBus, payloads, triggers EVENT y GET /events
 │   ├── domain/               Estados, máquina de estados e idempotency keys
-│   ├── evaluations/          Evaluador HUMAN: mapeo de feedback, vínculo con la ejecución de origen y webhook de Twenty
+│   ├── evaluations/          Evaluador HUMAN: mapeo de feedback, vínculo con la ejecución de origen, webhook de Twenty y evento evaluation.recorded
 │   ├── providers/            ModelProvider, StubProvider, AnthropicProvider, GeminiProvider y tabla de precios
 │   ├── queue/                RunQueue (BullMQ y en memoria)
 │   ├── scheduler/            TaskScheduler sobre BullMQ, parseo de schedules y rutas
-│   ├── seed/                 Seed idempotente del Prospector y sus tareas (pnpm seed)
+│   ├── seed/                 Seed idempotente del Prospector, el EmailDrafter y sus tareas (pnpm seed)
 │   ├── services/             Lanzamiento idempotente de TaskRuns
 │   └── worker/               RunProcessor, worker BullMQ, locks por entidad y reconciliador
 └── test/
@@ -321,8 +321,11 @@ Todos los eventos viajan con este sobre. Los campos del sobre y de `data` usan `
 | `task.failed` | Processor, al cerrar el run en `FAILED` o `TIMED_OUT` (no en un reintento) | Igual, con `error` (`name`, `code`, `message`) en lugar de coste |
 | `agent.execution.started` | Processor, al arrancar cada intento o ejecución directa | `executionId`, `taskRunId`, `taskDefinitionId`, `agentId`, `agentVersionId`, `agentVersion`, `stage`, `chainDepth` |
 | `agent.execution.completed` / `.failed` | Processor, al persistir el resultado (si no se canceló antes) | Lo anterior más `status`, `costEur`, `inputTokens`, `outputTokens`, `latencyMs` y `outcome` o `error` |
+| `evaluation.recorded` | Servicio de evaluaciones, tras guardar un veredicto humano (webhook de Twenty o `POST /evaluations/human`) | `evaluationId`, `evaluatorId`, `subjectType`, `subjectId`, `feedback`, `score`, `toStatus`, `source`, `agentExecutionId`, `taskRunId`, `companyId` (o `null` si no se pudo resolver), `occurredAt` |
 
-Cada evento del runtime lleva una `idempotencyKey` (`evt:{type}:{task_run_id}`, `evt:task.started:{task_run_id}:{attempt}`, `evt:{type}:{execution_id}`): publicar dos veces el mismo hecho devuelve la fila existente.
+Cada evento del runtime lleva una `idempotencyKey` (`evt:{type}:{task_run_id}`, `evt:task.started:{task_run_id}:{attempt}`, `evt:{type}:{execution_id}`, `evt:evaluation.recorded:{evaluation_id}`): publicar dos veces el mismo hecho devuelve la fila existente.
+
+`evaluation.recorded` no habla de un run: no lleva `taskDefinitionId` y su `chainDepth` es 0. Su `correlationId` es el `TaskRun` de origen de la hipótesis, o la evaluación si no se resolvió. `companyId` sale del registro del webhook o, en `POST /evaluations/human`, de la propuesta original del agente (entrada de `create_hypothesis` en el trace). Se emite también cuando la llamada se deduplica: la clave es la de la evaluación existente, así que no crea otro evento y vuelve a despachar uno que no llegó a la cola.
 
 ### Publicación
 
@@ -445,6 +448,8 @@ Las de Twenty usan `TWENTY_BASE_URL` y `TWENTY_API_KEY` y tienen `outputTrust = 
 | `create_research` | `LOW_WRITE` | Sí | Ejecución + empresa + `researchType` |
 | `create_hypothesis` | `LOW_WRITE` | Sí | Empresa + `name` (por defecto `{empresa} — {need}`) |
 | `create_agent_run_summary` | `LOW_WRITE` | Sí | `agentExecutionId` |
+| `get_hypothesis` | `READ` | No | — (hipótesis con empresa, señal y decision maker, `depth=1`) |
+| `create_note` | `LOW_WRITE` | Sí | Empresa + título; adopta una nota huérfana con el mismo título |
 | `fetch_url` | `READ` | No | — (consulta [Seguridad del contenido web](#seguridad-del-contenido-web)) |
 
 `create_signal` acepta `companyId` opcional: sin él crea una **señal a nivel de evento** (una feria sin empresa asociada todavía), deduplicada entre las señales sin empresa por tipo + `eventDate` + `sourceDomain`.
@@ -830,7 +835,7 @@ curl -s -X POST localhost:4020/evaluations/human -H 'content-type: application/j
   -d '{"hypothesisId":"<id en Twenty>","feedback":"ACCEPTED","reviewerId":"twenty-user-3f2a"}'
 ```
 
-Si no envías `agent_execution_id` (o `agentExecutionId`), el runtime resuelve el vínculo como en el webhook. Si lo envías, debe existir en el tenant (si no, `404`). Responde con `evaluatorId`, `executionId`, `scores.TASK_SUCCESS`, `passed`, `deduplicated` y la evaluación guardada.
+Si no envías `agent_execution_id` (o `agentExecutionId`), el runtime resuelve el vínculo como en el webhook. Si lo envías, debe existir en el tenant (si no, `404`). Responde con `evaluatorId`, `executionId`, `scores.TASK_SUCCESS`, `passed`, `deduplicated`, `event_id` (el `evaluation.recorded`, o `null` si no se pudo publicar) y la evaluación guardada.
 
 ### Tabla `evaluations`
 
@@ -846,6 +851,67 @@ Si no envías `agent_execution_id` (o `agentExecutionId`), el runtime resuelve e
 
 Índices: `(tenant_id, subject_type, subject_id, occurred_at)`, `(tenant_id, agent_execution_id)` y único `(tenant_id, idempotency_key)`. La tabla es solo de inserción.
 
+## Borradores de email
+
+> **Importante:** el sistema **no envía emails**. No hay dependencia SMTP, ni API de correo, ni tool de envío en el registro. Solo genera **borradores** que el comercial revisa y envía a mano desde su buzón (modelo HITL del LLD v0.1, sección 10, y *human gates* de la sección 15: las notas internas son automáticas; enviar un email exige a una persona).
+
+Cuando un comercial valida una hipótesis, el agente `EmailDrafter` prepara un borrador del primer email y lo deja en Twenty como nota sobre la empresa y sobre la hipótesis.
+
+```
+veredicto ACCEPTED (webhook de Twenty o POST /evaluations/human)
+  -> evaluation.recorded
+  -> tarea draft-email-on-validated (trigger EVENT)
+  -> EmailDrafter: get_hypothesis -> 1 llamada a Gemini {asunto, cuerpo} -> create_note
+  -> Note "Borrador email — {hipótesis}" en la empresa y en la hipótesis
+```
+
+### Tarea y agente
+
+- **Tarea `draft-email-on-validated`**: `{"type": "EVENT", "event_type": "evaluation.recorded", "filter": {"feedback": "ACCEPTED", "subjectType": "hypothesis"}}`, `timeout_ms = 120000`, 2 intentos y `max_concurrency = 2`. Un veredicto `EDITED` (validada con cambios) no dispara la tarea: el filtro no tiene operador OR.
+- **Agente `EmailDrafter`** (`implementation = "email_drafter"`, `gemini-flash-latest`, `thinking_level = low`): tool policy `find_company`, `get_company`, `get_hypothesis` y `create_note`, techo `LOW_WRITE`, máximo 6 llamadas y una sola `create_note` por ejecución.
+- Entrada: el sobre del evento bajo `input.event`, o `{ "hypothesis_id": "<id en Twenty>" }` para lanzarlo a mano con `POST /tasks/:id/run`.
+- `pnpm seed` crea o actualiza el agente y la tarea (idempotente, igual que el Prospector).
+
+### Flujo
+
+1. Lee la hipótesis con `get_hypothesis` (empresa, señal y decision maker en una sola petición). Si la hipótesis no existe o está `REJECTED` o `EXPIRED`, si el veredicto no es `ACCEPTED` ni `EDITED` o si el sujeto no es una hipótesis, termina con `outcome = SKIPPED` sin llamar al modelo.
+1. Hace **una** llamada a Gemini con la necesidad, el porqué ahora, el evento, los productos recomendados y los diferenciales que anotó el Prospector. Los datos del CRM entran en un bloque `DATOS_NO_CONFIABLES`. La respuesta se valida con zod (`{asunto, cuerpo}`); si no es válida, el run termina con `outcome = FAILED` y sin nota (no hay ronda de reparación).
+1. Post-procesa el texto por código (`finalizeDraft`).
+1. Guarda la nota con `create_note`.
+
+El prompt pide español de España, tuteo, tono cercano y sin humo comercial, de 120 a 180 palabras, 1 o 2 diferenciales (taller propio, ofertas, trato cercano, precios) y nada inventado: sin nombres de contacto si la hipótesis no tiene decision maker, sin presupuestos ni cantidades estimadas y sin mencionar el CRM ni la IA.
+
+### Cumplimiento (LSSI art. 21)
+
+El modelo **no** escribe la firma ni la línea de baja: las añade el código siempre.
+
+- Quita cualquier línea de baja o de privacidad que haya escrito el modelo y termina el cuerpo con exactamente `Si no quieres recibir más mensajes, respóndeme o escribe a baja@publiexpe.info`.
+- Añade la firma (`Jesús Abril`, `PubliEXPE · Merchandising y regalo promocional personalizado`, `www.publiexpe.com`) si no está, y la despedida si falta.
+- Sin decision maker, sustituye un nombre propio inventado en el saludo por `Hola:`.
+- Cuenta las palabras y avisa (en la nota y en la salida) si el cuerpo sale de 120-180 palabras o el asunto pasa de 70 caracteres.
+
+El remitente, los buzones (`jesus.abril@publiexpe.info` y `j.abril@publiexpe.info`) y el buzón de baja salen de `configuration.sender` y `configuration.unsubscribe_email` de la versión del agente.
+
+### La nota en Twenty
+
+Título `Borrador email — {nombre de la hipótesis}`. El cuerpo empieza con la cabecera **BORRADOR — revísalo y envíalo desde tu correo; el sistema no envía nada.**, sigue con `De`, `Para` (el decision maker si existe; si no, un aviso para que el comercial ponga una dirección corporativa de rol) y `Asunto`, el cuerpo listo para copiar y un pie con la hipótesis, el veredicto y la ejecución.
+
+Formato de Twenty 2.45 (verificado contra la API REST):
+
+```http
+POST /rest/notes        { "title": "...", "bodyV2": { "markdown": "..." } }
+POST /rest/noteTargets  { "noteId": "<note>", "targetCompanyId": "<company>" }
+POST /rest/noteTargets  { "noteId": "<note>", "targetCommercialHypothesisId": "<hypothesis>" }
+```
+
+- `bodyV2` es un campo `RICH_TEXT_V2` (`{ markdown, blocknote }`). Basta con enviar `markdown`: el servidor genera `blocknote`.
+- Cada registro enlazado es una fila de `noteTarget` con su columna (`targetCompanyId`, `targetPersonId`, `targetOpportunityId` y, para los objetos de la App, `targetCommercialHypothesisId`, `targetCommercialSignalId`, `targetResearchId` y `targetAgentRunSummaryId`).
+- `create_note` es idempotente por empresa + título: busca notas con ese título (`title[eq]`) y sus `noteTargets` (`noteId[eq]`). Si una ya apunta a la empresa, la devuelve con `created: false` y crea solo los targets que falten. Si encuentra una con ese título y sin ningún target (una llamada que murió entre los dos `POST`), la adopta. Las comillas y barras invertidas del título se eliminan porque los filtros de Twenty no las escapan.
+
+### Coste
+
+Una llamada a Gemini por borrador. En la prueba en vivo: 0,0021 USD (0,0018 €) y unos 5 s por run.
+
 ## Pendiente
 
 - Triggers `DEPENDENCY` y `CONDITION` (hoy no registran nada).
@@ -856,6 +922,7 @@ Si no envías `agent_execution_id` (o `agentExecutionId`), el runtime resuelve e
 - Modo scout: muchas ferias publican el catálogo de expositores como aplicación JavaScript o PDF, que `fetch_url` no lee (queda como señal de evento). Falta extracción de PDF o render de JavaScript.
 - `GeminiProvider.stream()` no es incremental: devuelve la respuesta completa en un solo fragmento.
 - Validación de URL en campos de texto libre contra las fuentes del trace (LLD v0.2 sección 10.4, punto 4) en el modo directo: el modo scout ya la aplica con su `SourceLedger`.
-- Eventos aún no emitidos: `task.failed` cuando el reconciliador cierra un huérfano, cancelaciones, `signal.detected` y `evaluation.completed`. Entrada de eventos externos (Twenty, n8n) por HTTP y entrega a n8n por webhook.
+- Eventos aún no emitidos: `task.failed` cuando el reconciliador cierra un huérfano, cancelaciones y `signal.detected`.
+- Borradores de email: disparar también con `EDITED` (necesita una segunda tarea o un operador OR en el filtro), plantillas por sector y registro de si el comercial envió el borrador. Entrada de eventos externos (Twenty, n8n) por HTTP y entrega a n8n por webhook.
 - Harness, skills, memoria y verificador reales; promote, rollback y evaluate.
 - Export de los contratos zod a JSON Schema versionado en `schemas/`.

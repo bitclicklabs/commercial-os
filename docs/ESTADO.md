@@ -95,7 +95,7 @@ Contexto: el usuario conectó el SMTP, activó el workflow y el primer email rea
 | Docs: ADRs de la tanda 7 al LLD v0.3, guía del comercial con el envío ya activo, runbook | `docs/adrs-tanda7` | Sonnet | ✅ fusionado (ADRs 23-31; guía y warm-up en presente; + fixes PM: guía de envío, README runtime, compose con token de eventos) |
 | Integración, e2e y PR | `feat/tanda8` | PM | ✅ 560 tests; redeploy con 0007; bloque Email en métricas verificado (fase Semana 1 detectada); nota de supresión reparada; v2 NO activada siguiendo el gate |
 
-## Tanda 9 — Cierre de MVP-1 y dashboard en Twenty 🔄 (en curso, 2026-10-07)
+## Tanda 9 — Cierre de MVP-1 y dashboard en Twenty ✅ (PR #9, 2026-10-07)
 
 En paralelo, en sesiones aparte del usuario: desglose por versión de skill en métricas y fix del reconciliador con runs largos del scout. Esta tanda NO toca `src/metrics/queries.ts` ni `src/worker/recovery.ts`, y el checkout principal del repo queda para esa sesión (la integración de la tanda vive en el worktree wt9-integracion).
 
@@ -104,5 +104,5 @@ En paralelo, en sesiones aparte del usuario: desglose por versión de skill en m
 | Skill v3 del Prospector (EXP-002): corrige la semántica de confianza de la v2, holdout fresco | `feat/skill-v3` | Opus | ✅ fusionado y ACTIVADA por el PM (todos los criterios pre-declarados cumplidos; need con cantidades 20/20, confianza de descartes 0,05, +10,9% coste; rollback: deprecate v3) |
 | Harness versionado v1: políticas consolidadas en `harness/harness_versions`, resolución con fallback y registro en el trace | `feat/harness-v1` | Opus | ✅ fusionado (semántica de techo sobre límites por agente; 7 fallbacks probados; comportamiento idéntico verificado; 577 tests) |
 | Memoria semántica (KnowledgeEntry) + el Prospector escribe Research | `feat/knowledge-research` | Opus | ✅ fusionado (3 entries ACTIVE con evidencia del EXP-001 y tu feedback; MEMORY_READ en el trace; research real de ARCECARNE en Twenty; 597 tests) |
-| Dashboard dentro de Twenty (estudio de viabilidad + implementación si procede) | `feat/twenty-dashboard` | Opus | 🔄 en curso |
-| Integración, e2e y PR | `feat/tanda9` (worktree wt9-integracion) | PM | ⏸️ |
+| Dashboard dentro de Twenty (estudio de viabilidad + implementación si procede) | `feat/twenty-dashboard` | Opus | ✅ fusionado (viable y NATIVO: objeto agentOsDailyMetric + página de KPIs/gráficos + sync cada 15 min; sin CORS ni aperturas; Front Components descartados con evidencia) |
+| Integración, e2e y PR | `feat/tanda9` (worktree wt9-integracion) | PM | ✅ 615 tests; migraciones 0008+0009; seed (harness v1, 3 knowledge, Prospector v8/EmailDrafter v4); skill v3 ACTIVADA tras EXP-002; e2e: run con harness@1 + MEMORY_READ + research ✦ PENDIENTE DEL USUARIO: sync de la App (necesita rol Admin temporal en la key) y backfill de métricas |

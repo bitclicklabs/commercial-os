@@ -26,6 +26,7 @@ runtime/agent-runtime/
 │   ├── tools/                Interfaz Tool, registry, tool_policy, executor y tools de Twenty
 │   ├── db/                   Esquema Drizzle, cliente y migrador
 │   ├── domain/               Estados, máquina de estados e idempotency keys
+│   ├── evaluations/          Evaluador HUMAN: mapeo de feedback, vínculo con la ejecución de origen y webhook de Twenty
 │   ├── providers/            ModelProvider, StubProvider, AnthropicProvider, GeminiProvider y tabla de precios
 │   ├── queue/                RunQueue (BullMQ y en memoria)
 <<<<<<< HEAD
@@ -39,7 +40,7 @@ runtime/agent-runtime/
     ├── unit/                 Corren siempre, sin BD ni Redis
     ├── integration/          API, worker, scheduler, locks y tools (PostgreSQL, Redis y Twenty); se saltan si falta el servicio
     ├── helpers/              FakeTwenty: API REST de Twenty en memoria para los unitarios
-    ├── fixtures/             feria-ejemplo.json: evento de demo con 3 expositores
+    ├── fixtures/             feria-ejemplo.json (evento de demo) y payloads reales de webhooks de Twenty 2.45
     └── setup-env.ts          Carga .env (si existe) antes de los tests
 ```
 
@@ -98,6 +99,9 @@ Requisitos: Node.js 22, pnpm, y los contenedores `pxos-postgres` (127.0.0.1:5440
 | `TWENTY_BASE_URL` | `http://localhost:3020` | API REST de Twenty. En el contenedor: `http://pxos-twenty:3000` |
 | `TWENTY_API_KEY` | vacío | API key de Twenty. Sin ella, las tools de Twenty responden `TWENTY_NOT_CONFIGURED` |
 | `TWENTY_TIMEOUT_MS` | `10000` | Timeout por petición a Twenty |
+| `TWENTY_WEBHOOK_SECRET` | vacío | Secreto del webhook de Twenty (mínimo 16 caracteres). Sin él, `POST /webhooks/twenty` responde `503` |
+| `TWENTY_WEBHOOK_TARGET_URL` | `http://pxos-runtime:4020/webhooks/twenty` | Destino que registra `pnpm register:webhook` si no pasas `--url` |
+| `EVALUATION_DEDUPE_WINDOW_MS` | `600000` | Ventana en la que no se repite el mismo veredicto (sujeto, feedback y estado destino) |
 
 ## Migraciones
 
@@ -119,6 +123,7 @@ El esquema vive en `src/db/schema.ts`. Todas las tablas llevan `tenant_id` (C6).
 |---|---|
 | `0000_init` | Esquema inicial (agentes, tareas, runs, ejecuciones, traces) |
 | `0001_scheduler_locks` | Tabla `entity_locks` e índice `task_runs (status, updated_at)` para el reconciliador |
+| `0003_evaluations` | Tabla `evaluations` del evaluador HUMAN. El `0002` lo reserva la rama del event bus. El SQL es idempotente (`IF NOT EXISTS`) |
 
 Importante: el migrador de Drizzle aplica solo las migraciones con fecha posterior a la última aplicada. Si dos ramas generan migraciones en paralelo contra la misma BD de desarrollo, aplica primero la más antigua o regenera la nueva tras el merge.
 
@@ -184,6 +189,9 @@ Cabecera opcional `x-tenant-id` en todas las rutas. Las respuestas usan `snake_c
 | `GET /executions`, `GET /executions/:id` | Lista o detalle con trace y pasos |
 | `POST /executions/:id/cancel` | `QUEUED` o `RUNNING` a `CANCELLED` |
 | `POST /executions/:id/{pause,resume}` | `501`, requiere harness con checkpoints |
+| `POST /webhooks/twenty` | Webhook de Twenty firmado. Convierte cambios de `commercialHypothesis` en evaluaciones HUMAN |
+| `POST /evaluations/human` | Registra un veredicto manual: `201` nuevo, `200` duplicado |
+| `GET /evaluations` | Lista evaluaciones. Filtros: `subject_id`, `subject_type`, `feedback`, `agent_execution_id`, `since`, `limit` |
 
 ### Idempotencia
 
@@ -545,6 +553,104 @@ Quien mantenga `deployments/` puede añadir este servicio a la red `pxos-net`:
 ```
 
 Para escalar, separa roles: un servicio con `RUNTIME_ROLE=api`, N réplicas con `RUNTIME_ROLE=worker` y `RUN_MIGRATIONS=false`, y un servicio con `RUNTIME_ROLE=scheduler`. Puedes tener varias réplicas del scheduler: los disparos se deduplican por idempotency key.
+
+## Evaluador HUMAN
+
+Primera señal de calidad del MVP-0 (LLD v0.2 secciones 5.5 y 6.4, decisión D14). Cuando un comercial acepta, edita o descarta una hipótesis en Twenty, el runtime guarda una evaluación en la tabla `evaluations` ligada a la ejecución que generó la hipótesis.
+
+| Cambio en `commercialHypothesis` | `feedback` | `score` (`TASK_SUCCESS`) |
+|---|---|---|
+| `PROPOSED` a `VALIDATED` sin cambios de contenido | `ACCEPTED` | 1.0 |
+| `PROPOSED` a `VALIDATED` tras editar (o en la misma edición) | `EDITED` | 0.5 |
+| Edición de `need`, `whyNow`, `budget*`, `quantity*`, `recommendedProducts` o `timing` en `PROPOSED` | `EDITED` | 0.5 |
+| `PROPOSED` o `VALIDATED` a `REJECTED` | `DISCARDED` | 0.0 |
+
+Se ignoran (respuesta `200` con `status: "ignored"`): el paso a `EXPIRED` o de vuelta a `PROPOSED`, las transiciones desde `EXPIRED`, las ediciones de campos que no son de negocio y las ediciones después de validar.
+
+### Webhook de Twenty
+
+Twenty 2.45 envía un `POST` por cada registro cambiado (`CallWebhookJob`). Payload real capturado en `test/fixtures/twenty-webhook-hypothesis-*.json`:
+
+```json
+{
+  "targetUrl": "http://pxos-runtime:4020/webhooks/twenty",
+  "eventName": "commercialHypothesis.updated",
+  "objectMetadata": { "id": "9994b775-...", "nameSingular": "commercialHypothesis" },
+  "workspaceId": "36d3d8e2-...",
+  "webhookId": "be4bd4df-...",
+  "eventDate": "2026-10-07T06:39:44.257Z",
+  "record": { "id": "0a6e5044-...", "status": "PROPOSED", "need": "...", "budgetMin": { "amountMicros": 600000000, "currencyCode": "EUR" }, "tenantId": "publiexpe", "updatedBy": { "source": "API", "workspaceMemberId": null, "name": "agent-runtime" } },
+  "updatedFields": ["need", "budgetMax", "recommendedProducts"]
+}
+```
+
+- `record` es el registro **después** del cambio. `userId` y `workspaceMemberId` solo aparecen si el cambio lo hizo un usuario de la interfaz (no con API key).
+- `updatedFields` trae **solo los nombres** de los campos cambiados, **nunca los valores anteriores**. Por eso:
+  - el estado origen sale de la última evaluación guardada para esa hipótesis; si no hay ninguna, se asume `PROPOSED` (`details.from_status_source = "assumed"`);
+  - el "antes" del diff de `EDITED` es la propuesta original del agente: el input de la llamada a `create_hypothesis` en el trace (`details.edited_fields_before_source = "agent_proposal"`). Si la hipótesis no tiene trace, el diff lista los campos cambiados con `before: null` (`"unknown"`), y una validación cuenta como `EDITED` si antes se registró una edición.
+- Seguridad: si el webhook tiene `secret`, Twenty firma cada envío. `X-Twenty-Webhook-Signature` es el HMAC-SHA256 en hexadecimal de `` `${X-Twenty-Webhook-Timestamp}:${body}` `` (timestamp en milisegundos), y también envía `X-Twenty-Webhook-Nonce`. El runtime comprueba la firma sobre el cuerpo crudo y rechaza timestamps con más de 5 minutos de desfase. Como alternativa para emisores que no firman, acepta el secreto en la cabecera `x-pxos-webhook-secret` o en `?secret=`. Evita la forma `?secret=` con Twenty: Twenty escribe la URL completa en sus logs (`SecureHttpClientService`). Sin credenciales válidas responde `401`, y sin `TWENTY_WEBHOOK_SECRET` responde `503`.
+- Twenty no reintenta: un fallo de entrega se pierde. Para recuperar un veredicto perdido, usa `POST /evaluations/human`.
+
+Importante: Twenty bloquea por protección SSRF los webhooks hacia IPs privadas, y `pxos-runtime` y `host.docker.internal` lo son. Para que entregue los webhooks, el servidor y el worker de Twenty necesitan `OUTBOUND_HTTP_ALLOWED_INTERNAL_HOSTS=pxos-runtime,host.docker.internal`. Sin esa variable, Twenty descarta el envío sin registrar ningún error.
+
+### Registrar el webhook
+
+```sh
+pnpm register:webhook                                                   # http://pxos-runtime:4020/webhooks/twenty
+pnpm register:webhook --url http://host.docker.internal:4024/webhooks/twenty   # runtime en el host
+pnpm register:webhook --pause                                           # operations = [], no se entrega nada
+pnpm register:webhook --dry-run
+```
+
+- Desde los contenedores de Twenty, el runtime se alcanza como `http://pxos-runtime:4020` (misma red `pxos-net`). Es el destino por defecto.
+- Si el runtime corre en el host (`pnpm dev`), usa `http://host.docker.internal:<puerto>/webhooks/twenty` y escucha en `RUNTIME_HOST=0.0.0.0`.
+- El script es idempotente: identifica el webhook por la marca `pxos-runtime:human-feedback` en la descripción, lo crea si no existe y si no lo actualiza. Suscribe solo `commercialHypothesis.updated`. Guarda `TWENTY_WEBHOOK_SECRET` como `secret` del webhook (Twenty firma con él) y nunca lo pone en la URL.
+- Twenty no tiene un estado "inactivo" para los webhooks: `--pause` deja `operations` vacío. El script nunca borra webhooks.
+- El runtime que recibe el webhook necesita el mismo `TWENTY_WEBHOOK_SECRET` en su entorno.
+
+### Vínculo con la ejecución de origen
+
+La hipótesis no guarda `agentExecutionId` en Twenty, así que el runtime lo busca en las trazas del Agent OS, en este orden:
+
+1. `trace_output`: el paso `create_hypothesis` cuyo `tool_output.record.id` es la hipótesis. Las re-ejecuciones idempotentes devuelven el mismo id con `created: false`; gana el paso con `created: true` y, después, el más antiguo.
+2. `execution_output`: una ejecución cuyo `output` final contiene el id.
+3. `company_name`: una llamada a `create_hypothesis` de la misma empresa cuyo nombre (explícito o `{empresa} — {need}`) coincide. Cubre la tool que expiró después de que Twenty aplicase la escritura.
+
+Si nada coincide, la evaluación se guarda sin `agent_execution_id` y con `details.link.resolved = false`. Las hipótesis creadas a mano en Twenty o por tests que llaman a las tools sin ejecución nunca se vinculan, y es lo correcto.
+
+### Deduplicación
+
+- Por `idempotency_key`: en el webhook, `twenty:{webhookId}:{evento}:{recordId}:{record.updatedAt}`; en `POST /evaluations/human`, la cabecera `Idempotency-Key`.
+- Por ventana: no se repite el mismo `(subject_id, feedback, estado destino)` dentro de `EVALUATION_DEDUPE_WINDOW_MS`. Así, el webhook y una llamada manual (o la futura logic function de la App) que informan del mismo veredicto cuentan una vez. En `POST /evaluations/human` el estado destino es `details.to_status` o, para hipótesis, `VALIDATED` (`ACCEPTED`, `EDITED`) o `REJECTED` (`DISCARDED`).
+
+### `POST /evaluations/human`
+
+Acepta la forma del runtime o la del LLD v0.2 (sección 6.4):
+
+```sh
+curl -s -X POST localhost:4020/evaluations/human -H 'content-type: application/json' \
+  -H 'Idempotency-Key: fb-123' \
+  -d '{"subject_type":"hypothesis","subject_id":"<id en Twenty>","feedback":"EDITED","details":{"note":"Cambié el decisor"}}'
+
+curl -s -X POST localhost:4020/evaluations/human -H 'content-type: application/json' \
+  -d '{"hypothesisId":"<id en Twenty>","feedback":"ACCEPTED","reviewerId":"twenty-user-3f2a"}'
+```
+
+Si no envías `agent_execution_id` (o `agentExecutionId`), el runtime resuelve el vínculo como en el webhook. Si lo envías, debe existir en el tenant (si no, `404`). Responde con `evaluatorId`, `executionId`, `scores.TASK_SUCCESS`, `passed`, `deduplicated` y la evaluación guardada.
+
+### Tabla `evaluations`
+
+| Columna | Contenido |
+|---|---|
+| `kind`, `evaluator_id` | `HUMAN`, `human-v1` |
+| `subject_type`, `subject_id` | `hypothesis` e id del registro en Twenty |
+| `agent_execution_id`, `task_run_id` | Ejecución y `TaskRun` de origen, o `null` |
+| `feedback`, `score` | `ACCEPTED` 1.0, `EDITED` 0.5, `DISCARDED` 0.0 |
+| `details` | `from_status`, `to_status`, `edited_fields` (`{campo: {before, after}}`, presupuestos en EUR), `updated_fields`, `link`, `actor` y metadatos del evento de Twenty |
+| `source` | `twenty_webhook` o `api` |
+| `idempotency_key`, `evaluated_by`, `occurred_at`, `created_at` | |
+
+Índices: `(tenant_id, subject_type, subject_id, occurred_at)`, `(tenant_id, agent_execution_id)` y único `(tenant_id, idempotency_key)`. La tabla es solo de inserción.
 
 ## Pendiente
 

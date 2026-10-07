@@ -8,6 +8,7 @@ import { taskRoutes } from './routes/tasks.js';
 import { schedulerRoutes } from '../scheduler/routes.js';
 import { eventRoutes } from '../events/routes.js';
 import { evaluationRoutes } from './routes/evaluations.js';
+import { metricsRoutes } from './routes/metrics.js';
 
 export async function buildServer(
   ctx: ApiContext,
@@ -31,5 +32,6 @@ export async function buildServer(
   await schedulerRoutes(app, ctx);
   await eventRoutes(app, ctx);
   await evaluationRoutes(app, ctx);
+  await metricsRoutes(app, ctx);
   return app;
 }

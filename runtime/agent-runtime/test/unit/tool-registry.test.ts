@@ -70,7 +70,7 @@ describe('ToolRegistry', () => {
     expect(r.resolve(policy(['read_a', 'write_b'], { maxRiskLevel: 'READ' })).map((t) => t.id)).toEqual(['read_a']);
   });
 
-  it('default registry exposes the 7 Twenty tools and fetch_url with their risk classes', () => {
+  it('default registry exposes the 7 Twenty tools, fetch_url and render_url with their risk classes', () => {
     const r = createDefaultToolRegistry({ twenty: new FakeTwenty().client() });
     const byId = Object.fromEntries(r.list().map((t) => [t.id, t.riskLevel]));
     expect(byId).toEqual({
@@ -82,8 +82,10 @@ describe('ToolRegistry', () => {
       create_hypothesis: 'LOW_WRITE',
       create_agent_run_summary: 'LOW_WRITE',
       fetch_url: 'READ',
+      render_url: 'READ',
     });
     expect(r.get('fetch_url')).toMatchObject({ sideEffects: false, outputTrust: 'untrusted' });
+    expect(r.get('render_url')).toMatchObject({ sideEffects: false, outputTrust: 'untrusted', approvalPolicy: { mode: 'NONE' } });
     for (const t of r.list()) {
       expect(t.sideEffects).toBe(t.riskLevel !== 'READ');
       const spec = toToolSpec(t);

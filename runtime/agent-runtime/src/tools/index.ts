@@ -8,6 +8,7 @@ import {
   createCreateSignalTool,
 } from './twenty/record-tools.js';
 import { createFetchUrlTool, type FetchUrlDeps } from './web/fetch-url.js';
+import { createRenderUrlTool, type RenderUrlDeps } from './web/render-url.js';
 
 export * from './types.js';
 export * from './registry.js';
@@ -18,6 +19,8 @@ export * from './twenty/record-tools.js';
 export * from './web/fetch-url.js';
 export * from './web/ip-guard.js';
 export * from './web/html-text.js';
+export * from './web/pdf-text.js';
+export * from './web/render-url.js';
 
 /** Registers the Twenty-backed MVP-0 tools on `registry`. */
 export function registerTwentyTools(registry: ToolRegistry, twenty: TwentyClient): ToolRegistry {
@@ -32,9 +35,13 @@ export function registerTwentyTools(registry: ToolRegistry, twenty: TwentyClient
   return registry;
 }
 
-/** Registers the web tools (`fetch_url`). Host allow/deny lists come from FETCH_URL_* env vars. */
-export function registerWebTools(registry: ToolRegistry, deps: FetchUrlDeps = {}): ToolRegistry {
+/**
+ * Registers the web tools (`fetch_url`, `render_url`). Host allow/deny lists come from
+ * FETCH_URL_* env vars; the renderer service from RENDERER_URL.
+ */
+export function registerWebTools(registry: ToolRegistry, deps: FetchUrlDeps = {}, render: RenderUrlDeps = {}): ToolRegistry {
   registry.register(createFetchUrlTool(deps));
+  registry.register(createRenderUrlTool({ ...(deps.policy ? { policy: deps.policy } : {}), ...render }));
   return registry;
 }
 
@@ -42,8 +49,8 @@ export function registerWebTools(registry: ToolRegistry, deps: FetchUrlDeps = {}
  * Registry with every MVP-0 tool implemented so far. The Twenty client is read from
  * TWENTY_BASE_URL / TWENTY_API_KEY; without a key the tools are still registered
  * and answer `TWENTY_NOT_CONFIGURED`. Agents only get the tools their `tool_policy`
- * allows (fetch_url is in no policy unless listed explicitly).
+ * allows (fetch_url / render_url are in no policy unless listed explicitly).
  */
-export function createDefaultToolRegistry(opts: { twenty?: TwentyClient; web?: FetchUrlDeps } = {}): ToolRegistry {
-  return registerWebTools(registerTwentyTools(new ToolRegistry(), opts.twenty ?? twentyClientFromEnv()), opts.web);
+export function createDefaultToolRegistry(opts: { twenty?: TwentyClient; web?: FetchUrlDeps; render?: RenderUrlDeps } = {}): ToolRegistry {
+  return registerWebTools(registerTwentyTools(new ToolRegistry(), opts.twenty ?? twentyClientFromEnv()), opts.web, opts.render);
 }

@@ -354,7 +354,7 @@ export class RunProcessor {
     const controller = new AbortController();
     let timer: NodeJS.Timeout | undefined;
     try {
-      const impl = resolveAgentImplementation(version.configuration);
+      const impl = resolveAgentImplementation(version.configuration, { db: this.db });
       const provider = this.providers(version.modelProvider);
       const timeout = new Promise<never>((_, reject) => {
         timer = setTimeout(() => {

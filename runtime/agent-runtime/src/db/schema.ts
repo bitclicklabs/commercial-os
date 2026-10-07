@@ -10,6 +10,7 @@
  */
 import { sql } from 'drizzle-orm';
 import {
+  bigint,
   boolean,
   check,
   index,
@@ -441,6 +442,38 @@ export const evaluations = pgTable(
   ],
 );
 
+// ---------------------------------------------------------------------------
+// 10.2 Inbound Manager (LLD v0.1): IMAP cursors
+// ---------------------------------------------------------------------------
+/**
+ * Read cursor of an inbound consumer over one IMAP mailbox: the highest UID already
+ * processed under a given UIDVALIDITY. One row per (tenant, consumer, mailbox), updated in
+ * place (it is a cursor, not history; the history is the TaskRun/Trace of each run).
+ * `consumer` separates readers of the same mailbox (`bajas` today, general triage later).
+ * If the server reports a different UIDVALIDITY the cursor is no longer valid and the
+ * consumer starts again from its initial date (the suppression list dedupes).
+ */
+export const inboundState = pgTable(
+  'inbound_state',
+  {
+    tenantId: tenantId(),
+    consumer: text('consumer').notNull(),
+    /** `user@host/MAILBOX` (no password). */
+    mailbox: text('mailbox').notNull(),
+    uidValidity: bigint('uid_validity', { mode: 'number' }).notNull(),
+    lastUid: bigint('last_uid', { mode: 'number' }).notNull().default(0),
+    lastRunAt: timestamp('last_run_at', { withTimezone: true }),
+    /** Counters of the last run that advanced the cursor (no message content). */
+    lastSummary: jsonb('last_summary').$type<Record<string, unknown>>().notNull().default({}),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [
+    primaryKey({ name: 'inbound_state_pk', columns: [t.tenantId, t.consumer, t.mailbox] }),
+    check('inbound_state_last_uid_ck', sql`${t.lastUid} >= 0`),
+  ],
+);
+
 export type Agent = typeof agents.$inferSelect;
 export type AgentVersion = typeof agentVersions.$inferSelect;
 export type TaskDefinition = typeof taskDefinitions.$inferSelect;
@@ -452,3 +485,4 @@ export type TraceStep = typeof traceSteps.$inferSelect;
 export type EntityLock = typeof entityLocks.$inferSelect;
 export type EventRow = typeof events.$inferSelect;
 export type Evaluation = typeof evaluations.$inferSelect;
+export type InboundState = typeof inboundState.$inferSelect;

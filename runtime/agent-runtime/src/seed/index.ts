@@ -3,7 +3,8 @@
  *
  * Seeds the Prospector agent and its tasks `daily-event-prospecting` and
  * `weekly-event-scouting`, and the EmailDrafter agent with its task
- * `draft-email-on-validated` (all idempotent).
+ * `draft-email-on-validated`, and the BajasAgent with its task `process-unsubscribes`
+ * (CRON every 2 hours; all idempotent).
  * The daily task default input is the demo fixture `test/fixtures/feria-ejemplo.json`
  * unless `--input` points to another file with the same shape.
  */
@@ -13,6 +14,7 @@ import { fileURLToPath } from 'node:url';
 import { ProspectorInput } from '../agents/prospector-agent.js';
 import { loadConfig } from '../config.js';
 import { createDb } from '../db/client.js';
+import { seedBajas } from './bajas-seed.js';
 import { seedEmailDrafter } from './email-drafter-seed.js';
 import { seedProspector } from './prospector-seed.js';
 
@@ -41,6 +43,7 @@ if (isMain) {
     log,
   })
     .then(async (prospector) => ({ prospector, emailDrafter: await seedEmailDrafter(handle.db, { tenantId, log }) }))
+    .then(async (r) => ({ ...r, bajas: await seedBajas(handle.db, { tenantId, log }) }))
     .then((r) => console.log(JSON.stringify({ tenant: tenantId, ...r }, null, 2)))
     .catch((err: unknown) => {
       console.error('[seed] failed', err);

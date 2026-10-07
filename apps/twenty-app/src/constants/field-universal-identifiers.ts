@@ -71,6 +71,27 @@ export const AGENT_RUN_SUMMARY_FIELD_IDS = {
   company: '8017a78b-ce36-40e5-b87d-d793ad69748a',
 } as const;
 
+// Métricas diarias del Agent OS: un registro por tenant y día local (Europe/Madrid).
+export const AGENT_OS_DAILY_METRIC_FIELD_IDS = {
+  name: 'd51ace14-b7bb-47a0-8427-6e3c7b401d9e',
+  day: '8dfbb313-bc1d-4289-a556-a7741ed9b987',
+  dayKey: '29e23eed-ebf0-431c-b08a-f7b89f00575f',
+  tenantId: '554a5a2c-0ee3-45f1-bad3-fc1646392dab',
+  runs: 'ff59e8b2-ed43-4eaa-a2ad-b7645e496aae',
+  runsSucceeded: '9eda5bec-2a7b-44e8-a19b-d2991f953085',
+  runsFailed: 'fde24102-ca4e-49c6-bd0f-af1e8ce54a85',
+  cost: 'd1bb4b01-ae6e-449b-aa28-a2adf192e98d',
+  hypothesesCreated: 'ee26664e-1829-45bd-8ade-8f3c617d24f6',
+  emailSends: '7b6dd355-f5e7-408f-8979-4569d820ab69',
+  warmupTarget: '8c71cfdd-25f0-4dbd-a6dd-96edbf1c40c5',
+  warmupStage: '8847a209-0af5-45ba-b30f-258241567dc1',
+  warmupPhase: 'f408ca2c-514b-40bb-a5f8-2888e5c717a2',
+  humanReviewed: 'b9223a2b-cdc5-4245-a47a-795f8e03d4ca',
+  humanAccepted: '6361bb97-a41c-4e89-8b5c-bb30a82cbfbc',
+  acceptanceRate: 'c3c21692-fc77-4b36-883d-58e7d3f58e63',
+  syncedAt: 'c81f11fd-44b6-4981-8d19-eca446c25b1c',
+} as const;
+
 export const COMPANY_REVERSE_FIELD_IDS = {
   commercialSignals: '6296fa4d-55b3-414f-9ee8-fd126d63cc5a',
   researches: '2e116fbf-34ba-4e85-aee9-a903aa8aaa43',

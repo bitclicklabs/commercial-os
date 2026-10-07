@@ -53,7 +53,8 @@ const CreatedRecord = <T extends z.ZodRawShape>(shape: T) =>
 // ---------------------------------------------------------------------------
 
 export const CreateSignalInput = z.object({
-  companyId: RecordId,
+  /** Omitted for an event-level signal (a fair without a company yet, e.g. no exhibitor list). */
+  companyId: RecordId.optional(),
   title: ShortText,
   signalType: z.enum(SIGNAL_TYPES),
   description: LongText(4000).optional(),
@@ -81,7 +82,7 @@ export function createCreateSignalTool(deps: TwentyToolDeps) {
     name: 'Create commercial signal',
     version: '1.0.0',
     description:
-      'Record a commercial signal (fair, congress, hiring, expansion...) for a CRM company. Idempotent: the same company, type, event date and source domain returns the existing signal.',
+      'Record a commercial signal (fair, congress, hiring, expansion...) for a CRM company, or an event-level signal without company. Idempotent: the same company (or none), type, event date and source domain returns the existing signal.',
     inputSchema: CreateSignalInput,
     outputSchema: CreateSignalOutput,
     riskLevel: 'LOW_WRITE',
@@ -95,9 +96,9 @@ export function createCreateSignalTool(deps: TwentyToolDeps) {
       withTwenty(deps, async () => {
         const sourceDomain = normalizeDomain(input.sourceDomain ?? input.sourceUrl);
         if (!sourceDomain) return errorResult('INVALID_INPUT', 'sourceDomain could not be derived from sourceUrl');
-        const idempotencyKey = `publi:signal:create:${input.companyId}:${input.signalType}:${input.eventDate ?? 'none'}:${sourceDomain}`;
+        const idempotencyKey = `publi:signal:create:${input.companyId ?? 'event'}:${input.signalType}:${input.eventDate ?? 'none'}:${sourceDomain}`;
         const filter = `and(${[
-          eq('companyId', input.companyId),
+          input.companyId ? eq('companyId', input.companyId) : 'companyId[is]:NULL',
           eq('signalType', input.signalType),
           eq('sourceDomain', sourceDomain),
           input.eventDate ? eq('eventDate', input.eventDate) : 'eventDate[is]:NULL',
@@ -130,7 +131,7 @@ export function createCreateSignalTool(deps: TwentyToolDeps) {
             confidence: input.confidence,
             status: input.status,
             tenantId: ctx.tenantId,
-            companyId: input.companyId,
+            ...(input.companyId ? { companyId: input.companyId } : {}),
           },
           { signal: ctx.signal },
         );

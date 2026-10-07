@@ -128,5 +128,5 @@ Nota: las 2 sesiones paralelas del usuario (métricas por versión; fix del reco
 | Skill Optimizer (§18): harvest de fallos → clustering → candidata por edit-ops → experimento → gate; propuesta de promoción en Twenty, humano activa; BLOCKED_NO_DATA si no hay etiquetas frescas (P5) | `feat/skill-optimizer` | Opus | 🔄 |
 | Experimentos de harness (activación con gate, adiós al force) + canario post-gate (% determinista, promote/rollback humanos) | `feat/harness-experiments` | Opus | 🔄 |
 | Recuperación del trabajo huérfano: métricas solo con veredictos HUMAN + desglose por versión de skill en /metrics/agents + fix del reconciliador que marcaba FAILED scouts terminados | `feat/metrics-recovery` | Opus | 🔄 |
-| Docs: skill-optimizer.md, ciclo-mejora-skills.md (modo automático), ROADMAP al día (MVP-2 ✅, MVP-3 🔄) | `docs/tanda11` | Sonnet | 🔄 |
+| Docs: skill-optimizer.md, ciclo-mejora-skills.md (modo automático), ROADMAP al día (MVP-2 ✅, MVP-3 🔄) | `docs/tanda11` | Sonnet | ✅ entregado (pendiente de fusión; detectó docs desfasados en README runtime y ADRs 22/29 — reconcilia el PM) |
 | Integración, e2e y PR | `feat/tanda11` (worktree wt11-integracion) | PM | 🔄 worktree creado con .env copiado (lección tanda 10) |

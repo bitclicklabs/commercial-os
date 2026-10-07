@@ -461,6 +461,7 @@ Las de Twenty usan `TWENTY_BASE_URL` y `TWENTY_API_KEY` y tienen `outputTrust = 
 | `create_hypothesis` | `LOW_WRITE` | Sí | Empresa + `name` (por defecto `{empresa} — {need}`) |
 | `create_agent_run_summary` | `LOW_WRITE` | Sí | `agentExecutionId` |
 | `get_hypothesis` | `READ` | No | — (hipótesis con empresa, señal y decision maker, `depth=1`) |
+| `set_hypothesis_draft` | `LOW_WRITE` | Sí | Solo escribe si la hipótesis no tiene borrador (`emailStatus` vacío); nunca toca `DRAFT`, `READY`, `SENDING` ni `SENT`. No envía nada |
 | `create_note` | `LOW_WRITE` | Sí | Empresa + título; adopta una nota huérfana con el mismo título |
 | `get_note` | `READ` | No | — (título y markdown de una nota; salida `untrusted`) |
 | `update_note` | `LOW_WRITE` | Sí | Solo añade líneas al final; las que ya están (coincidencia exacta) se omiten. Nunca edita ni borra contenido |
@@ -1152,7 +1153,7 @@ veredicto ACCEPTED (webhook de Twenty o POST /evaluations/human)
 ### Tarea y agente
 
 - **Tarea `draft-email-on-validated`**: `{"type": "EVENT", "event_type": "evaluation.recorded", "filter": {"feedback": "ACCEPTED", "subjectType": "hypothesis"}}`, `timeout_ms = 120000`, 2 intentos y `max_concurrency = 2`. Un veredicto `EDITED` (validada con cambios) no dispara la tarea: el filtro no tiene operador OR.
-- **Agente `EmailDrafter`** (`implementation = "email_drafter"`, `gemini-flash-latest`, `thinking_level = low`): tool policy `find_company`, `get_company`, `get_hypothesis` y `create_note`, techo `LOW_WRITE`, máximo 6 llamadas y una sola `create_note` por ejecución.
+- **Agente `EmailDrafter`** (`implementation = "email_drafter"`, `gemini-flash-latest`, `thinking_level = low`): tool policy `find_company`, `get_company`, `get_hypothesis`, `create_note` y `set_hypothesis_draft`, techo `LOW_WRITE`, máximo 6 llamadas y una sola `create_note` y una sola `set_hypothesis_draft` por ejecución.
 - Entrada: el sobre del evento bajo `input.event`, o `{ "hypothesis_id": "<id en Twenty>" }` para lanzarlo a mano con `POST /tasks/:id/run`.
 - `pnpm seed` crea o actualiza el agente y la tarea (idempotente, igual que el Prospector).
 
@@ -1161,7 +1162,12 @@ veredicto ACCEPTED (webhook de Twenty o POST /evaluations/human)
 1. Lee la hipótesis con `get_hypothesis` (empresa, señal y decision maker en una sola petición). Si la hipótesis no existe o está `REJECTED` o `EXPIRED`, si el veredicto no es `ACCEPTED` ni `EDITED` o si el sujeto no es una hipótesis, termina con `outcome = SKIPPED` sin llamar al modelo.
 1. Hace **una** llamada a Gemini con la necesidad, el porqué ahora, el evento, los productos recomendados y los diferenciales que anotó el Prospector. Los datos del CRM entran en un bloque `DATOS_NO_CONFIABLES`. La respuesta se valida con zod (`{asunto, cuerpo}`); si no es válida, el run termina con `outcome = FAILED` y sin nota (no hay ronda de reparación).
 1. Post-procesa el texto por código (`finalizeDraft`).
+1. Solo con `configuration.send_from_twenty.enabled = true` (en el seed, `false`): escribe el mismo borrador en los campos `emailTo`, `emailSubject`, `emailBody` de la hipótesis con `emailStatus = DRAFT` (`set_hypothesis_draft`). Un fallo aquí no falla el run.
 1. Guarda la nota con `create_note`.
+
+### Envío desde Twenty (opcional, lo hace una persona)
+
+Con los campos de borrador en la hipótesis, una persona revisa y edita el texto en Twenty, pone `Email status = Reviewed` y lanza el workflow manual **Commercial OS · Enviar borrador de email**, que envía desde **su** buzón conectado en Twenty. El runtime no envía ni activa nada: `pnpm twenty:send-workflow` solo crea el workflow en borrador (`--apply`) o muestra su definición (por defecto). Definición en `src/integrations/twenty/send-draft-workflow.ts`; pasos, privacidad y la restricción obligatoria de la API key en [docs/twenty-envio-email.md](../../docs/twenty-envio-email.md).
 
 El prompt pide español de España, tuteo, tono cercano y sin humo comercial, de 120 a 180 palabras, 1 o 2 diferenciales (taller propio, ofertas, trato cercano, precios) y nada inventado: sin nombres de contacto si la hipótesis no tiene decision maker, sin presupuestos ni cantidades estimadas y sin mencionar el CRM ni la IA.
 

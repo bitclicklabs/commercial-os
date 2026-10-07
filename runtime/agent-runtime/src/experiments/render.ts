@@ -120,12 +120,16 @@ export function renderExperimentMarkdown(r: ExperimentReport): string {
     executor_budget_eur: number;
     judge_budget_eur: number;
   };
+  const isHarness = e.subjectType === 'harness';
+  const fixed = (r.config as { fixed_skill?: { name: string; version: number; version_id: string } }).fixed_skill;
+  const route = isHarness ? 'harnesses' : 'skills';
   const L: string[] = [];
-  L.push(`# ${e.name} · ${e.subjectName} v${e.baselineVersion} vs v${e.candidateVersion} (experimento automático)`, '');
+  L.push(`# ${e.name} · ${isHarness ? 'harness ' : ''}${e.subjectName} v${e.baselineVersion} vs v${e.candidateVersion} (experimento automático)`, '');
   L.push(`Generado por \`pnpm experiment:run\` (runner v${String((r.config as { runner_version?: unknown }).runner_version ?? 1)}). Lo que EXP-001 y EXP-002 hicieron a mano, en una ejecución: reserva de casos con P5, comparación con el proveedor real, evaluación automática y Release Gate (LLD v0.1 §11.5-11.6).`, '');
   L.push('| Campo | Valor |', '|---|---|');
   L.push(`| Fecha | ${r.started_at.slice(0, 10)} (el agente ve ${cfg.today}) |`);
-  L.push(`| Sujeto | skill \`${e.subjectName}\` |`);
+  L.push(`| Sujeto | ${isHarness ? 'harness' : 'skill'} \`${e.subjectName}\` |`);
+  if (isHarness && fixed) L.push(`| Skill (fija en las dos ramas) | \`${fixed.name}\` v${fixed.version} \`ACTIVE\` · \`${fixed.version_id}\` |`);
   L.push(`| Baseline | v${cfg.baseline.version} \`ACTIVE\` · \`${cfg.baseline.version_id}\` · \`content_hash\` \`${cfg.baseline.content_hash.slice(0, 12)}…\` |`);
   L.push(`| Candidata | v${cfg.candidate.version} \`${cfg.candidate.status}\` · \`${cfg.candidate.version_id}\` · \`content_hash\` \`${cfg.candidate.content_hash.slice(0, 12)}…\` |`);
   L.push(`| Dataset | \`${cfg.dataset.name}\` v${cfg.dataset.version} (${cfg.dataset.status}) · \`${cfg.dataset.id}\` |`);
@@ -138,7 +142,7 @@ export function renderExperimentMarkdown(r: ExperimentReport): string {
   L.push(`**${r.summary}**`, '');
   if (r.decision === 'PASS_FORM') {
     L.push(
-      '> **Importante — PASS_FORM:** el split no tenía casos etiquetados, así que el gate solo ha podido comprobar la forma de las decisiones (reglas, juez, coste, ausencia de regresiones), no si aciertan. PASS_FORM basta para que `POST /skills/:id/versions/:v/activate` acepte la versión sin `force`, pero el experimento queda registrado como pendiente de re-validar: cuando el dataset tenga veredictos del comercial en VALIDATION/TEST, repite el experimento contra la versión activa.',
+      `> **Importante — PASS_FORM:** el split no tenía casos etiquetados, así que el gate solo ha podido comprobar la forma de las decisiones (reglas, juez, coste, ausencia de regresiones), no si aciertan. PASS_FORM basta para que \`POST /${route}/:id/versions/:v/activate\` acepte la versión sin \`force\`, pero el experimento queda registrado como pendiente de re-validar: cuando el dataset tenga veredictos del comercial en VALIDATION/TEST, repite el experimento contra la versión activa.`,
       '',
     );
   }
@@ -146,7 +150,11 @@ export function renderExperimentMarkdown(r: ExperimentReport): string {
   L.push('La activación es una decisión humana (LLD §19): este experimento no activa nada.', '');
   L.push('```sh');
   L.push(`# Si decides activar (el gate la deja pasar solo con PASS o PASS_FORM frente a la versión activa):`);
-  L.push(`curl -s -X POST "http://127.0.0.1:4020/skills/${e.subjectName}/versions/${e.candidateVersion}/activate" -H 'x-tenant-id: ${e.tenantId}'`);
+  L.push(`curl -s -X POST "http://127.0.0.1:4020/${route}/${e.subjectName}/versions/${e.candidateVersion}/activate" -H 'x-tenant-id: ${e.tenantId}'`);
+  if (!isHarness) {
+    L.push(`# O, más prudente, en canario sobre un % de ejecuciones (exige el mismo gate, sin force; promote/rollback los decide un humano):`);
+    L.push(`curl -s -X POST "http://127.0.0.1:4020/skills/${e.subjectName}/versions/${e.candidateVersion}/canary" -H 'x-tenant-id: ${e.tenantId}' -H 'content-type: application/json' -d '{"percent":10}'`);
+  }
   L.push('```', '');
   for (const p of r.phases) L.push(...phaseSection(p));
   L.push('## Anexo A · Comparación lado a lado (skill:compare)', '');

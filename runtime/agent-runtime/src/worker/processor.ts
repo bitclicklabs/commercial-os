@@ -185,8 +185,8 @@ export class RunProcessor {
     const harness = resolved && task ? await this.resolveHarness(tenantId, resolved.version, { timeoutMs: task.timeoutMs, retry: task.retryPolicy }) : null;
     if (resolved) await this.gateOnTwenty(taskRunId, resolved.version, attempt.twentyWait, harness);
     // Skills are resolved once per attempt, when it starts: a version activated later only
-    // affects later runs.
-    const skills = resolved ? await this.resolveSkills(tenantId, resolved.version) : null;
+    // affects later runs. Canary routing key = the task run id: every attempt gets the same arm.
+    const skills = resolved ? await this.resolveSkills(tenantId, resolved.version, run.id) : null;
 
     // max_concurrency gate + guarded QUEUED -> RUNNING, serialised per task by a transaction-
     // scoped advisory lock so two workers cannot both see a free slot.
@@ -364,7 +364,7 @@ export class RunProcessor {
       return;
     }
     await this.events.emit(executionStartedEvent(execution, this.eventContext(agent, version, null, null)));
-    const skills = await this.resolveSkills(tenantId, version);
+    const skills = await this.resolveSkills(tenantId, version, execution.id);
     const harness = await this.resolveHarness(tenantId, version, DIRECT_EXECUTION_BASE);
     try {
       const outcome = await this.runAgent(execution, agent, version, harness.policies, skills);
@@ -430,11 +430,18 @@ export class RunProcessor {
     return version ? { agent, version } : null;
   }
 
-  /** Skill refs of the version against the database; never throws (falls back to code). */
-  private resolveSkills(tenantId: string, version: AgentVersion): Promise<SkillSet> {
-    return resolveSkillRefs(this.db, tenantId, version.skillRefs, {
-      warn: (obj, msg) => this.logger.warn({ tenantId, agentVersionId: version.id, ...obj }, msg),
-    });
+  /**
+   * Skill refs of the version against the database; never throws (falls back to code).
+   * `routingKey` picks the arm of an ACTIVE skill canary (deterministic, recorded in the trace).
+   */
+  private resolveSkills(tenantId: string, version: AgentVersion, routingKey: string): Promise<SkillSet> {
+    return resolveSkillRefs(
+      this.db,
+      tenantId,
+      version.skillRefs,
+      { warn: (obj, msg) => this.logger.warn({ tenantId, agentVersionId: version.id, ...obj }, msg) },
+      { routingKey },
+    );
   }
 
   /**

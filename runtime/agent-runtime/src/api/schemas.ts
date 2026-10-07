@@ -213,6 +213,25 @@ export const ActivateVersionBody = z
   })
   .refine((b) => b.force !== true || (b.reason ?? '').length >= 10, { message: 'force requires a reason (at least 10 characters)', path: ['reason'] });
 
+/**
+ * Body of `POST /skills/:id/versions/:v/canary` (src/skills/canary.ts). Strict: there is no
+ * `force` (a canary always needs a gate PASS / PASS_FORM experiment).
+ */
+export const StartCanaryBody = z
+  .object({
+    percent: z.number().int().min(1).max(99),
+    by: z.string().trim().max(200).optional(),
+  })
+  .strict();
+
+/** Body of `POST /skills/:id/canary/promote` and `/rollback` (no force: promote re-checks the gate, rollback always passes). */
+export const FinishCanaryBody = z
+  .object({
+    by: z.string().trim().max(200).optional(),
+    reason: z.string().trim().max(2_000).optional(),
+  })
+  .strict();
+
 // ---------------------------------------------------------------------------
 // Experiments (MVP-2, LLD v0.1 sections 11.5-11.6): read only, `pnpm experiment:run` writes
 // ---------------------------------------------------------------------------

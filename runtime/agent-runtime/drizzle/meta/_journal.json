@@ -85,6 +85,13 @@
       "when": 1791376000000,
       "tag": "0011_experiments",
       "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "7",
+      "when": 1791376200000,
+      "tag": "0013_skill_canaries",
+      "breakpoints": true
     }
   ]
 }

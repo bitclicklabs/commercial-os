@@ -669,3 +669,116 @@ export async function recentRuns(db: Db, w: Window & AgentFilter & { limit: numb
     })),
   };
 }
+
+// ---------------------------------------------------------------------------
+// GET /skills/:id/canary (src/skills/canary.ts): canary arm vs stable arm
+// ---------------------------------------------------------------------------
+export interface CanaryArmsOptions {
+  tenantId: string;
+  skillName: string;
+  canaryId: string;
+}
+
+/**
+ * Same measures as /metrics/agents (executions, outcome, EUR cost, tokens, latency, latest human
+ * verdict per subject) plus the automatic evaluations (COMPOSITE and other non-HUMAN rows), for
+ * the executions whose trace says THIS canary routed them (`skill_versions[].canary.canary_id`),
+ * split by arm. Pinned refs and runs before/after the canary never count.
+ */
+export async function canaryArmMetrics(db: Db, o: CanaryArmsOptions) {
+  const routed = sql`routed as (
+    select t.execution_id, sv->'canary'->>'arm' as arm, (sv->>'version')::int as version, sv->>'skill_version_id' as skill_version_id
+    from traces t cross join lateral jsonb_array_elements(case when jsonb_typeof(t.skill_versions) = 'array' then t.skill_versions else '[]'::jsonb end) sv
+    where t.tenant_id = ${o.tenantId} and sv->>'name' = ${o.skillName} and sv->'canary'->>'canary_id' = ${o.canaryId}
+  )`;
+  const runs = await rows(
+    db,
+    sql`with ${routed}
+    select r.arm, r.version, r.skill_version_id,
+           count(*) as runs,
+           count(*) filter (where e.status = 'COMPLETED') as completed,
+           count(*) filter (where e.status in ('FAILED', 'TIMED_OUT')) as failed,
+           count(*) filter (where e.output->>'outcome' = 'SUCCESS') as o_success,
+           count(*) filter (where e.output->>'outcome' = 'PARTIAL') as o_partial,
+           count(*) filter (where e.output->>'outcome' = 'FAILED') as o_failed,
+           sum(${execCostEur('e')}) as cost_eur, avg(${execCostEur('e')}) as avg_cost_eur,
+           avg(e.input_tokens + e.output_tokens) as avg_tokens,
+           avg(e.latency_ms) as avg_latency_ms,
+           min(e.created_at) as first_run_at, max(e.created_at) as last_run_at
+    from routed r join agent_executions e on e.id = r.execution_id and e.tenant_id = ${o.tenantId}
+    group by r.arm, r.version, r.skill_version_id
+    order by r.arm`,
+  );
+  const verdicts = await rows(
+    db,
+    sql`with ${routed},
+    linked as (
+      select ev.subject_type, ev.subject_id, ev.feedback, ev.score, ev.occurred_at, ev.created_at, r.arm
+      from evaluations ev join routed r on r.execution_id = ev.agent_execution_id
+      where ev.tenant_id = ${o.tenantId} and ev.kind = 'HUMAN'
+    ),
+    latest as (
+      select distinct on (subject_type, subject_id) arm, feedback, score from linked order by subject_type, subject_id, occurred_at desc, created_at desc
+    ),
+    totals as (select arm, count(*) as verdicts from linked group by 1)
+    select l.arm,
+           count(*) filter (where l.feedback = 'ACCEPTED') as accepted,
+           count(*) filter (where l.feedback = 'EDITED') as edited,
+           count(*) filter (where l.feedback = 'DISCARDED') as discarded,
+           avg(l.score::float8) as avg_score,
+           max(t.verdicts) as verdicts
+    from latest l join totals t on t.arm = l.arm
+    group by l.arm`,
+  );
+  const automatic = await rows(
+    db,
+    sql`with ${routed}
+    select r.arm, ev.evaluator_id, count(*) as n, avg(ev.score::float8) as avg_score
+    from evaluations ev join routed r on r.execution_id = ev.agent_execution_id
+    where ev.tenant_id = ${o.tenantId} and ev.kind <> 'HUMAN'
+    group by r.arm, ev.evaluator_id order by r.arm, ev.evaluator_id`,
+  );
+  const arm = (name: 'canary' | 'stable') => {
+    const r = runs.find((x) => x.arm === name);
+    const runCount = n(r?.runs);
+    const withOutcome = n(r?.o_success) + n(r?.o_partial) + n(r?.o_failed);
+    return {
+      arm: name,
+      version: nOrNull(r?.version),
+      skill_version_id: (r?.skill_version_id as string | undefined) ?? null,
+      runs: runCount,
+      by_status: { completed: n(r?.completed), failed: n(r?.failed) },
+      completion_rate: ratio(n(r?.completed), runCount),
+      outcome: { success: n(r?.o_success), partial: n(r?.o_partial), failed: n(r?.o_failed), none: runCount - withOutcome, success_rate: ratio(n(r?.o_success), withOutcome) },
+      cost_eur: round(n(r?.cost_eur)),
+      avg_cost_eur: round(nOrNull(r?.avg_cost_eur)),
+      avg_tokens: round(nOrNull(r?.avg_tokens), 0),
+      avg_latency_ms: round(nOrNull(r?.avg_latency_ms), 0),
+      first_run_at: iso(r?.first_run_at),
+      last_run_at: iso(r?.last_run_at),
+      human_feedback: feedbackCounts(verdicts.find((v) => v.arm === name)),
+      automatic_evaluations: automatic
+        .filter((a) => a.arm === name)
+        .map((a) => ({ evaluator_id: a.evaluator_id, evaluations: n(a.n), avg_score: round(nOrNull(a.avg_score), 4) })),
+    };
+  };
+  const canary = arm('canary');
+  const stable = arm('stable');
+  const delta = (a: number | null, b: number | null) => (a === null || b === null ? null : round(a - b, 6));
+  const totalRuns = canary.runs + stable.runs;
+  return {
+    tenant_id: o.tenantId,
+    canary_id: o.canaryId,
+    source: 'traces.skill_versions[].canary (solo ejecuciones enrutadas por este canario)',
+    observed_canary_share: ratio(canary.runs, totalRuns),
+    arms: { canary, stable },
+    delta_canary_minus_stable: {
+      completion_rate: delta(canary.completion_rate, stable.completion_rate),
+      success_rate: delta(canary.outcome.success_rate, stable.outcome.success_rate),
+      avg_cost_eur: delta(canary.avg_cost_eur, stable.avg_cost_eur),
+      avg_latency_ms: delta(canary.avg_latency_ms, stable.avg_latency_ms),
+      acceptance_rate: delta(canary.human_feedback.acceptance_rate, stable.human_feedback.acceptance_rate),
+      useful_rate: delta(canary.human_feedback.useful_rate, stable.human_feedback.useful_rate),
+    },
+  };
+}

@@ -9,6 +9,11 @@
  * - `{ skill_id, version }` (MVP-0 legacy ref to a code constant) -> never read from the
  *                           database (its `version` is a code version, not a db version).
  *
+ * Canary (src/skills/canary.ts): when the skill has an ACTIVE canary and the ref follows the
+ * ACTIVE version (`{ name }`), the run gets the canary version if the deterministic hash of
+ * `routingKey` falls in its percent, the stable (ACTIVE) one otherwise. The record carries
+ * `canary` (arm, bucket, key). A pinned ref (`{ name, version }`) never takes part.
+ *
  * Compatibility: when a ref cannot be resolved (skill or version missing, no ACTIVE
  * version, database error, legacy ref) the agent keeps its MVP-0 behaviour (its
  * `system_prompt` or the code constant) and a warning is logged. Nothing fails because of
@@ -20,7 +25,8 @@
  */
 import { and, eq, inArray } from 'drizzle-orm';
 import type { Db } from '../db/client.js';
-import { skills, skillVersions, type DbSkillRef, type LegacySkillRef, type Skill, type SkillRef, type SkillVersion, type SkillVersionUsed } from '../db/schema.js';
+import { skillCanaries, skills, skillVersions, type DbSkillRef, type LegacySkillRef, type Skill, type SkillCanary, type SkillRef, type SkillVersion, type SkillVersionUsed } from '../db/schema.js';
+import { canaryRouting } from './canary.js';
 import { codeSkill } from './code-skills.js';
 import { renderSkill, sha256 } from './render.js';
 
@@ -111,8 +117,13 @@ export function useSkill(ctx: { skills?: SkillSet | undefined }, name: string, f
 
 /** Read side of the resolver (the database; an in-memory one in unit tests). */
 export interface SkillStore {
-  /** Skills of the tenant with these names and all their versions. */
-  load(tenantId: string, names: string[]): Promise<{ skills: Skill[]; versions: SkillVersion[] }>;
+  /** Skills of the tenant with these names, all their versions and their ACTIVE canaries (if any). */
+  load(tenantId: string, names: string[]): Promise<{ skills: Skill[]; versions: SkillVersion[]; canaries?: SkillCanary[] }>;
+}
+
+export interface ResolveOptions {
+  /** Canary routing key: the task_run id, or the execution id of a direct execution. Without it, never the canary. */
+  routingKey?: string | null | undefined;
 }
 
 export function dbSkillStore(db: Db): SkillStore {
@@ -120,11 +131,10 @@ export function dbSkillStore(db: Db): SkillStore {
     async load(tenantId, names) {
       const rows = await db.select().from(skills).where(and(eq(skills.tenantId, tenantId), inArray(skills.name, names)));
       if (rows.length === 0) return { skills: [], versions: [] };
-      const versions = await db
-        .select()
-        .from(skillVersions)
-        .where(and(eq(skillVersions.tenantId, tenantId), inArray(skillVersions.skillId, rows.map((r) => r.id))));
-      return { skills: rows, versions };
+      const ids = rows.map((r) => r.id);
+      const versions = await db.select().from(skillVersions).where(and(eq(skillVersions.tenantId, tenantId), inArray(skillVersions.skillId, ids)));
+      const canaries = await db.select().from(skillCanaries).where(and(eq(skillCanaries.tenantId, tenantId), inArray(skillCanaries.skillId, ids), eq(skillCanaries.status, 'ACTIVE')));
+      return { skills: rows, versions, canaries };
     },
   };
 }
@@ -135,6 +145,7 @@ export async function resolveSkillRefs(
   tenantId: string,
   refs: readonly SkillRef[] | null | undefined,
   logger?: SkillLogger,
+  options: ResolveOptions = {},
 ): Promise<SkillSet> {
   const store: SkillStore = 'load' in source && typeof source.load === 'function' ? source : dbSkillStore(source as Db);
   const list = Array.isArray(refs) ? refs.filter((r): r is SkillRef => Boolean(r) && typeof r === 'object') : [];
@@ -155,12 +166,14 @@ export async function resolveSkillRefs(
   const dbRefs = list.filter((r): r is DbSkillRef => !isLegacyRef(r) && typeof r.name === 'string');
   let byName = new Map<string, Skill>();
   let versionsById = new Map<string, SkillVersion>();
+  let canaryBySkill = new Map<string, SkillCanary>();
   let failed: unknown = null;
   if (dbRefs.length > 0) {
     try {
       const loaded = await store.load(tenantId, [...new Set(dbRefs.map((r) => r.name))]);
       byName = new Map(loaded.skills.map((r) => [r.name, r]));
       versionsById = new Map(loaded.versions.map((v) => [v.id, v]));
+      canaryBySkill = new Map((loaded.canaries ?? []).filter((c) => c.status === 'ACTIVE').map((c) => [c.skillId, c]));
     } catch (err) {
       failed = err;
     }
@@ -184,12 +197,16 @@ export async function resolveSkillRefs(
       entries.push(pending(ref, 'skill_not_found'));
       continue;
     }
-    const version =
+    let version =
       ref.version !== undefined
         ? [...versionsById.values()].find((v) => v.skillId === skill.id && v.version === ref.version)
         : skill.activeVersionId
           ? versionsById.get(skill.activeVersionId)
           : undefined;
+    // Canary: only for refs that follow the ACTIVE version, and only while it is the canary's stable one.
+    const canary = ref.version === undefined ? canaryBySkill.get(skill.id) : undefined;
+    const routing = canary && version && canary.stableVersionId === version.id && versionsById.has(canary.canaryVersionId) ? canaryRouting(canary, options.routingKey) : undefined;
+    if (routing?.arm === 'canary') version = versionsById.get(canary!.canaryVersionId);
     if (!version) {
       const reason = ref.version !== undefined ? 'version_not_found' : 'no_active_version';
       logger?.warn({ skill: ref.name, version: ref.version ?? null, tenantId, reason }, 'skill version not resolved; falling back to the code constant');
@@ -205,6 +222,7 @@ export async function resolveSkillRefs(
         content_hash: sha256(text),
         source: 'db',
         requested: ref,
+        ...(routing ? { canary: routing } : {}),
       },
       text,
     });

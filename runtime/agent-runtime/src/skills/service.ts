@@ -4,10 +4,14 @@
  * ACTIVE to roll back). Every transition runs in one transaction that locks the skill row,
  * so there is never more than one ACTIVE version (also enforced by a partial unique index).
  * Version content is immutable (trigger): changing a skill means creating a new version.
+ *
+ * Canary (src/skills/canary.ts, 0013): while a skill has an ACTIVE canary, `activateVersion` is
+ * rejected (409: promote or roll the canary back first) and deprecating the stable or the canary
+ * version closes the canary as ROLLED_BACK in the same transaction (rollback is always allowed).
  */
 import { and, desc, eq } from 'drizzle-orm';
 import type { Db } from '../db/client.js';
-import { skills, skillVersions, type Skill, type SkillVersion, type SkillVersionStatus } from '../db/schema.js';
+import { skillCanaries, skills, skillVersions, type Skill, type SkillCanary, type SkillVersion, type SkillVersionStatus } from '../db/schema.js';
 import { UNTRUSTED_SYSTEM_RULE } from '../agents/untrusted.js';
 import { renderSkill, sha256 } from './render.js';
 
@@ -33,7 +37,7 @@ export interface SkillVersionContent {
   metadata?: Record<string, unknown> | undefined;
 }
 
-type Tx = Parameters<Parameters<Db['transaction']>[0]>[0];
+export type Tx = Parameters<Parameters<Db['transaction']>[0]>[0];
 type Conn = Db | Tx;
 
 /** Non-blocking checks returned to the caller (the version is created anyway). */
@@ -69,7 +73,8 @@ export async function findSkill(db: Conn, tenantId: string, key: string): Promis
   return row;
 }
 
-async function lockSkill(tx: Tx, tenantId: string, key: string): Promise<Skill> {
+/** Finds the skill and locks its row (FOR UPDATE): every lifecycle transition serialises on it. */
+export async function lockSkill(tx: Tx, tenantId: string, key: string): Promise<Skill> {
   const found = await findSkill(tx, tenantId, key);
   if (!found) throw new SkillServiceError('not_found', 'skill not found');
   const [locked] = await tx.select().from(skills).where(eq(skills.id, found.id)).for('update');
@@ -244,7 +249,7 @@ export function planDeprecate(versions: readonly VersionState[], version: number
   return { changed: true, deprecate: [t.id], activate: restore.id, activeVersionId: restore.id, restore };
 }
 
-async function applyPlan(tx: Tx, skill: Skill, plan: TransitionPlan): Promise<{ skill: Skill; byId: Map<string, SkillVersion> }> {
+export async function applyPlan(tx: Tx, skill: Skill, plan: TransitionPlan): Promise<{ skill: Skill; byId: Map<string, SkillVersion> }> {
   const now = new Date();
   const byId = new Map<string, SkillVersion>();
   // Deprecate first: the partial unique index allows one ACTIVE row per skill at any time.
@@ -265,6 +270,27 @@ async function applyPlan(tx: Tx, skill: Skill, plan: TransitionPlan): Promise<{ 
   return { skill: updated ?? skill, byId };
 }
 
+/** The ACTIVE canary of a skill (at most one: partial unique index), or null. */
+export async function activeCanaryOf(conn: Conn, skillId: string): Promise<SkillCanary | null> {
+  const [row] = await conn.select().from(skillCanaries).where(and(eq(skillCanaries.skillId, skillId), eq(skillCanaries.status, 'ACTIVE'))).limit(1);
+  return row ?? null;
+}
+
+/** ACTIVE -> PROMOTED | ROLLED_BACK (the row is immutable afterwards, trigger). */
+export async function closeCanary(
+  tx: Tx,
+  canary: SkillCanary,
+  status: 'PROMOTED' | 'ROLLED_BACK',
+  args: { by?: string | null | undefined; reason: string; gate?: Record<string, unknown> | null | undefined },
+): Promise<SkillCanary> {
+  const [row] = await tx
+    .update(skillCanaries)
+    .set({ status, finishedAt: new Date(), finishedBy: args.by ?? null, finishReason: args.reason, finishGate: args.gate ?? null })
+    .where(and(eq(skillCanaries.id, canary.id), eq(skillCanaries.status, 'ACTIVE')))
+    .returning();
+  return row ?? canary;
+}
+
 /**
  * Check run inside the activation transaction, after the skill row is locked and before any
  * change (the Release Gate, src/experiments/release-gate.ts). Throwing aborts the activation;
@@ -283,6 +309,15 @@ export async function activateVersion<G = undefined>(db: Db, args: { tenantId: s
     const versions = await listVersions(tx, skill.id);
     const plan = planActivate(versions, args.version);
     const t = versions.find((v) => v.version === args.version)!;
+    const canary = plan.changed ? await activeCanaryOf(tx, skill.id) : null;
+    if (canary) {
+      throw new SkillServiceError('conflict', `skill has an ACTIVE canary (v${canary.canaryVersion} at ${canary.percent} % over v${canary.stableVersion}): promote it or roll it back first`, {
+        canary_id: canary.id,
+        canary_version: canary.canaryVersion,
+        stable_version: canary.stableVersion,
+        percent: canary.percent,
+      });
+    }
     const gate = args.guard ? await args.guard(tx, { skill, versions, target: t, active: versions.find((v) => v.status === 'ACTIVE') ?? null }) : undefined;
     const withGate = gate === undefined ? {} : { gate };
     if (!plan.changed) return { skill, version: t, changed: false, previous: null, ...withGate };
@@ -292,16 +327,21 @@ export async function activateVersion<G = undefined>(db: Db, args: { tenantId: s
   });
 }
 
-/** See `planDeprecate`. */
-export async function deprecateVersion(db: Db, args: { tenantId: string; skillKey: string; version: number }): Promise<TransitionResult> {
+/** See `planDeprecate`. Deprecating the stable or the canary version of an ACTIVE canary rolls the canary back. */
+export async function deprecateVersion(db: Db, args: { tenantId: string; skillKey: string; version: number }): Promise<TransitionResult & { canary?: SkillCanary | null }> {
   return db.transaction(async (tx) => {
     const skill = await lockSkill(tx, args.tenantId, args.skillKey);
     const versions = await listVersions(tx, skill.id);
     const plan = planDeprecate(versions, args.version);
     const t = versions.find((v) => v.version === args.version)!;
     if (!plan.changed) return { skill, version: t, changed: false, restored: null };
+    const open = await activeCanaryOf(tx, skill.id);
+    const canary =
+      open && (open.canaryVersionId === t.id || open.stableVersionId === t.id)
+        ? await closeCanary(tx, open, 'ROLLED_BACK', { reason: `v${t.version} (${open.canaryVersionId === t.id ? 'canaria' : 'estable'}) deprecada: el canario vuelve a la estable` })
+        : null;
     const applied = await applyPlan(tx, skill, plan);
     const restored = plan.restore ? (applied.byId.get(plan.restore.id) ?? null) : null;
-    return { skill: applied.skill, version: applied.byId.get(t.id)!, changed: true, restored };
+    return { skill: applied.skill, version: applied.byId.get(t.id)!, changed: true, restored, ...(canary ? { canary } : {}) };
   });
 }

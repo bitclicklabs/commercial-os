@@ -37,6 +37,7 @@ runtime/agent-runtime/
 │   ├── seed/                 Seed idempotente del harness default-commercial, las skills, el Prospector, el EmailDrafter, el BajasAgent y sus tareas (pnpm seed)
 │   ├── skills/               Skills versionadas (MVP-1): render, resolución desde la BD con fallback a las constantes, ciclo de estados
 │   ├── harness/              Harness versionado (MVP-1): config v1 por dimensiones, precedencia, resolución desde la BD con fallback y ciclo de estados
+│   ├── datasets/             Datasets de evaluación (MVP-2): cosecha de trazas y veredictos, split determinista, registro de exclusiones de EXP-001/EXP-002 y control de contaminación (markUsed)
 │   ├── services/             Lanzamiento idempotente de TaskRuns
 │   └── worker/               RunProcessor, worker BullMQ, locks por entidad y reconciliador
 └── test/
@@ -152,6 +153,7 @@ El esquema vive en `src/db/schema.ts`. Todas las tablas llevan `tenant_id` (C6).
 | `0007_email_sends` | Tabla `email_sends` (envíos observados desde Twenty, append-only con trigger anti-`DELETE`, dedupe `(tenant_id, hypothesis_id, sent_at)`). SQL idempotente |
 | `0008_harness` | Tablas `harnesses` y `harness_versions` (triggers anti-`DELETE` y de contenido inmutable) y columnas `agent_versions.harness_ref` y `traces.harness`. SQL idempotente. La `0009` la reclama otra rama: la `0008` lleva `when` = `1791375700000`, entre la `0007` y la `0009` ([ADR-31](../../docs/LLD-0.3-estado-real.md#adr-31)) |
 | `0009_knowledge` | Tabla `knowledge_entries` (memoria semántica, LLD §6.4): triggers anti-`DELETE`, de transiciones válidas y de contenido inmutable fuera de `PROPOSED`/`VALIDATED`; CHECK que impide `ACTIVE` sin evidencia. SQL idempotente. La `0008` es de `feat/harness-v1` (`when` 1791375700000); la `0009` lleva `when` 1791375800000 e idx 9 (ADR-31) |
+| `0010_eval_datasets` | Tablas `evaluation_datasets` y `evaluation_cases` (LLD §11.4 y P5): triggers anti-`DELETE`, versión de dataset inmutable salvo el estado, caso inmutable salvo `used_by` (solo crece) y casos solo en datasets `DRAFT`. SQL idempotente. `when` 1791375900000 e idx 10; la `0011` la reserva la rama de experiments (ADR-31). Consulta [Datasets de evaluación](#datasets-de-evaluación) |
 
 Importante: el migrador de Drizzle aplica solo las migraciones con fecha posterior a la última aplicada. Si dos ramas generan migraciones en paralelo contra la misma BD de desarrollo, aplica primero la más antigua o regenera la nueva tras el merge.
 
@@ -235,6 +237,11 @@ Cabecera opcional `x-tenant-id` en todas las rutas. Las respuestas usan `snake_c
 | `POST /skills/:id/versions` | Versión nueva en `DRAFT`, desde texto o copiando la activa (`copy_from`) |
 | `POST /skills/:id/versions/:v/activate` | La versión pasa a `ACTIVE` y la anterior a `DEPRECATED`, en una transacción |
 | `POST /skills/:id/versions/:v/deprecate` | `DRAFT` a `DEPRECATED`; sobre la `ACTIVE`, vuelve a la versión activa anterior. No hay `DELETE` |
+| `GET /datasets`, `GET /datasets/:id` | Datasets de evaluación con conteos por split. Consulta [Datasets de evaluación](#datasets-de-evaluación) |
+| `POST /datasets`, `POST /datasets/:id/build` | Cosecha y crea la v1, o la versión siguiente. Nunca modifica una versión |
+| `GET /datasets/:id/cases`, `GET /datasets/:id/fixtures` | Casos de un split sin los vetados por P5; `fixtures` en el formato de `skill:compare` |
+| `POST /datasets/:id/mark-used` | Registra qué experimento usó qué casos y en qué papel (`design`, `validation`, `test`) |
+| `POST /datasets/:id/activate`, `/archive` | Ciclo de vida de una versión. No hay `DELETE` |
 
 ### Idempotencia
 
@@ -803,6 +810,89 @@ curl -s -X POST http://127.0.0.1:4020/knowledge/<id>/activate -H 'x-tenant-id: p
 | `email` · `presentacion-primer-contacto` | Presenta siempre a PubliEXPE como expertos en merchandising para empresas al nombrarla | Feedback del usuario del 2026-10-07 (CHANGELOG, tanda 6) y LLD v0.3 (`company_descriptor`) |
 
 No se siembra el techo de confianza de EXP-001 (OP1): provocó la regresión de semántica de la confianza y el gate decidió iterar.
+
+## Datasets de evaluación
+
+Un dataset de evaluación (LLD v0.1 §11.4) es un objeto versionado con splits `TRAIN` / `VALIDATION` / `TEST` construido desde las trazas reales y el veredicto del comercial, no a mano. Aplica P5 de forma operativa: un caso que un experimento ya ha usado nunca vuelve a servir de validación o test para otro.
+
+### Tablas
+
+- `evaluation_datasets`: `id`, `tenant_id`, `name` (minúsculas, p. ej. `prospeccion-v1`), `domain` (`prospeccion`), `version`, `description`, `status` (`DRAFT` → `ACTIVE` → `ARCHIVED`), `build_info` (reglas, exclusiones, conteos y avisos de la construcción), `created_at`, `created_by`. Única por `(tenant_id, name, version)`.
+- `evaluation_cases`: `id`, `dataset_id`, `tenant_id`, `split`, `entity_key` (empresa normalizada: decide el split), `input` (lo que recibió el agente: `{ event, exhibitor }`), `context` (fecha, modo, agente, versiones de skill, nivel de datos, posición), `expected` (del veredicto humano o de una regla), `source` (`origin` `harvested` | `synthetic` | `manual`, `expected_source` `human` | `rule` | `none`, `trace_id`, `execution_id`, `evaluation_id`, `input_fidelity`, ocurrencias), `difficulty` (`easy` datos ricos, `medium` con sector, `hard` solo nombre), `tags`, `content_hash` (sha256 de `input` + `expected`, único por dataset), `used_by` (registro P5) y `created_at`.
+
+Reglas que aplica la BD (migración `0010_eval_datasets`): sin `DELETE` físico; una versión de dataset solo cambia de estado; un caso es inmutable salvo `used_by`, que solo crece (el valor nuevo contiene al anterior); y solo se insertan casos en un dataset `DRAFT`.
+
+### Reglas de cosecha (`prospeccion`)
+
+El cosechador lee en una transacción `READ ONLY`. No lee las decisiones del modelo (`relevant`, `confidence`, hipótesis): solo lo que el agente recibió y el veredicto humano. Así, construir un dataset no expone salidas de casos reservados a quien diseña la siguiente candidata.
+
+1. **Ocurrencias.** Cada paso `MODEL` con `input.exhibitor` de una ejecución real (sin modelo `stub`, sin agentes `[TEST]`) es una ocurrencia, numerada por orden de decisión en su traza (posición 1..n; los reintentos no cuentan). La entrada se reconstruye así:
+   - Modo directo: `agent_executions.input` (`{ event, exhibitors[] }`), exacto (`input_fidelity: execution_input`).
+   - Modo scout: el JSON del catálogo capturado por `render_url` (con `findExhibitorListInJson`, la misma función del scout) si el evento dice `catalog_source: json_api` (`catalog_json`); si no, los pasos de extracción `scout_extract` (`llm_extraction`). El evento sale de `final_output.events`. Sin datos, solo el nombre (`name_only_fallback`).
+1. **Veredicto humano** (`expected_source: human`): una hipótesis con evaluación `HUMAN` y `details.actor.human = true` (sin `[TEST]`, enlazada a una ejecución) da un caso con la entrada del expositor en la ejecución que la escribió. Manda el último veredicto. `expected`: `feedback`, `score`, `relevant` y `writable` (falsos solo con `DISCARDED`), `reference_hypothesis` (la propuesta del agente, con los valores editados si es `EDITED`) y `edited_fields`.
+1. **Descarte estructural** (`expected_source: rule`): una entidad sin veredicto cuya entrada coincide con un organismo público (gobiernos, universidades públicas, consejos reguladores DO/IGP, empresas de capital público o con licitación pública en la descripción) da `relevant: false`, `writable: false`, `hypothesis: null`, `confidence_max: 0.19`. Es la regla de la skill: «Administraciones, organismos y empresas públicas: compran por licitación pública». El sector mixto «Organismos públicos, asociaciones» de Feria Valencia no basta: las asociaciones son privadas.
+1. **Sin etiquetar** (`expected: { kind: "unlabeled" }`): el resto de entidades, solo con la entrada. Sirven para comparar dos versiones con `skill:compare` sobre datos que nadie ha mirado, como se hizo a mano en EXP-001 y EXP-002.
+
+Hay un caso por entidad (nombre normalizado: sin tildes, sin puntuación, sin forma jurídica) y tipo. De sus ocurrencias se elige la de más datos (rico > sector > solo nombre), luego la más fiel y luego la más antigua.
+
+### Splits y exclusiones
+
+- **Split determinista:** `sha256(nombre_del_dataset \0 entity_key)` reparte 50 / 25 / 25. La semilla es el nombre, no la versión: una empresa cae siempre en el mismo split entre versiones y nunca está en dos a la vez.
+- **Exclusiones (P5):** un caso con algún uso en `used_by` va siempre a `TRAIN` (`burned` y una etiqueta `exp-001:design`, `exp-002:validation`…). `used_by` se rellena desde:
+  - el registro `src/datasets/exclusions.ts`, que pone por escrito lo que se aplicaba a mano: las trazas de diseño de EXP-001 (`e67cba89` y `44e35e27` enteras, posiciones 1-60 de `7eaa0dd4`), `feria-ejemplo.json`, el holdout de EXP-001 (quemado como diseño de EXP-002) y la validación de EXP-002 (`gastronoma-holdout-2.json` y los 2 sintéticos), por nombre en cualquier traza;
+  - `markUsed` (abajo), para los experimentos nuevos;
+  - los usos de las versiones anteriores del mismo dataset (`via: inherited`), porque un caso quemado no se des-quema.
+
+### API (sin DELETE)
+
+| Método y ruta | Qué hace |
+|---|---|
+| `GET /datasets?name=&domain=&status=` | Lista versiones con conteos por split |
+| `POST /datasets` | Dataset nuevo: cosecha ahora y crea la v1 `DRAFT`. `{ name, domain, description?, created_by? }`. `409` si el nombre existe |
+| `GET /datasets/:id` | Una versión con `counts`: `by_split`, `labeled_by_split` y `burned_by_split` |
+| `POST /datasets/:id/build` | Re-cosecha: crea la versión siguiente del mismo nombre (`DRAFT`). Nunca modifica la versión existente |
+| `GET /datasets/:id/cases?split=&experiment=&role=&include_vetoed=&tag=` | Casos de un split. En `VALIDATION` y `TEST` omite los vetados para ese experimento y papel (o para un experimento nuevo si no se indica) y devuelve cuántos (`vetoed`) |
+| `GET /datasets/:id/fixtures?split=&experiment=` | Los mismos casos como entradas de `skill:compare` (`{ event, exhibitors[] }`, máximo 50, con `case_ids`) |
+| `POST /datasets/:id/mark-used` | Registro P5: `{ case_ids, experiment, role: design \| validation \| test, by?, note? }`. Todo o nada |
+| `POST /datasets/:id/activate` | `DRAFT` → `ACTIVE`; archiva la `ACTIVE` anterior del mismo nombre |
+| `POST /datasets/:id/archive` | → `ARCHIVED` |
+
+Reglas de `mark-used`:
+
+- `design` se acepta siempre y quema el caso: ya no se sirve como `VALIDATION`/`TEST` a ningún experimento.
+- `validation` o `test` solo se aceptan si todos los usos anteriores son del mismo experimento y en el mismo papel (repetir la misma comparación). Si no, `409` y no se escribe nada.
+- Marcar dos veces lo mismo no hace nada (`already`).
+
+Flujo de un experimento: pide el split, ejecuta la comparación y marca lo usado.
+
+```sh
+curl -s "http://127.0.0.1:4020/datasets/<id>/fixtures?split=VALIDATION&experiment=EXP-003" -H 'x-tenant-id: publiexpe'
+# ... pnpm skill:compare con esas entradas ...
+curl -s -X POST http://127.0.0.1:4020/datasets/<id>/mark-used -H 'content-type: application/json' -H 'x-tenant-id: publiexpe' \
+  -d '{"case_ids":["<id>","<id>"],"experiment":"EXP-003","role":"validation","by":"PM"}'
+```
+
+### `pnpm dataset:build`
+
+```sh
+# Simulación: cosecha y reparte, no escribe nada
+DATABASE_URL=postgres://agentos:agentos_dev@127.0.0.1:5440/agentos pnpm dataset:build --dry-run
+# Crea prospeccion-v1 (v1, o la versión siguiente si ya existe) y guarda el informe
+pnpm dataset:build --name prospeccion-v1 --domain prospeccion --tenant publiexpe --created-by "<quién>" --out informe.json
+```
+
+- Escribe solo `evaluation_datasets` y `evaluation_cases` en `DATABASE_URL`. Con `--source-url` cosecha de otra BD (siempre en solo lectura).
+- Imprime trazas y decisiones leídas, veredictos usados y omitidos, casos por split, por tipo, etiquetados por split y por nivel de datos.
+
+> **Importante:** un dataset nuevo queda en `DRAFT`. Actívalo (`POST /datasets/:id/activate`) cuando lo hayas revisado.
+
+### Tests
+
+`test/unit/datasets.test.ts` fija las reglas puras (hash, clave de entidad, split 50/25/25 estable, veto P5, registro de exclusiones contra los fixtures, regla de organismo público, plan y entradas de `skill:compare`). `test/integration/datasets.test.ts` cosecha trazas sintéticas en modo directo y scout, recorre la API completa y comprueba los triggers; ejecútalo contra una BD propia:
+
+```sh
+DATABASE_URL=postgres://agentos:agentos_dev@127.0.0.1:5440/agentos_wt10_datasets pnpm vitest run test/integration/datasets.test.ts
+```
 
 ## Research
 

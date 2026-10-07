@@ -474,6 +474,44 @@ export const inboundState = pgTable(
   ],
 );
 
+// ---------------------------------------------------------------------------
+// Event bus, outbound side (LLD v0.1 section 20): webhook subscriptions (n8n first)
+// ---------------------------------------------------------------------------
+/**
+ * One outbound webhook per row: every event of the tenant whose type matches `event_types`
+ * (exact `task.completed` or prefix `task.*`) is POSTed to `target_url`, signed with
+ * `secret` (HMAC-SHA256 of `timestamp:body`, same scheme as Twenty). No DELETE: a
+ * subscription is switched off with `enabled = false` (section 22). The secret is stored
+ * in clear because the runtime must sign with it; the API never returns it after creation.
+ */
+export const eventSubscriptions = pgTable(
+  'event_subscriptions',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    tenantId: tenantId(),
+    name: text('name').notNull(),
+    targetUrl: text('target_url').notNull(),
+    secret: text('secret').notNull(),
+    eventTypes: text('event_types').array().notNull(),
+    enabled: boolean('enabled').notNull().default(true),
+    /** Last successful delivery (2xx). */
+    lastDeliveryAt: timestamp('last_delivery_at', { withTimezone: true }),
+    /** Last delivery error (kept after later successes; compare with `last_error_at`). */
+    lastError: text('last_error'),
+    lastErrorAt: timestamp('last_error_at', { withTimezone: true }),
+    /** Deliveries that failed for good (all attempts) since the last success. */
+    consecutiveFailures: integer('consecutive_failures').notNull().default(0),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [
+    uniqueIndex('event_subscriptions_tenant_name_uq').on(t.tenantId, t.name),
+    index('event_subscriptions_tenant_enabled_idx').on(t.tenantId, t.enabled),
+    check('event_subscriptions_types_ck', sql`cardinality(${t.eventTypes}) > 0`),
+    check('event_subscriptions_url_ck', sql`${t.targetUrl} ~ '^https?://'`),
+  ],
+);
+
 export type Agent = typeof agents.$inferSelect;
 export type AgentVersion = typeof agentVersions.$inferSelect;
 export type TaskDefinition = typeof taskDefinitions.$inferSelect;
@@ -486,3 +524,4 @@ export type EntityLock = typeof entityLocks.$inferSelect;
 export type EventRow = typeof events.$inferSelect;
 export type Evaluation = typeof evaluations.$inferSelect;
 export type InboundState = typeof inboundState.$inferSelect;
+export type EventSubscription = typeof eventSubscriptions.$inferSelect;

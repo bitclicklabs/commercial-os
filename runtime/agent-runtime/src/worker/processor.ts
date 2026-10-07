@@ -18,6 +18,9 @@ import { allowedSources } from '../domain/run-state.js';
 import type { RunStatus } from '../domain/statuses.js';
 import type { ProviderFactory } from '../providers/index.js';
 import type { RunJob } from '../queue/run-queue.js';
+import { createDefaultToolRegistry, parseToolPolicy, ToolExecutor, type ToolRegistry } from '../tools/index.js';
+import { EntityLocks } from './entity-locks.js';
+import { recoverOrphanRun } from './recovery.js';
 
 export interface ProcessorLogger {
   info(obj: object, msg?: string): void;
@@ -41,6 +44,20 @@ export class RetryableRunError extends Error {
   }
 }
 
+/**
+ * Thrown when the task already has `max_concurrency` runs RUNNING. The run stays QUEUED and
+ * the BullMQ worker moves the job to `delayed` so it is retried when a slot may be free.
+ */
+export class ConcurrencyLimitError extends Error {
+  constructor(
+    readonly taskDefinitionId: string,
+    readonly maxConcurrency: number,
+  ) {
+    super(`task ${taskDefinitionId} reached max_concurrency=${maxConcurrency}`);
+    this.name = 'ConcurrencyLimitError';
+  }
+}
+
 class TimeoutError extends Error {
   constructor(ms: number) {
     super(`Execution timed out after ${ms} ms`);
@@ -61,11 +78,17 @@ function errorPayload(err: unknown): Record<string, unknown> {
 }
 
 export class RunProcessor {
+  readonly locks: EntityLocks;
+
   constructor(
     private readonly db: Db,
     private readonly providers: ProviderFactory,
     private readonly logger: ProcessorLogger = silentLogger,
-  ) {}
+    /** Tool registry; defaults to the MVP-0 tools with the Twenty client from env. */
+    private readonly tools: ToolRegistry = createDefaultToolRegistry(),
+  ) {
+    this.locks = new EntityLocks(db);
+  }
 
   async process(job: RunJob, attempt: AttemptInfo = { attempt: 1, maxAttempts: 1 }): Promise<void> {
     if (job.kind === 'task_run') await this.processTaskRun(job.tenantId, job.taskRunId, attempt);
@@ -76,38 +99,66 @@ export class RunProcessor {
   // TaskRun: QUEUED -> RUNNING -> COMPLETED | FAILED | TIMED_OUT (| QUEUED on retry)
   // -------------------------------------------------------------------------
   async processTaskRun(tenantId: string, taskRunId: string, attempt: AttemptInfo): Promise<void> {
-    const run = await this.db.query.taskRuns.findFirst({
-      where: and(eq(taskRuns.tenantId, tenantId), eq(taskRuns.id, taskRunId)),
-    });
+    const findRun = () =>
+      this.db.query.taskRuns.findFirst({ where: and(eq(taskRuns.tenantId, tenantId), eq(taskRuns.id, taskRunId)) });
+    let run = await findRun();
     if (!run) {
       this.logger.warn({ tenantId, taskRunId }, 'task run not found; dropping job');
-      return;
-    }
-    if (run.status !== 'QUEUED') {
-      this.logger.info({ taskRunId, status: run.status }, 'task run not in QUEUED; skipping');
       return;
     }
     const task = await this.db.query.taskDefinitions.findFirst({
       where: and(eq(taskDefinitions.tenantId, tenantId), eq(taskDefinitions.id, run.taskDefinitionId)),
     });
-    const resolved = task ? await this.resolveActiveVersion(tenantId, task.agentId) : null;
+    const maxAttempts = task?.retryPolicy.max_attempts ?? attempt.maxAttempts;
 
-    // Guarded QUEUED -> RUNNING: loses gracefully against a concurrent cancel.
-    const [started] = await this.db
-      .update(taskRuns)
-      .set({
-        status: 'RUNNING',
-        startedAt: run.startedAt ?? new Date(),
-        attempts: sql`${taskRuns.attempts} + 1`,
-        agentVersionId: resolved?.version.id ?? null,
-        agentVersion: resolved?.version.version ?? null,
-        harnessVersion: resolved?.version.harnessVersionId ?? null,
-        skillVersions: resolved?.version.skillRefs ?? [],
-        environmentVersion: task?.environmentId ?? null,
-        updatedAt: new Date(),
-      })
-      .where(and(eq(taskRuns.id, run.id), inArray(taskRuns.status, allowedSources('RUNNING'))))
-      .returning();
+    if (run.status === 'RUNNING') {
+      // The job id is unique per run and every other path leaves the run QUEUED before the
+      // job is delivered again, so a RUNNING run here means BullMQ re-delivered a stalled job:
+      // the previous attempt died. Recover it (RUNNING -> QUEUED | FAILED) and go on.
+      const outcome = await recoverOrphanRun(this.db, run, maxAttempts, 'stalled job re-delivered');
+      this.logger.warn({ taskRunId, outcome }, 'recovered stalled task run');
+      if (outcome !== 'requeued') return;
+      run = await findRun();
+      if (!run) return;
+    }
+    if (run.status !== 'QUEUED') {
+      this.logger.info({ taskRunId, status: run.status }, 'task run not in QUEUED; skipping');
+      return;
+    }
+    const resolved = task ? await this.resolveActiveVersion(tenantId, task.agentId) : null;
+    const queuedRun = run;
+
+    // max_concurrency gate + guarded QUEUED -> RUNNING, serialised per task by a transaction-
+    // scoped advisory lock so two workers cannot both see a free slot.
+    const started = await this.db.transaction(async (tx) => {
+      if (task) {
+        const lockKey = `task-concurrency:${task.id}`;
+        await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${lockKey}, 0))`);
+        const [row] = await tx
+          .select({ running: sql<number>`count(*)::int` })
+          .from(taskRuns)
+          .where(and(eq(taskRuns.taskDefinitionId, task.id), eq(taskRuns.status, 'RUNNING')));
+        if ((row?.running ?? 0) >= task.maxConcurrency) return 'deferred' as const;
+      }
+      // Guarded: loses gracefully against a concurrent cancel.
+      const [updated] = await tx
+        .update(taskRuns)
+        .set({
+          status: 'RUNNING',
+          startedAt: queuedRun.startedAt ?? new Date(),
+          attempts: sql`${taskRuns.attempts} + 1`,
+          agentVersionId: resolved?.version.id ?? null,
+          agentVersion: resolved?.version.version ?? null,
+          harnessVersion: resolved?.version.harnessVersionId ?? null,
+          skillVersions: resolved?.version.skillRefs ?? [],
+          environmentVersion: task?.environmentId ?? null,
+          updatedAt: new Date(),
+        })
+        .where(and(eq(taskRuns.id, queuedRun.id), inArray(taskRuns.status, allowedSources('RUNNING'))))
+        .returning();
+      return updated ?? null;
+    });
+    if (started === 'deferred') throw new ConcurrencyLimitError(task!.id, task!.maxConcurrency);
     if (!started) return;
 
     if (!task || !resolved) {
@@ -133,11 +184,16 @@ export class RunProcessor {
     if (!execution) throw new Error('failed to create agent execution');
     await this.db.update(taskRuns).set({ executionId: execution.id }).where(eq(taskRuns.id, run.id));
 
-    const outcome = await this.runAgent(execution, resolved.agent, resolved.version, task.timeoutMs);
-    await this.persistOutcome(execution, resolved.agent, resolved.version, outcome, {
-      taskRunId: run.id,
-      taskDefinitionId: task.id,
-    });
+    let outcome: Outcome;
+    try {
+      outcome = await this.runAgent(execution, resolved.agent, resolved.version, task.timeoutMs);
+      await this.persistOutcome(execution, resolved.agent, resolved.version, outcome, {
+        taskRunId: run.id,
+        taskDefinitionId: task.id,
+      });
+    } finally {
+      await this.releaseLocks(execution.id);
+    }
 
     if (outcome.status === 'COMPLETED' && outcome.result) {
       const r = outcome.result;
@@ -152,7 +208,9 @@ export class RunProcessor {
       return;
     }
 
-    if (outcome.status === 'FAILED' && attempt.attempt < attempt.maxAttempts) {
+    // Retry only while both the queue and the run have attempts left (a stalled attempt
+    // consumes a run attempt without consuming a BullMQ attempt).
+    if (outcome.status === 'FAILED' && attempt.attempt < attempt.maxAttempts && started.attempts < maxAttempts) {
       // RUNNING -> QUEUED, then let the queue retry the job.
       await this.db
         .update(taskRuns)
@@ -191,8 +249,22 @@ export class RunProcessor {
       await this.finishExecution(execution.id, 'FAILED', { error: { message: 'agent or agent version not found' } });
       return;
     }
-    const outcome = await this.runAgent(execution, agent, version, 300_000);
-    await this.persistOutcome(execution, agent, version, outcome, {});
+    try {
+      const outcome = await this.runAgent(execution, agent, version, 300_000);
+      await this.persistOutcome(execution, agent, version, outcome, {});
+    } finally {
+      await this.releaseLocks(execution.id);
+    }
+  }
+
+  /** Entity locks never outlive the attempt that took them (TTL covers a crashed worker). */
+  private async releaseLocks(executionId: string): Promise<void> {
+    try {
+      const released = await this.locks.releaseAll(executionId);
+      if (released > 0) this.logger.info({ executionId, released }, 'released entity locks');
+    } catch (err) {
+      this.logger.error({ executionId, err: errorPayload(err) }, 'failed to release entity locks');
+    }
   }
 
   // -------------------------------------------------------------------------
@@ -220,6 +292,23 @@ export class RunProcessor {
           reject(new TimeoutError(timeoutMs));
         }, timeoutMs);
       });
+      // Per-execution executor: enforces the version's tool_policy allowlist.
+      const toolLogger = {
+        info: (msg: string, meta?: object) => this.logger.info({ executionId: execution.id, ...meta }, msg),
+        error: (msg: string, meta?: object) => this.logger.error({ executionId: execution.id, ...meta }, msg),
+      };
+      const tools = new ToolExecutor(
+        this.tools,
+        parseToolPolicy(version.configuration),
+        {
+          tenantId: execution.tenantId,
+          executionId: execution.id,
+          agentId: agent.id,
+          stage: typeof version.configuration.stage === 'string' ? version.configuration.stage : (agent.role?.toUpperCase() ?? null),
+          logger: toolLogger,
+        },
+        controller.signal,
+      );
       const result = await Promise.race([
         impl.run({
           tenantId: execution.tenantId,
@@ -236,6 +325,7 @@ export class RunProcessor {
           input: execution.input,
           provider,
           signal: controller.signal,
+          tools,
         }),
         timeout,
       ]);

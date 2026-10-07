@@ -16,6 +16,7 @@ import {
   numeric,
   pgEnum,
   pgTable,
+  primaryKey,
   text,
   timestamp,
   uniqueIndex,
@@ -53,6 +54,14 @@ export interface ScheduleSpec {
   at?: string;
   interval_seconds?: number;
   event?: string;
+  /** CRON alias of `expression` (LLD v0.2 section 5.6). */
+  cron?: string;
+  /** ONCE alias of `at`. */
+  run_at?: string;
+  /** INTERVAL alias of `interval_seconds`. */
+  every_seconds?: number;
+  /** Overrides the task timezone for CRON schedules. */
+  timezone?: string;
 }
 
 export interface RetryPolicy {
@@ -248,6 +257,8 @@ export const taskRuns = pgTable(
     uniqueIndex('task_runs_idem_uq').on(t.tenantId, t.idempotencyKey),
     index('task_runs_task_scheduled_idx').on(t.taskDefinitionId, t.scheduledAt),
     index('task_runs_tenant_status_idx').on(t.tenantId, t.status),
+    // Orphan reconciler: scans QUEUED/RUNNING runs across tenants by age.
+    index('task_runs_status_updated_idx').on(t.status, t.updatedAt),
   ],
 );
 
@@ -315,6 +326,34 @@ export const traceSteps = pgTable(
   (t) => [uniqueIndex('trace_steps_trace_seq_uq').on(t.traceId, t.sequence)],
 );
 
+// ---------------------------------------------------------------------------
+// 21 Entity locks (one holder per business entity, with TTL)
+// ---------------------------------------------------------------------------
+/**
+ * Lease-style lock on a business entity (e.g. company:acme.com). A row is reused across
+ * acquisitions: release sets `expires_at = now()` instead of deleting (section 22), and a
+ * new acquisition takes over any row whose lease has expired. `locked_by_execution` is the
+ * AgentExecution id holding the lease (no FK so direct executions and tests can use it).
+ */
+export const entityLocks = pgTable(
+  'entity_locks',
+  {
+    tenantId: tenantId(),
+    entityType: text('entity_type').notNull(),
+    entityId: text('entity_id').notNull(),
+    lockedByExecution: uuid('locked_by_execution').notNull(),
+    acquiredAt: timestamp('acquired_at', { withTimezone: true }).notNull().defaultNow(),
+    expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
+    releasedAt: timestamp('released_at', { withTimezone: true }),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [
+    primaryKey({ name: 'entity_locks_pk', columns: [t.tenantId, t.entityType, t.entityId] }),
+    index('entity_locks_execution_idx').on(t.lockedByExecution),
+  ],
+);
+
 export type Agent = typeof agents.$inferSelect;
 export type AgentVersion = typeof agentVersions.$inferSelect;
 export type TaskDefinition = typeof taskDefinitions.$inferSelect;
@@ -323,3 +362,4 @@ export type TaskRun = typeof taskRuns.$inferSelect;
 export type AgentExecution = typeof agentExecutions.$inferSelect;
 export type Trace = typeof traces.$inferSelect;
 export type TraceStep = typeof traceSteps.$inferSelect;
+export type EntityLock = typeof entityLocks.$inferSelect;

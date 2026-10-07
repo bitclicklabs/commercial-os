@@ -1,8 +1,8 @@
 # Agent Runtime
 
-Servicio del Agent OS de PubliEXPE Commercial OS (LLD v0.1, sección 8). Expone la API HTTP del runtime y ejecuta un worker BullMQ que lanza agentes y persiste `TaskRun`, `AgentExecution`, `Trace` y `TraceStep` en PostgreSQL.
+Servicio del Agent OS de PubliEXPE Commercial OS (LLD v0.1, sección 8). Expone la API HTTP del runtime, planifica tareas (`ONCE`, `CRON`, `INTERVAL`) y ejecuta un worker BullMQ que lanza agentes y persiste `TaskRun`, `AgentExecution`, `Trace` y `TraceStep` en PostgreSQL.
 
-Estado: esqueleto MVP. Los agentes se ejecutan con `StubAgent` (sin LLM). `AnthropicProvider` existe como esqueleto y no se llama en los tests.
+Estado: MVP. Además de `StubAgent` (sin LLM) y `SmokeAgent` (tools reales contra Twenty, consulta [Tools](#tools)), el runtime ejecuta el **Prospector v1** con Gemini (consulta [Prospector](#prospector)). `AnthropicProvider` existe como esqueleto y no se llama en los tests.
 
 ## Stack
 
@@ -18,19 +18,29 @@ Estado: esqueleto MVP. Los agentes se ejecutan con `StubAgent` (sin LLM). `Anthr
 runtime/agent-runtime/
 ├── drizzle/                  Migraciones SQL generadas por drizzle-kit
 ├── src/
-│   ├── main.ts               Entrada: API y/o worker según RUNTIME_ROLE o --role=
+│   ├── main.ts               Entrada: API, worker y/o scheduler según RUNTIME_ROLE o --role=
 │   ├── config.ts             Configuración desde variables de entorno
 │   ├── api/                  Servidor Fastify, contratos zod y rutas
-│   ├── agents/               Interfaz de agente y StubAgent
+│   ├── agents/               Interfaz de agente, StubAgent, SmokeAgent y ProspectorAgent (+ prompt)
+│   ├── integrations/twenty/  TwentyClient REST tipado y mapeo de objetos de la App
+│   ├── tools/                Interfaz Tool, registry, tool_policy, executor y tools de Twenty
 │   ├── db/                   Esquema Drizzle, cliente y migrador
 │   ├── domain/               Estados, máquina de estados e idempotency keys
-│   ├── providers/            ModelProvider, StubProvider y AnthropicProvider
+│   ├── providers/            ModelProvider, StubProvider, AnthropicProvider, GeminiProvider y tabla de precios
 │   ├── queue/                RunQueue (BullMQ y en memoria)
+<<<<<<< HEAD
+│   ├── scheduler/            TaskScheduler sobre BullMQ, parseo de schedules y rutas
+=======
+│   ├── seed/                 Seed idempotente del Prospector y su tarea (pnpm seed)
+>>>>>>> feat/prospector
 │   ├── services/             Lanzamiento idempotente de TaskRuns
-│   └── worker/               RunProcessor y worker BullMQ
+│   └── worker/               RunProcessor, worker BullMQ, locks por entidad y reconciliador
 └── test/
     ├── unit/                 Corren siempre, sin BD ni Redis
-    └── integration/          API + worker contra PostgreSQL; se saltan si no hay BD
+    ├── integration/          API, worker, scheduler, locks y tools (PostgreSQL, Redis y Twenty); se saltan si falta el servicio
+    ├── helpers/              FakeTwenty: API REST de Twenty en memoria para los unitarios
+    ├── fixtures/             feria-ejemplo.json: evento de demo con 3 expositores
+    └── setup-env.ts          Carga .env (si existe) antes de los tests
 ```
 
 ## Arranque en desarrollo
@@ -62,21 +72,32 @@ Requisitos: Node.js 22, pnpm, y los contenedores `pxos-postgres` (127.0.0.1:5440
    pnpm dev
    ```
 
-   La API escucha en `http://127.0.0.1:4020`. Para separar procesos, usa `pnpm dev:api` y `pnpm dev:worker`.
+   La API escucha en `http://127.0.0.1:4020`. Para separar procesos, usa `pnpm dev:api`, `pnpm dev:worker` y `pnpm dev:scheduler`.
 
 ### Variables de entorno
 
 | Variable | Por defecto | Uso |
 |---|---|---|
-| `RUNTIME_ROLE` | `all` | `all`, `api` o `worker` |
+| `RUNTIME_ROLE` | `all` | `all`, `api`, `worker` o `scheduler` |
 | `RUNTIME_HOST` / `RUNTIME_PORT` | `127.0.0.1` / `4020` | Escucha de la API |
 | `DATABASE_URL` | `postgres://agentos:agentos_dev@127.0.0.1:5440/agentos` | PostgreSQL del Agent OS |
 | `REDIS_URL` | `redis://127.0.0.1:6391` | Redis de BullMQ |
 | `QUEUE_NAME` | `pxos-agent-runs` | Cola BullMQ |
 | `WORKER_CONCURRENCY` | `4` | Jobs simultáneos por worker |
+| `SCHEDULER_SYNC_INTERVAL_MS` | `60000` | Cada cuánto el scheduler reconcilia todas las tareas con BullMQ |
+| `RECONCILE_INTERVAL_MS` | `60000` | Cada cuánto el worker busca `TaskRun` huérfanos |
+| `RECONCILE_GRACE_MS` | `120000` | Antigüedad mínima de un `TaskRun` para considerarlo huérfano |
+| `CONCURRENCY_DEFER_MS` | `2000` | Espera antes de reintentar un job aplazado por `max_concurrency` |
+| `STALLED_INTERVAL_MS` | `30000` | Frecuencia del chequeo de jobs stalled de BullMQ |
+| `MAX_STALLED_COUNT` | `1` | Veces que un job puede quedar stalled antes de que BullMQ lo marque `failed` |
 | `DEFAULT_TENANT_ID` | `publiexpe` | Tenant si la petición no envía `x-tenant-id` |
-| `DEFAULT_MODEL_PROVIDER` | `stub` | Proveedor para agentes creados sin `model_provider` |
+| `DEFAULT_MODEL_PROVIDER` | `stub` | Proveedor para agentes creados sin `model_provider`: `stub`, `anthropic` o `gemini` |
 | `ANTHROPIC_API_KEY` | vacío | Solo para agentes con `model_provider=anthropic` |
+| `GEMINI_API_KEY` | vacío | API key de Google AI Studio para agentes con `model_provider=gemini` |
+| `GEMINI_MODEL` | `gemini-flash-latest` | Modelo de Gemini si la versión del agente no fija uno |
+| `TWENTY_BASE_URL` | `http://localhost:3020` | API REST de Twenty. En el contenedor: `http://pxos-twenty:3000` |
+| `TWENTY_API_KEY` | vacío | API key de Twenty. Sin ella, las tools de Twenty responden `TWENTY_NOT_CONFIGURED` |
+| `TWENTY_TIMEOUT_MS` | `10000` | Timeout por petición a Twenty |
 
 ## Migraciones
 
@@ -94,6 +115,13 @@ El esquema vive en `src/db/schema.ts`. Todas las tablas llevan `tenant_id` (C6).
   pnpm db:migrate
   ```
 
+| Migración | Contenido |
+|---|---|
+| `0000_init` | Esquema inicial (agentes, tareas, runs, ejecuciones, traces) |
+| `0001_scheduler_locks` | Tabla `entity_locks` e índice `task_runs (status, updated_at)` para el reconciliador |
+
+Importante: el migrador de Drizzle aplica solo las migraciones con fecha posterior a la última aplicada. Si dos ramas generan migraciones en paralelo contra la misma BD de desarrollo, aplica primero la más antigua o regenera la nueva tras el merge.
+
 El contenedor aplica las migraciones al arrancar si `RUN_MIGRATIONS=true`.
 
 ## Tests
@@ -101,12 +129,35 @@ El contenedor aplica las migraciones al arrancar si `RUN_MIGRATIONS=true`.
 ```sh
 pnpm test              # todo
 pnpm test:unit         # sin dependencias externas
-pnpm test:integration  # necesita PostgreSQL; Redis no
+pnpm test:integration  # necesita PostgreSQL; los tests del scheduler también Redis
 pnpm typecheck
 pnpm build
 ```
 
-Los tests de integración comprueban la conexión a `DATABASE_URL` y, si falla, se saltan con un aviso. Para forzar el salto, define `SKIP_DB_TESTS=1`. Cada ejecución usa un tenant nuevo (`it-xxxxxxxx`), así que no borran datos.
+Los tests de integración comprueban la conexión a `DATABASE_URL` (y a `REDIS_URL` los del scheduler) y, si falla, se saltan con un aviso. Para forzar el salto, define `SKIP_DB_TESTS=1` o `SKIP_REDIS_TESTS=1`. Cada ejecución usa un tenant nuevo (`it-xxxxxxxx`), así que no borran datos. Los tests del scheduler usan colas BullMQ propias (`it-runs-xxxxxxxx`) y las eliminan al terminar.
+
+Para no interferir con otras ramas que comparten la BD de desarrollo, puedes apuntar los tests a una base propia del mismo servidor:
+
+```sh
+DATABASE_URL=postgres://agentos:agentos_dev@127.0.0.1:5440/agentos_wt2_scheduler pnpm test
+```
+
+`test/setup-env.ts` carga `runtime/agent-runtime/.env` antes de cada fichero de test, sin sobrescribir variables ya definidas. Los tests de Twenty (`test/integration/twenty-tools.test.ts`) se saltan si `TWENTY_API_KEY` está vacía o si `TWENTY_BASE_URL` no responde. Para ejecutarlos en local:
+
+1. Copia la API key de Twenty a tu `.env` local (está en `.gitignore`):
+
+   ```sh
+   grep '^TWENTY_API_KEY=' ../../deployments/.env >> .env
+   echo 'TWENTY_BASE_URL=http://localhost:3020' >> .env
+   ```
+
+1. Ejecuta los tests:
+
+   ```sh
+   pnpm vitest run test/integration/twenty-tools.test.ts
+   ```
+
+Los tests crean registros de prueba reconocibles (`[TEST] pxos-it …`, dominio `test-{uuid}.example`) y **no borran nada**: el borrado en el CRM está prohibido. Si además hay PostgreSQL, el último bloque ejecuta el camino completo API → worker → `SmokeAgent` → tools reales → trace.
 
 ## API
 
@@ -124,7 +175,9 @@ Cabecera opcional `x-tenant-id` en todas las rutas. Las respuestas usan `snake_c
 | `GET /tasks`, `GET /tasks/:id` | Lista o detalle con versiones |
 | `PATCH /tasks/:id` | Cada cambio crea una `TaskDefinitionVersion` nueva |
 | `POST /tasks/:id/run` | Lanza un `TaskRun` idempotente: `202` nuevo, `200` duplicado |
-| `POST /tasks/:id/pause`, `/resume`, `/archive` | Ciclo de vida. No hay `DELETE` |
+| `POST /tasks/:id/pause`, `/resume`, `/archive` | Ciclo de vida. No hay `DELETE`. Registran o retiran el schedule |
+| `GET /tasks/:id/schedule` | Schedule deseado frente al registrado en BullMQ y próximos disparos |
+| `GET /scheduler/status` | Job schedulers y jobs `ONCE` registrados del tenant, y contadores de la cola |
 | `GET /tasks/:id/runs` | Historial de ejecuciones de la tarea |
 | `GET /task-runs/:id` | `TaskRun` con su ejecución, trace y pasos |
 | `POST /executions` | Ejecuta un agente sin tarea (idempotente con `idempotency_key`) |
@@ -149,6 +202,62 @@ COMPLETED, FAILED, TIMED_OUT, CANCELLED: terminales e inmutables
 ```
 
 Cada intento crea una `AgentExecution` nueva. `task_runs.execution_id` apunta al último intento.
+
+## Scheduler
+
+`TaskDefinition.schedule` admite estos tipos con disparo temporal:
+
+| Tipo | Campos | Ejemplo |
+|---|---|---|
+| `ONCE` | `run_at` (o `at`), ISO 8601 | `{"type":"ONCE","run_at":"2026-10-07T08:00:00+02:00"}` |
+| `CRON` | `expression` (o `cron`), 5 o 6 campos; `timezone` opcional | `{"type":"CRON","expression":"0 8 * * 1-5"}` |
+| `INTERVAL` | `every_seconds` (o `interval_seconds`) | `{"type":"INTERVAL","every_seconds":900}` |
+
+`MANUAL`, `EVENT`, `DEPENDENCY` y `CONDITION` no registran nada en el scheduler. La zona horaria de `CRON` es `schedule.timezone`, si existe, o `task.timezone` (por defecto `Europe/Madrid`). `POST /tasks` y `PATCH /tasks/:id` devuelven `400 invalid_schedule` si el schedule no es válido.
+
+### Funcionamiento
+
+- El registro vive en la cola `{QUEUE_NAME}-schedule`. `CRON` e `INTERVAL` usan un Job Scheduler de BullMQ por tarea (`task__{task_id}`). `ONCE` usa un job diferido (`once__{task_id}__{run_at_ms}`).
+- Una tarea tiene schedule registrado solo si está `ACTIVE`, `enabled` y su schedule es temporal y válido.
+- La API sincroniza tras `POST /tasks`, `PATCH /tasks/:id` (versión nueva), `pause`, `resume` y `archive`. Si Redis no responde, la petición no falla: la sincronización periódica lo corrige.
+- El proceso con rol `scheduler` (o `all`) consume los disparos y ejecuta `syncAll` al arrancar y cada `SCHEDULER_SYNC_INTERVAL_MS`. `syncAll` registra lo que falte, actualiza lo que haya cambiado y retira los schedules de tareas que ya no cumplen. Solo toca BullMQ si el estado deseado difiere del registrado.
+- Cada disparo pasa por `requestTaskRun`, el mismo camino que `POST /tasks/:id/run`, con `scheduled_at` igual al instante planificado del slot (no al de entrega). Un disparo repetido por un reinicio o un job stalled genera la misma clave `taskrun:{task_id}:{scheduled_at}` y no duplica el `TaskRun`.
+- Si la tarea ya no está activa cuando llega el disparo, se descarta y se retira el schedule. Si el agente no está `ACTIVE`, el slot se omite con un aviso en el log.
+
+### max_concurrency por tarea
+
+El worker aplica `max_concurrency` antes de pasar un `TaskRun` de `QUEUED` a `RUNNING`:
+
+1. Abre una transacción y toma `pg_advisory_xact_lock` con una clave derivada del `task_id`. Así dos workers no ven el mismo hueco libre.
+1. Cuenta los `TaskRun` `RUNNING` de la tarea. Si hay `max_concurrency` o más, el run sigue `QUEUED` y el job pasa a `delayed` durante `CONCURRENCY_DEFER_MS` (con un pequeño jitter) mediante `moveToDelayed` + `DelayedError`. No consume intentos.
+1. Si hay hueco, hace la transición guardada a `RUNNING` dentro de la misma transacción.
+
+Se eligió un advisory lock en vez de `SELECT ... FOR UPDATE` sobre `task_definitions` para no bloquear los `PATCH` de la tarea, y en vez de grupos de BullMQ porque son de la versión Pro.
+
+### Locks por entidad
+
+`EntityLocks` (`src/worker/entity-locks.ts`) gestiona arrendamientos sobre la tabla `entity_locks` (`tenant_id`, `entity_type`, `entity_id`, `locked_by_execution`, `expires_at`):
+
+- `acquire({ tenantId, entityType, entityId, executionId, ttlMs })` es un único `INSERT ... ON CONFLICT DO UPDATE ... WHERE` atómico. Devuelve el lock si estaba libre, caducado o ya era de la misma ejecución (reentrante, renueva el TTL). Devuelve `null` si lo tiene otra ejecución. No espera.
+- `release(...)`, `releaseAll(executionId)`, `holder(...)` y `withLock(..., fn)`.
+- Usa el reloj de PostgreSQL (`now()`). Liberar pone `expires_at = now()`; no hay `DELETE` físico.
+- El worker llama a `releaseAll` al terminar cada intento. Si el worker cae, el lock caduca por TTL.
+
+Aún no hay tools que lo usen. El processor expone la instancia en `RunProcessor.locks`.
+
+### Recuperación de huérfanos
+
+El rol `worker` (o `all`) ejecuta `OrphanReconciler` al arrancar y cada `RECONCILE_INTERVAL_MS`. Para cada `TaskRun` `QUEUED` o `RUNNING` sin cambios durante `RECONCILE_GRACE_MS`, consulta el estado de su job en BullMQ:
+
+| Estado del run | Job de BullMQ | Acción |
+|---|---|---|
+| Cualquiera | `waiting`, `delayed`, `active`, `prioritized` | Nada: BullMQ sigue siendo dueño del job |
+| `QUEUED` | No existe, `completed` o `failed` | Re-encola con la misma idempotency key |
+| `RUNNING` | No existe, `completed` o `failed` | `RUNNING -> QUEUED` y re-encola, o `RUNNING -> FAILED` si `attempts >= max_attempts` |
+
+La ejecución (`AgentExecution`) del intento muerto pasa a `FAILED` con `error.name = "OrphanedRun"`. Todas las transiciones son `UPDATE` guardados por estado en SQL, así que el reconciliador nunca pisa a un worker que haya terminado entre medias.
+
+Los jobs `active` de un worker caído los gestiona el chequeo de stalled de BullMQ (`STALLED_INTERVAL_MS`, `MAX_STALLED_COUNT`): los devuelve a `wait`. Cuando el processor recibe un job cuyo run sigue `RUNNING`, sabe que el intento anterior murió y aplica la misma recuperación antes de continuar. Si BullMQ lo marca `failed` por superar `MAX_STALLED_COUNT`, lo recoge el reconciliador.
 
 ## Ejemplo end-to-end con curl
 
@@ -197,6 +306,205 @@ Salida esperada del paso 4:
 
 Nota: `POST /agents` devuelve `409` si el nombre ya existe en el tenant. Para repetir el ejemplo, cambia el nombre o el valor de `x-tenant-id`.
 
+## Tools
+
+Capa de tools del LLD v0.2 (secciones 5.2, 5.7 y 10). Los agentes no llaman a Twenty directamente: reciben un `AgentToolbox` (`ctx.tools`) que solo ejecuta las tools permitidas por la versión del agente.
+
+### Contrato
+
+Cada tool (`src/tools/types.ts`) declara `id` (snake_case, el que se usa en la allowlist), `name`, `version`, `description`, `inputSchema` y `outputSchema` (zod), `riskLevel`, `sideEffects`, `approvalPolicy`, `permissions`, `timeoutMs`, `outputTrust` y `enabled`. `toToolSpec()` exporta el `inputSchema` a JSON Schema para el proveedor LLM.
+
+Clases de riesgo: `READ`, `LOW_WRITE`, `HIGH_WRITE`, `EXTERNAL_SIDE_EFFECT` y `DESTRUCTIVE`.
+
+El `ToolRegistry` rechaza al registrar:
+
+- ids que no son snake_case o que ya existen;
+- **cualquier tool `DESTRUCTIVE`**, aunque declare `NEVER_AUTONOMOUS`;
+- tools con efectos de `HIGH_WRITE` o superior sin `approvalPolicy`.
+
+### Tools disponibles
+
+Todas usan Twenty (`TWENTY_BASE_URL`, `TWENTY_API_KEY`) y tienen `outputTrust = trusted`.
+
+| Tool | Riesgo | Efectos | Idempotencia |
+|---|---|---|---|
+| `find_company` | `READ` | No | — |
+| `get_company` | `READ` | No | — |
+| `upsert_company` | `LOW_WRITE` | Sí | Por dominio normalizado: `publi:company:create:domain:{domain}` |
+| `create_signal` | `LOW_WRITE` | Sí | Empresa + tipo + `eventDate` + `sourceDomain` |
+| `create_research` | `LOW_WRITE` | Sí | Ejecución + empresa + `researchType` |
+| `create_hypothesis` | `LOW_WRITE` | Sí | Empresa + `name` (por defecto `{empresa} — {need}`) |
+| `create_agent_run_summary` | `LOW_WRITE` | Sí | `agentExecutionId` |
+
+Los objetos de la App no tienen campo `idempotencyKey`, así que cada tool de escritura busca primero un registro con su clave natural. Si existe, devuelve `created: false` y el registro existente en vez de crear un duplicado. Todos los `create_*` escriben `tenantId` (el tenant de la ejecución, `publiexpe` por defecto) y aceptan `companyId` y, según el objeto, `signalId` o `decisionMakerId`.
+
+`upsert_company` nunca sobrescribe una empresa existente: los datos que edita el equipo comercial prevalecen. Si pierde una carrera contra otra escritura (Twenty tiene un índice único sobre `domainName`), devuelve la empresa ganadora.
+
+### Política de tools del agente
+
+La allowlist vive en `configuration.tool_policy` de la `agent_version`. Sin `tool_policy`, el agente no puede usar ninguna tool.
+
+```json
+{ "tool_policy": ["find_company", "upsert_company", "create_signal"] }
+```
+
+Forma completa (también acepta camelCase):
+
+```json
+{
+  "tool_policy": {
+    "allow": ["find_company", "upsert_company", "create_signal"],
+    "max_calls_per_execution": 60,
+    "max_calls_per_tool": { "upsert_company": 20 },
+    "max_risk_level": "LOW_WRITE"
+  }
+}
+```
+
+El techo de riesgo por defecto es `LOW_WRITE` y nunca puede ser `DESTRUCTIVE`.
+
+### Ejecución y trace
+
+El `ToolExecutor` (uno por ejecución) aplica, en orden: allowlist, registro, `enabled`, techo de riesgo, límites de llamadas, validación de entrada, timeout y validación de salida. Cada llamada, incluidos los rechazos, genera un paso `TOOL` en el trace con `tool`, `tool_input`, `tool_output`, `output` (`status`, `riskLevel`, `sourceTrust`, `idempotencyKey`) y, si falla, `error.code`:
+
+| Código | Causa |
+|---|---|
+| `TOOL_NOT_ALLOWED` | Fuera de la allowlist, por encima del techo de riesgo o `DESTRUCTIVE` |
+| `TOOL_NOT_FOUND` / `TOOL_DISABLED` | No registrada o deshabilitada |
+| `TOOL_CALL_LIMIT` | Superado `max_calls_per_execution` o `max_calls_per_tool` |
+| `INVALID_INPUT` / `INVALID_OUTPUT` | No cumple el esquema zod |
+| `TOOL_TIMEOUT` / `TOOL_ERROR` | Timeout de la tool o excepción |
+| `TWENTY_*` | Error de Twenty (`TWENTY_NOT_CONFIGURED`, `TWENTY_BAD_REQUEST`, `TWENTY_RATE_LIMITED`...) |
+
+### TwentyClient
+
+`src/integrations/twenty/client.ts` es un cliente REST tipado sobre `/rest/{objeto}` con `list`, `get`, `create`, `update` y `ping`. **No tiene método de borrado.**
+
+- Timeout por petición (`TWENTY_TIMEOUT_MS`) combinado con la cancelación de la ejecución.
+- Reintentos con backoff exponencial para `429` y `5xx`; respeta `Retry-After`.
+- Los errores de red y los timeouts solo se reintentan en `GET`. Un `POST` ambiguo no se repite a ciegas: la tool vuelve a buscar antes de crear.
+- La API key no aparece en logs, errores ni trace.
+
+Formas de campo verificadas contra Twenty 2.45:
+
+| Tipo | Forma en la API REST |
+|---|---|
+| `LINKS` | `{ primaryLinkUrl, primaryLinkLabel, secondaryLinks: [] }`. En `Company.domainName`, Twenty quita el esquema al guardar (`https://acme.com` → `acme.com`) |
+| `CURRENCY` | `{ amountMicros, currencyCode: "EUR" }`, con 1 EUR = 1 000 000 micros |
+| `SELECT` | Valor en MAYÚSCULAS; cualquier otro valor devuelve `400` |
+| `DATE` / `DATE_TIME` | `YYYY-MM-DD` / ISO 8601 |
+| `ARRAY` / `RAW_JSON` | `string[]` / JSON libre |
+| `RELATION` N:1 | Columna de unión: `companyId`, `commercialSignalId`, `decisionMakerId` |
+
+### Probar una tool real con SmokeAgent
+
+`SmokeAgent` (`configuration.implementation = "smoke"`) no usa LLM: ejecuta la lista `input.tool_calls` con el executor real. Un valor `{ "$ref": "0.company.id" }` toma el resultado de una llamada anterior.
+
+```sh
+AGENT_ID=$(curl -s -X POST $B/agents -H "$H" -H "$J" -d '{"name":"Smoke tools","version":{"configuration":
+  {"implementation":"smoke","tool_policy":["upsert_company","create_signal"]}}}' | jq -r .agent.id)
+
+curl -s -X POST $B/executions -H "$H" -H "$J" -d "{\"agent_id\":\"$AGENT_ID\",\"input\":{\"tool_calls\":[
+  {\"tool\":\"upsert_company\",\"input\":{\"domain\":\"test-smoke.example\",\"name\":\"[TEST] Smoke\"}},
+  {\"tool\":\"create_signal\",\"input\":{\"companyId\":{\"\$ref\":\"0.company.id\"},\"title\":\"[TEST] Smoke\",
+   \"signalType\":\"OTHER\",\"sourceUrl\":\"https://test-smoke.example\",\"confidence\":0.5}}]}}"
+```
+
+El `StubAgent` sigue usando su tool simulada (`stub.lookup`), que no pasa por el registry.
+
+## Prospector
+
+`ProspectorAgent` (`configuration.implementation = "prospector"`) evalúa los expositores de un evento y propone hipótesis de merchandising para PubliEXPE. Es la versión 1: recibe el evento y los expositores ya extraídos (todavía no busca en la web).
+
+### Entrada
+
+```json
+{
+  "event": { "name": "Expo Alimentaria Ibérica 2026", "type": "FAIR", "date": "2026-11-24",
+             "location": "Madrid (IFEMA)", "source_url": "https://expoalimentariaiberica.example/expositores" },
+  "exhibitors": [{ "name": "Conservas Marineras del Cantábrico", "domain": "conservasdelcantabrico.example",
+                   "sector": "Alimentación gourmet", "description": "..." }]
+}
+```
+
+- `event.type` es un `signalType` de Twenty (`FAIR`, `CONGRESS`, `EVENT`...). También acepta `feria`, `congreso` y `evento`.
+- `date` es `YYYY-MM-DD`. Entre 1 y 50 expositores; `domain`, `description` y `sector` son opcionales.
+
+### Flujo por expositor
+
+1. Una llamada al LLM con salida JSON estructurada (`responseJsonSchema`), validada con zod. Si la respuesta no es válida, se hace **un** reintento con el error de validación en el prompt.
+1. El modelo decide `relevant`, `confidence` (0-1) y `reason`. Si es relevante, genera la hipótesis: `need`, `why_now`, `quantity_min/max`, `budget_min_eur/max_eur`, `recommended_products` (genéricos, aún sin catálogo), `timing` y los diferenciales de PubliEXPE que aplican.
+1. Si `relevant` y `confidence >= min_confidence` (por defecto `0.5`):
+   - `upsert_company` por dominio. Sin dominio, solo reutiliza una empresa con el mismo nombre exacto (`find_company`); nunca crea una empresa sin dominio verificado.
+   - `create_signal`: el evento, con su `signalType`, `status = NEW` y la confianza.
+   - `create_hypothesis` con `status = PROPOSED` y nombre `{empresa} — {evento}`, para que repetir el mismo evento no duplique la hipótesis.
+1. Al final, **siempre**, `create_agent_run_summary` con `outcome` (`SUCCESS`, `PARTIAL` si algún expositor falló, `FAILED` si fallaron todos o la entrada no es válida), un `resultSummary` en español con contadores y el coste real del modelo en EUR.
+
+Un error en un expositor (modelo o Twenty) no detiene la ejecución: queda en `output.results[]` y cuenta como error. El agente devuelve su resultado aunque el `outcome` sea `FAILED`, para que el trace conserve todos los pasos y el coste; el estado de negocio está en `output.outcome` y en el `agentRunSummary` de Twenty.
+
+### Trace y coste
+
+Cada llamada al LLM es un paso `MODEL` con `model` (el modelo real que respondió, por ejemplo `gemini-3.8-flash`), tokens y `output.cost` (`amount`, `currency`). Cada tool es un paso `TOOL` con `output.costEur`. `AgentExecution.model_cost` y `TaskRun.cost` acumulan el coste del proveedor en USD; `output.cost.eur` y el `agentRunSummary` lo convierten a EUR con `configuration.usd_to_eur` (por defecto `0.86`).
+
+### Configuración de la versión
+
+| Clave de `configuration` | Por defecto | Uso |
+|---|---|---|
+| `implementation` | — | `prospector` |
+| `tool_policy` | — | `find_company`, `upsert_company`, `create_signal`, `create_hypothesis`, `create_agent_run_summary`; techo `LOW_WRITE` |
+| `min_confidence` | `0.5` | Umbral para escribir en Twenty |
+| `usd_to_eur` | `0.86` | Conversión del coste para Twenty |
+| `model_options` | `{}` | `thinking_level` (Gemini 3.x), `thinking_budget` (Gemini 2.5), `temperature` |
+| `max_output_tokens` | `4096` | Por llamada; incluye los tokens de razonamiento |
+| `task_name` | `daily-event-prospecting` | Campo `task` del `agentRunSummary` |
+
+### Seed
+
+```sh
+pnpm seed                                        # tenant DEFAULT_TENANT_ID (publiexpe)
+pnpm seed -- --tenant=otro --input=evento.json
+```
+
+Es idempotente:
+
+- **Agente `Prospector`**: si no existe, lo crea con la versión 1 `ACTIVE` (`model_provider = gemini`, `model = gemini-flash-latest`, `thinking_level = low`, la tool policy anterior y el prompt en español con los diferenciales de PubliEXPE: ofertas, trato cercano, taller propio y precio). Si existe y su versión activa es distinta, añade una versión nueva, la activa y pasa la anterior a `DEPRECATED`. Si es igual, no cambia nada.
+- **Tarea `daily-event-prospecting`**: `CRON 0 8 * * *` en `Europe/Madrid`, `timeout_ms = 900000`, sin reintentos, con `test/fixtures/feria-ejemplo.json` como `default_input`. Si cambia, se actualiza y se guarda una `TaskDefinitionVersion` nueva. El scheduler que la dispara a las 08:00 llega en otra rama; mientras tanto, lánzala con `POST /tasks/:id/run`.
+
+La fixture tiene tres expositores ficticios: uno claramente relevante (fabricante de conservas con stand propio), uno dudoso (distribuidor de envases que también imprime bolsas promocionales) y uno irrelevante (organismo público que compra por licitación).
+
+### Gemini
+
+`GeminiProvider` usa la API REST v1beta (`models/{model}:generateContent`) con la cabecera `x-goog-api-key`:
+
+- `system` va a `systemInstruction` y los mensajes `assistant` se envían con el rol `model`.
+- `options.responseSchema` activa `responseMimeType: application/json` y `responseJsonSchema`.
+- Tokens desde `usageMetadata`. Los tokens de razonamiento (`thoughtsTokenCount`) se facturan como salida y los de caché se restan de la entrada.
+- Reintenta `429`, `5xx`, errores de red y timeouts con backoff exponencial (1 s, 2 s, 4 s; máximo 3 reintentos) y respeta `Retry-After` y `RetryInfo.retryDelay`.
+- Prioridad del modelo: `agent_version.model` (si empieza por `gemini`) > `GEMINI_MODEL` > `gemini-flash-latest`.
+
+El coste se calcula con la tabla editable de `src/providers/gemini-pricing.ts`, por el modelo concreto de `modelVersion` (los alias `*-latest` se resuelven a su modelo real). Precios de la capa de pago, USD por millón de tokens, consultados el 2026-10-06 en [ai.google.dev/gemini-api/docs/pricing](https://ai.google.dev/gemini-api/docs/pricing):
+
+| Modelo | Entrada | Salida (incluye razonamiento) | Caché |
+|---|---|---|---|
+| `gemini-3.8-flash` (servía `gemini-flash-latest` el 2026-10-06) | 0,75 (1,50 desde 2027-01-01) | 3,75 (7,50 desde 2027-01-01) | 0,075 (0,15) |
+| `gemini-3.5-flash` | 1,50 | 9,00 | 0,15 |
+| `gemini-2.5-flash` | 0,30 | 2,50 | 0,03 |
+| `gemini-2.5-flash-lite` | 0,10 | 0,40 | 0,01 |
+
+Cuando Google cambie un precio, añade un periodo nuevo con su fecha `from` en vez de sobrescribir el anterior.
+
+### Tests del Prospector
+
+- `test/unit/prospector-agent.test.ts` y `test/unit/gemini-provider.test.ts`: con `StubProvider` (respuestas guionizadas) y `FakeTwenty`. Cubren el parseo, el reintento por JSON inválido, el flujo de tools, la idempotencia y la agregación de coste.
+- `test/integration/prospector-live.test.ts`: **en vivo**. Ejecuta el seed y un `TaskRun` con la fixture contra Gemini, Twenty y PostgreSQL reales, y comprueba empresa, señal, hipótesis y `agentRunSummary` en Twenty. Se salta si falta `GEMINI_API_KEY`, `TWENTY_API_KEY`, Twenty o PostgreSQL, o si `SKIP_LLM_TESTS=1`. Usa los nombres de la fixture (datos de demo, sin prefijo `[TEST]`) en el tenant `publiexpe`; como todas las escrituras son idempotentes, repetirlo solo añade un `agentRunSummary`. Cuesta unos 0,005 € por ejecución.
+
+Para ejecutarlo en local, copia también la clave de Gemini a tu `.env`:
+
+```sh
+grep '^GEMINI_API_KEY=' ../../deployments/.env >> .env
+pnpm vitest run test/integration/prospector-live.test.ts
+```
+
 ## Docker
 
 El `Dockerfile` es multi-stage (build con pnpm, imagen final solo con dependencias de producción, usuario `node`, healthcheck sobre `/health`).
@@ -221,6 +529,10 @@ Quien mantenga `deployments/` puede añadir este servicio a la red `pxos-net`:
       REDIS_URL: redis://pxos-redis:6379
       RUN_MIGRATIONS: "true"
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      GEMINI_MODEL: ${GEMINI_MODEL:-}
+      TWENTY_BASE_URL: http://pxos-twenty:3000
+      TWENTY_API_KEY: ${TWENTY_API_KEY:-}
     ports:
       - "127.0.0.1:4020:4020"
     depends_on:
@@ -232,13 +544,25 @@ Quien mantenga `deployments/` puede añadir este servicio a la red `pxos-net`:
     networks: [pxos-net]
 ```
 
-Para escalar, separa roles: un servicio con `RUNTIME_ROLE=api` y N réplicas con `RUNTIME_ROLE=worker` y `RUN_MIGRATIONS=false`.
+Para escalar, separa roles: un servicio con `RUNTIME_ROLE=api`, N réplicas con `RUNTIME_ROLE=worker` y `RUN_MIGRATIONS=false`, y un servicio con `RUNTIME_ROLE=scheduler`. Puedes tener varias réplicas del scheduler: los disparos se deduplican por idempotency key.
 
 ## Pendiente
 
+<<<<<<< HEAD
+- Triggers `EVENT`, `DEPENDENCY` y `CONDITION` (hoy no registran nada).
+- Columna `trigger` (`SCHEDULE`, `MANUAL`...) en `task_runs` para distinguir el origen de cada run (LLD v0.2, AC-04).
+- Exponer `EntityLocks` a las tools (el helper está listo en `RunProcessor.locks`).
+- Política de catch-up si el scheduler estuvo parado: hoy, al volver, se procesa el slot pendiente (tarde, con su `scheduled_at` original) y los demás slots perdidos se omiten.
+- Tools pendientes del registro del MVP-0: `search_web`, `fetch_url`, `create_activity` y las del Catalog Service.
+=======
 - Scheduler (`CRON`, `INTERVAL`, `EVENT`...): hoy solo hay lanzamiento manual con `POST /tasks/:id/run`.
 - `max_concurrency` por tarea y locks por entidad (LLD sección 21).
 - Recuperación de jobs atascados (`RUNNING` tras caída del worker).
-- Harness, skills, memoria, tools y verificador reales; promote, rollback y evaluate.
+- Harness, skills, memoria y verificador reales; promote, rollback y evaluate.
+- Tools pendientes del registro del MVP-0: `search_web`, `fetch_url`, `create_activity` y las del Catalog Service. Con ellas, el Prospector descubrirá eventos y expositores por sí mismo y recomendará productos reales del catálogo.
+- `GeminiProvider.stream()` no es incremental: devuelve la respuesta completa en un solo fragmento.
+>>>>>>> feat/prospector
+- Validación de URL en campos de texto libre contra las fuentes del trace (LLD v0.2 sección 10.4, punto 4).
+- Harness, skills, memoria y verificador reales; promote, rollback y evaluate.
 - Publicación de eventos (`task.started`, `task.completed`...) en el event bus.
 - Export de los contratos zod a JSON Schema versionado en `schemas/`.

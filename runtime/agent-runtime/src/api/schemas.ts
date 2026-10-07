@@ -11,7 +11,7 @@ export const SkillRefSchema = z.object({ skill_id: z.string().min(1), version: z
 
 export const AgentVersionInput = z.object({
   model: z.string().min(1).optional(),
-  model_provider: z.enum(['stub', 'anthropic']).optional(),
+  model_provider: z.enum(['stub', 'anthropic', 'gemini']).optional(),
   system_prompt: z.string().default(''),
   configuration: JsonObject.default({}),
   skill_refs: z.array(SkillRefSchema).default([]),
@@ -54,6 +54,11 @@ export const ScheduleSchema = z.object({
   at: z.iso.datetime({ offset: true }).optional(),
   interval_seconds: z.number().int().positive().optional(),
   event: z.string().optional(),
+  // Scheduler aliases (LLD v0.2 section 5.6); validated by src/scheduler/schedule.ts.
+  cron: z.string().optional(),
+  run_at: z.iso.datetime({ offset: true }).optional(),
+  every_seconds: z.number().int().positive().optional(),
+  timezone: z.string().optional(),
 });
 
 export const RetryPolicySchema = z.object({

@@ -13,6 +13,7 @@ import {
 } from '../../db/schema.js';
 import type { TaskDefinitionStatus } from '../../domain/statuses.js';
 import { QueueUnavailableError, requestTaskRun } from '../../services/task-runs.js';
+import { assertValidSchedule } from '../../scheduler/routes.js';
 import type { ApiContext } from '../context.js';
 import { conflict, HttpError, IdParams, notFound, parse, serialize, tenantOf } from '../http.js';
 import { CreateTaskBody, ListQuery, ListTasksQuery, PatchTaskBody, RunTaskBody } from '../schemas.js';
@@ -61,6 +62,7 @@ export async function taskRoutes(app: FastifyInstance, ctx: ApiContext): Promise
   app.post('/tasks', async (req, reply) => {
     const tenantId = tenantOf(req, ctx.config.defaultTenantId);
     const body = parse(CreateTaskBody, req.body);
+    assertValidSchedule(body.schedule, body.timezone);
     await assertAgentUsable(db, tenantId, body.agent_id);
 
     const task = await db.transaction(async (tx) => {
@@ -110,6 +112,7 @@ export async function taskRoutes(app: FastifyInstance, ctx: ApiContext): Promise
         .returning();
       return withVersion ?? created;
     });
+    await ctx.scheduler?.sync(task);
     return reply.status(201).send({ task: serialize(task) });
   });
 
@@ -146,6 +149,9 @@ export async function taskRoutes(app: FastifyInstance, ctx: ApiContext): Promise
     const task = await loadTask(tenantId, id);
     if (task.status === 'ARCHIVED') throw conflict('archived tasks are immutable');
     if (body.agent_id) await assertAgentUsable(db, tenantId, body.agent_id);
+    if (body.schedule !== undefined || body.timezone !== undefined) {
+      assertValidSchedule(body.schedule ?? task.schedule, body.timezone ?? task.timezone);
+    }
 
     const updated = await db.transaction(async (tx) => {
       const nextVersion = task.currentVersion + 1;
@@ -196,12 +202,16 @@ export async function taskRoutes(app: FastifyInstance, ctx: ApiContext): Promise
         .returning();
       return final ?? row;
     });
+    await ctx.scheduler?.sync(updated);
     return { task: serialize(updated) };
   });
 
   async function setStatus(tenantId: string, id: string, to: TaskDefinitionStatus, allowedFrom: TaskDefinitionStatus[]) {
     const task = await loadTask(tenantId, id);
-    if (task.status === to) return task;
+    if (task.status === to) {
+      await ctx.scheduler?.sync(task); // idempotent: also heals a missed registration
+      return task;
+    }
     if (!allowedFrom.includes(task.status)) throw conflict(`cannot move task from ${task.status} to ${to}`);
     const [row] = await db
       .update(taskDefinitions)
@@ -209,6 +219,7 @@ export async function taskRoutes(app: FastifyInstance, ctx: ApiContext): Promise
       .where(and(eq(taskDefinitions.id, task.id), eq(taskDefinitions.status, task.status)))
       .returning();
     if (!row) throw conflict('task status changed concurrently; retry');
+    await ctx.scheduler?.sync(row);
     return row;
   }
 

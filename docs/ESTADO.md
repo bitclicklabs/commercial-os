@@ -71,3 +71,15 @@ Canal de email (recordatorio operativo): warm-up iniciado el 2026-10-06; DMARC p
 | Inbound de bajas: lector IMAP del buzón → alta automática en la lista de supresión (HITL para el resto) | `feat/inbound-bajas` | Opus | ✅ fusionado (solo-lectura verificado a nivel de comandos IMAP; live contra el buzón real OK; task cada 2 h) |
 | LLD v0.3: consolidación de todas las decisiones de implementación | `docs/lld-0.3` | Sonnet | ✅ fusionado (22 ADRs, 34 puntos mapeados, 9 contradicciones de docs — reconciliadas por el PM salvo README del runtime, pendiente del cierre) |
 | Integración, e2e y PR | `feat/tanda6` | PM | ✅ 433 tests×2; desplegado y sembrado (Prospector v6 lookups=100, EmailDrafter v2 con descriptor, BajasAgent cada 2 h — primer run en Docker: 4 revisados, 0 bajas) |
+
+## Tanda 7 — Envío desde Twenty, puente n8n y skills versionadas 🔄 (en curso, 2026-10-07)
+
+| Pieza | Rama | Agente | Estado |
+|---|---|---|---|
+| Cuenta de correo conectada en Twenty: envío HITL con un clic + historial en ficha (hallazgo del usuario) | `feat/twenty-email-account` | Opus | 🔄 en curso |
+| Puente de eventos con n8n: ingesta de eventos externos + reenvío saliente por webhook | `feat/n8n-events` | Opus | 🔄 en curso |
+| Skills versionadas en BD (primer paso MVP-1): tablas, loader, seed de las skills actuales, API sin DELETE | `feat/skills-versionadas` | Opus | 🔄 en curso |
+| Docs de cierre (guía, runbook, ADRs nuevos en LLD v0.3) | — | Sonnet (al final) | ⏸️ |
+| Integración, e2e y PR | `feat/tanda7` | PM | ⏸️ |
+
+Fuera de la tanda: Catalog Service (sigue a la espera del contrato del conector con el backend de publiexpe).

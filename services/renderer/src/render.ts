@@ -42,10 +42,24 @@ const BLOCKED_RESOURCE_TYPES = new Set(['image', 'media', 'font', 'manifest', 't
 /** Dead proxy for Chromium's own network stack (nothing listens on the discard port). */
 export const DEAD_PROXY = 'http://127.0.0.1:9';
 
+export type WaitUntil = 'domcontentloaded' | 'load' | 'networkidle';
+export const WAIT_UNTIL: readonly WaitUntil[] = ['domcontentloaded', 'load', 'networkidle'];
+export const RENDER_DEFAULT_MIN_TEXT_CHARS = 200;
+export const RENDER_MAX_MIN_TEXT_CHARS = 5_000;
+/** Interval of the hydration check (visible text length sampled until it is stable). */
+const SETTLE_POLL_MS = 700;
+
 export interface RenderRequest {
   url: string;
   waitMs?: number;
   maxChars?: number;
+  /**
+   * Hydration: keep waiting (within the 25 s budget) while the visible text is shorter
+   * than this, and until it stops growing between two samples. 0 = only `waitMs`.
+   */
+  minTextChars?: number;
+  /** Load state awaited after navigation before the hydration wait (default `domcontentloaded`). */
+  waitUntil?: WaitUntil;
 }
 
 export interface RenderResult {
@@ -58,6 +72,10 @@ export interface RenderResult {
   render_ms: number;
   /** Requests of the page refused by the egress guard (private IPs, bad schemes...). */
   blocked_requests: number;
+  /** Time spent waiting for the app to hydrate (visible text >= min_text_chars and stable). */
+  hydration_ms: number;
+  /** False when the budget ran out before the text reached min_text_chars / stopped growing. */
+  hydrated: boolean;
 }
 
 export class RenderError extends Error {
@@ -89,7 +107,15 @@ export interface RendererOptions {
 /** Text, title and links of the page and its frames, read inside the page. */
 function readPage(maxChars: number): { title: string; text: string; links: Array<{ url: string; text: string }>; frames: string[] } {
   // Elements hidden from people are a classic prompt-injection carrier: drop them.
-  for (const el of Array.from(document.querySelectorAll('script,style,noscript,template,[hidden],[aria-hidden="true"]'))) el.remove();
+  for (const el of Array.from(document.querySelectorAll('script,style,noscript,template,[hidden]'))) el.remove();
+  // aria-hidden: dropped when it is a snippet, NOT when it wraps a big part of the page
+  // (Vue/Vuetify, MUI... set aria-hidden="true" on the whole app while a dialog, such
+  // as a cookie banner, is open; dropping it left the render empty). Text that people
+  // cannot see (display:none, visibility:hidden) is already excluded by innerText.
+  const total = (document.body?.innerText ?? '').length || 1;
+  for (const el of Array.from(document.querySelectorAll('[aria-hidden="true"]'))) {
+    if (el.isConnected && ((el as HTMLElement).innerText ?? '').length < total * 0.3) el.remove();
+  }
   const body = document.body as HTMLElement | null;
   const text = (body?.innerText ?? document.documentElement?.textContent ?? '').slice(0, maxChars + 1000);
   const links: Array<{ url: string; text: string }> = [];
@@ -241,12 +267,15 @@ export class Renderer {
   }
 
   private async renderValidated(target: URL, req: RenderRequest): Promise<RenderResult> {
+    const maxChars = Math.min(Math.max(req.maxChars ?? RENDER_MAX_CHARS, 500), RENDER_MAX_CHARS);
+    const waitMs = Math.min(Math.max(req.waitMs ?? RENDER_DEFAULT_WAIT_MS, 0), RENDER_MAX_WAIT_MS);
+    const minTextChars = Math.min(Math.max(req.minTextChars ?? RENDER_DEFAULT_MIN_TEXT_CHARS, 0), RENDER_MAX_MIN_TEXT_CHARS);
+    const waitUntil: WaitUntil = req.waitUntil && WAIT_UNTIL.includes(req.waitUntil) ? req.waitUntil : 'domcontentloaded';
+    // Launching Chromium (cold start: seconds in a container) is not part of the JS budget.
+    const browser = await this.getBrowser();
     const started = Date.now();
     const deadline = started + this.jsTimeoutMs;
     const remaining = () => Math.max(0, deadline - Date.now());
-    const maxChars = Math.min(Math.max(req.maxChars ?? RENDER_MAX_CHARS, 500), RENDER_MAX_CHARS);
-    const waitMs = Math.min(Math.max(req.waitMs ?? RENDER_DEFAULT_WAIT_MS, 0), RENDER_MAX_WAIT_MS);
-    const browser = await this.getBrowser();
     const userAgent = `Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${browser.version()} Safari/537.36 ${RENDER_USER_AGENT_SUFFIX}`;
     const abort = new AbortController();
     const preTimer = setTimeout(() => abort.abort(), this.jsTimeoutMs);
@@ -310,7 +339,7 @@ export class Renderer {
 
       let status: number | null = null;
       try {
-        const res = await page.goto(navUrl.toString(), { waitUntil: 'domcontentloaded', timeout: Math.max(1_000, remaining()) });
+        const res = await page.goto(navUrl.toString(), { waitUntil: waitUntil === 'networkidle' ? 'domcontentloaded' : waitUntil, timeout: Math.max(1_000, remaining()) });
         status = res?.status() ?? null;
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
@@ -321,9 +350,24 @@ export class Renderer {
       }
       if (status !== null && status >= 400) throw new RenderError('HTTP_ERROR', `HTTP ${status}`, 502);
 
-      // Let the app fetch its data: network idle (bounded) and then the requested wait.
-      await page.waitForLoadState('networkidle', { timeout: Math.min(8_000, remaining()) }).catch(() => undefined);
+      // Let the app fetch its data: network idle (bounded; longer when asked for) and then the requested wait.
+      await page.waitForLoadState('networkidle', { timeout: Math.min(waitUntil === 'networkidle' ? 15_000 : 8_000, remaining()) }).catch(() => undefined);
       if (remaining() > 0) await page.waitForTimeout(Math.min(waitMs, remaining()));
+      // Hydration: SPA catalogs paint the header first and the list later (after an
+      // anonymous login, a config call, the list call...). Sample the visible text until
+      // it is long enough AND stable, keeping 2.5 s of the budget to read the page.
+      const hydrationStarted = Date.now();
+      let hydrated = minTextChars === 0;
+      let previous = -1;
+      while (!hydrated && remaining() > 2_500) {
+        const length = await page.evaluate(() => (document.body?.innerText ?? '').trim().length).catch(() => 0);
+        if (length >= minTextChars && length === previous) hydrated = true;
+        else {
+          previous = length;
+          await page.waitForTimeout(Math.min(SETTLE_POLL_MS, remaining()));
+        }
+      }
+      const hydrationMs = Date.now() - hydrationStarted;
       // Lazy lists: a few scrolls to the bottom while there is time left.
       for (let i = 0; i < 4 && remaining() > 2_500; i++) {
         const grew = await page
@@ -387,6 +431,8 @@ export class Renderer {
         truncated,
         render_ms: Date.now() - started,
         blocked_requests: blocked,
+        hydration_ms: hydrationMs,
+        hydrated,
       };
     } catch (err) {
       if (err instanceof RenderError) throw err;
@@ -396,7 +442,7 @@ export class Renderer {
       clearTimeout(killer);
       abort.abort();
       await context.close().catch(() => undefined);
-      this.log('render finished', { host: target.hostname, ms: Date.now() - started, requests, blocked, bytes });
+      this.log('render finished', { host: target.hostname, path: target.pathname.slice(0, 120), ms: Date.now() - started, requests, blocked, bytes });
     }
   }
 

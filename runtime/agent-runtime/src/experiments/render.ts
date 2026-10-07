@@ -151,6 +151,10 @@ export function renderExperimentMarkdown(r: ExperimentReport): string {
   L.push('```sh');
   L.push(`# Si decides activar (el gate la deja pasar solo con PASS o PASS_FORM frente a la versión activa):`);
   L.push(`curl -s -X POST "http://127.0.0.1:4020/${route}/${e.subjectName}/versions/${e.candidateVersion}/activate" -H 'x-tenant-id: ${e.tenantId}'`);
+  if (!isHarness) {
+    L.push(`# O, más prudente, en canario sobre un % de ejecuciones (exige el mismo gate, sin force; promote/rollback los decide un humano):`);
+    L.push(`curl -s -X POST "http://127.0.0.1:4020/skills/${e.subjectName}/versions/${e.candidateVersion}/canary" -H 'x-tenant-id: ${e.tenantId}' -H 'content-type: application/json' -d '{"percent":10}'`);
+  }
   L.push('```', '');
   for (const p of r.phases) L.push(...phaseSection(p));
   L.push('## Anexo A · Comparación lado a lado (skill:compare)', '');

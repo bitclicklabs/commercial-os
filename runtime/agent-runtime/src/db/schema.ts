@@ -86,6 +86,24 @@ export interface SkillVersionUsed {
   fallback_reason?: 'legacy_ref' | 'skill_not_found' | 'version_not_found' | 'no_active_version' | 'db_error' | 'not_referenced';
   /** Exact text, stored in the trace only for source 'code' (constants are not versioned in the db). */
   text?: string;
+  /**
+   * The skill had a canary (0013_skill_canaries) when the run started and the ref follows the
+   * ACTIVE version: which arm this run got and why (deterministic hash of `routing_key`).
+   */
+  canary?: SkillCanaryRouting;
+}
+
+/** Canary routing of one run (src/skills/canary.ts): reproducible from `canary_id` + `routing_key`. */
+export interface SkillCanaryRouting {
+  canary_id: string;
+  arm: 'canary' | 'stable';
+  percent: number;
+  /** 0..9999: `arm = canary` when `bucket < percent * 100`; null without routing key (always stable). */
+  bucket: number | null;
+  /** task_run id (task runs: every attempt gets the same arm) or execution id (direct executions). */
+  routing_key: string | null;
+  stable_version: number;
+  canary_version: number;
 }
 
 /**
@@ -1000,6 +1018,63 @@ export const experiments = pgTable(
   ],
 );
 
+// ---------------------------------------------------------------------------
+// Skill canary (post Release Gate; migration 0013_skill_canaries)
+// ---------------------------------------------------------------------------
+export const SKILL_CANARY_STATUSES = ['ACTIVE', 'PROMOTED', 'ROLLED_BACK'] as const;
+export type SkillCanaryStatus = (typeof SKILL_CANARY_STATUSES)[number];
+
+/**
+ * A canary deployment of a skill version (src/skills/canary.ts): after a Release Gate PASS /
+ * PASS_FORM a human sends `percent` % of the runs that follow the ACTIVE version to the
+ * candidate (deterministic hash of the run id), compares and decides: PROMOTED (the candidate
+ * becomes ACTIVE, gate re-checked) or ROLLED_BACK (everything back to the stable version).
+ * At most one ACTIVE canary per skill (partial unique index). Trigger: no DELETE; identity,
+ * versions, percent and experiment immutable; ACTIVE -> PROMOTED | ROLLED_BACK only, and a
+ * finished canary is immutable.
+ */
+export const skillCanaries = pgTable(
+  'skill_canaries',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    tenantId: tenantId(),
+    skillId: uuid('skill_id')
+      .notNull()
+      .references(() => skills.id),
+    canaryVersionId: uuid('canary_version_id')
+      .notNull()
+      .references(() => skillVersions.id),
+    canaryVersion: integer('canary_version').notNull(),
+    /** The ACTIVE version when the canary started (the rest of the runs). */
+    stableVersionId: uuid('stable_version_id')
+      .notNull()
+      .references(() => skillVersions.id),
+    stableVersion: integer('stable_version').notNull(),
+    percent: integer('percent').notNull(),
+    status: text('status').$type<SkillCanaryStatus>().notNull().default('ACTIVE'),
+    /** The experiment whose gate let the canary start. */
+    experimentId: uuid('experiment_id')
+      .notNull()
+      .references(() => experiments.id),
+    /** Release Gate result when it started (and, on promote, the re-check in `finishGate`). */
+    gate: jsonb('gate').$type<Record<string, unknown>>().notNull().default({}),
+    startedAt: timestamp('started_at', { withTimezone: true }).notNull().defaultNow(),
+    startedBy: text('started_by'),
+    finishedAt: timestamp('finished_at', { withTimezone: true }),
+    finishedBy: text('finished_by'),
+    finishReason: text('finish_reason'),
+    finishGate: jsonb('finish_gate').$type<Record<string, unknown>>(),
+  },
+  (t) => [
+    uniqueIndex('skill_canaries_one_active_uq').on(t.skillId).where(sql`${t.status} = 'ACTIVE'`),
+    index('skill_canaries_tenant_skill_idx').on(t.tenantId, t.skillId, t.startedAt),
+    check('skill_canaries_status_ck', sql`${t.status} in ('ACTIVE', 'PROMOTED', 'ROLLED_BACK')`),
+    check('skill_canaries_percent_ck', sql`${t.percent} between 1 and 99`),
+    check('skill_canaries_versions_ck', sql`${t.canaryVersionId} <> ${t.stableVersionId}`),
+    check('skill_canaries_finished_ck', sql`(${t.status} = 'ACTIVE') = (${t.finishedAt} is null)`),
+  ],
+);
+
 export type Agent = typeof agents.$inferSelect;
 export type AgentVersion = typeof agentVersions.$inferSelect;
 export type TaskDefinition = typeof taskDefinitions.$inferSelect;
@@ -1022,3 +1097,4 @@ export type KnowledgeEntry = typeof knowledgeEntries.$inferSelect;
 export type EvaluationDataset = typeof evaluationDatasets.$inferSelect;
 export type EvaluationCase = typeof evaluationCases.$inferSelect;
 export type Experiment = typeof experiments.$inferSelect;
+export type SkillCanary = typeof skillCanaries.$inferSelect;

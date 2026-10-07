@@ -722,7 +722,7 @@ La v1 contiene **los valores vigentes**, así que el comportamiento no cambia. S
 | `GET /harnesses/:id` | Harness y todas sus versiones |
 | `POST /harnesses` | Crea el harness y su v1 en `DRAFT`. Cuerpo: `name`, `config` y, opcionalmente, `description`, `metadata` y `created_by` |
 | `POST /harnesses/:id/versions` | Versión `DRAFT` nueva. Cuerpo: `config` o `copy_from` (`"active"` o un número; las dimensiones enviadas se fusionan sobre la copia) y `change_reason` |
-| `POST /harnesses/:id/versions/:v/activate` | `ACTIVE` esa versión y `DEPRECATED` la anterior, en una transacción |
+| `POST /harnesses/:id/versions/:v/activate` | `ACTIVE` esa versión y `DEPRECATED` la anterior, en una transacción. Pasa por el Release Gate como las skills: una versión que nunca estuvo activa necesita un experimento de harness `PASS`/`PASS_FORM` (ver [Experimentos de harness](#experimentos-de-harness)) o `force` con motivo |
 | `POST /harnesses/:id/versions/:v/deprecate` | Descarta un `DRAFT` o hace rollback de la `ACTIVE`: se reactiva la versión anterior activada más recientemente. Sin versión que restaurar: `409` |
 
 Por ejemplo, para probar un timeout común de 10 minutos en los agentes del seed y volver atrás:
@@ -731,8 +731,11 @@ Por ejemplo, para probar un timeout común de 10 minutos en los agentes del seed
 curl -s -X POST localhost:4020/harnesses/default-commercial/versions \
   -H 'content-type: application/json' \
   -d '{"copy_from": "active", "config": {"execution": {"timeout_seconds": 600}}, "change_reason": "Timeout común de 10 min", "created_by": "jesus"}'
+# Experimento: v1 ACTIVE contra la v2, con la skill ACTIVE fija
+pnpm experiment:run --subject harness:default-commercial --candidate 2 --dataset prospeccion-v1 --budget 0.30
+# Con PASS o PASS_FORM, la activación pasa sin force
 curl -s -X POST localhost:4020/harnesses/default-commercial/versions/2/activate
-# Rollback: vuelve la v1
+# Rollback: vuelve la v1 (siempre permitido)
 curl -s -X POST localhost:4020/harnesses/default-commercial/versions/2/deprecate
 ```
 
@@ -902,7 +905,7 @@ DATABASE_URL=postgres://agentos:agentos_dev@127.0.0.1:5440/agentos_wt10_datasets
 
 ## Experiments y Release Gate
 
-Un experimento (LLD v0.1 §11.5) compara la versión `ACTIVE` de una skill (baseline) con una candidata sobre los mismos casos y deja la decisión del Release Gate (§11.6). La activación de una versión pasa por ese gate: ningún agente se promueve a producción a sí mismo (§19). `pnpm experiment:run` hace de forma automática lo que EXP-001 y EXP-002 hicieron a mano.
+Un experimento (LLD v0.1 §11.5) compara la versión `ACTIVE` de una skill o de una harness (baseline) con una candidata sobre los mismos casos y deja la decisión del Release Gate (§11.6). La activación de una versión pasa por ese gate: ningún agente se promueve a producción a sí mismo (§19). `pnpm experiment:run` hace de forma automática lo que EXP-001 y EXP-002 hicieron a mano.
 
 ### Tabla `experiments`
 
@@ -921,7 +924,8 @@ pnpm experiment:run --subject skill:prospector-event-exhibitors --candidate 4 --
 
 | Opción | Por defecto | Descripción |
 |---|---|---|
-| `--subject skill:<nombre>` | — | Sujeto. Hoy solo hay runner para `prospector-event-exhibitors` (la maquinaria de `skill:compare`) |
+| `--subject skill:<nombre>` o `harness:<nombre>` | — | Sujeto. Las skills con runner: `prospector-event-exhibitors` (la maquinaria de `skill:compare`). Cualquier harness |
+| `--skill <nombre>` | `prospector-event-exhibitors` | Solo con `harness:`: la skill cuya versión `ACTIVE` se inyecta, fija, en las dos ramas |
 | `--candidate <v>` | — | Versión candidata (no puede ser la `ACTIVE`, que es la baseline) |
 | `--dataset` | `prospeccion-v1` | Nombre (versión `ACTIVE`, o la última no archivada) o uuid |
 | `--budget` | `0.30` | Presupuesto total en euros: ejecutor + juez |
@@ -961,6 +965,30 @@ Orden de la decisión: un fallo duro es siempre `FAIL`; si no, una medición inc
 
 La latencia (§11.6, `latency <= max_latency`) aún no es criterio: `skill:compare` no la mide por decisión.
 
+### Experimentos de harness
+
+`pnpm experiment:run --subject harness:<nombre> --candidate <v>` compara la versión `ACTIVE` de la harness (baseline) con otra versión (normalmente un `DRAFT`). Lo que cambia respecto a una skill:
+
+- **Las dos ramas inyectan la misma skill:** la versión `ACTIVE` de `--skill`, fija y registrada en `config.fixed_skill`. Solo varían las políticas efectivas de cada harness, calculadas con `applyHarness` sobre la configuración del agente, igual que el worker (`src/experiments/runner.ts`, `resolveHarnessArms`).
+- **Cómo se aplica cada dimensión fuera del worker:**
+
+  | Campo | En el experimento |
+  |---|---|
+  | `context.max_output_tokens` | Techo sobre la configuración del agente: llega al proveedor como `maxTokens` |
+  | `tools.max_calls_per_execution`, `tools.max_risk_level` | Techo sobre la `tool_policy`: el FakeTwenty de cada ejecución se crea con la política recortada |
+  | `execution.timeout_seconds` | Aborta la ejecución como el worker (`TIMED_OUT`, sin decisiones). Base: 300 s |
+  | `execution.retry` | Reintenta una ejecución que lanza un error (no un `TIMED_OUT`), sin la espera de backoff |
+  | `safety.twenty_wait_max_ms` | No aplica: no hay Twenty real ni gate de salud |
+  | Placeholders | Sin efecto, como en producción |
+
+- **Mismo gate y mismos evaluadores.** `config.baseline` y `config.candidate` guardan el `harness_version_id`, el `content_hash`, los valores `effective` y los `overrides`. Las evaluaciones usan un `subject_id` propio (`<skill>~<harness>@h<v>:…`), que nunca se confunde con una versión de skill.
+- **Activación:** `POST /harnesses/:id/versions/:v/activate` aplica el mismo candado que las skills (abajo). El informe propone el `curl` de la harness.
+
+```sh
+pnpm experiment:run --subject harness:default-commercial --candidate 2 --dry-run
+pnpm experiment:run --subject harness:default-commercial --candidate 2 --dataset prospeccion-v1 --budget 0.30 --today 2026-10-07
+```
+
 ### Candado en la activación
 
 `POST /skills/:id/versions/:v/activate` (y `POST /harnesses/:id/versions/:v/activate`) comprueba el gate dentro de la transacción de activación, después de bloquear la fila:
@@ -973,11 +1001,38 @@ La latencia (§11.6, `latency <= max_latency`) aún no es criterio: `skill:compa
 | Sin experimento, con `FAIL`/`INCONCLUSIVE`, o hecho contra otra baseline | `409 release_gate_blocked` con los experimentos encontrados | — |
 | Lo anterior con `{ "force": true, "reason": "≥ 10 caracteres", "by": "…" }` | `200`, línea `WARN` en el log con motivo y autor | `override` |
 
-El humano puede forzar; el sistema no: ningún código del runtime llama a `activate`, y `experiment:run` nunca activa. La API no tiene autenticación, así que el override es auditable (log y respuesta), no imposible. Una skill nueva (v1 sin versión activa) no tiene baseline y necesita `force`. Las harness todavía no tienen runner de experimentos: una versión de harness que nunca estuvo activa se activa hoy solo con `force`.
+El humano puede forzar; el sistema no: ningún código del runtime llama a `activate`, y `experiment:run` nunca activa. La API no tiene autenticación, así que el override es auditable (log y respuesta), no imposible. Una skill o harness nueva (v1 sin versión activa) no tiene baseline y necesita `force`. Mientras una skill tiene un canario `ACTIVE`, `activate` devuelve `409`: primero se promueve o se hace rollback del canario.
+
+### Canario de skills
+
+Tras un `PASS` o `PASS_FORM`, en vez de activar la candidata para todas las ejecuciones, un humano puede enviarle un porcentaje (`src/skills/canary.ts`, migración `0013_skill_canaries`). Solo hay canario para skills: el de harness quedaría mezclado con los reintentos que BullMQ fija al encolar.
+
+| Método y ruta | Qué hace |
+|---|---|
+| `POST /skills/:id/versions/:v/canary` `{ "percent": 1-99, "by"? }` | Arranca el canario de `v`. Exige el mismo gate que la activación (experimento `PASS`/`PASS_FORM` de `v` contra la versión `ACTIVE` actual) y **no admite `force`** (`400`). Bloqueado: `409 release_gate_blocked`. Un solo canario por skill (`409`). Repetir con la misma versión y porcentaje: `200`, `changed: false` |
+| `GET /skills/:id/canary` | Canario `ACTIVE` (o el último), su historial y las métricas canaria contra estable |
+| `POST /skills/:id/canary/promote` `{ "by"? }` | Decisión humana: re-verifica el gate, `ACTIVE` la versión canaria (la estable pasa a `DEPRECATED`) y cierra el canario como `PROMOTED` |
+| `POST /skills/:id/canary/rollback` `{ "by"?, "reason"? }` | Cierra el canario como `ROLLED_BACK`: todas las ejecuciones vuelven a la estable. Siempre permitido e idempotente |
+
+- **Reparto determinista.** Una ref que sigue la versión `ACTIVE` (`{ "name": … }`) recibe la canaria si `sha256(canary_id ":" clave)[0..8] mod 10000 < percent × 100`. La clave es el id del `task_run` (todos los intentos de un run van a la misma rama) o el de la ejecución directa. Nada es aleatorio: el mismo id da siempre la misma versión. Una ref fijada (`{ "name", "version" }`) no participa.
+- **Atribución exacta (P4).** `traces.skill_versions[]` y `task_runs.skill_versions[]` guardan la versión resuelta y `canary`: `canary_id`, `arm` (`canary` o `stable`), `percent`, `bucket`, `routing_key`, `stable_version` y `canary_version`.
+- **Comparación.** `GET /skills/:id/canary` mide, por rama, solo las ejecuciones que enrutó ese canario: ejecuciones por estado y `outcome`, coste en euros, tokens y latencia medios (las mismas medidas que `/metrics/agents`), el último veredicto humano por sujeto y la media de las evaluaciones automáticas por evaluador, más `delta_canary_minus_stable`.
+- **Nada se promueve solo.** No hay tarea programada que promueva ni cierre un canario. Hacer `deprecate` de la versión canaria o de la estable cierra el canario (`ROLLED_BACK`) en la misma transacción.
+- **Tabla `skill_canaries`:** `skill_id`, `canary_version_id`/`canary_version`, `stable_version_id`/`stable_version`, `percent`, `status` (`ACTIVE` → `PROMOTED` | `ROLLED_BACK`), `experiment_id`, `gate`, `started_at`/`started_by`, `finished_at`/`finished_by`, `finish_reason`, `finish_gate`. La BD aplica: sin `DELETE`, como mucho un canario `ACTIVE` por skill (índice único parcial), identidad, versiones, porcentaje y experimento inmutables, y un canario terminado es inmutable entero. Para cambiar el porcentaje: rollback y canario nuevo.
+
+```sh
+curl -s -X POST localhost:4020/skills/prospector-event-exhibitors/versions/4/canary -H 'content-type: application/json' -d '{"percent": 10, "by": "jesus"}'
+curl -s localhost:4020/skills/prospector-event-exhibitors/canary
+curl -s -X POST localhost:4020/skills/prospector-event-exhibitors/canary/promote -H 'content-type: application/json' -d '{"by": "jesus"}'
+# o
+curl -s -X POST localhost:4020/skills/prospector-event-exhibitors/canary/rollback -H 'content-type: application/json' -d '{"by": "jesus", "reason": "más descartes que la estable"}'
+```
+
+> **Importante:** el código necesita la migración `0013_skill_canaries` (el resolver lee `skill_canaries`). Con `RUN_MIGRATIONS=true` se aplica al arrancar; a mano, aplícala antes de desplegar.
 
 ### Tests
 
-`test/unit/experiments-gate.test.ts` fija cada criterio, el seesaw, el modo forma, el orden de la decisión, la accuracy contra etiquetas, la muestra de forma y el cuerpo del override. `test/integration/experiments.test.ts` ejecuta el runner con proveedores guionizados (sin red) contra una BD propia: `PASS_FORM` con muestra de forma, contaminación (`409` → `FAILED`), `PASS` con `TEST`, `FAIL` por accuracy sin tocar `TEST`, inmutabilidad, y el candado (bloqueo, `PASS_FORM`, baseline obsoleta, override, rollback):
+`test/unit/experiments-gate.test.ts` fija cada criterio, el seesaw, el modo forma, el orden de la decisión, la accuracy contra etiquetas, la muestra de forma y el cuerpo del override. `test/unit/skill-canary.test.ts` fija el reparto del canario (mismo id, misma versión; reparto cercano al porcentaje con 10.000 ids; monótono al subir el porcentaje) y las ramas de harness de `skill:compare` (techos, timeout). `test/integration/harness-experiments.test.ts` recorre el experimento de harness y su candado; `test/integration/skill-canary.test.ts`, el ciclo completo del canario con runs reales del worker. `test/integration/experiments.test.ts` ejecuta el runner con proveedores guionizados (sin red) contra una BD propia: `PASS_FORM` con muestra de forma, contaminación (`409` → `FAILED`), `PASS` con `TEST`, `FAIL` por accuracy sin tocar `TEST`, inmutabilidad, y el candado (bloqueo, `PASS_FORM`, baseline obsoleta, override, rollback):
 
 ```sh
 DATABASE_URL=postgres://agentos:agentos_dev@127.0.0.1:5440/agentos_wt10_experiments pnpm vitest run test/integration/experiments.test.ts

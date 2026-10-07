@@ -2,10 +2,16 @@
  * Skills API (MVP-1, LLD v0.1 section 6.3). No DELETE: versions are deprecated.
  * `:id` accepts the skill uuid or its name (e.g. `prospector-event-exhibitors`).
  * Activating a version does not touch running agents: new runs resolve it when they start.
+ *
+ * Canary (src/skills/canary.ts): `POST /skills/:id/versions/:v/canary`, `GET /skills/:id/canary`,
+ * `POST /skills/:id/canary/promote` and `POST /skills/:id/canary/rollback`. A human decides
+ * every step; nothing promotes itself.
  */
 import { and, asc, eq } from 'drizzle-orm';
 import type { FastifyInstance } from 'fastify';
-import { skills, skillVersions, type SkillVersion } from '../../db/schema.js';
+import { skills, skillVersions, type SkillCanary, type SkillVersion } from '../../db/schema.js';
+import { canaryArmMetrics } from '../../metrics/queries.js';
+import { latestCanary, listCanaries, promoteCanary, rollbackCanary, startCanary, type CanaryGuard } from '../../skills/canary.js';
 import {
   activateVersion,
   contentWarnings,
@@ -16,10 +22,10 @@ import {
   listVersions,
   SkillServiceError,
 } from '../../skills/service.js';
-import { checkActivationGate, logGate, ReleaseGateBlockedError } from '../../experiments/release-gate.js';
+import { checkActivationGate, logGate, ReleaseGateBlockedError, type ActivationGate } from '../../experiments/release-gate.js';
 import type { ApiContext } from '../context.js';
 import { HttpError, notFound, parse, serialize, tenantOf } from '../http.js';
-import { ActivateVersionBody, CreateSkillBody, CreateSkillVersionBody, ListSkillsQuery, SkillParams, SkillVersionParams } from '../schemas.js';
+import { ActivateVersionBody, CreateSkillBody, CreateSkillVersionBody, FinishCanaryBody, ListSkillsQuery, SkillParams, SkillVersionParams, StartCanaryBody } from '../schemas.js';
 
 function toHttp(err: unknown): unknown {
   if (err instanceof ReleaseGateBlockedError) return new HttpError(409, err.code, err.message, err.details);
@@ -38,6 +44,37 @@ async function mapped<T>(fn: () => Promise<T>): Promise<T> {
 }
 
 const versionOut = (v: SkillVersion | null | undefined) => serialize(v);
+const canaryOut = (c: SkillCanary | null | undefined) => serialize(c);
+
+type CanaryGate = { experimentId: string; record: Record<string, unknown>; gate: Extract<ActivationGate, { mode: 'experiment' }> };
+
+/**
+ * Release Gate of a canary (start and promote): the activation gate WITHOUT override. It must
+ * be an experiment PASS / PASS_FORM of the canary version against the current ACTIVE version
+ * (a rollback-mode pass is not enough: a canary compares a candidate with an experiment).
+ */
+function canaryGuard(tenantId: string, step: 'start' | 'promote'): CanaryGuard<CanaryGate> {
+  return async (tx, g) => {
+    const blocked = (why: string, details: Record<string, unknown> = {}) =>
+      new ReleaseGateBlockedError(`Release Gate (${step === 'start' ? 'canario' : 'promote'}): ${why}. Un canario no admite force: ejecuta un experimento (pnpm experiment:run) de v${g.target.version} frente a la v${g.active.version} activa.`, {
+        subject_type: 'skill',
+        subject_name: g.skill.name,
+        candidate_version: g.target.version,
+        active_version: g.active.version,
+        required: 'experimento COMPLETED con decision PASS o PASS_FORM y baseline = versión activa (sin override)',
+        ...details,
+      });
+    let gate: ActivationGate;
+    try {
+      gate = await checkActivationGate(tx, { tenantId, subjectType: 'skill', subjectName: g.skill.name, target: g.target, activeVersion: g.active.version });
+    } catch (err) {
+      if (err instanceof ReleaseGateBlockedError) throw blocked(err.message.replace(/^Release Gate: /, '').replace(/\. Ejecuta un experimento.*$/s, ''), { experiments: err.details.experiments });
+      throw err;
+    }
+    if (gate.mode !== 'experiment') throw blocked(gate.detail, { gate_mode: gate.mode });
+    return { experimentId: gate.experiment.id, record: { ...gate, step, checked_at: new Date().toISOString() }, gate };
+  };
+}
 
 export async function skillRoutes(app: FastifyInstance, ctx: ApiContext): Promise<void> {
   const { db } = ctx;
@@ -143,6 +180,53 @@ export async function skillRoutes(app: FastifyInstance, ctx: ApiContext): Promis
     const tenantId = tenantOf(req, ctx.config.defaultTenantId);
     const { id, v } = parse(SkillVersionParams, req.params);
     const r = await mapped(() => deprecateVersion(db, { tenantId, skillKey: id, version: v }));
-    return { skill: serialize(r.skill), version: versionOut(r.version), changed: r.changed, restored_version: versionOut(r.restored) };
+    return { skill: serialize(r.skill), version: versionOut(r.version), changed: r.changed, restored_version: versionOut(r.restored), canary_rolled_back: canaryOut(r.canary ?? null) };
+  });
+
+  /**
+   * POST /skills/:id/versions/:v/canary { percent } - sends `percent` % of the runs that follow
+   * the ACTIVE version to v (deterministic hash of the run id). Same gate as the activation, no
+   * force. One canary per skill (409 otherwise). Idempotent for the same version and percent.
+   */
+  app.post('/skills/:id/versions/:v/canary', async (req, reply) => {
+    const tenantId = tenantOf(req, ctx.config.defaultTenantId);
+    const { id, v } = parse(SkillVersionParams, req.params);
+    const body = parse(StartCanaryBody, req.body ?? {});
+    const r = await mapped(() => startCanary(db, { tenantId, skillKey: id, version: v, percent: body.percent, by: body.by, guard: canaryGuard(tenantId, 'start') }));
+    if (r.changed) req.log.info({ canary: r.canary.id, skill: id, version: v, percent: body.percent, experiment: r.gate?.gate.experiment.name, by: body.by ?? null }, 'skill canary started (human)');
+    return reply.status(r.changed ? 201 : 200).send({ skill: serialize(r.skill), canary: canaryOut(r.canary), changed: r.changed, gate: r.gate?.gate ?? null });
+  });
+
+  /** GET /skills/:id/canary - the ACTIVE canary (or the latest one), its history and canary-vs-stable metrics. */
+  app.get('/skills/:id/canary', async (req) => {
+    const tenantId = tenantOf(req, ctx.config.defaultTenantId);
+    const { id } = parse(SkillParams, req.params);
+    const skill = await findSkill(db, tenantId, id);
+    if (!skill) throw notFound('skill');
+    const current = await latestCanary(db, skill.id);
+    if (!current) throw new HttpError(404, 'not_found', `skill ${skill.name} has no canary`);
+    const history = await listCanaries(db, tenantId, skill.id);
+    const metrics = await canaryArmMetrics(db, { tenantId, skillName: skill.name, canaryId: current.id });
+    return { skill: { id: skill.id, name: skill.name, active_version_id: skill.activeVersionId }, canary: canaryOut(current), active: current.status === 'ACTIVE', metrics, history: history.map((c) => canaryOut(c)) };
+  });
+
+  /** POST /skills/:id/canary/promote - human decision: re-checks the gate and makes the canary version ACTIVE. */
+  app.post('/skills/:id/canary/promote', async (req) => {
+    const tenantId = tenantOf(req, ctx.config.defaultTenantId);
+    const { id } = parse(SkillParams, req.params);
+    const body = parse(FinishCanaryBody, req.body ?? {});
+    const r = await mapped(() => promoteCanary(db, { tenantId, skillKey: id, by: body.by, guard: canaryGuard(tenantId, 'promote') }));
+    req.log.info({ canary: r.canary.id, skill: id, version: r.canary.canaryVersion, by: body.by ?? null }, 'skill canary promoted (human)');
+    return { skill: serialize(r.skill), canary: canaryOut(r.canary), changed: r.changed, version: versionOut(r.version), previous_version: versionOut(r.previous), gate: r.gate?.gate ?? null };
+  });
+
+  /** POST /skills/:id/canary/rollback - every run goes back to the stable version. Always allowed, idempotent. */
+  app.post('/skills/:id/canary/rollback', async (req) => {
+    const tenantId = tenantOf(req, ctx.config.defaultTenantId);
+    const { id } = parse(SkillParams, req.params);
+    const body = parse(FinishCanaryBody, req.body ?? {});
+    const r = await mapped(() => rollbackCanary(db, { tenantId, skillKey: id, by: body.by, reason: body.reason }));
+    if (r.changed) req.log.warn({ canary: r.canary?.id, skill: id, by: body.by ?? null, reason: body.reason ?? null }, 'skill canary rolled back (human)');
+    return { skill: serialize(r.skill), canary: canaryOut(r.canary), changed: r.changed };
   });
 }

@@ -840,6 +840,109 @@ export const knowledgeEntries = pgTable(
   ],
 );
 
+// ---------------------------------------------------------------------------
+// 11.4 Evaluation datasets (MVP-2, migration 0010_eval_datasets) and P5
+// ---------------------------------------------------------------------------
+export const DATASET_STATUSES = ['DRAFT', 'ACTIVE', 'ARCHIVED'] as const;
+export type DatasetStatus = (typeof DATASET_STATUSES)[number];
+export const DATASET_SPLITS = ['TRAIN', 'VALIDATION', 'TEST'] as const;
+export type DatasetSplit = (typeof DATASET_SPLITS)[number];
+export const CASE_ORIGINS = ['harvested', 'synthetic', 'manual'] as const;
+export type CaseOrigin = (typeof CASE_ORIGINS)[number];
+/** Role of a case in an experiment (P5): `design` burns it for any future validation/test. */
+export const CASE_USE_ROLES = ['design', 'validation', 'test'] as const;
+export type CaseUseRole = (typeof CASE_USE_ROLES)[number];
+
+/** One use of a case by an experiment (`evaluation_cases.used_by`, append-only). */
+export interface CaseUse {
+  experiment: string;
+  role: CaseUseRole;
+  /** ISO timestamp of the mark (the registry date for static exclusions). */
+  at: string;
+  /** `registry` (src/datasets/exclusions.ts), `mark_used` (API/service) or `inherited` (from an older version). */
+  via: 'registry' | 'mark_used' | 'inherited';
+  by?: string | null;
+  note?: string | null;
+  /** Older version the use was inherited from (`via: 'inherited'`). */
+  from_version?: number;
+}
+
+/** Provenance of a case (`evaluation_cases.source`). */
+export interface CaseSource {
+  origin: CaseOrigin;
+  trace_id?: string;
+  execution_id?: string;
+  evaluation_id?: string;
+  /** Where the expected value comes from: the commercial's verdict, a declared rule, or nothing. */
+  expected_source: 'human' | 'rule' | 'none';
+  [key: string]: unknown;
+}
+
+/**
+ * A versioned EvaluationDataset (LLD v0.1 section 11.4). One row per (name, version): a
+ * re-harvest creates a new version, it never mutates an older one. `build_info` records the
+ * rules, exclusions and counts of the build. Trigger: no DELETE, only status transitions
+ * DRAFT -> ACTIVE -> ARCHIVED (or DRAFT -> ARCHIVED), everything else immutable.
+ */
+export const evaluationDatasets = pgTable(
+  'evaluation_datasets',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    tenantId: tenantId(),
+    name: text('name').notNull(),
+    domain: text('domain').notNull(),
+    version: integer('version').notNull(),
+    description: text('description'),
+    status: text('status').$type<DatasetStatus>().notNull().default('DRAFT'),
+    buildInfo: jsonb('build_info').$type<Record<string, unknown>>().notNull().default({}),
+    createdAt: createdAt(),
+    createdBy: text('created_by'),
+  },
+  (t) => [
+    uniqueIndex('evaluation_datasets_name_version_uq').on(t.tenantId, t.name, t.version),
+    index('evaluation_datasets_tenant_domain_idx').on(t.tenantId, t.domain, t.status),
+    check('evaluation_datasets_status_ck', sql`${t.status} in ('DRAFT', 'ACTIVE', 'ARCHIVED')`),
+    check('evaluation_datasets_version_ck', sql`${t.version} >= 1`),
+  ],
+);
+
+/**
+ * An EvaluationCase: input the agent received, context of the run, expected behaviour (human
+ * verdict or rule) and provenance. Immutable (trigger) except `used_by`, which only grows:
+ * it is the P5 ledger of the experiments that consumed the case and in which role.
+ * `entity_key` (folded exhibitor name) drives the split, so one entity never lands in two
+ * splits; `content_hash` (sha256 of input + expected) is unique per dataset.
+ */
+export const evaluationCases = pgTable(
+  'evaluation_cases',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    datasetId: uuid('dataset_id')
+      .notNull()
+      .references(() => evaluationDatasets.id),
+    tenantId: tenantId(),
+    split: text('split').$type<DatasetSplit>().notNull(),
+    entityKey: text('entity_key').notNull(),
+    input: jsonb('input').$type<Record<string, unknown>>().notNull(),
+    context: jsonb('context').$type<Record<string, unknown>>().notNull().default({}),
+    expected: jsonb('expected').$type<Record<string, unknown>>().notNull().default({}),
+    source: jsonb('source').$type<CaseSource>().notNull(),
+    difficulty: text('difficulty'),
+    tags: text('tags').array().notNull().default(sql`'{}'::text[]`),
+    contentHash: text('content_hash').notNull(),
+    usedBy: jsonb('used_by').$type<CaseUse[]>().notNull().default([]),
+    createdAt: createdAt(),
+  },
+  (t) => [
+    uniqueIndex('evaluation_cases_dataset_hash_uq').on(t.datasetId, t.contentHash),
+    index('evaluation_cases_dataset_split_idx').on(t.datasetId, t.split),
+    index('evaluation_cases_tenant_entity_idx').on(t.tenantId, t.entityKey),
+    check('evaluation_cases_split_ck', sql`${t.split} in ('TRAIN', 'VALIDATION', 'TEST')`),
+    check('evaluation_cases_used_by_ck', sql`jsonb_typeof(${t.usedBy}) = 'array'`),
+    check('evaluation_cases_origin_ck', sql`${t.source}->>'origin' in ('harvested', 'synthetic', 'manual')`),
+  ],
+);
+
 export type Agent = typeof agents.$inferSelect;
 export type AgentVersion = typeof agentVersions.$inferSelect;
 export type TaskDefinition = typeof taskDefinitions.$inferSelect;
@@ -859,3 +962,5 @@ export type EmailSend = typeof emailSends.$inferSelect;
 export type Harness = typeof harnesses.$inferSelect;
 export type HarnessVersion = typeof harnessVersions.$inferSelect;
 export type KnowledgeEntry = typeof knowledgeEntries.$inferSelect;
+export type EvaluationDataset = typeof evaluationDatasets.$inferSelect;
+export type EvaluationCase = typeof evaluationCases.$inferSelect;

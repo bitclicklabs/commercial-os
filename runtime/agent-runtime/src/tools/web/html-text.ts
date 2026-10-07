@@ -83,6 +83,46 @@ function extractLinks(html: string, baseUrl: string, max: number): PageLink[] {
   return out;
 }
 
+export interface JsAppVerdict {
+  likely: boolean;
+  /** `<script>` elements (inline + external). */
+  scripts: number;
+  /** Characters of inline script code. */
+  scriptChars: number;
+  textChars: number;
+  /** Why it looks like a JavaScript app (empty when `likely` is false). */
+  reasons: string[];
+}
+
+/** Empty mount points of the usual SPA frameworks (React, Vue, Angular, Nuxt, Quasar, Svelte...). */
+const EMPTY_MOUNT = /<(div|main|section|app-root)\b[^>]*\bid\s*=\s*["']?(?:app|root|__nuxt|__next|q-app|svelte|main-app|application)["']?[^>]*>\s*(?:<!--[\s\S]*?-->\s*)?<\/\1\s*>/i;
+const FRAMEWORK_MARKERS = /<app-root\b|\bng-version=|\bdata-reactroot\b|\bdata-server-rendered\b|window\.__NUXT__|__NEXT_DATA__|\bdata-v-app\b|webpackChunk|\/_next\/static\/|\/_nuxt\//i;
+const NOSCRIPT_JS = /<noscript\b[^>]*>[\s\S]{0,400}?(?:javascript|enable js|habilit|activ)[\s\S]{0,200}?<\/noscript\s*>/i;
+
+/**
+ * Heuristic: does this HTML need JavaScript to show its content? (little visible text,
+ * a lot of script, an empty SPA mount point or a "enable JavaScript" notice). Used by
+ * the scout to decide when to call `render_url`. `text` is the output of `htmlToText`.
+ */
+export function detectJsApp(html: string, text: string): JsAppVerdict {
+  let scripts = 0;
+  let scriptChars = 0;
+  const re = /<script\b[^>]*>([\s\S]*?)<\/script\s*>/gi;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(html))) {
+    scripts += 1;
+    scriptChars += m[1]!.trim().length;
+  }
+  const textChars = text.replace(/\s+/g, ' ').trim().length;
+  const reasons: string[] = [];
+  if (scripts > 0 && textChars < 400) reasons.push('casi sin texto visible');
+  if (scripts > 0 && textChars < 3_000 && scriptChars > textChars * 4) reasons.push('mucho más script que texto');
+  if (EMPTY_MOUNT.test(html) && textChars < 3_000) reasons.push('punto de montaje de SPA vacío');
+  if (NOSCRIPT_JS.test(html) && textChars < 3_000) reasons.push('aviso <noscript> de JavaScript');
+  if (FRAMEWORK_MARKERS.test(html) && textChars < 1_500) reasons.push('marcadores de framework JS con poco texto');
+  return { likely: reasons.length > 0, scripts, scriptChars, textChars, reasons };
+}
+
 export function htmlToText(html: string, baseUrl: string, opts: { maxLinks?: number } = {}): ExtractedPage {
   const titleMatch = /<title\b[^>]*>([\s\S]*?)<\/title\s*>/i.exec(html);
   const title = titleMatch ? collapse(decodeEntities(titleMatch[1]!.replace(/<[^>]*>/g, ''))).replace(/\n+/g, ' ').slice(0, 300) || null : null;

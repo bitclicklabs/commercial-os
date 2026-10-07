@@ -18,7 +18,7 @@ El navegador vive en este servicio, no en el runtime: la imagen del runtime no c
 Cuerpo:
 
 ```json
-{ "url": "https://apps.feriavalencia.com/catalog/gastronoma/exhibitors", "wait_ms": 2500, "max_chars": 40000, "min_text_chars": 200, "wait_until": "domcontentloaded", "max_pages": 1 }
+{ "url": "https://apps.feriavalencia.com/catalog/gastronoma/exhibitors", "wait_ms": 2500, "max_chars": 40000, "min_text_chars": 200, "wait_until": "domcontentloaded", "max_pages": 10, "capture_json": true }
 ```
 
 | Campo | Tipo | Por defecto | Descripción |
@@ -28,7 +28,8 @@ Cuerpo:
 | `max_chars` | entero, 500-40 000 | `40000` | Límite del texto devuelto |
 | `min_text_chars` | entero, 0-5 000 | `200` | Espera de hidratación: después de `wait_ms`, el renderer mide el texto visible cada 700 ms y sigue esperando (dentro de los 25 s) hasta que alcanza esta longitud **y** deja de crecer entre dos muestras. `0` = solo `wait_ms` |
 | `wait_until` | `domcontentloaded` \| `load` \| `networkidle` | `domcontentloaded` | Estado de carga que se espera tras navegar. Con `networkidle`, la espera de red inactiva sube de 8 s a 15 s |
-| `max_pages` | entero, 1-5 | `1` | Paginación en el cliente: lee hasta este número de páginas del listado pulsando el control "siguiente" entre lecturas (consulta [Paginación](#paginación)). `1` = sin clics |
+| `max_pages` | entero, 1-20 | `1` | Paginación en el cliente: lee hasta este número de páginas del listado pulsando el control "siguiente" entre lecturas (consulta [Paginación](#paginación)). `1` = sin clics. Cada página después de la primera suma 3 s al presupuesto (máximo 60 s) |
+| `capture_json` | booleano | `false` | Devuelve también las respuestas JSON que la página recibió (consulta [Captura de JSON](#captura-de-json)) |
 
 Respuesta `200`:
 
@@ -44,15 +45,20 @@ Respuesta `200`:
   "blocked_requests": 0,
   "hydration_ms": 710,
   "hydrated": true,
-  "pages_read": 1,
-  "page_urls": ["https://apps.feriavalencia.com/catalog/gastronoma/exhibitors"]
+  "pages_read": 5,
+  "page_urls": ["https://apps.feriavalencia.com/catalog/gastronoma/exhibitors", "…"],
+  "pagination_stop": "not_changed",
+  "json_responses": [{ "url": "https://apps.feriavalencia.com/api/puisearch", "method": "POST", "status": 200, "bytes": 52121, "list_length": 91, "body": { "totalRecords": 91, "data": [{ "exhibitor": 36157, "name": "AGORA", "country": "España" }] } }],
+  "json_skipped": { "cross_origin": 0, "not_json": 0, "status": 0, "too_large": 1, "invalid_json": 0, "no_list": 5, "evicted": 0, "duplicate": 1 }
 }
 ```
 
 - `text`: `innerText` de la página y de hasta 5 iframes, sin `script`, `style`, `noscript`, `template` ni elementos con `hidden`. Los elementos con `aria-hidden="true"` se eliminan si son fragmentos (menos del 30 % del texto de la página), pero no si envuelven buena parte de ella: Vue, Vuetify o MUI marcan así la aplicación entera mientras hay un diálogo abierto. Lo que no se ve (`display:none`, `visibility:hidden`) no aparece en `innerText`.
 - `hydrated` / `hydration_ms`: si el texto alcanzó `min_text_chars` y se estabilizó antes de agotar el presupuesto, y cuánto se esperó. El arranque de Chromium no cuenta en los 25 s.
-- `links`: hasta 300 enlaces `http(s)` absolutos y las URL de los iframes, sin duplicados. Si varios enlaces comparten URL (el logo y el nombre de un expositor), se conserva el primer texto no vacío.
+- `links`: hasta 600 enlaces `http(s)` absolutos y las URL de los iframes, sin duplicados. Si varios enlaces comparten URL (el logo y el nombre de un expositor), se conserva el primer texto no vacío.
 - `pages_read` / `page_urls`: páginas leídas con `max_pages` y la URL de cada una (la misma URL repetida si la paginación no cambia la dirección).
+- `pagination_stop` (solo con `max_pages` > 1): por qué paró la paginación: `max_pages`, `no_next_control`, `not_changed`, `repeated_page`, `no_new_content` (parada temprana: la página no aporta ninguna línea nueva), `max_chars` o `budget`.
+- `json_responses` / `json_skipped` (solo con `capture_json`): respuestas JSON guardadas y contadores de las descartadas por motivo.
 - `final_url`: URL final después de las redirecciones.
 - `blocked_requests`: peticiones de la página rechazadas por la guarda de egreso.
 
@@ -71,7 +77,7 @@ Errores: `{ "error": { "code": "…", "message": "…" } }`.
 | `TOO_MANY_REDIRECTS` | 502 | Más de 5 redirecciones |
 | `NAVIGATION_FAILED`, `RENDER_FAILED` | 502 | Fallo de navegación o del navegador |
 | `RENDERER_BUSY` | 503 | Hay 2 renders en curso y la cola (4) está llena, o la espera supera 30 s |
-| `RENDER_TIMEOUT` | 504 | Se agotó el presupuesto de 25 s |
+| `RENDER_TIMEOUT` | 504 | Se agotó el presupuesto (25 s, más 3 s por página de `max_pages` después de la primera, hasta 60 s) |
 
 ### Paginación
 
@@ -81,7 +87,19 @@ Muchos catálogos JavaScript paginan en el navegador: el botón "siguiente" no e
 2. Lo pulsa con un clic DOM (un aviso de cookies fijo encima del paginador no lo bloquea) y espera hasta 6 s a que el texto cambie y se estabilice.
 3. Añade el texto de la página nueva tras una marca `[Página N del listado]`, sin las líneas iniciales y finales que comparte con la primera (cabecera, filtros, pie).
 
-Se detiene al no encontrar el control, si el texto no cambia o se repite, al llegar a `max_chars` o cuando quedan menos de 3,5 s del presupuesto de 25 s. Todas las peticiones que provoque el clic pasan por la misma guarda de egreso. En Gastrónoma, 3 páginas (60 expositores) tardan unos 11 s.
+Se detiene al no encontrar el control, si el texto no cambia o se repite, si la página nueva no aporta ninguna línea de contenido que no estuviera ya en las anteriores (parada temprana: el paginador vuelve a mostrar la última página con otro contador), al llegar a `max_chars` o cuando quedan menos de 3,5 s del presupuesto. El presupuesto es de 25 s para la primera página (navegación, hidratación, scroll) y 3 s más por cada página adicional pedida, hasta 60 s. Todas las peticiones que provoque el clic pasan por la misma guarda de egreso. En Gastrónoma, las 5 páginas (91 expositores) tardan unos 15-20 s con `max_pages` = 10: en la página 5 el control "siguiente" ya no cambia la lista (`pagination_stop = not_changed`).
+
+### Captura de JSON
+
+Muchos catálogos SPA descargan su lista como JSON y la paginan en el navegador (Feria Valencia: `POST /api/puisearch` devuelve los 91 expositores de Gastrónoma de una vez, 52 KB). Con `capture_json: true`, el renderer devuelve esas respuestas para que el scout use la lista directamente. Se guarda una respuesta solo si:
+
+- es una petición `xhr` o `fetch` de la página;
+- su URL (la que respondió, tras las redirecciones) es del **mismo origen** que la página renderizada (el documento principal tras sus redirecciones);
+- responde 2xx con `Content-Type` `application/json` o `application/*+json`;
+- ocupa 200 KB como máximo (descomprimida) y es JSON válido;
+- contiene una lista: un array de al menos 2 objetos (hasta 6 niveles de profundidad).
+
+Se guardan 5 como máximo, las de la lista más larga primero; una respuesta idéntica a otra ya guardada (la SPA repite la llamada) se cuenta como `duplicate`. El JSON es contenido web **no confiable**, igual que el texto: el runtime lo vuelve a filtrar (mismo origen, tamaño, número) y el scout lo valida como una página.
 
 ### `GET /health`
 
@@ -107,7 +125,7 @@ El renderer ejecuta JavaScript de terceros: se trata como hostil.
 | Ventanas emergentes y diálogos | Se cierran |
 | Aislamiento | Un contexto de navegador nuevo por petición (sin cookies, almacenamiento ni caché compartidos), cerrado al terminar |
 | Concurrencia | 2 renders a la vez como máximo (`RENDER_MAX_CONCURRENCY`, 1-2), cola de 4 |
-| Tiempo | 25 s para navegación, JavaScript y esperas; el contexto se cierra a la fuerza 3 s después |
+| Tiempo | 25 s para navegación, JavaScript y esperas, más 3 s por página adicional de `max_pages` (máximo 60 s); el contexto se cierra a la fuerza 3 s después |
 | Tamaño | 5 MB por respuesta, 30 MB y 400 peticiones por render; texto de salida de 40 000 caracteres |
 | Cabeceras | `User-Agent` de Chromium con el sufijo `PubliexpeCommercialOS/0.1`; nunca `Proxy-Authorization`; `Cookie`/`Authorization` puestas por la propia página (su sesión anónima: el contexto empieza vacío y el renderer no tiene credenciales) se reenvían tal como las envía el navegador y se eliminan si una redirección cambia de origen |
 | Red | Sin puerto publicado al host: solo `pxos-net` |
@@ -153,7 +171,8 @@ pnpm vitest run test/integration/live.test.ts      # contra `pnpm dev` y la web 
 
 - `test/unit/egress.test.ts`: guarda de URL y DNS con `FakeWeb` (`data:`, `file:`, `localhost`, nombres internos, IP privadas, metadata, IPv6 incrustada, DNS mixto, puertos, credenciales, allow/denylist), cabeceras reenviadas, validación **antes** de lanzar Chromium y comprobación de que `ip-guard.ts` es idéntico al del runtime.
 - `test/unit/server.test.ts`: contrato HTTP con Fastify `inject`, mapeo de errores y semáforo de concurrencia.
-- `test/integration/browser-guard.test.ts`: Chromium real con `FakeWeb` como internet y un servidor HTTP/WebSocket real en `127.0.0.1` que hace de servicio interno. La página intenta llegar a él por `fetch` (IP literal, `localhost`, DNS privado, DNS mixto), WebSocket, `sendBeacon`, WebRTC, metadata, `file:`, un iframe y redirecciones; el servidor interno no recibe **ninguna** conexión. También: contenido oculto eliminado (sin perder una aplicación entera marcada `aria-hidden` por un diálogo), espera de hidratación de una lista que aparece 4 s tarde, redirecciones públicas seguidas, descargas rechazadas y bucle infinito de JavaScript cortado por tiempo. Se salta si Chromium no está instalado o con `SKIP_BROWSER_TESTS=1`.
+- `test/unit/json-capture.test.ts`: filtros de `capture_json` (mismo origen, tipo JSON, 2xx, límite de 200 KB exacto, JSON válido con lista, 5 como máximo por longitud de lista, duplicados), parada temprana de la paginación y presupuesto por página.
+- `test/integration/browser-guard.test.ts`: Chromium real con `FakeWeb` como internet y un servidor HTTP/WebSocket real en `127.0.0.1` que hace de servicio interno. La página intenta llegar a él por `fetch` (IP literal, `localhost`, DNS privado, DNS mixto), WebSocket, `sendBeacon`, WebRTC, metadata, `file:`, un iframe y redirecciones; el servidor interno no recibe **ninguna** conexión. También: contenido oculto eliminado (sin perder una aplicación entera marcada `aria-hidden` por un diálogo), espera de hidratación de una lista que aparece 4 s tarde, redirecciones públicas seguidas, descargas rechazadas, bucle infinito de JavaScript cortado por tiempo, parada temprana de un paginador que repite la última página (`no_new_content`) y captura de la lista JSON de una SPA (la de otro origen y las respuestas sin lista no se devuelven). Se salta si Chromium no está instalado o con `SKIP_BROWSER_TESTS=1`.
 - `test/integration/live.test.ts`: **en vivo**, contra el servicio arrancado con `pnpm dev` (`RENDERER_TEST_URL`, por defecto `http://127.0.0.1:4030`). Renderiza `gastronoma.es` y el catálogo JavaScript de Gastrónoma en Feria Valencia, y comprueba que `data:`, `localhost`, loopback, IP privadas, metadata y nombres internos se rechazan con `400`. Se salta si el servicio no responde o con `SKIP_LIVE_TESTS=1`.
 
 ## Docker

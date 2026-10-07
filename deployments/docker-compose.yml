@@ -205,6 +205,7 @@ services:
       PORT: "3000"
       LOG_LEVEL: ${RENDERER_LOG_LEVEL:-info}
       RENDER_MAX_CONCURRENCY: "2"
+      RENDER_CHROMIUM_SANDBOX: ${RENDER_CHROMIUM_SANDBOX:-true}
       HOME: /tmp
       FETCH_URL_ALLOWLIST: ${FETCH_URL_ALLOWLIST:-}
       FETCH_URL_DENYLIST: ${FETCH_URL_DENYLIST:-}
@@ -215,8 +216,14 @@ services:
     tmpfs:
       - /tmp:size=512m
     cap_drop: [ALL]
+    # SYS_CHROOT: única capability repuesta — el zygote del sandbox de Chromium hace
+    # chroot y el perfil seccomp lo condiciona a esta capability.
+    cap_add: [SYS_CHROOT]
     security_opt:
       - no-new-privileges:true
+      # Perfil seccomp oficial de Playwright: permite los syscalls de namespaces que
+      # necesita el sandbox propio de Chromium (RENDER_CHROMIUM_SANDBOX=true).
+      - seccomp:./seccomp/chromium-seccomp.json
     mem_limit: 1536m
     cpus: 1.5
     pids_limit: 512

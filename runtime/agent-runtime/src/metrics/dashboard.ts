@@ -4,6 +4,8 @@
  * (`metrics/...`, `task-runs/...`), so the page works behind any host/port. The tenant is
  * taken from `?tenant=` and sent as `x-tenant-id`; without it the runtime default applies.
  * All DB text is inserted with textContent (never innerHTML).
+ * ARCHIVED agents (test agents) are hidden from the agent table and the latest runs; open
+ * the page with `?include_archived=true` to see them. The summary cards count every run.
  */
 export const DASHBOARD_HTML = `<!doctype html>
 <html lang="es">
@@ -88,6 +90,8 @@ a:hover { text-decoration: underline; }
   var params = new URLSearchParams(location.search);
   var tenant = params.get('tenant');
   var headers = tenant ? { 'x-tenant-id': tenant } : {};
+  var includeArchived = params.get('include_archived') === 'true';
+  var archivedQs = includeArchived ? 'include_archived=true' : '';
 
   function get(path) {
     return fetch(path, { headers: headers, cache: 'no-store' }).then(function (r) {
@@ -128,11 +132,12 @@ a:hover { text-decoration: underline; }
     get('metrics/summary'),
     get('metrics/summary?since=' + encodeURIComponent(startToday.toISOString())),
     get('metrics/summary?since=' + encodeURIComponent(start7.toISOString())),
-    get('metrics/agents'),
-    get('metrics/runs?limit=10')
+    get('metrics/agents' + (archivedQs ? '?' + archivedQs : '')),
+    get('metrics/runs?limit=10' + (archivedQs ? '&' + archivedQs : ''))
   ]).then(function (res) {
     var all = res[0], today = res[1], week = res[2], agents = res[3], runs = res[4];
-    set('meta', 'Tenant ' + all.tenant_id + ' · actualizado ' + now.toLocaleTimeString('es-ES'));
+    set('meta', 'Tenant ' + all.tenant_id + ' · actualizado ' + now.toLocaleTimeString('es-ES') +
+      (includeArchived ? ' · incluye agentes archivados' : ' · sin agentes archivados'));
 
     set('c-today', today.runs.total);
     set('c-today-sub', statusLine(today.runs.by_status));

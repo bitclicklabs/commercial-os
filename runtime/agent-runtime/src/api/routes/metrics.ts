@@ -2,8 +2,10 @@
  * Metrics API and mini dashboard (LLD v0.1 sections 17.2 and 17.3). Read-only.
  * - GET /metrics/summary      - runs by status/task/outcome, cost, tokens, latency, funnel, feedback.
  * - GET /metrics/agents       - per agent and version: runs, cost, outcome and human acceptance.
+ *                               ARCHIVED agents are hidden unless `include_archived=true`.
  * - GET /metrics/evaluations  - human verdicts per day and per subject.
- * - GET /metrics/runs         - latest TaskRuns (compact) with the link to their trace.
+ * - GET /metrics/runs         - latest TaskRuns (compact) with the link to their trace (same
+ *                               `include_archived` rule). /metrics/summary always counts every run.
  * - GET /dashboard            - static HTML page over the endpoints above (local requests only).
  */
 import type { FastifyInstance, FastifyRequest } from 'fastify';
@@ -29,6 +31,18 @@ export const MetricsWindowQuery = z
   })
   .refine((q) => !q.since || !q.until || new Date(q.since) < new Date(q.until), { message: 'since must be before until' });
 
+/** `include_archived=true|false` (also 1/0, yes/no); default false. */
+const IncludeArchived = z.stringbool().default(false);
+
+const windowFields = {
+  since: z.iso.datetime({ offset: true }).optional(),
+  until: z.iso.datetime({ offset: true }).optional(),
+};
+
+export const MetricsAgentsQuery = z
+  .object({ ...windowFields, include_archived: IncludeArchived })
+  .refine((q) => !q.since || !q.until || new Date(q.since) < new Date(q.until), { message: 'since must be before until' });
+
 export const MetricsEvaluationsQuery = z
   .object({
     since: z.iso.datetime({ offset: true }).optional(),
@@ -38,7 +52,10 @@ export const MetricsEvaluationsQuery = z
   })
   .refine((q) => !q.since || !q.until || new Date(q.since) < new Date(q.until), { message: 'since must be before until' });
 
-export const RecentRunsQuery = z.object({ limit: z.coerce.number().int().min(1).max(100).default(10) });
+export const RecentRunsQuery = z.object({
+  limit: z.coerce.number().int().min(1).max(100).default(10),
+  include_archived: IncludeArchived,
+});
 
 const toDate = (v: string | undefined) => (v ? new Date(v) : undefined);
 
@@ -77,8 +94,8 @@ export async function metricsRoutes(app: FastifyInstance, ctx: ApiContext): Prom
 
   app.get('/metrics/agents', async (req) => {
     const tenantId = tenantOf(req, ctx.config.defaultTenantId);
-    const q = parse(MetricsWindowQuery, req.query);
-    return metricsAgents(db, { tenantId, since: toDate(q.since), until: toDate(q.until) });
+    const q = parse(MetricsAgentsQuery, req.query);
+    return metricsAgents(db, { tenantId, since: toDate(q.since), until: toDate(q.until), includeArchived: q.include_archived });
   });
 
   app.get('/metrics/evaluations', async (req) => {
@@ -96,7 +113,7 @@ export async function metricsRoutes(app: FastifyInstance, ctx: ApiContext): Prom
   app.get('/metrics/runs', async (req) => {
     const tenantId = tenantOf(req, ctx.config.defaultTenantId);
     const q = parse(RecentRunsQuery, req.query);
-    return recentRuns(db, { tenantId, limit: q.limit });
+    return recentRuns(db, { tenantId, limit: q.limit, includeArchived: q.include_archived });
   });
 
   app.get('/dashboard', async (req, reply) => {

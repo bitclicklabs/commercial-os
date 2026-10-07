@@ -12,6 +12,10 @@
  * - Human acceptance uses the LATEST verdict per subject (subject_type, subject_id): a
  *   hypothesis edited and later discarded counts once, as DISCARDED. `verdicts` counts
  *   every row.
+ * - ARCHIVED agents (e.g. the "[TEST] ..." agents of the live tests, archived by
+ *   `pnpm cleanup:archive-test-agents`) are hidden from the per-agent table
+ *   (/metrics/agents) and the recent runs list (/metrics/runs) unless `includeArchived`.
+ *   Their historical runs STILL count in /metrics/summary and /metrics/evaluations.
  */
 import { sql, type SQL } from 'drizzle-orm';
 import type { Db } from '../db/client.js';
@@ -21,6 +25,16 @@ export interface Window {
   tenantId: string;
   since?: Date | undefined;
   until?: Date | undefined;
+}
+
+/** Per-agent views: ARCHIVED agents are hidden by default. */
+export interface AgentFilter {
+  includeArchived?: boolean | undefined;
+}
+
+/** `and a.status <> 'ARCHIVED'` unless archived agents are requested (alias of `agents`). */
+function archivedAgentsWhere(alias: string, f: AgentFilter): SQL {
+  return f.includeArchived ? sql`` : sql` and ${sql.raw(alias)}.status <> 'ARCHIVED'`;
 }
 
 /** AC-15 and AC-16 thresholds (LLD v0.2 section 11.2, `[PROPUESTA]`). */
@@ -283,8 +297,9 @@ export async function metricsSummary(db: Db, w: Window) {
 // ---------------------------------------------------------------------------
 // GET /metrics/agents
 // ---------------------------------------------------------------------------
-export async function metricsAgents(db: Db, w: Window) {
+export async function metricsAgents(db: Db, w: Window & AgentFilter) {
   const exWhere = windowWhere('e', 'created_at', w);
+  const includeArchived = Boolean(w.includeArchived);
   const runs = await rows(
     db,
     sql`select a.id as agent_id, a.name as agent_name, a.status as agent_status,
@@ -303,7 +318,7 @@ export async function metricsAgents(db: Db, w: Window) {
     from agent_executions e
     join agents a on a.id = e.agent_id
     left join agent_versions v on v.id = e.agent_version_id
-    where ${exWhere}
+    where ${exWhere}${archivedAgentsWhere('a', w)}
     group by a.id, a.name, a.status, v.id, v.version, v.status, v.model, v.model_provider
     order by a.name, v.version nulls first`,
   );
@@ -368,7 +383,12 @@ export async function metricsAgents(db: Db, w: Window) {
       human_feedback: feedbackCounts(byKey.get(key(r.agent_id, r.version_id ?? null))),
     };
   });
-  return { tenant_id: w.tenantId, window: { since: w.since?.toISOString() ?? null, until: w.until?.toISOString() ?? null, field: 'agent_executions.created_at' }, items };
+  return {
+    tenant_id: w.tenantId,
+    window: { since: w.since?.toISOString() ?? null, until: w.until?.toISOString() ?? null, field: 'agent_executions.created_at' },
+    include_archived: includeArchived,
+    items,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -461,7 +481,7 @@ export async function metricsEvaluations(db: Db, o: EvaluationsOptions) {
 // ---------------------------------------------------------------------------
 // GET /metrics/runs (latest TaskRuns, compact; used by the dashboard)
 // ---------------------------------------------------------------------------
-export async function recentRuns(db: Db, w: Window & { limit: number }) {
+export async function recentRuns(db: Db, w: Window & AgentFilter & { limit: number }) {
   const items = await rows(
     db,
     sql`select r.id, r.status, r.output->>'outcome' as outcome, r.created_at, r.started_at, r.finished_at, r.attempts,
@@ -473,11 +493,12 @@ export async function recentRuns(db: Db, w: Window & { limit: number }) {
     join task_definitions t on t.id = r.task_definition_id
     join agents a on a.id = t.agent_id
     left join agent_versions v on v.id = r.agent_version_id
-    where ${windowWhere('r', 'created_at', w)}
+    where ${windowWhere('r', 'created_at', w)}${archivedAgentsWhere('a', w)}
     order by r.created_at desc limit ${w.limit}`,
   );
   return {
     tenant_id: w.tenantId,
+    include_archived: Boolean(w.includeArchived),
     items: items.map((r) => ({
       id: r.id,
       task: r.task,

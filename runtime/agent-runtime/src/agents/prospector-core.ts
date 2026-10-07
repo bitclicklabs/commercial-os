@@ -204,6 +204,17 @@ export interface ScoutConfig {
   maxRenders: number;
   /** Catalog / exhibitor-list PDFs linked from the pages downloaded per event (fetch_url). */
   maxPdfsPerEvent: number;
+  /**
+   * Pages of a paginated exhibitor list read per event (the first one included): client-side
+   * pagination inside one render_url call (`maxPages`), or "next"/`?page=N` links. 1 = first page only.
+   */
+  maxCatalogPages: number;
+  /**
+   * Exhibitor profiles (`/exhibitors/{id}`) opened per run to find the website of RELEVANT
+   * exhibitors without a domain, after the LLM evaluation. Each lookup is one fetch_url or
+   * render_url of the profile plus one fetch_url of the domain found (resolvable + public).
+   */
+  maxProfileLookups: number;
   /** Grounding redirects resolved to learn a source's domain when grounding did not report it. */
   maxRedirectResolutions: number;
   eventSignalConfidence: number;
@@ -242,11 +253,13 @@ export function readConfig(configuration: Record<string, unknown>): ProspectorCo
     scout: {
       taskName: typeof s.task_name === 'string' ? s.task_name : 'weekly-event-scouting',
       maxEvents: int(s.max_events, 3, 3),
-      maxExhibitorsPerEvent: int(s.max_exhibitors_per_event, 20, 50),
+      maxExhibitorsPerEvent: int(s.max_exhibitors_per_event, 60, 100),
       maxFetches: int(s.max_fetches, 18, 30),
       maxPagesPerEvent: int(s.max_pages_per_event, 3, 4),
       maxRenders: int(s.max_renders, 4, 6),
       maxPdfsPerEvent: int(s.max_pdfs_per_event, 2, 2),
+      maxCatalogPages: Math.max(1, int(s.max_catalog_pages, 3, 5)),
+      maxProfileLookups: int(s.max_profile_lookups, 20, 30),
       maxRedirectResolutions: int(s.max_redirect_resolutions, 3, 5),
       eventSignalConfidence: Math.min(1, Math.max(0, num(s.event_signal_confidence, 0.5))),
       verifyUnsourcedByFetch: s.verify_unsourced_by_fetch !== false,
@@ -468,6 +481,18 @@ export interface ExhibitorResult {
   hypothesis_id?: string;
   hypothesis?: z.infer<typeof ExhibitorHypothesis>;
   error?: { code: string; message: string };
+  /** Scout mode: lookup of the exhibitor profile (website) after a writable decision. */
+  profile?: {
+    url: string | null;
+    status: string;
+    via?: 'fetch' | 'render';
+    domain?: string | null;
+    domain_source?: string;
+    /** Why the lookup failed (tool error code). */
+    error?: string;
+    /** Social network pages found in the profile: metadata, never used as the company domain. */
+    social?: Record<string, string>;
+  };
 }
 
 export interface EvaluateOptions {
@@ -482,12 +507,24 @@ export interface EvaluateOptions {
 
 /** classification (LLM) -> company -> signal -> hypothesis, for one exhibitor. Never throws on business errors. */
 export async function evaluateExhibitor(run: ProspectorRun, event: ProspectorEvent, exhibitor: ExhibitorInput, opts: EvaluateOptions): Promise<ExhibitorResult> {
+  const decided = await decideExhibitor(run, event, exhibitor, opts);
+  return decided.writable ? writeExhibitor(run, event, exhibitor, decided, opts) : decided.result;
+}
+
+/** Outcome of the LLM step of one exhibitor. `writable`: relevant with enough confidence (the CRM steps come next). */
+export interface DecidedExhibitor {
+  result: ExhibitorResult;
+  decision: ExhibitorDecision | null;
+  writable: boolean;
+}
+
+/**
+ * Step 1 only: the LLM decision (+1 repair attempt), no CRM write. The scout mode
+ * evaluates every exhibitor first and opens exhibitor profiles only for the writable ones.
+ */
+export async function decideExhibitor(run: ProspectorRun, event: ProspectorEvent, exhibitor: ExhibitorInput, opts: Pick<EvaluateOptions, 'today' | 'system'>): Promise<DecidedExhibitor> {
   const domain = normalizeDomain(exhibitor.domain);
   const result: ExhibitorResult = { name: exhibitor.name, domain, status: 'llm_invalid' };
-  const ledger = opts.ledger;
-  const clean = (text: string) => (ledger ? scrubUnknownUrls(text, ledger) : text);
-
-  // 1. LLM decision (+1 repair attempt).
   const call = await run.completeJson({
     label: { exhibitor: exhibitor.name },
     system: opts.system,
@@ -496,18 +533,42 @@ export async function evaluateExhibitor(run: ProspectorRun, event: ProspectorEve
     schema: EXHIBITOR_DECISION_JSON_SCHEMA,
   });
   if (call.status === 'model_error') {
-    return Object.assign(result, { status: 'llm_error' as const, error: { code: call.code, message: call.message } });
+    return { result: Object.assign(result, { status: 'llm_error' as const, error: { code: call.code, message: call.message } }), decision: null, writable: false };
   }
   if (call.status === 'invalid') {
-    return Object.assign(result, { status: 'llm_invalid' as const, error: { code: 'LLM_INVALID_OUTPUT', message: call.message } });
+    return { result: Object.assign(result, { status: 'llm_invalid' as const, error: { code: 'LLM_INVALID_OUTPUT', message: call.message } }), decision: null, writable: false };
   }
   const decision = call.value;
   result.relevant = decision.relevant;
   result.confidence = decision.confidence;
   result.reason = decision.reason;
-  if (!decision.relevant || !decision.hypothesis) return Object.assign(result, { status: 'discarded_irrelevant' as const });
+  if (!decision.relevant || !decision.hypothesis) return { result: Object.assign(result, { status: 'discarded_irrelevant' as const }), decision, writable: false };
   result.hypothesis = decision.hypothesis;
-  if (decision.confidence < run.cfg.minConfidence) return Object.assign(result, { status: 'discarded_low_confidence' as const });
+  if (decision.confidence < run.cfg.minConfidence) return { result: Object.assign(result, { status: 'discarded_low_confidence' as const }), decision, writable: false };
+  return { result, decision, writable: true };
+}
+
+/**
+ * Steps 2-5 for a writable decision: source check, company, signal, hypothesis. The
+ * exhibitor's domain is read again here (the scout may have found it in the exhibitor
+ * profile after the decision). `extraEvidence` is added to the hypothesis evidence
+ * (each `sourceUrl` must be a known source in scout mode, or it is dropped).
+ */
+export async function writeExhibitor(
+  run: ProspectorRun,
+  event: ProspectorEvent,
+  exhibitor: ExhibitorInput,
+  decided: DecidedExhibitor,
+  opts: EvaluateOptions & { extraEvidence?: Array<{ claim: string; sourceUrl?: string }> },
+): Promise<ExhibitorResult> {
+  const result = decided.result;
+  const decision = decided.decision!;
+  const domain = normalizeDomain(exhibitor.domain);
+  result.domain = domain;
+  const ledger = opts.ledger;
+  const clean = (text: string) => (ledger ? scrubUnknownUrls(text, ledger) : text);
+  const extraEvidence = opts.extraEvidence ?? [];
+  if (!decision.hypothesis) return Object.assign(result, { status: 'discarded_irrelevant' as const });
 
   // 2. Source check before any write (scout mode): the URL must have been visited or returned by grounding.
   if (ledger && (!event.source_url || !ledger.isKnownSource(event.source_url))) {
@@ -574,6 +635,10 @@ export async function evaluateExhibitor(run: ProspectorRun, event: ProspectorEve
     { claim: clean(`Valoración del Prospector: ${decision.reason}`).slice(0, 1000) },
   ];
   if (h.differentiators.length > 0) evidence.push({ claim: `Diferenciales de PubliEXPE aplicables: ${h.differentiators.join(', ')}.` });
+  for (const e of extraEvidence) {
+    const known = e.sourceUrl && (!ledger || ledger.isKnownSource(e.sourceUrl)) ? { sourceUrl: e.sourceUrl } : {};
+    evidence.push({ claim: clean(e.claim).slice(0, 1000), ...known });
+  }
   const hyp = await run.callTool('create_hypothesis', {
     companyId,
     signalId,

@@ -142,8 +142,8 @@ Dos ejemplos:
 
 | Acción | Qué ocurre en Twenty | Qué ocurre además |
 |---|---|---|
-| **Validar** | La hipótesis pasa a `Validated`. | Cuenta como una hipótesis **aceptada** para el sistema (consulta [Por qué tu feedback importa](#por-qué-tu-feedback-importa)). No se envía nada. |
-| **Editar y validar** | Se guardan tus cambios y la hipótesis pasa a `Validated`. | Cuenta como **editada**: el sistema aprende de lo que corriges. No se envía nada. |
+| **Validar** | La hipótesis pasa a `Validated`. | Cuenta como una hipótesis **aceptada** para el sistema (consulta [Por qué tu feedback importa](#por-qué-tu-feedback-importa)). El sistema prepara un [borrador de email](#borradores-de-email). No se envía nada. |
+| **Editar y validar** | Se guardan tus cambios y la hipótesis pasa a `Validated`. | Cuenta como **editada**: el sistema aprende de lo que corriges. El sistema prepara un [borrador de email](#borradores-de-email) con tus datos corregidos. No se envía nada. |
 | **Rechazar** | La hipótesis pasa a `Rejected` y sale de tu cola. | Cuenta como **descartada**. No se borra ni se avisa a nadie. |
 | **No hacer nada** | La hipótesis sigue en `Proposed`. | El sistema no aprende nada de ella. |
 
@@ -151,7 +151,7 @@ Dos ejemplos:
 
 ## Borradores de email
 
-Cuando validas una hipótesis, el sistema prepara un borrador del primer email para esa empresa. El borrador es solo una propuesta de texto: **el sistema no envía nada, nunca**. Lo envías tú, a mano, desde tu buzón.
+Cuando validas una hipótesis, el sistema prepara un borrador del primer email para esa empresa. Esto ocurre tanto si la validas tal cual como si la editas antes de validarla: en ese segundo caso, el borrador usa los datos que has corregido (cantidades, presupuesto, productos o enfoque). El borrador es solo una propuesta de texto: **el sistema no envía nada, nunca**. Lo envías tú, a mano, desde tu buzón.
 
 ### Dónde aparece el borrador
 
@@ -164,7 +164,15 @@ El borrador aparece como una nota en la empresa en Twenty. Su título empieza po
 1. Personaliza lo que haga falta: saludo, nombre de la persona, referencia al evento, cantidades o tono. Comprueba que los datos son correctos.
 1. Copia el texto a un correo nuevo. Envíalo desde `jesus.abril@publiexpe.info` o `j.abril@publiexpe.info`.
 1. Comprueba que el correo lleva tu identificación y la línea de baja con `baja@publiexpe.info`.
-1. Antes de enviar, comprueba que el destinatario no está en la lista de supresión (consulta [Gestión de bajas y lista de supresión](email-warmup.md#gestión-de-bajas-y-lista-de-supresión)).
+1. Antes de enviar, comprueba que el destinatario no está en la lista de supresión (consulta el apartado siguiente).
+
+### Lista de supresión: qué haces antes de enviar
+
+1. **Antes de enviar cualquier correo en frío**, abre en Twenty la nota `Lista de supresión — NO contactar` (búscala por "supresión") y comprueba que ni la dirección ni el dominio del destinatario aparecen. Si aparecen, no envíes ni vuelvas a contactar nunca.
+1. **Toda petición de baja** (una respuesta a tu correo o un mensaje a `baja@publiexpe.info`) se añade **el mismo día** como una línea nueva al final de la nota, con el formato `email — fecha — motivo`.
+1. **No borres ni edites** las líneas existentes de la nota.
+
+Para el detalle del procedimiento, consulta [Gestión de bajas y lista de supresión](email-warmup.md#gestión-de-bajas-y-lista-de-supresión).
 
 ### Qué no haces
 
@@ -174,6 +182,7 @@ El borrador aparece como una nota en la empresa en Twenty. Su título empieza po
 - **No superes el ritmo de envío del [plan de warm-up](email-warmup.md)** mientras los buzones se están calentando.
 
 > **Importante:** la nota es un borrador. No significa que el correo se haya enviado ni que se vaya a enviar. Si no lo envías tú, no sale.
+
 ## Estados: cuándo usar cada uno
 
 ### Hipótesis

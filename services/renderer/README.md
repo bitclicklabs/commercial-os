@@ -18,7 +18,7 @@ El navegador vive en este servicio, no en el runtime: la imagen del runtime no c
 Cuerpo:
 
 ```json
-{ "url": "https://apps.feriavalencia.com/catalog/gastronoma/exhibitors", "wait_ms": 2500, "max_chars": 40000, "min_text_chars": 200, "wait_until": "domcontentloaded" }
+{ "url": "https://apps.feriavalencia.com/catalog/gastronoma/exhibitors", "wait_ms": 2500, "max_chars": 40000, "min_text_chars": 200, "wait_until": "domcontentloaded", "max_pages": 1 }
 ```
 
 | Campo | Tipo | Por defecto | Descripción |
@@ -28,6 +28,7 @@ Cuerpo:
 | `max_chars` | entero, 500-40 000 | `40000` | Límite del texto devuelto |
 | `min_text_chars` | entero, 0-5 000 | `200` | Espera de hidratación: después de `wait_ms`, el renderer mide el texto visible cada 700 ms y sigue esperando (dentro de los 25 s) hasta que alcanza esta longitud **y** deja de crecer entre dos muestras. `0` = solo `wait_ms` |
 | `wait_until` | `domcontentloaded` \| `load` \| `networkidle` | `domcontentloaded` | Estado de carga que se espera tras navegar. Con `networkidle`, la espera de red inactiva sube de 8 s a 15 s |
+| `max_pages` | entero, 1-5 | `1` | Paginación en el cliente: lee hasta este número de páginas del listado pulsando el control "siguiente" entre lecturas (consulta [Paginación](#paginación)). `1` = sin clics |
 
 Respuesta `200`:
 
@@ -42,13 +43,16 @@ Respuesta `200`:
   "render_ms": 9073,
   "blocked_requests": 0,
   "hydration_ms": 710,
-  "hydrated": true
+  "hydrated": true,
+  "pages_read": 1,
+  "page_urls": ["https://apps.feriavalencia.com/catalog/gastronoma/exhibitors"]
 }
 ```
 
 - `text`: `innerText` de la página y de hasta 5 iframes, sin `script`, `style`, `noscript`, `template` ni elementos con `hidden`. Los elementos con `aria-hidden="true"` se eliminan si son fragmentos (menos del 30 % del texto de la página), pero no si envuelven buena parte de ella: Vue, Vuetify o MUI marcan así la aplicación entera mientras hay un diálogo abierto. Lo que no se ve (`display:none`, `visibility:hidden`) no aparece en `innerText`.
 - `hydrated` / `hydration_ms`: si el texto alcanzó `min_text_chars` y se estabilizó antes de agotar el presupuesto, y cuánto se esperó. El arranque de Chromium no cuenta en los 25 s.
-- `links`: hasta 300 enlaces `http(s)` absolutos y las URL de los iframes.
+- `links`: hasta 300 enlaces `http(s)` absolutos y las URL de los iframes, sin duplicados. Si varios enlaces comparten URL (el logo y el nombre de un expositor), se conserva el primer texto no vacío.
+- `pages_read` / `page_urls`: páginas leídas con `max_pages` y la URL de cada una (la misma URL repetida si la paginación no cambia la dirección).
 - `final_url`: URL final después de las redirecciones.
 - `blocked_requests`: peticiones de la página rechazadas por la guarda de egreso.
 
@@ -68,6 +72,16 @@ Errores: `{ "error": { "code": "…", "message": "…" } }`.
 | `NAVIGATION_FAILED`, `RENDER_FAILED` | 502 | Fallo de navegación o del navegador |
 | `RENDERER_BUSY` | 503 | Hay 2 renders en curso y la cola (4) está llena, o la espera supera 30 s |
 | `RENDER_TIMEOUT` | 504 | Se agotó el presupuesto de 25 s |
+
+### Paginación
+
+Muchos catálogos JavaScript paginan en el navegador: el botón "siguiente" no es un enlace y la URL no cambia (Gastrónoma: 20 expositores por página, 91 en total). Con `max_pages` > 1, después de leer la primera página el renderer:
+
+1. Busca el control "siguiente" más probable: `rel="next"`, texto o `aria-label` "Siguiente"/"Next", clases con `next` o iconos de flecha (`fa-arrow-right`, `mdi-chevron-right`...), con más peso dentro de un contenedor de paginación. Nunca elige controles desactivados, flechas de "última página" o dobles, flechas de carruseles (`swiper`, `slick`, `carousel`...) ni enlaces a otro origen; un enlace que navega solo se pulsa dentro de un paginador o con `rel="next"`.
+2. Lo pulsa con un clic DOM (un aviso de cookies fijo encima del paginador no lo bloquea) y espera hasta 6 s a que el texto cambie y se estabilice.
+3. Añade el texto de la página nueva tras una marca `[Página N del listado]`, sin las líneas iniciales y finales que comparte con la primera (cabecera, filtros, pie).
+
+Se detiene al no encontrar el control, si el texto no cambia o se repite, al llegar a `max_chars` o cuando quedan menos de 3,5 s del presupuesto de 25 s. Todas las peticiones que provoque el clic pasan por la misma guarda de egreso. En Gastrónoma, 3 páginas (60 expositores) tardan unos 11 s.
 
 ### `GET /health`
 

@@ -65,10 +65,11 @@ export function desiredProspectorVersion() {
         allow: [...PROSPECTOR_TOOLS],
         max_risk_level: 'LOW_WRITE',
         // Direct: 50 exhibitors x (upsert + signal + hypothesis, or find) + summary.
-        // Scout: 3 fairs x 20 exhibitors x 3 + fetches + renders + event signals + summary.
-        max_calls_per_execution: 240,
-        // fetch_url: 18 pages/PDFs + 3 grounding redirects (+1); render_url: 4 renders (+1).
-        max_calls_per_tool: { fetch_url: 22, render_url: 5 },
+        // Scout: 3 fairs x 60 exhibitors x 3 + fetches + renders + profiles + event signals + summary.
+        max_calls_per_execution: 640,
+        // fetch_url: 18 pages/PDFs + 3 grounding redirects (+1) + 10 profiles + 10 domain checks;
+        // render_url: 4 renders (+1) + 10 profiles.
+        max_calls_per_tool: { fetch_url: 42, render_url: 15 },
       },
       min_confidence: 0.5,
       usd_to_eur: DEFAULT_USD_TO_EUR,
@@ -77,11 +78,13 @@ export function desiredProspectorVersion() {
       scout: {
         task_name: SCOUT_TASK_NAME,
         max_events: 3,
-        max_exhibitors_per_event: 20,
+        max_exhibitors_per_event: 60,
         max_fetches: 18,
         max_pages_per_event: 3,
         max_renders: 4,
         max_pdfs_per_event: 2,
+        max_catalog_pages: 3,
+        max_profile_lookups: 20,
         max_redirect_resolutions: 3,
         event_signal_confidence: 0.5,
         verify_unsourced_by_fetch: true,

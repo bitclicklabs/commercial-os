@@ -27,6 +27,14 @@ Cambios notables de PubliEXPE Commercial OS, agrupados por tanda de trabajo. For
 - Plan operativo del warm-up (`docs/email-warmup.md`) con calendario hasta el hito DMARC del 2026-11-03, y sección de borradores en la guía del comercial.
 - Infra: servicio pxos-renderer en el compose (sin puerto público; 127.0.0.1:4030 solo desarrollo), `RENDERER_URL` al runtime. Prospector v4 (render_url) y agente EmailDrafter sembrados.
 
+## 2026-10-07 — Tanda 5 (PR #5)
+
+- Dominios de expositores: paginación de catálogos (también la de solo-cliente, pulsando el paginador dentro del renderer) + apertura de fichas de los relevantes para extraer y validar su web. Run real: 60 expositores evaluados, 6 empresas reales creadas en Twenty con señal e hipótesis (0,14 €). `max_profile_lookups` por defecto: 20.
+- Triggers EVENT con operador `{in: [...]}` y guarda `toStatus`: una hipótesis editada y validada también genera borrador, con los datos corregidos.
+- Limpieza: script `pnpm cleanup:archive-test-agents`; 30+ agentes/tareas de test archivados (nunca borrados); métricas y dashboard ocultan archivados (`include_archived=true` para verlos).
+- Sandbox de Chromium activo en pxos-renderer (perfil seccomp de Playwright + `cap_add SYS_CHROOT`).
+- Email: documentado que SNDS no aplica con IP compartida de IONOS (alternativa manual para Outlook) y procedimiento de la lista de supresión (nota en Twenty, ya creada).
+
 ## Sin publicar
 
 ### Documentación y herramientas
@@ -36,6 +44,8 @@ Cambios notables de PubliEXPE Commercial OS, agrupados por tanda de trabajo. For
 - Se documenta el workaround de Windows en el runbook y en el README de la Twenty App.
 - Se añade la [guía del equipo comercial](guia-comercial.md) y la sección "Operación diaria" del runbook, y se cierra el hueco del seed con `pnpm seed`.
 - Se añade el [plan de warm-up del canal de email](email-warmup.md) (calendario de cuatro semanas desde el 2026-10-06, vigilancia DMARC y Postmaster, hito DMARC `p=quarantine` del 2026-11-03, bajas y checklists), la sección "Borradores de email" de la guía comercial y su enlace desde el runbook y el README.
+- Se amplía el [plan de warm-up](email-warmup.md) con la sección "Alta en Microsoft SNDS" (SNDS no es accesible con IONOS correo compartido; se documenta la alternativa manual: prueba de colocación con cuentas Outlook propias, cabeceras, rebotes y señales indirectas) y con el procedimiento de la lista de supresión: nota de Twenty "Lista de supresión — NO contactar", una línea `email — fecha — motivo` por baja y comprobación obligatoria antes de cada envío en frío.
+- La [guía del equipo comercial](guia-comercial.md) resume el procedimiento de la lista de supresión en la sección de borradores y documenta que una hipótesis editada y validada también genera borrador, con los datos corregidos.
 
 ## 2026-10-06 — Tanda 1: bootstrap del MVP-0 (PR #1)
 

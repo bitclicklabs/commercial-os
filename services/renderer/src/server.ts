@@ -1,14 +1,14 @@
 /**
  * HTTP API of pxos-renderer (internal network only, no port published to the host).
  *
- * POST /render  { url, wait_ms?, max_chars?, min_text_chars?, wait_until? }
- *               -> 200 { text, title, links[], final_url, status, truncated, render_ms, blocked_requests, hydration_ms, hydrated }
+ * POST /render  { url, wait_ms?, max_chars?, min_text_chars?, wait_until?, max_pages? }
+ *               -> 200 { text, title, links[], final_url, status, truncated, render_ms, blocked_requests, hydration_ms, hydrated, pages_read, page_urls[] }
  *               errors -> 4xx/5xx { error: { code, message } }
  * GET  /health  -> 200 { status: 'ok', active, queued }
  */
 import Fastify, { type FastifyInstance } from 'fastify';
 import { z } from 'zod';
-import { RENDER_MAX_CHARS, RENDER_MAX_MIN_TEXT_CHARS, RENDER_MAX_WAIT_MS, RenderError, WAIT_UNTIL, type RenderRequest, type RenderResult } from './render.js';
+import { RENDER_MAX_CHARS, RENDER_MAX_MIN_TEXT_CHARS, RENDER_MAX_PAGES, RENDER_MAX_WAIT_MS, RenderError, WAIT_UNTIL, type RenderRequest, type RenderResult } from './render.js';
 
 export interface RenderService {
   render(req: RenderRequest): Promise<RenderResult>;
@@ -21,6 +21,7 @@ export const RenderBody = z.object({
   max_chars: z.number().int().min(500).max(RENDER_MAX_CHARS).optional(),
   min_text_chars: z.number().int().min(0).max(RENDER_MAX_MIN_TEXT_CHARS).optional(),
   wait_until: z.enum(WAIT_UNTIL as [string, ...string[]]).optional(),
+  max_pages: z.number().int().min(1).max(RENDER_MAX_PAGES).optional(),
 });
 
 export function buildServer(service: RenderService, opts: { logger?: boolean | object } = {}): FastifyInstance {
@@ -41,9 +42,10 @@ export function buildServer(service: RenderService, opts: { logger?: boolean | o
         maxChars: parsed.data.max_chars,
         minTextChars: parsed.data.min_text_chars,
         waitUntil: parsed.data.wait_until as RenderRequest['waitUntil'],
+        maxPages: parsed.data.max_pages,
       });
       request.log.info(
-        { host: safeHost(parsed.data.url), ms: Date.now() - started, chars: result.text.length, blocked: result.blocked_requests, hydrated: result.hydrated, hydration_ms: result.hydration_ms },
+        { host: safeHost(parsed.data.url), ms: Date.now() - started, chars: result.text.length, blocked: result.blocked_requests, hydrated: result.hydrated, hydration_ms: result.hydration_ms, pages: result.pages_read },
         'rendered',
       );
       return result;

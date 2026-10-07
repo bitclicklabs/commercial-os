@@ -60,6 +60,13 @@ export interface RenderRequest {
   minTextChars?: number;
   /** Load state awaited after navigation before the hydration wait (default `domcontentloaded`). */
   waitUntil?: WaitUntil;
+  /**
+   * Client-side pagination (catalogs whose "next" control is a button, not a link):
+   * read up to this many pages, clicking the page's "next" control between reads
+   * (1 = no clicks). The text of pages 2+ is appended without the header and footer it
+   * shares with page 1, after a `[Página N del listado]` marker.
+   */
+  maxPages?: number;
 }
 
 export interface RenderResult {
@@ -76,6 +83,123 @@ export interface RenderResult {
   hydration_ms: number;
   /** False when the budget ran out before the text reached min_text_chars / stopped growing. */
   hydrated: boolean;
+  /** Pages read (1 unless `max_pages` > 1 and a "next" control was found and changed the page). */
+  pages_read: number;
+  /** URL of each page read (the same URL repeated for client-side pagination). */
+  page_urls: string[];
+}
+
+export const RENDER_MAX_PAGES = 5;
+/** Time kept to read a page after a click (the read itself needs ~1-2 s). */
+const PAGE_READ_RESERVE_MS = 3_500;
+/** Wait for the list to change after clicking "next". */
+const PAGE_CHANGE_TIMEOUT_MS = 6_000;
+
+/**
+ * Marks (data-pxos-next) the most likely "next page" control of the page, or returns
+ * false. Runs inside the page. Pagination containers, rel=next, "Siguiente"/"Next"
+ * texts or labels and arrow icons (fa-arrow-right, mdi-chevron-right...) score;
+ * "last"/"double" arrows, disabled controls, carousels and links to other origins are
+ * never chosen. Exported for tests.
+ */
+export function markNextControl(): boolean {
+  // No named helper functions in here: the dev build (tsx/esbuild keepNames) wraps them in
+  // __name(), which does not exist inside the page.
+  for (const el of Array.from(document.querySelectorAll('[data-pxos-next]'))) el.removeAttribute('data-pxos-next');
+  const WORD = /^(siguiente|next|next page|página siguiente|pagina siguiente|suivant|weiter|avanti|seguinte|próxima|proxima)$/i;
+  const SYMBOL = /^(›|»|>|>>|→|⟩|❯|▶|►)$/;
+  const ICON = /(^|[-_])(arrow-right|chevron-right|angle-right|caret-right|arrow-forward|arrow-forward-ios|navigate-next|keyboard-arrow-right|right-arrow|next)$/i;
+  const OWN_NEXT = /(^|[-_])(next|siguiente)([-_]|$)/i;
+  const BAD = /(^|[-_\s])(last|double|end|first|prev|previous|back|left|to-right|último|ultimo|primero|primera|anterior)([-_\s]|$)/i;
+  const CAROUSEL = /(swiper|slick|carousel|slider|glide|splide|owl-|flickity|tns-)/i;
+  const PAGER = /(paginat|pager|paging|pagina)/i;
+  let best: HTMLElement | null = null;
+  let bestScore = 0;
+  const candidates = Array.from(document.querySelectorAll('a,button,[role="button"],[role="link"]')).slice(0, 3000);
+  for (const node of candidates) {
+    const el = node as HTMLElement;
+    const rect = el.getBoundingClientRect();
+    if (rect.width === 0 || rect.height === 0) continue;
+    if (el.hasAttribute('disabled') || el.getAttribute('aria-disabled') === 'true' || /\bdisabled\b/i.test((el.getAttribute('class') ?? ''))) continue;
+    if (el.parentElement && /\bdisabled\b/i.test((el.parentElement.getAttribute('class') ?? ''))) continue;
+    let carousel = false;
+    for (let a: Element | null = el; a; a = a.parentElement) if (CAROUSEL.test((a.getAttribute('class') ?? ''))) carousel = true;
+    if (carousel) continue;
+    // A real link (not "#" / javascript:) navigates: only inside a pager or with rel=next, and never off-site.
+    let navigates = false;
+    if (el instanceof HTMLAnchorElement && el.getAttribute('href') && !/^\s*(#|javascript:)/i.test(el.getAttribute('href') ?? '')) {
+      try {
+        if (new URL(el.href).origin !== location.origin) continue;
+      } catch {
+        continue;
+      }
+      navigates = true;
+    }
+    const label = (el.getAttribute('aria-label') ?? el.getAttribute('title') ?? '').trim();
+    const text = (el.innerText ?? '').trim();
+    const ownTokens = (el.getAttribute('class') ?? '').split(/\s+/).filter(Boolean);
+    const iconTokens = Array.from(el.querySelectorAll('i,svg,span,use,img'))
+      .slice(0, 6)
+      .flatMap((n) => (n.getAttribute('class') ?? '').split(/\s+/))
+      .filter(Boolean);
+    if ([label, text, ...ownTokens, ...iconTokens].some((t) => BAD.test(t) && !WORD.test(t))) continue;
+    let score = 0;
+    if ((el.getAttribute('rel') ?? '').toLowerCase().split(/\s+/).includes('next')) score += 3;
+    if (WORD.test(label) || WORD.test(text)) score += 3;
+    else if (SYMBOL.test(label) || (text.length <= 3 && SYMBOL.test(text))) score += 1;
+    if (ownTokens.some((t) => OWN_NEXT.test(t))) score += 2;
+    if (iconTokens.some((t) => ICON.test(t))) score += 1;
+    if (score === 0) continue;
+    let pager = false;
+    for (let a: Element | null = el.parentElement, depth = 0; a && depth < 6; a = a.parentElement, depth++) {
+      if (PAGER.test((a.getAttribute('class') ?? '')) || PAGER.test(a.getAttribute('aria-label') ?? '') || a.getAttribute('role') === 'navigation' || a.tagName === 'NAV') pager = true;
+    }
+    if (pager) score += 2;
+    else if (navigates && !(el.getAttribute('rel') ?? '').toLowerCase().split(/\s+/).includes('next')) continue;
+    if (score > bestScore) {
+      best = el;
+      bestScore = score;
+    }
+  }
+  if (!best || bestScore < 3) return false;
+  best.setAttribute('data-pxos-next', '1');
+  return true;
+}
+
+/** Lines of `next` without the leading and trailing lines it shares with `first` (header, filters, footer). */
+export function stripSharedFrame(first: string, next: string): string {
+  const a = first.split('\n');
+  const b = next.split('\n');
+  let start = 0;
+  while (start < a.length && start < b.length && a[start] === b[start]) start++;
+  let end = 0;
+  while (end < a.length - start && end < b.length - start && a[a.length - 1 - end] === b[b.length - 1 - end]) end++;
+  return b.slice(start, b.length - end).join('\n').trim();
+}
+
+/** Deduplicates links by URL, keeping the first non-empty text (a logo link and a name link often share the URL). */
+export function mergeLinks(links: Array<{ url: string; text: string }>, max: number): Array<{ url: string; text: string }> {
+  const byUrl = new Map<string, { url: string; text: string }>();
+  for (const l of links) {
+    let key: string;
+    try {
+      const u = new URL(l.url);
+      if (u.protocol !== 'http:' && u.protocol !== 'https:') continue;
+      u.hash = '';
+      key = u.toString();
+    } catch {
+      continue;
+    }
+    if (key.length > 2048) continue;
+    const seen = byUrl.get(key);
+    if (seen) {
+      if (!seen.text && l.text) seen.text = l.text;
+      continue;
+    }
+    if (byUrl.size >= max) continue;
+    byUrl.set(key, { url: key, text: l.text });
+  }
+  return [...byUrl.values()];
 }
 
 export class RenderError extends Error {
@@ -271,6 +395,7 @@ export class Renderer {
     const waitMs = Math.min(Math.max(req.waitMs ?? RENDER_DEFAULT_WAIT_MS, 0), RENDER_MAX_WAIT_MS);
     const minTextChars = Math.min(Math.max(req.minTextChars ?? RENDER_DEFAULT_MIN_TEXT_CHARS, 0), RENDER_MAX_MIN_TEXT_CHARS);
     const waitUntil: WaitUntil = req.waitUntil && WAIT_UNTIL.includes(req.waitUntil) ? req.waitUntil : 'domcontentloaded';
+    const maxPages = Math.min(Math.max(Math.floor(req.maxPages ?? 1), 1), RENDER_MAX_PAGES);
     // Launching Chromium (cold start: seconds in a container) is not part of the JS budget.
     const browser = await this.getBrowser();
     const started = Date.now();
@@ -404,23 +529,58 @@ export class Renderer {
         links.push(...sub.links);
       }
       links.push(...main.frames.map((url) => ({ url, text: '(iframe)' })));
-      const seen = new Set<string>();
-      const cleanLinks: Array<{ url: string; text: string }> = [];
-      for (const l of links) {
-        if (cleanLinks.length >= MAX_LINKS) break;
+      final.hash = '';
+      const pageUrls = [final.toString()];
+
+      // Client-side pagination: click the "next" control, wait for the list to change, read again.
+      const firstText = collapse(main.text);
+      const seenTexts = new Set([firstText]);
+      for (let n = 2; n <= maxPages && text.length < maxChars && remaining() > PAGE_READ_RESERVE_MS; n++) {
+        const marked = await page.evaluate(markNextControl).catch(() => false);
+        if (!marked) break;
+        const before = await page.evaluate(() => document.body?.innerText ?? '').catch(() => '');
+        // DOM click, not a pointer click: a fixed cookie banner over the pager must not block it.
+        const clicked = await page
+          .evaluate(() => {
+            const el = document.querySelector('[data-pxos-next="1"]') as HTMLElement | null;
+            el?.click();
+            return el !== null;
+          })
+          .catch(() => false);
+        if (!clicked) break;
+        // Changed and stable (two equal samples), within the budget.
+        const until = Date.now() + Math.min(PAGE_CHANGE_TIMEOUT_MS, Math.max(0, remaining() - PAGE_READ_RESERVE_MS));
+        let changed = false;
+        let previous: string | null = null;
+        while (Date.now() < until) {
+          await page.waitForTimeout(350);
+          const now = await page.evaluate(() => document.body?.innerText ?? '').catch(() => null);
+          if (now === null) continue; // navigating
+          if (now !== before && now === previous) {
+            changed = true;
+            break;
+          }
+          previous = now;
+        }
+        if (!changed) break;
+        const next = await withTimeout(page.evaluate(readPage, maxChars), Math.max(2_000, remaining() + 2_000), 'reading a page').catch(() => null);
+        if (!next) break;
+        const full = collapse(next.text);
+        if (seenTexts.has(full)) break;
+        seenTexts.add(full);
+        const body = stripSharedFrame(firstText, full);
+        if (!body) break;
+        text += `\n\n[Página ${n} del listado]\n${body}`;
+        links.push(...next.links);
         try {
-          const u = new URL(l.url);
-          if (u.protocol !== 'http:' && u.protocol !== 'https:') continue;
+          const u = new URL(page.url());
           u.hash = '';
-          const key = u.toString();
-          if (seen.has(key) || key.length > 2048) continue;
-          seen.add(key);
-          cleanLinks.push({ url: key, text: l.text });
+          pageUrls.push(u.protocol === 'http:' || u.protocol === 'https:' ? u.toString() : final.toString());
         } catch {
-          continue;
+          pageUrls.push(final.toString());
         }
       }
-      final.hash = '';
+      const cleanLinks = mergeLinks(links, MAX_LINKS);
       const truncated = text.length > maxChars;
       return {
         text: truncated ? text.slice(0, maxChars) : text,
@@ -433,6 +593,8 @@ export class Renderer {
         blocked_requests: blocked,
         hydration_ms: hydrationMs,
         hydrated,
+        pages_read: pageUrls.length,
+        page_urls: pageUrls,
       };
     } catch (err) {
       if (err instanceof RenderError) throw err;

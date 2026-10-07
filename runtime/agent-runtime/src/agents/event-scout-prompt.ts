@@ -7,8 +7,11 @@
 import { UNTRUSTED_SYSTEM_RULE, wrapUntrusted } from './untrusted.js';
 
 export const SCOUT_SKILL_ID = 'event-source-discovery';
-/** v2: also PDFs (text extracted) and pages rendered with a browser. */
-export const SCOUT_SKILL_VERSION = 2;
+/**
+ * v2: also PDFs (text extracted) and pages rendered with a browser.
+ * v3: paginated exhibitor lists and exhibitor profiles (website of the relevant ones).
+ */
+export const SCOUT_SKILL_VERSION = 3;
 
 export const SCOUT_SEARCH_SYSTEM_PROMPT = `Eres el explorador de eventos del Prospector de PubliEXPE (merchandising y regalo promocional B2B, España).
 Tu trabajo es localizar ferias profesionales REALES y próximas usando la búsqueda de Google, para que después el sistema descargue su lista de expositores.
@@ -95,6 +98,10 @@ const CONTENT_KIND_LABEL: Record<string, string> = {
   rendered: 'página renderizada con navegador (aplicación JavaScript)',
 };
 
+/** Marker the renderer puts before pages 2+ of a client-side paginated list. */
+const MULTI_PAGE_MARK = /\[Página \d+ del listado\]/;
+const MULTI_PAGE_NOTE = 'El texto contiene varias páginas del mismo listado, separadas por marcas "[Página N del listado]": extrae los expositores de todas.\n';
+
 export function buildExtractPrompt(p: ExtractPromptInput): string {
   const links = p.links.map((l) => `- ${l.text || '(sin texto)'} -> ${l.url}`).join('\n');
   return `Feria buscada: ${JSON.stringify(p.eventName)}
@@ -104,7 +111,7 @@ ${wrapUntrusted(`TÍTULO: ${p.pageTitle ?? '(sin título)'}\n\nTEXTO:\n${p.text}
 
 ${wrapUntrusted(`ENLACES DE LA PÁGINA:\n${links || '(ninguno)'}`, { origin: `${p.pageUrl} (enlaces)` })}
 
-Extrae como máximo ${p.maxExhibitors} expositores (los primeros que aparezcan). Devuelve SOLO este JSON:
+${MULTI_PAGE_MARK.test(p.text) ? MULTI_PAGE_NOTE : ''}Extrae como máximo ${p.maxExhibitors} expositores (los primeros que aparezcan). Devuelve SOLO este JSON:
 {
   "page_kind": "exhibitor_list" | "event_home" | "other",
   "event": { "name": string o null, "start_date": "YYYY-MM-DD" o null, "end_date": "YYYY-MM-DD" o null, "city": string o null },

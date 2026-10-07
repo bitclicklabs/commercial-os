@@ -12,8 +12,18 @@
  *     downloaded with `fetch_url` (text extracted from the PDF) and read too;
  *  c) the LLM extracts `{name, domain?, description?}` from the DOWNLOADED TEXT only
  *     (static HTML, rendered page or PDF);
- *  d) each exhibitor goes through the existing pipeline (classification -> hypothesis
- *     -> Twenty tools).
+ *  d) a paginated list is read up to `max_catalog_pages`: client-side pagination in the
+ *     same render_url call (`maxPages`, the renderer clicks "next"), or the list's
+ *     "next" / `?page=N` links;
+ *  e) every exhibitor is evaluated by the LLM FIRST (no write); then, only for the
+ *     RELEVANT ones without a domain, best confidence first and up to
+ *     `max_profile_lookups` per run, the exhibitor profile linked from the list
+ *     (`/exhibitors/{id}`) is opened (fetch_url, or render_url if it is a JS app) and
+ *     its website taken ("Web/Website" label, only external link or only www. domain),
+ *     refusing the fair's own sites and social networks (kept as metadata); the domain
+ *     must resolve to public addresses (fetch_url of its home page, same guards);
+ *  f) the existing pipeline writes company -> signal -> hypothesis (no domain after the
+ *     lookup: `skipped_no_domain`, as before).
  * Without an exhibitor list the fair is recorded as an event-level FAIR signal and
  * the run ends PARTIAL with the reason. Without a renderer (`RENDERER_NOT_CONFIGURED`,
  * render_url not in the tool policy) the flow is the same minus step b's rendering.
@@ -32,8 +42,17 @@ import { normalizeDomain } from '../integrations/twenty/index.js';
 import type { FetchUrlOutput } from '../tools/web/fetch-url.js';
 import type { RenderUrlOutput } from '../tools/web/render-url.js';
 import {
+  extractProfileWebsite,
+  findProfileLink,
+  paginationLinks,
+  profileMatchesExhibitor,
+  registrableDomain,
+} from './exhibitor-profile.js';
+import {
+  decideExhibitor,
   ERROR_STATUSES,
-  evaluateExhibitor,
+  writeExhibitor,
+  type DecidedExhibitor,
   exhibitorCounters,
   formatEur,
   issues,
@@ -71,7 +90,9 @@ export const ScoutInput = z
     event_name: z.string().trim().min(1).max(255).optional(),
     /** Lower caps for one run (never above the agent configuration). */
     max_events: z.number().int().min(1).max(3).optional(),
-    max_exhibitors: z.number().int().min(1).max(50).optional(),
+    max_exhibitors: z.number().int().min(1).max(100).optional(),
+    max_catalog_pages: z.number().int().min(1).max(5).optional(),
+    max_profile_lookups: z.number().int().min(0).max(30).optional(),
   })
   .refine((v) => v.sector !== undefined || v.event_url !== undefined, { message: 'sector or event_url is required' });
 export type ScoutInput = z.infer<typeof ScoutInput>;
@@ -243,6 +264,18 @@ export function pickPageLink(candidate: string | null, page: Pick<FetchUrlOutput
   return page.links.find((l) => normalizeUrl(l.url) === want)?.url ?? null;
 }
 
+/** URL path of an exhibitor list / catalog (the renderer is then asked to paginate). */
+const LIST_URL_KEYWORDS = /expositor|exhibitor|exposant|aussteller|espositori|catalog|directorio|directory|participantes|participants|empresas|companies|marcas|brands|listado|list/i;
+
+export function looksLikeExhibitorList(url: string): boolean {
+  try {
+    const u = new URL(url);
+    return LIST_URL_KEYWORDS.test(decodeURIComponentSafe(`${u.pathname} ${u.search}`));
+  } catch {
+    return false;
+  }
+}
+
 /** Catalog / list keywords for PDF links (folded: no accents, lowercase). */
 const CATALOG_PDF_KEYWORDS =
   /expositor|exhibitor|exposant|aussteller|espositori|catalog|listado|lista|list of|participantes|participants|empresas|companies|marcas|brands|directorio|directory|plano|floor ?plan|\bstands?\b/;
@@ -303,6 +336,8 @@ type ContentKind = 'html' | 'text' | 'pdf' | 'rendered';
 export type ScoutPage = Pick<FetchUrlOutput, 'url' | 'finalUrl' | 'title' | 'text' | 'truncated' | 'links' | 'redirects'> & {
   content_kind: ContentKind;
   js_app_likely: boolean;
+  /** render_url with `maxPages`: list pages read in that call (null/undefined: one). */
+  pages_read?: number | null;
 };
 
 type PageAttempt = {
@@ -319,10 +354,19 @@ type PageAttempt = {
   exhibitors_extracted?: number;
   /** New exhibitors (verified, not seen in an earlier page of the event). */
   exhibitors_verified?: number;
+  /** List pages this attempt covers (client-side pagination inside one render). */
+  list_pages?: number;
+  /** A next page of an exhibitor list (link-based pagination). */
+  pagination?: boolean;
 };
 
 /** render_url answers that switch rendering off for the rest of the run. */
 const RENDER_OFF_CODES = new Set(['RENDERER_NOT_CONFIGURED', 'TOOL_NOT_ALLOWED', 'TOOL_NOT_FOUND', 'TOOL_DISABLED', 'TOOL_CALL_LIMIT']);
+/**
+ * fetch_url errors of a company home page that still prove a real, public domain: they
+ * happen AFTER the DNS + public-IP check (HTTP 4xx/5xx, TLS / connection errors, timeouts).
+ */
+const DOMAIN_ALIVE_CODES = new Set(['HTTP_ERROR', 'NETWORK_ERROR', 'FETCH_TIMEOUT', 'TOO_MANY_REDIRECTS', 'UNSUPPORTED_CONTENT_TYPE', 'INVALID_REDIRECT', 'PDF_INVALID', 'PDF_ENCRYPTED', 'PDF_TOO_LARGE']);
 /** Below this many characters a JS-app shell (or an empty render) is not worth an LLM extraction call. */
 const EMPTY_SHELL_CHARS = 200;
 /** First render: wait until the app shows some text and it stops growing (renderer hydration wait). */
@@ -345,6 +389,8 @@ export interface ScoutEventResult {
   exhibitors_extracted: number;
   exhibitors_dropped: Array<{ name: string; reason: string }>;
   domains_removed: number;
+  /** Pages of the exhibitor list from which exhibitors were read (pagination included). */
+  catalog_pages: number;
   signal_id?: string;
   error?: { code: string; message: string };
   results: ExhibitorResult[];
@@ -409,6 +455,16 @@ export async function runScout(run: ProspectorRun, rawInput: Record<string, unkn
   let pdfsRead = 0;
   let renderOff: string | null = cfg.maxRenders === 0 ? 'RENDER_DISABLED_BY_CONFIG' : null;
   const renderCache = new Map<string, ScoutPage>();
+  const maxCatalogPages = Math.max(1, Math.min(input.max_catalog_pages ?? cfg.maxCatalogPages, cfg.maxCatalogPages));
+  const maxProfileLookups = Math.max(0, Math.min(input.max_profile_lookups ?? cfg.maxProfileLookups, cfg.maxProfileLookups));
+  /** render_url calls for exhibitor lists / event pages (budget `max_renders`); profile renders are counted apart. */
+  let catalogRenders = 0;
+  let profileLookups = 0;
+  let profileRenders = 0;
+  let domainChecks = 0;
+  let domainsResolved = 0;
+  /** Hosts whose static HTML was a JavaScript shell: their profiles are rendered directly. */
+  const jsAppHosts = new Set<string>();
 
   type PageRead = { ok: true; page: ScoutPage } | { ok: false; code: string; message: string };
 
@@ -418,6 +474,11 @@ export async function runScout(run: ProspectorRun, rawInput: Record<string, unkn
     if (cached) return { ok: true, page: cached };
     if (fetches >= cfg.maxFetches) return { ok: false, code: 'FETCH_BUDGET_EXHAUSTED', message: `max_fetches (${cfg.maxFetches}) reached` };
     fetches += 1;
+    return fetchUncounted(url);
+  };
+
+  /** fetch_url without the `max_fetches` budget (profile lookups have their own). */
+  const fetchUncounted = async (url: string): Promise<PageRead> => {
     const out = await run.callTool('fetch_url', { url });
     if (out.result.status !== 'ok') return { ok: false, ...toolError(out) };
     const page = out.result.output as FetchUrlOutput;
@@ -425,6 +486,10 @@ export async function runScout(run: ProspectorRun, rawInput: Record<string, unkn
     for (const u of [url, page.finalUrl]) {
       const k = normalizeUrl(u);
       if (k) pageCache.set(k, page);
+    }
+    if (page.js_app_likely && page.text.trim().length < EMPTY_SHELL_CHARS) {
+      const h = hostOf(page.finalUrl);
+      if (h) jsAppHosts.add(h);
     }
     return { ok: true, page };
   };
@@ -447,27 +512,111 @@ export async function runScout(run: ProspectorRun, rawInput: Record<string, unkn
    * unavailable. A render that comes back (almost) empty, i.e. the app had not hydrated
    * yet, is retried ONCE with a longer, network-idle wait if the budget allows it.
    */
-  const renderPage = async (url: string): Promise<PageRead> => {
+  const renderPage = async (url: string, opts: { profile?: boolean; paginate?: boolean } = {}): Promise<PageRead> => {
     const key = normalizeUrl(url);
     const cached = key ? renderCache.get(key) : undefined;
     if (cached) return { ok: true, page: cached };
     if (renderOff) return { ok: false, code: 'RENDER_DISABLED', message: renderOff };
-    if (renders >= cfg.maxRenders) return { ok: false, code: 'RENDER_BUDGET_EXHAUSTED', message: `max_renders (${cfg.maxRenders}) reached` };
-    const first = await callRender(url, RENDER_FIRST);
+    // Profiles: one render each, under max_profile_lookups (checked by the caller), no retry.
+    const budgetLeft = () => opts.profile || catalogRenders < cfg.maxRenders;
+    if (!budgetLeft()) return { ok: false, code: 'RENDER_BUDGET_EXHAUSTED', message: `max_renders (${cfg.maxRenders}) reached` };
+    // Exhibitor lists: ask the renderer to click through client-side pagination.
+    const paginate = !opts.profile && maxCatalogPages > 1 && (opts.paginate ?? looksLikeExhibitorList(url));
+    const firstOpts = paginate ? { ...RENDER_FIRST, maxPages: maxCatalogPages } : RENDER_FIRST;
+    if (opts.profile) profileRenders += 1;
+    else catalogRenders += 1;
+    const first = await callRender(url, firstOpts);
     if (!first.ok) return first;
     let r = first.out;
-    if (r.text.trim().length < EMPTY_SHELL_CHARS && renders < cfg.maxRenders && !renderOff) {
+    if (!opts.profile && r.text.trim().length < EMPTY_SHELL_CHARS && budgetLeft() && !renderOff) {
       renderRetries += 1;
-      const second = await callRender(url, RENDER_RETRY);
+      catalogRenders += 1;
+      const second = await callRender(url, paginate ? { ...RENDER_RETRY, maxPages: maxCatalogPages } : RENDER_RETRY);
       if (second.ok && second.out.text.trim().length > r.text.trim().length) r = second.out;
     }
-    const page: ScoutPage = { url: r.url, finalUrl: r.finalUrl, title: r.title, text: r.text, truncated: r.truncated, links: r.links, redirects: r.redirects, content_kind: 'rendered', js_app_likely: false };
-    ledger.addVisited(url, r.finalUrl);
+    const page: ScoutPage = {
+      url: r.url,
+      finalUrl: r.finalUrl,
+      title: r.title,
+      text: r.text,
+      truncated: r.truncated,
+      links: r.links,
+      redirects: r.redirects,
+      content_kind: 'rendered',
+      js_app_likely: false,
+      pages_read: r.pagesRead ?? null,
+    };
+    ledger.addVisited(url, r.finalUrl, ...(r.pageUrls ?? []));
     for (const u of [url, r.finalUrl]) {
       const k = normalizeUrl(u);
       if (k) renderCache.set(k, page);
     }
     return { ok: true, page };
+  };
+
+  // ------------------------------------------------- exhibitor profiles (websites)
+
+  /** The fair's own sites: event website, exhibitor list and every page read for the event (never a company domain). */
+  const fairDomainsOf = (ev: ScoutEventResult): string[] => {
+    const hosts = [ev.website_url, ev.exhibitors_url, ...ev.pages.filter((p) => p.via !== 'pdf').flatMap((p) => [p.url, p.final_url ?? null])]
+      .map((u) => (u ? hostOf(u) : null))
+      .filter((h): h is string => h !== null);
+    return [...new Set(hosts.map(registrableDomain))];
+  };
+
+  /**
+   * The domain must resolve to public addresses: fetch_url of its home page, with the
+   * same SSRF guards as any fetch. A DNS failure or a non-public address refuses it; an
+   * HTTP error, TLS / connection error or timeout after the DNS check still proves a
+   * real, public domain (company sites behind a WAF often answer 403).
+   */
+  const checkDomain = async (domain: string): Promise<{ ok: true } | { ok: false; code: string }> => {
+    domainChecks += 1;
+    const out = await run.callTool('fetch_url', { url: `https://${domain}/`, maxChars: 2_000 });
+    if (out.result.status === 'ok') {
+      const page = out.result.output as FetchUrlOutput;
+      ledger.addVisited(`https://${domain}/`, page.finalUrl, ...page.redirects);
+      return { ok: true };
+    }
+    const e = toolError(out);
+    return DOMAIN_ALIVE_CODES.has(e.code) ? { ok: true } : { ok: false, code: e.code };
+  };
+
+  type ProfileInfo = NonNullable<ExhibitorResult['profile']>;
+
+  /** Opens the exhibitor's profile linked from the list page and returns its verified website, if any. */
+  const lookupProfile = async (exhibitor: ExhibitorInput, listPage: ScoutPage, fairDomains: string[]): Promise<{ info: ProfileInfo; domain: string | null; profileUrl: string | null }> => {
+    const none = (info: ProfileInfo) => ({ info, domain: null, profileUrl: null });
+    const url = findProfileLink(exhibitor.name, listPage);
+    if (!url) return none({ url: null, status: 'no_profile_link' });
+    if (profileLookups >= maxProfileLookups) return none({ url, status: 'budget_exhausted' });
+    profileLookups += 1;
+    let profile: ScoutPage | null = null;
+    let via: 'fetch' | 'render' = 'fetch';
+    let lastCode: string | null = null;
+    const host = hostOf(url);
+    // A static profile is read with fetch_url; a JavaScript app (shell, or a host already known as one) is rendered.
+    if (!host || !jsAppHosts.has(host)) {
+      const key = normalizeUrl(url);
+      const cached = key ? pageCache.get(key) : undefined;
+      const f: PageRead = cached ? { ok: true, page: cached } : await fetchUncounted(url);
+      if (f.ok && !(f.page.js_app_likely && f.page.text.trim().length < EMPTY_SHELL_CHARS)) profile = f.page;
+      else if (!f.ok) lastCode = f.code;
+    }
+    if (!profile) {
+      via = 'render';
+      const r = await renderPage(url, { profile: true });
+      if (!r.ok) return none({ url, status: 'profile_unreadable', via, error: lastCode ? `${r.code} (fetch: ${lastCode})` : r.code });
+      profile = r.page;
+    }
+    if (!profileMatchesExhibitor(exhibitor.name, profile.text)) return none({ url, status: 'profile_mismatch', via });
+    const w = extractProfileWebsite(profile, fairDomains);
+    const social = Object.keys(w.social).length > 0 ? { social: w.social } : {};
+    if (!w.domain) return none({ url, status: w.candidates.length > 1 ? 'website_ambiguous' : 'no_website', via, ...social });
+    const check = await checkDomain(w.domain);
+    if (!check.ok) return none({ url, status: 'domain_rejected', via, domain: w.domain, error: check.code, ...social });
+    domainsResolved += 1;
+    return { info: { url: profile.finalUrl, status: 'domain_resolved', via, domain: w.domain, domain_source: w.source ?? 'unknown', ...social }, domain: w.domain, profileUrl: profile.finalUrl };
   };
 
   // ------------------------------------------------------------- a) candidates
@@ -575,6 +724,7 @@ export async function runScout(run: ProspectorRun, rawInput: Record<string, unkn
       exhibitors_extracted: 0,
       exhibitors_dropped: [],
       domains_removed: 0,
+      catalog_pages: 0,
       results: [],
     };
     events.push(ev);
@@ -616,7 +766,8 @@ export async function runScout(run: ProspectorRun, rawInput: Record<string, unkn
         ],
         parse: (text) => parseWith(ExtractAnswer, text),
         schema: EXTRACT_JSON_SCHEMA,
-        maxTokens: 8192,
+        // Up to ~60 exhibitors of a paginated list in one answer.
+        maxTokens: 12_288,
       });
       if (extract.status !== 'ok') {
         attempt.code = extract.status === 'model_error' ? extract.code : 'LLM_INVALID_OUTPUT';
@@ -648,8 +799,46 @@ export async function runScout(run: ProspectorRun, rawInput: Record<string, unkn
       if (fresh.length > 0) {
         batches.push({ page, exhibitors: fresh });
         collected += fresh.length;
+        if (page.content_kind !== 'pdf') {
+          const listPages = page.pages_read ?? 1;
+          ev.catalog_pages += listPages;
+          if (listPages > 1) attempt.list_pages = listPages;
+          listPage ??= { page, via: attempt.via === 'render' ? 'render' : 'fetch' };
+        }
       }
       return { added: fresh.length, next: pickPageLink(x.exhibitors_page_url, page), kind: x.page_kind };
+    };
+
+    /** First list page that gave exhibitors (start of the link-based pagination). */
+    let listPage: { page: ScoutPage; via: 'fetch' | 'render' } | null = null;
+
+    /**
+     * Link-based pagination ("next" / ?page=N / /page/N links) of the list, up to
+     * max_catalog_pages, each page read the same way as the first (fetch or render).
+     * Not used when the renderer already clicked through a client-side pagination.
+     */
+    const paginateList = async (): Promise<void> => {
+      if (!listPage || (listPage.page.pages_read ?? 1) > 1) return;
+      const via = listPage.via;
+      let current = listPage.page;
+      let pages = 1;
+      const read = new Set([normalizeUrl(current.finalUrl)]);
+      while (pages < maxCatalogPages && collected < maxExhibitors) {
+        const nextUrl = paginationLinks(current.links, current.finalUrl, (u) => read.has(normalizeUrl(u)) || ledger.isVisited(u))[0];
+        if (!nextUrl) break;
+        read.add(normalizeUrl(nextUrl));
+        const pr = via === 'render' ? await renderPage(nextUrl, { paginate: false }) : await fetchPage(nextUrl);
+        if (!pr.ok) {
+          ev.pages.push({ url: nextUrl, via, status: 'error', code: pr.code, pagination: true });
+          break;
+        }
+        const att = okAttempt(nextUrl, via, pr.page);
+        att.pagination = true;
+        const got = await extractFrom(pr.page, att);
+        if (got.added === 0) break;
+        pages += 1;
+        current = pr.page;
+      }
     };
 
     const okAttempt = (url: string, via: PageAttempt['via'], page: ScoutPage): PageAttempt => {
@@ -719,6 +908,9 @@ export async function runScout(run: ProspectorRun, rawInput: Record<string, unkn
         }
       }
 
+      // (b2) Next pages of the list (link-based pagination; client-side pagination was done by the renderer).
+      await paginateList();
+
       // (c) Catalog / exhibitor-list PDFs linked from the page (static or rendered).
       if (collected < maxExhibitors && pdfsThisEvent < cfg.maxPdfsPerEvent) {
         const pdfLinks = catalogPdfLinks(
@@ -758,6 +950,8 @@ export async function runScout(run: ProspectorRun, rawInput: Record<string, unkn
     if (batches.length > 0) {
       ev.status = 'exhibitors_processed';
       ev.source_url = batches[0]!.page.finalUrl;
+      // 1. LLM evaluation of EVERY exhibitor first (no CRM write yet).
+      const items: Array<{ event: ProspectorEvent; page: ScoutPage; exhibitor: ExhibitorInput; decided: DecidedExhibitor; evidence: Array<{ claim: string; sourceUrl?: string }> }> = [];
       for (const batch of batches) {
         // Each exhibitor cites the page (HTML, rendered page or PDF) it was read from.
         const event: ProspectorEvent = {
@@ -769,8 +963,29 @@ export async function runScout(run: ProspectorRun, rawInput: Record<string, unkn
         };
         for (const exhibitor of batch.exhibitors) {
           run.ctx.signal.throwIfAborted();
-          ev.results.push(await evaluateExhibitor(run, event, exhibitor, { today, system, ledger }));
+          items.push({ event, page: batch.page, exhibitor, decided: await decideExhibitor(run, event, exhibitor, { today, system }), evidence: [] });
         }
+      }
+      // 2. Profiles ONLY of the relevant exhibitors without a domain, best confidence first, up to the run budget.
+      const fairDomains = fairDomainsOf(ev);
+      const needDomain = items
+        .filter((it) => it.decided.writable && !normalizeDomain(it.exhibitor.domain))
+        .sort((a, b) => (b.decided.result.confidence ?? 0) - (a.decided.result.confidence ?? 0));
+      for (const it of needDomain) {
+        run.ctx.signal.throwIfAborted();
+        const found = await lookupProfile(it.exhibitor, it.page, fairDomains);
+        it.decided.result.profile = found.info;
+        if (found.domain) {
+          it.exhibitor = { ...it.exhibitor, domain: found.domain };
+          it.evidence.push({ claim: `Web ${found.domain} tomada de la ficha del expositor en el catálogo de la feria.`, ...(found.profileUrl ? { sourceUrl: found.profileUrl } : {}) });
+        }
+      }
+      // 3. CRM writes (same pipeline as before; still no domain: skipped_no_domain).
+      for (const it of items) {
+        run.ctx.signal.throwIfAborted();
+        ev.results.push(
+          it.decided.writable ? await writeExhibitor(run, it.event, it.exhibitor, it.decided, { today, system, ledger, extraEvidence: it.evidence }) : it.decided.result,
+        );
       }
       continue;
     }
@@ -842,6 +1057,11 @@ export async function runScout(run: ProspectorRun, rawInput: Record<string, unkn
     renders_ok: rendersOk,
     render_retries: renderRetries,
     pdfs_read: pdfsRead,
+    catalog_pages: events.reduce((n, e) => n + e.catalog_pages, 0),
+    profile_lookups: profileLookups,
+    profile_renders: profileRenders,
+    domain_checks: domainChecks,
+    domains_resolved: domainsResolved,
     llm_calls: run.llmCalls,
     grounding_calls: run.groundingCalls,
     grounding_queries: searchInfo?.queries.length ?? 0,
@@ -874,6 +1094,7 @@ export async function runScout(run: ProspectorRun, rawInput: Record<string, unkn
       }.`,
       ...e.results.map(resultLine),
     ]),
+    `Páginas de catálogo leídas: ${counters.catalog_pages}; fichas de expositor abiertas: ${profileLookups} (de ${maxProfileLookups} posibles), dominios obtenidos de la ficha: ${domainsResolved}.`,
     `Totales: relevantes ${counters.relevant}, hipótesis nuevas ${counters.hypotheses_created}, ya existentes ${counters.hypotheses_existing}, descartados ${counters.discarded_irrelevant + counters.discarded_low_confidence}, sin dominio verificado ${counters.skipped_no_domain}, errores ${errors}.`,
     `Coste del modelo: ${formatEur(run.costEur())} (${run.llmCalls} llamadas, ${run.groundingCalls} con búsqueda: ${formatEur(groundingEur)} de búsqueda; ${run.usage.inputTokens} tokens de entrada y ${run.usage.outputTokens} de salida).`,
     ...(partialReasons.length > 0 ? [`Motivos: ${partialReasons.join(' | ')}`] : []),
@@ -893,7 +1114,8 @@ export async function runScout(run: ProspectorRun, rawInput: Record<string, unkn
       results,
       partial_reasons: partialReasons,
       sources: ledger.snapshot(),
-      render: { calls: renders, ok: rendersOk, retries: renderRetries, max: cfg.maxRenders, disabled: renderOff },
+      render: { calls: renders, ok: rendersOk, retries: renderRetries, max: cfg.maxRenders, catalog_calls: catalogRenders, profile_calls: profileRenders, disabled: renderOff },
+      profiles: { lookups: profileLookups, max: maxProfileLookups, domains_resolved: domainsResolved, domain_checks: domainChecks, max_catalog_pages: maxCatalogPages },
       errors_by_status: ERROR_STATUSES.reduce<Record<string, number>>((acc, s) => ({ ...acc, [s]: results.filter((r) => r.status === s).length }), {}),
     },
   };

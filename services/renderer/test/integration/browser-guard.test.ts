@@ -82,6 +82,30 @@ describe.skipIf(skip)('renderer with a real browser: egress guard', () => {
         <script>setTimeout(() => { const ul = document.createElement('ul'); for (let i = 0; i < 20; i++) { const li = document.createElement('li'); li.textContent = 'EXPOSITOR TARDIO ' + i + ' S.L. - España'; ul.appendChild(li); } document.getElementById('app').appendChild(ul); }, 4000);</script>`)
       // Framework that hides the whole app from screen readers while a cookie dialog is open.
       .page('http://public.example:8080/modal', `<title>Modal</title><div id="app" aria-hidden="true"><h1>Lista</h1><ul>${Array.from({ length: 20 }, (_, i) => `<li>EMPRESA VISIBLE ${i}</li>`).join('')}</ul><span aria-hidden="true">INYECCION_PEQUENA</span></div><div role="dialog">Esta web utiliza cookies. De acuerdo</div>`)
+      // Client-side paginated catalog (like Gastrónoma's Vue app): 45 exhibitors, 20 per page,
+      // "next" is a <button> with an arrow icon; a carousel "next" arrow must never be clicked.
+      .page('http://public.example:8080/paged', `<title>Catálogo paginado</title><div id="app"><h1>Catálogo de expositores</h1><p>Filtros</p>
+        <div class="swiper"><button class="swiper-button-next" onclick="document.title='CARRUSEL'"><i class="fa fa-chevron-right"></i></button></div>
+        <table><tbody id="rows"></tbody></table>
+        <div class="catalog__pagination"><span id="info"></span>
+          <button class="catalog__pagination-button" onclick="go(1)"><i class="far fa-arrow-to-left"></i></button>
+          <button class="catalog__pagination-button" onclick="go(cur-1)"><i class="far fa-arrow-left"></i></button>
+          <button class="catalog__pagination-button" onclick="go(cur+1)"><i class="far fa-arrow-right"></i></button>
+          <button class="catalog__pagination-button" onclick="go(3)"><i class="far fa-arrow-to-right"></i></button>
+        </div><footer>Todos los derechos reservados</footer></div>
+        <script>
+          const all = Array.from({ length: 45 }, (_, i) => 'EXPOSITOR PAGINADO ' + (i + 1));
+          let cur = 1;
+          function go(n) { if (n < 1 || n > 3) return; cur = n; setTimeout(paint, 150); }
+          function paint() {
+            document.getElementById('rows').innerHTML = all.slice((cur - 1) * 20, cur * 20).map((name, i) => {
+              const id = (cur - 1) * 20 + i + 1;
+              return '<tr><td><a href="/paged/ficha/' + id + '"><img alt=""></a></td><td><a href="/paged/ficha/' + id + '">' + name + '</a></td><td>España</td></tr>';
+            }).join('');
+            document.getElementById('info').textContent = ((cur - 1) * 20 + 1) + ' - ' + Math.min(cur * 20, 45) + ' de 45';
+          }
+          setTimeout(paint, 300);
+        </script>`)
       .page('http://public.example:8080/loop', '<title>Bucle</title><script>while (true) {}</script>')
       .page('http://public.example:8080/doc.pdf', { headers: { 'content-type': 'application/pdf', 'content-disposition': 'attachment; filename="doc.pdf"' }, body: '%PDF-1.4' });
     renderer = new Renderer({ egress: web.deps(), jsTimeoutMs: 8_000 });
@@ -125,6 +149,25 @@ describe.skipIf(skip)('renderer with a real browser: egress guard', () => {
     const r = await renderer.render({ url: 'http://public.example:8080/modal', waitMs: 0 });
     expect(r.text).toContain('EMPRESA VISIBLE 19');
     expect(r.text).not.toContain('INYECCION_PEQUENA');
+  }, 40_000);
+
+  it('max_pages: clicks the pager "next" button (never a carousel arrow) and appends pages 2+ without the shared header/footer', async () => {
+    const r = await renderer.render({ url: 'http://public.example:8080/paged', waitMs: 0, minTextChars: 100, maxPages: 5 });
+    expect(r.pages_read).toBe(3);
+    expect(r.page_urls).toEqual(Array(3).fill('http://public.example:8080/paged'));
+    for (const n of [1, 20, 21, 40, 41, 45]) expect(r.text).toContain(`EXPOSITOR PAGINADO ${n}\n`.trim());
+    expect(r.text).toContain('[Página 2 del listado]');
+    expect(r.text).toContain('[Página 3 del listado]');
+    expect(r.text.match(/Catálogo de expositores/g)).toHaveLength(1);
+    expect(r.text.match(/Todos los derechos reservados/g)).toHaveLength(1);
+    expect(r.title).toBe('Catálogo paginado');
+    // Logo link and name link share the URL: the name text is kept.
+    expect(r.links).toContainEqual({ url: 'http://public.example:8080/paged/ficha/1', text: 'EXPOSITOR PAGINADO 1' });
+    expect(r.links).toContainEqual({ url: 'http://public.example:8080/paged/ficha/45', text: 'EXPOSITOR PAGINADO 45' });
+    // Default: one page, no clicks.
+    const one = await renderer.render({ url: 'http://public.example:8080/paged', waitMs: 0, minTextChars: 100 });
+    expect(one.pages_read).toBe(1);
+    expect(one.text).not.toContain('EXPOSITOR PAGINADO 21');
   }, 40_000);
 
   it('a redirect to an internal address blocks the navigation', async () => {

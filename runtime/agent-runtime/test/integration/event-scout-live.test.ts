@@ -12,6 +12,13 @@
  * ("event-scouting-live-test") in tenant `publiexpe`, created once and reused. Writes
  * to Twenty are idempotent (company by domain, signal by company+type+date+source,
  * hypothesis by name); every run adds an agentRunSummary. Nothing is ever deleted.
+ *
+ * The live agent is brought to the current seed configuration (a new version is added
+ * when it changed, as the seed does), so a run uses the current limits and tool policy.
+ *
+ * Exhibitor domains (pagination + profiles): SCOUT_LIVE_DOMAINS=1 with
+ * SCOUT_LIVE_EVENT_URL=https://www.gastronoma.es (and RENDERER_URL pointing to a renderer
+ * with `max_pages`): `-t "exhibitor domains"`. Up to 60 exhibitors: ~0.2 EUR.
  */
 import type { FastifyInstance } from 'fastify';
 import { and, eq } from 'drizzle-orm';
@@ -21,12 +28,12 @@ import { normalizeUrl } from '../../src/agents/source-ledger.js';
 import { buildServer } from '../../src/api/server.js';
 import { createDb, type DbHandle } from '../../src/db/client.js';
 import { runMigrations } from '../../src/db/migrate.js';
-import { agents, taskDefinitions } from '../../src/db/schema.js';
+import { agents, taskDefinitions, traces } from '../../src/db/schema.js';
 import { TWENTY_OBJECTS, twentyClientFromEnv } from '../../src/integrations/twenty/index.js';
 import { writeFileSync, mkdirSync } from 'node:fs';
 import { createProviderRegistry, GeminiProvider } from '../../src/providers/index.js';
 import { MemoryRunQueue } from '../../src/queue/run-queue.js';
-import { desiredProspectorVersion, SCOUT_DEFAULT_INPUT } from '../../src/seed/prospector-seed.js';
+import { desiredProspectorVersion, SCOUT_DEFAULT_INPUT, upsertAgent } from '../../src/seed/prospector-seed.js';
 import { createDefaultToolRegistry } from '../../src/tools/index.js';
 import { RunProcessor } from '../../src/worker/processor.js';
 
@@ -59,8 +66,9 @@ const live = reasons.length === 0;
 if (!live) console.warn(`[integration] Scout live test skipped: ${reasons.join('; ')}`);
 
 const TENANT = 'publiexpe';
-const AGENT_NAME = 'Prospector Scout (live test)';
-const TASK_NAME = 'event-scouting-live-test';
+// Overridable: an archived agent is immutable, so a new pair of names gives a fresh agent + MANUAL task.
+const AGENT_NAME = process.env.SCOUT_LIVE_AGENT_NAME ?? 'Prospector Scout (live test)';
+const TASK_NAME = process.env.SCOUT_LIVE_TASK_NAME ?? 'event-scouting-live-test';
 
 describe.skipIf(!live)('Prospector scout live (Gemini grounding + web + Twenty + PostgreSQL)', () => {
   let handle: DbHandle;
@@ -115,7 +123,7 @@ describe.skipIf(!live)('Prospector scout live (Gemini grounding + web + Twenty +
       reason?: string;
       pages: unknown[];
       signal_id?: string;
-      results: Array<{ name: string; domain: string | null; status: string; confidence?: number; signal_id?: string }>;
+      results: Array<{ name: string; domain: string | null; status: string; confidence?: number; signal_id?: string; company_id?: string; company_created?: boolean; hypothesis_id?: string; profile?: Record<string, unknown> }>;
     }>;
     discarded_events: unknown[];
     partial_reasons: string[];
@@ -128,8 +136,14 @@ describe.skipIf(!live)('Prospector scout live (Gemini grounding + web + Twenty +
 
   /** Own agent + MANUAL task (never scheduled), created once and reused. */
   async function ensureTask(): Promise<string> {
-    const want = desiredProspectorVersion();
+    const base = desiredProspectorVersion();
+    const want = { ...base, configuration: { ...base.configuration, scout: { ...(base.configuration.scout as object), task_name: TASK_NAME } } };
     let agent = await handle.db.query.agents.findFirst({ where: and(eq(agents.tenantId, TENANT), eq(agents.name, AGENT_NAME)) });
+    if (agent) {
+      // Same as the seed: a new ACTIVE version when the configuration changed (versions are immutable).
+      const up = await upsertAgent(handle.db, { tenantId: TENANT, createdBy: 'scout-live-test', name: AGENT_NAME, description: agent.description ?? '', role: agent.role ?? 'prospector', want, log: console.log });
+      console.log(`[scout-live] agent version ${up.version} (${up.action})`);
+    }
     if (!agent) {
       const res = await app.inject({
         method: 'POST',
@@ -143,7 +157,7 @@ describe.skipIf(!live)('Prospector scout live (Gemini grounding + web + Twenty +
             model: want.model,
             model_provider: want.modelProvider,
             system_prompt: want.systemPrompt,
-            configuration: { ...want.configuration, scout: { ...(want.configuration.scout as object), task_name: TASK_NAME } },
+            configuration: want.configuration,
             skill_refs: want.skillRefs,
           },
         },
@@ -165,19 +179,29 @@ describe.skipIf(!live)('Prospector scout live (Gemini grounding + web + Twenty +
     return task!.id;
   }
 
-  async function runScout(input: Record<string, unknown>): Promise<{ detail: Record<string, any>; output: ScoutOutput }> {
+  async function runScout(input: Record<string, unknown>, limits = { exhibitors: 5 }): Promise<{ detail: Record<string, any>; output: ScoutOutput }> {
     const taskId = await ensureTask();
     const runRes = await app.inject({ method: 'POST', url: `/tasks/${taskId}/run`, headers, payload: { input, scheduled_at: new Date().toISOString() } });
     expect(runRes.statusCode).toBe(202);
     for (const { job } of queue.drain()) await processor.process(job);
     const detail = (await app.inject({ method: 'GET', url: `/task-runs/${runRes.json().task_run.id}`, headers })).json();
-    const output = detail.task_run.output as ScoutOutput;
+    // A runtime deployed on the same database (pxos-runtime in Docker) may mark this in-process run as
+    // "orphaned" (its job is not in BullMQ) while it is still running: the agent finishes and writes to
+    // Twenty, but the task run ends FAILED without output. The agent output is still in the trace.
+    let output = detail.task_run.output as ScoutOutput | null;
+    const orphaned = !output && detail.task_run.error?.name === 'OrphanedRun' && detail.task_run.execution_id;
+    if (orphaned) {
+      const trace = await handle.db.query.traces.findFirst({ where: eq(traces.executionId, detail.task_run.execution_id) });
+      output = ((trace?.finalOutput as { output?: ScoutOutput } | null)?.output ?? (trace?.finalOutput as ScoutOutput | null)) ?? null;
+      console.warn('[scout-live] task run marked OrphanedRun by another runtime on the same database: reading the agent output from its trace');
+    }
+    if (!output) throw new Error(`task run without output: ${JSON.stringify(detail.task_run.error)}`);
     const report = {
       status: detail.task_run.status,
       outcome: output.outcome,
       counters: output.counters,
       search: output.search,
-      events: output.events.map((e) => ({ ...e, results: e.results.map((r) => ({ name: r.name, domain: r.domain, status: r.status, confidence: r.confidence })) })),
+      events: output.events.map((e) => ({ ...e, results: e.results.map((r) => ({ name: r.name, domain: r.domain, status: r.status, confidence: r.confidence, profile: r.profile })) })),
       discarded_events: output.discarded_events,
       partial_reasons: output.partial_reasons,
       visited: output.sources.visited,
@@ -188,10 +212,10 @@ describe.skipIf(!live)('Prospector scout live (Gemini grounding + web + Twenty +
     };
     console.log('[scout-live] result', JSON.stringify(report, null, 2));
 
-    expect(detail.task_run.status).toBe('COMPLETED');
+    if (!orphaned) expect(detail.task_run.status).toBe('COMPLETED');
     expect(['SUCCESS', 'PARTIAL']).toContain(output.outcome);
     expect(output.events.length).toBeLessThanOrEqual(1);
-    expect(output.events.flatMap((e) => e.results).length).toBeLessThanOrEqual(5);
+    expect(output.events.flatMap((e) => e.results).length).toBeLessThanOrEqual(limits.exhibitors);
     expect(output.cost.model).toBeGreaterThan(0);
     expect(output.run_summary_id).toBeTruthy();
     // Every signal written cites a URL the run really visited.
@@ -220,5 +244,31 @@ describe.skipIf(!live)('Prospector scout live (Gemini grounding + web + Twenty +
       expect(output.counters.grounding_calls).toBe(0);
     },
     600_000,
+  );
+
+  // Paginated JS catalog + exhibitor profiles (tanda 5): SCOUT_LIVE_DOMAINS=1 SCOUT_LIVE_EVENT_URL=https://www.gastronoma.es
+  it.skipIf(!process.env.SCOUT_LIVE_DOMAINS || !process.env.SCOUT_LIVE_EVENT_URL)(
+    'exhibitor domains: paginated catalog, profiles of the relevant exhibitors, >= 5 real companies with domain, FAIR signal and PROPOSED hypothesis',
+    async () => {
+      const { output } = await runScout({ event_url: process.env.SCOUT_LIVE_EVENT_URL }, { exhibitors: 100 });
+      expect(output.counters.grounding_calls).toBe(0);
+      expect(output.counters.catalog_pages).toBeGreaterThanOrEqual(2);
+      expect(output.counters.profile_lookups).toBeGreaterThan(0);
+      const written = output.events.flatMap((e) => e.results).filter((r) => r.status === 'hypothesis_created' || r.status === 'hypothesis_existing');
+      const withDomain = written.filter((r) => r.domain && (r.profile as { status?: string } | undefined)?.status === 'domain_resolved');
+      const created: Array<{ name: string; domain: string; companyCreated: boolean }> = [];
+      for (const r of withDomain) {
+        const company = await twenty.get<{ name: string; domainName: { primaryLinkUrl: string } }>(TWENTY_OBJECTS.company, r.company_id!);
+        const signal = await twenty.get<{ signalType: string; companyId: string }>(TWENTY_OBJECTS.commercialSignal, r.signal_id!);
+        const hyp = await twenty.get<{ status: string; companyId: string }>(TWENTY_OBJECTS.commercialHypothesis, r.hypothesis_id!);
+        expect(company!.domainName.primaryLinkUrl).toContain(r.domain!);
+        expect(signal).toMatchObject({ signalType: 'FAIR', companyId: r.company_id });
+        expect(hyp).toMatchObject({ status: 'PROPOSED', companyId: r.company_id });
+        created.push({ name: company!.name, domain: r.domain!, companyCreated: r.company_created === true });
+      }
+      console.log('[scout-live] companies with domain from their profile', JSON.stringify(created, null, 2));
+      expect(created.length).toBeGreaterThanOrEqual(5);
+    },
+    1_500_000,
   );
 });

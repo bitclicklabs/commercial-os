@@ -10,6 +10,13 @@ Cambios notables de PubliEXPE Commercial OS, agrupados por tanda de trabajo. For
 - Flaky de events: diagnóstico (ventana intencionada del patrón outbox; el código es correcto), test robustecido + test determinista del orden.
 - LLD v0.3 (`docs/LLD-0.3-estado-real.md`): 22 ADRs, mapa de los 34 puntos del v0.2 (2 iguales, 21 distintos, 11 pendientes), métricas base y pendientes honestos. 9 contradicciones de documentación reconciliadas.
 
+## 2026-10-07 — Tanda 7 (PR #7)
+
+- Envío HITL desde Twenty (preparado): campos de borrador en la hipótesis (`emailTo/Subject/Body/Status`), workflow manual de envío creado en borrador (filtra READY+VALIDATED, 0 reintentos, un clic humano por envío) y guía `docs/twenty-envio-email.md`. 2.45 self-hosted solo admite cuentas IMAP/SMTP genéricas — perfecto para IONOS. Hallazgo de seguridad corregido: la API key del runtime tenía rol Admin y habría podido enviar vía MCP con un buzón conectado → rol restringido "Agent runtime" (objetos sí, tools no) creado y asignado; verificado `send_email` fuera del catálogo.
+- Puente n8n: `POST /events/external` (Bearer, tipos `ext.*`, no puede suplantar eventos internos) y suscripciones salientes firmadas HMAC con reintentos; ejemplo importable en `integrations/n8n/ejemplo-eventos.json`. Migración 0006.
+- Skills versionadas (primer paso MVP-1): tablas `skills`/`skill_versions` inmutables por trigger SQL, 4 skills migradas byte a byte como v1 ACTIVE, resolución desde BD con fallback a código, API de versiones con activación/rollback, y el trace registra la versión exacta usada. Migración 0005.
+- PM: journal de migraciones 0005/0006 refechado (el orden por fecha contradecía el de índice: drizzle habría saltado la 0006 en silencio).
+
 ## Sin publicar
 
 ### Documentación y herramientas

@@ -25,6 +25,7 @@
     "metrics:sync-twenty": "tsx --env-file-if-exists=.env src/maintenance/sync-metrics-to-twenty.ts",
     "skill:candidate": "tsx --env-file-if-exists=.env scripts/skill-candidate.ts",
     "skill:compare": "tsx --env-file-if-exists=.env scripts/skill-compare.ts",
+    "evaluate": "tsx --env-file-if-exists=.env scripts/evaluate.ts",
     "test": "vitest run",
     "test:unit": "vitest run test/unit",
     "test:integration": "vitest run test/integration"

@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 import type { AgentContext } from '../../src/agents/agent.js';
 import {
+  DEFAULT_COMPANY_DESCRIPTOR,
   DEFAULT_SENDER,
   DRAFT_NOTE_HEADER,
   buildDraftNoteMarkdown,
@@ -13,7 +14,7 @@ import {
   unsubscribeLine,
 } from '../../src/agents/email-draft.js';
 import { EMAIL_DRAFTER_SYSTEM_PROMPT, buildDraftPrompt } from '../../src/agents/email-drafter-prompt.js';
-import { EMAIL_DRAFTER_TOOLS, EmailDrafterAgent, differentiatorsFromEvidence, readDrafterInput } from '../../src/agents/email-drafter.js';
+import { EMAIL_DRAFTER_TOOLS, EmailDrafterAgent, differentiatorsFromEvidence, readDrafterConfig, readDrafterInput } from '../../src/agents/email-drafter.js';
 import { resolveAgentImplementation } from '../../src/agents/stub-agent.js';
 import { EventEnvelopeSchema, type EventEnvelope } from '../../src/events/envelope.js';
 import { evaluationRecordedEvent } from '../../src/events/runtime-events.js';
@@ -26,7 +27,7 @@ import { FakeTwenty } from '../helpers/fake-twenty.js';
 const BODY_120 = [
   'Hola, equipo de Conservas Marineras del Cantábrico:',
   '',
-  'Soy Jesús Abril, de PubliEXPE. He visto que estaréis en Expo Alimentaria Ibérica el 24 de noviembre presentando vuestra nueva línea de ventresca, y he pensado que os puede venir bien tener resuelto el material para el stand con tiempo.',
+  'Soy Jesús Abril, de PubliEXPE, expertos en merchandising para empresas. He visto que estaréis en Expo Alimentaria Ibérica el 24 de noviembre presentando vuestra nueva línea de ventresca, y he pensado que os puede venir bien tener resuelto el material para el stand con tiempo.',
   '',
   'Podemos prepararos bolsas tote de algodón personalizadas para los visitantes, polos bordados para vuestro equipo comercial y algún detalle gourmet para compradores y distribuidores. Tenemos taller propio, así que personalizamos en casa y con plazos cortos, y un comercial de referencia os acompaña en todo el pedido para que no tengáis que perseguir a nadie.',
   '',
@@ -120,6 +121,63 @@ describe('finalizeDraft (compliance by code)', () => {
   });
 });
 
+describe('finalizeDraft: the first mention of PubliEXPE says what it is', () => {
+  const PRESENTACION = 'Soy Jesús Abril, de PubliEXPE, expertos en merchandising para empresas.';
+  const withIntro = (intro: string) => BODY_120.replace(PRESENTACION, intro);
+
+  it('leaves the body untouched when the model already said it (brand descriptor or a natural variant)', () => {
+    const d = finalizeDraft(ANSWER, opts());
+    expect(d.fixes).not.toContain('company_descriptor_added');
+    expect(d.body.match(/expertos en merchandising/g)).toHaveLength(1);
+    const variant = finalizeDraft({ ...ANSWER, cuerpo: withIntro('Soy Jesús Abril, de PubliEXPE; somos especialistas en merchandising y regalo promocional.') }, opts());
+    expect(variant.fixes).not.toContain('company_descriptor_added');
+    expect(variant.body).toContain('de PubliEXPE; somos especialistas en merchandising y regalo promocional.');
+  });
+
+  it('injects the descriptor when the model omitted it ("de PubliEXPE." -> "de PubliEXPE, expertos en ...")', () => {
+    const d = finalizeDraft({ ...ANSWER, cuerpo: withIntro('Soy Jesús Abril, de PubliEXPE.') }, opts());
+    expect(d.fixes).toContain('company_descriptor_added');
+    expect(d.body).toContain('Soy Jesús Abril, de PubliEXPE, expertos en merchandising para empresas. He visto que');
+    // The word count is the one of the final text (descriptor included).
+    expect(d.wordCount).toBe(countWords(BODY_120));
+    // Mid-sentence mention: the descriptor goes between commas so the sentence still reads.
+    const mid = finalizeDraft({ ...ANSWER, cuerpo: withIntro('Soy Jesús Abril y te escribo desde PubliEXPE porque he visto vuestra feria.') }, opts());
+    expect(mid.body).toContain('desde PubliEXPE, expertos en merchandising para empresas, porque he visto');
+  });
+
+  it('injects it at the FIRST mention when only a later one carries a descriptor', () => {
+    const cuerpo = withIntro('Soy Jesús Abril, de PubliEXPE.').replace('Tenemos taller propio', 'En PubliEXPE, especialistas en merchandising, tenemos taller propio');
+    const d = finalizeDraft({ ...ANSWER, cuerpo }, opts());
+    expect(d.fixes).toContain('company_descriptor_added');
+    expect(d.body).toContain('Soy Jesús Abril, de PubliEXPE, expertos en merchandising para empresas. He visto');
+    expect(d.body).toContain('En PubliEXPE, especialistas en merchandising, tenemos taller propio');
+  });
+
+  it('does not touch a body that never names PubliEXPE (the signature identifies the sender)', () => {
+    const cuerpo = withIntro('Soy Jesús Abril.');
+    const d = finalizeDraft({ ...ANSWER, cuerpo }, opts());
+    expect(d.fixes).not.toContain('company_descriptor_added');
+    expect(d.body.startsWith(cuerpo)).toBe(true);
+    expect(d.body).toContain('Jesús Abril\nPubliEXPE · Merchandising y regalo promocional personalizado');
+    // A signature written by the model, domains and addresses are not mentions.
+    const sig = finalizeDraft({ ...ANSWER, cuerpo: `${cuerpo}\n\nJesús Abril\nPubliEXPE` }, opts());
+    expect(sig.fixes).not.toContain('company_descriptor_added');
+    expect(sig.body).toContain('Jesús Abril\nPubliEXPE\n');
+    const web = finalizeDraft({ ...ANSWER, cuerpo: withIntro('Soy Jesús Abril; tienes el catálogo en www.publiexpe.com y puedes escribir a info@publiexpe.info.') }, opts());
+    expect(web.fixes).not.toContain('company_descriptor_added');
+  });
+
+  it('the descriptor is configurable (configuration.company_descriptor) and defaults to the brand one', () => {
+    expect(DEFAULT_COMPANY_DESCRIPTOR).toBe('expertos en merchandising para empresas');
+    expect(readDrafterConfig({}).companyDescriptor).toBe(DEFAULT_COMPANY_DESCRIPTOR);
+    expect(desiredEmailDrafterVersion().configuration.company_descriptor).toBe(DEFAULT_COMPANY_DESCRIPTOR);
+    const custom = readDrafterConfig({ company_descriptor: 'especialistas en regalo promocional' }).companyDescriptor;
+    expect(custom).toBe('especialistas en regalo promocional');
+    const d = finalizeDraft({ ...ANSWER, cuerpo: withIntro('Soy Jesús Abril, de PubliEXPE.') }, { ...opts(), companyDescriptor: custom });
+    expect(d.body).toContain('de PubliEXPE, especialistas en regalo promocional. He visto');
+  });
+});
+
 describe('draft note markdown', () => {
   it('starts with the BORRADOR header and carries subject, sender and the full body', () => {
     const draft = finalizeDraft(ANSWER, opts());
@@ -151,7 +209,7 @@ describe('prompt', () => {
   it('puts CRM data inside an untrusted block and never asks for budgets', () => {
     const p = buildDraftPrompt({
       today: '2026-10-07',
-      sender: { name: 'Jesús Abril', company: 'PubliEXPE' },
+      sender: { name: 'Jesús Abril', company: 'PubliEXPE', descriptor: DEFAULT_COMPANY_DESCRIPTOR },
       company: { name: 'Conservas', domain: 'conservas.example' },
       contact: null,
       signal: { name: 'Expo', type: 'FAIR', date: '2026-11-24', description: 'Expositor' },
@@ -162,6 +220,9 @@ describe('prompt', () => {
     expect(p).not.toMatch(/budget|presupuesto_/i);
     expect(EMAIL_DRAFTER_SYSTEM_PROMPT).toMatch(/No escribas la firma ni ninguna línea de baja/);
     expect(EMAIL_DRAFTER_SYSTEM_PROMPT).toMatch(/Nunca pongas un nombre propio en el saludo/);
+    expect(p).toContain('Remitente: Jesús Abril, de PubliEXPE, expertos en merchandising para empresas.');
+    expect(EMAIL_DRAFTER_SYSTEM_PROMPT).toMatch(/QUÉ ES PubliEXPE/);
+    expect(EMAIL_DRAFTER_SYSTEM_PROMPT).toContain('de PubliEXPE, expertos en merchandising para empresas');
   });
 
   it('reads the differentiators recorded by the Prospector', () => {

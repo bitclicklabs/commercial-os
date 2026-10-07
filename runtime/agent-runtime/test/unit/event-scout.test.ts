@@ -424,12 +424,13 @@ describe('seed: weekly-event-scouting', () => {
     expect(desiredTask({ a: 1 })).toMatchObject({ schedule: { type: 'CRON', expression: '0 8 * * *' }, timezone: 'Europe/Madrid', defaultInput: { a: 1 } });
     const cfg = desiredProspectorVersion().configuration as { scout: Record<string, unknown>; tool_policy: { max_calls_per_tool: Record<string, number> } };
     expect(cfg.scout).toMatchObject({ task_name: 'weekly-event-scouting', max_events: 3 });
-    expect(cfg.tool_policy.max_calls_per_tool).toEqual({ fetch_url: 42, render_url: 15 });
-    expect(cfg.scout).toMatchObject({ max_fetches: 18, max_pages_per_event: 3, max_renders: 4, max_pdfs_per_event: 2, max_exhibitors_per_event: 60, max_catalog_pages: 3, max_profile_lookups: 20 });
-    expect(readConfig(cfg).scout).toMatchObject({ maxExhibitorsPerEvent: 60, maxCatalogPages: 3, maxProfileLookups: 20 });
-    expect(readConfig({}).scout).toMatchObject({ maxExhibitorsPerEvent: 60, maxCatalogPages: 3, maxProfileLookups: 20 });
-    expect(readConfig({ scout: { max_catalog_pages: 0, max_profile_lookups: 99, max_exhibitors_per_event: 500 } }).scout).toMatchObject({ maxCatalogPages: 1, maxProfileLookups: 30, maxExhibitorsPerEvent: 100 });
-    expect(desiredProspectorVersion().skillRefs.find((s) => s.skill_id === 'event-source-discovery')?.version).toBe(3);
+    expect(cfg.tool_policy.max_calls_per_tool).toEqual({ fetch_url: 230, render_url: 115 });
+    expect(cfg.scout).toMatchObject({ max_fetches: 18, max_pages_per_event: 3, max_renders: 4, max_pdfs_per_event: 2, max_exhibitors_per_event: 100, max_catalog_pages: 10, max_profile_lookups: 100, time_budget_ms: 1_200_000, capture_json: true });
+    expect(readConfig(cfg).scout).toMatchObject({ maxExhibitorsPerEvent: 100, maxCatalogPages: 10, maxProfileLookups: 100, timeBudgetMs: 1_200_000, captureJson: true, profileConcurrency: 2 });
+    expect(readConfig({}).scout).toMatchObject({ maxExhibitorsPerEvent: 100, maxCatalogPages: 10, maxProfileLookups: 100, timeBudgetMs: 1_200_000, captureJson: true });
+    expect(readConfig({ scout: { max_catalog_pages: 0, max_profile_lookups: 999, max_exhibitors_per_event: 500, time_budget_ms: 99_000_000, capture_json: false } }).scout).toMatchObject({ maxCatalogPages: 1, maxProfileLookups: 100, maxExhibitorsPerEvent: 200, timeBudgetMs: 1_500_000, captureJson: false });
+    expect(readConfig({ scout: { max_catalog_pages: 99, time_budget_ms: 5 } }).scout).toMatchObject({ maxCatalogPages: 20, timeBudgetMs: 10_000 });
+    expect(desiredProspectorVersion().skillRefs.find((s) => s.skill_id === 'event-source-discovery')?.version).toBe(4);
     expect(desiredProspectorVersion().skillRefs.map((s) => s.skill_id)).toEqual(['prospector-event-exhibitors', 'event-source-discovery']);
   });
 });
@@ -484,7 +485,7 @@ describe('scout: JavaScript catalogs (render_url) and PDF catalogs', () => {
     expect(out.outcome).toBe('SUCCESS');
     // The empty shell is not sent to the LLM: one extraction (rendered) + one evaluation.
     expect(provider.requests).toHaveLength(2);
-    expect(renderer.requests).toEqual([{ url: 'https://catalogo.feria.example/', max_chars: 40_000, min_text_chars: 300 }]);
+    expect(renderer.requests).toEqual([{ url: 'https://catalogo.feria.example/', max_chars: 40_000, min_text_chars: 300, capture_json: true }]);
     const ev = out.events[0]! as unknown as Record<string, unknown> & { pages: Array<Record<string, unknown>>; results: Array<{ name: string; status: string }> };
     expect(ev.pages).toEqual([
       expect.objectContaining({ via: 'fetch', status: 'ok', code: 'JS_APP_SHELL', content_kind: 'html', js_app_likely: true }),
@@ -696,9 +697,9 @@ describe('scout: renders that come back empty (app not hydrated yet)', () => {
     );
     const out = (await agent.run(ctx)).output as unknown as Out & { render: Record<string, unknown> };
     expect(renderer.requests).toEqual([
-      // An exhibitor list: the renderer is asked to click through up to max_catalog_pages (3).
-      { url: 'https://apps.feriavalencia.com/catalog/gastronoma/exhibitors', max_chars: 40_000, min_text_chars: 300, max_pages: 3 },
-      { url: 'https://apps.feriavalencia.com/catalog/gastronoma/exhibitors', max_chars: 40_000, wait_ms: 8_000, wait_until: 'networkidle', min_text_chars: 400, max_pages: 3 },
+      // An exhibitor list: the renderer is asked to click through up to max_catalog_pages (10) and for its JSON answers.
+      { url: 'https://apps.feriavalencia.com/catalog/gastronoma/exhibitors', max_chars: 40_000, min_text_chars: 300, max_pages: 10, capture_json: true },
+      { url: 'https://apps.feriavalencia.com/catalog/gastronoma/exhibitors', max_chars: 40_000, wait_ms: 8_000, wait_until: 'networkidle', min_text_chars: 400, max_pages: 10, capture_json: true },
     ]);
     expect(out.render).toMatchObject({ calls: 2, ok: 2, retries: 1 });
     expect(out.events[0]).toMatchObject({ status: 'exhibitors_processed', exhibitors_extracted: 2 });

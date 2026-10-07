@@ -10,8 +10,10 @@ export const SCOUT_SKILL_ID = 'event-source-discovery';
 /**
  * v2: also PDFs (text extracted) and pages rendered with a browser.
  * v3: paginated exhibitor lists and exhibitor profiles (website of the relevant ones).
+ * v4: whole catalogs (up to 20 list pages, extraction in chunks, early stop), the
+ *     catalog's JSON API as preferred source, and a time budget for the run.
  */
-export const SCOUT_SKILL_VERSION = 3;
+export const SCOUT_SKILL_VERSION = 4;
 
 export const SCOUT_SEARCH_SYSTEM_PROMPT = `Eres el explorador de eventos del Prospector de PubliEXPE (merchandising y regalo promocional B2B, España).
 Tu trabajo es localizar ferias profesionales REALES y próximas usando la búsqueda de Google, para que después el sistema descargue su lista de expositores.
@@ -90,7 +92,7 @@ export interface ExtractPromptInput {
   maxExhibitors: number;
   truncated: boolean;
   /** Where the text comes from: static HTML (default), browser rendering or a PDF. */
-  contentKind?: 'html' | 'text' | 'pdf' | 'rendered';
+  contentKind?: 'html' | 'text' | 'pdf' | 'rendered' | 'json';
 }
 
 const CONTENT_KIND_LABEL: Record<string, string> = {

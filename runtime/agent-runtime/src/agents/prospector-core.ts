@@ -215,6 +215,15 @@ export interface ScoutConfig {
    * render_url of the profile plus one fetch_url of the domain found (resolvable + public).
    */
   maxProfileLookups: number;
+  /** Profiles opened at the same time (the renderer runs 2 renders at once). */
+  profileConcurrency: number;
+  /**
+   * Time budget of a scout run (ms), from the start of the run: pages, renders, extractions,
+   * evaluations and profiles stop when it runs out (writes of what was evaluated are not cut).
+   */
+  timeBudgetMs: number;
+  /** Ask the renderer for the JSON answers of catalog pages (JSON API shortcut). */
+  captureJson: boolean;
   /** Grounding redirects resolved to learn a source's domain when grounding did not report it. */
   maxRedirectResolutions: number;
   eventSignalConfidence: number;
@@ -233,6 +242,19 @@ export interface ProspectorConfig {
   modelOptions: Record<string, unknown>;
   scout: ScoutConfig;
 }
+
+/** Hard caps of the scout limits (configuration and per-run input). */
+export const SCOUT_MAX_EXHIBITORS_CAP = 200;
+export const SCOUT_CATALOG_PAGES_CAP = 20;
+export const SCOUT_PROFILE_LOOKUPS_CAP = 100;
+/** 20 min by default. */
+export const SCOUT_TIME_BUDGET_DEFAULT_MS = 1_200_000;
+/**
+ * Ceiling of the time budget: the `weekly-event-scouting` task timeout (30 min) minus 5 min
+ * kept for the CRM writes of what was evaluated and the run summary. The agent does not
+ * receive the task timeout; a task with a shorter timeout needs a lower `time_budget_ms`.
+ */
+export const SCOUT_TIME_BUDGET_CAP_MS = 1_500_000;
 
 export function readConfig(configuration: Record<string, unknown>): ProspectorConfig {
   const num = (v: unknown, fallback: number) => (typeof v === 'number' && Number.isFinite(v) ? v : fallback);
@@ -253,13 +275,16 @@ export function readConfig(configuration: Record<string, unknown>): ProspectorCo
     scout: {
       taskName: typeof s.task_name === 'string' ? s.task_name : 'weekly-event-scouting',
       maxEvents: int(s.max_events, 3, 3),
-      maxExhibitorsPerEvent: int(s.max_exhibitors_per_event, 60, 100),
+      maxExhibitorsPerEvent: Math.max(1, int(s.max_exhibitors_per_event, 100, SCOUT_MAX_EXHIBITORS_CAP)),
       maxFetches: int(s.max_fetches, 18, 30),
       maxPagesPerEvent: int(s.max_pages_per_event, 3, 4),
       maxRenders: int(s.max_renders, 4, 6),
       maxPdfsPerEvent: int(s.max_pdfs_per_event, 2, 2),
-      maxCatalogPages: Math.max(1, int(s.max_catalog_pages, 3, 5)),
-      maxProfileLookups: int(s.max_profile_lookups, 20, 30),
+      maxCatalogPages: Math.max(1, int(s.max_catalog_pages, 10, SCOUT_CATALOG_PAGES_CAP)),
+      maxProfileLookups: int(s.max_profile_lookups, 100, SCOUT_PROFILE_LOOKUPS_CAP),
+      profileConcurrency: Math.max(1, int(s.profile_concurrency, 2, 4)),
+      timeBudgetMs: Math.max(10_000, int(s.time_budget_ms, SCOUT_TIME_BUDGET_DEFAULT_MS, SCOUT_TIME_BUDGET_CAP_MS)),
+      captureJson: s.capture_json !== false,
       maxRedirectResolutions: int(s.max_redirect_resolutions, 3, 5),
       eventSignalConfidence: Math.min(1, Math.max(0, num(s.event_signal_confidence, 0.5))),
       verifyUnsourcedByFetch: s.verify_unsourced_by_fetch !== false,
@@ -484,6 +509,8 @@ export interface ExhibitorResult {
   /** Scout mode: lookup of the exhibitor profile (website) after a writable decision. */
   profile?: {
     url: string | null;
+    /** `json_template`: URL built from the catalog's profile-link template and the JSON id (no link in the rendered pages). */
+    url_source?: 'json_template';
     status: string;
     via?: 'fetch' | 'render';
     domain?: string | null;

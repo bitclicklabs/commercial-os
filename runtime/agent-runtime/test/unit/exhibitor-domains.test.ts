@@ -272,7 +272,7 @@ describe('scout: client-side paginated catalog + exhibitor profiles', () => {
 
     // The list render asks for client-side pagination; the irrelevant exhibitor's profile is never opened.
     expect(renderer.requests.map((r) => [r.url, r.max_pages ?? null])).toEqual([
-      [CATALOG, 3],
+      [CATALOG, 10],
       [PROFILE(3), null], // 0.9
       [PROFILE(4), null], // 0.8
       [PROFILE(1), null], // 0.7
@@ -340,7 +340,7 @@ describe('scout: client-side paginated catalog + exhibitor profiles', () => {
       input: { event_url: CATALOG, max_catalog_pages: 1, max_profile_lookups: 0 },
     });
     const out = (await agent.run(ctx)).output as unknown as Out;
-    expect(renderer.requests).toEqual([{ url: CATALOG, max_chars: 40_000, min_text_chars: 300 }]);
+    expect(renderer.requests).toEqual([{ url: CATALOG, max_chars: 40_000, min_text_chars: 300, capture_json: true }]);
     expect(out.events[0]!.results.map((r) => [r.name, r.status])).toEqual([
       ['ARCECARNE', 'skipped_no_domain'],
       ['AYUNTAMIENTO DE PRUEBA', 'discarded_irrelevant'],

@@ -21,7 +21,8 @@ runtime/agent-runtime/
 │   ├── main.ts               Entrada: API, worker y/o scheduler según RUNTIME_ROLE o --role=
 │   ├── config.ts             Configuración desde variables de entorno
 │   ├── api/                  Servidor Fastify, contratos zod y rutas
-│   ├── agents/               Interfaz de agente, StubAgent, SmokeAgent, ProspectorAgent (modos directo y scout, prompts, SourceLedger) y EmailDrafterAgent (borradores, nunca envía)
+│   ├── agents/               Interfaz de agente, StubAgent, SmokeAgent, ProspectorAgent (modos directo y scout, prompts, SourceLedger) EmailDrafterAgent (borradores, nunca envía) y BajasAgent (inbound de bajas, sin LLM)
+│   ├── inbound/              Inbound de bajas: lector IMAP de solo lectura, clasificador determinista, lista de supresión y cursor (inbound_state)
 │   ├── integrations/twenty/  TwentyClient REST tipado y mapeo de objetos de la App
 │   ├── tools/                Interfaz Tool, registry, tool_policy, executor, tools de Twenty y web/ (fetch_url con texto de PDF, render_url y guarda SSRF)
 │   ├── db/                   Esquema Drizzle, cliente y migrador
@@ -32,13 +33,13 @@ runtime/agent-runtime/
 │   ├── providers/            ModelProvider, StubProvider, AnthropicProvider, GeminiProvider y tabla de precios
 │   ├── queue/                RunQueue (BullMQ y en memoria)
 │   ├── scheduler/            TaskScheduler sobre BullMQ, parseo de schedules y rutas
-│   ├── seed/                 Seed idempotente del Prospector, el EmailDrafter y sus tareas (pnpm seed)
+│   ├── seed/                 Seed idempotente del Prospector, el EmailDrafter, el BajasAgent y sus tareas (pnpm seed)
 │   ├── services/             Lanzamiento idempotente de TaskRuns
 │   └── worker/               RunProcessor, worker BullMQ, locks por entidad y reconciliador
 └── test/
     ├── unit/                 Corren siempre, sin BD ni Redis
     ├── integration/          API, worker, scheduler, locks y tools (PostgreSQL, Redis y Twenty); se saltan si falta el servicio
-    ├── helpers/              FakeTwenty (API REST de Twenty en memoria), FakeWeb (DNS y HTTP simulados), FakeRenderer (pxos-renderer simulado) y makePdf (PDF de prueba en memoria)
+    ├── helpers/              FakeTwenty (API REST de Twenty en memoria), FakeWeb (DNS y HTTP simulados), FakeRenderer (pxos-renderer simulado), FakeImapServer (servidor IMAP en proceso) y makePdf (PDF de prueba en memoria)
     ├── fixtures/             feria-ejemplo.json (evento de demo) y payloads reales de webhooks de Twenty 2.45
     └── setup-env.ts          Carga .env (si existe) antes de los tests
 ```
@@ -109,6 +110,9 @@ Requisitos: Node.js 22, pnpm, y los contenedores `pxos-postgres` (127.0.0.1:5440
 | `FETCH_URL_ALLOWLIST` | vacío | Dominios que `fetch_url` puede descargar, separados por comas (incluye subdominios). Vacío = cualquier host público |
 | `FETCH_URL_DENYLIST` | vacío | Dominios que `fetch_url` nunca descarga. Gana sobre la allowlist |
 | `FETCH_URL_ALLOWED_PORTS` | `80,443,8080,8443` | Puertos permitidos en las URL de `fetch_url` |
+| `IONOS_IMAP_HOST` / `IONOS_IMAP_PORT` | `imap.ionos.es` / `993` | Servidor IMAP del buzón de bajas (siempre TLS) |
+| `IONOS_IMAP_USER` / `IONOS_IMAP_PASSWORD` | vacío | Buzón que lee el BajasAgent (`jesus.abril@publiexpe.info`). Sin ellas, `process-unsubscribes` termina `SKIPPED` |
+| `IONOS_IMAP_MAILBOX` | `INBOX` | Carpeta que lee el BajasAgent |
 | `RENDERER_URL` | `http://pxos-renderer:3000` | Servicio de render JavaScript de `render_url`. En desarrollo, `http://127.0.0.1:4030` si el renderer está publicado ahí. Vacío u `off` = desactivado (`render_url` devuelve `RENDERER_NOT_CONFIGURED`) |
 
 ## Migraciones
@@ -133,6 +137,7 @@ El esquema vive en `src/db/schema.ts`. Todas las tablas llevan `tenant_id` (C6).
 | `0001_scheduler_locks` | Tabla `entity_locks` e índice `task_runs (status, updated_at)` para el reconciliador |
 | `0002_events` | Tabla `events` (log de eventos de dominio, *append-only* con trigger anti-`DELETE`) |
 | `0003_evaluations` | Tabla `evaluations` del evaluador HUMAN. SQL idempotente (`IF NOT EXISTS`) |
+| `0004_inbound` | Tabla `inbound_state` (cursor IMAP del inbound de bajas). SQL idempotente (`IF NOT EXISTS`) |
 
 Importante: el migrador de Drizzle aplica solo las migraciones con fecha posterior a la última aplicada. Si dos ramas generan migraciones en paralelo contra la misma BD de desarrollo, aplica primero la más antigua o regenera la nueva tras el merge.
 
@@ -352,7 +357,7 @@ Tabla `events` (migración `0002_events`): `id`, `tenant_id`, `type`, `schema_ve
 ```
 
 - `event_type` (alias `event`) debe coincidir con el `type` del evento.
-- `filter` es opcional. Cada clave es una ruta con puntos dentro de `data` (`funnel.out`, `results.0.status`; se acepta el prefijo `$.`) y el valor se compara por igualdad estricta (objetos y arrays, en profundidad). No hay operadores.
+- `filter` es opcional. Cada clave es una ruta con puntos dentro de `data` (`funnel.out`, `results.0.status`; se acepta el prefijo `$.`) y el valor se compara por igualdad estricta (objetos y arrays, en profundidad), o con el operador `{"in": [v1, v2, ...]}` (máx. 50 valores) para aceptar varios.
 - El registro sigue el mismo camino que `CRON`: la API sincroniza tras `POST /tasks`, `PATCH`, `pause`, `resume` y `archive`, y `syncAll` lo corrige periódicamente. Solo se registran tareas `ACTIVE`, `enabled` y con un `EVENT` válido, en el hash de Redis `pxos:{QUEUE_NAME}-events:triggers`. `GET /tasks/:id/schedule` devuelve `event_trigger` (deseado y registrado) y `GET /scheduler/status` lista los triggers con `kind = "event"`.
 - El consumidor (rol `scheduler` o `all`) recibe cada evento, busca los triggers del mismo tenant y tipo, vuelve a leer la tarea en PostgreSQL (un registro obsoleto se retira), aplica el filtro y la guardia anti-bucle y llama a `requestTaskRun` con la clave `taskrun:{task_id}:event:{event_id}`. El mismo evento entregado dos veces devuelve el `TaskRun` existente.
 - El `input` del run es `default_input` más el sobre completo bajo la clave `event` (`input.event.data` es el payload).
@@ -457,6 +462,8 @@ Las de Twenty usan `TWENTY_BASE_URL` y `TWENTY_API_KEY` y tienen `outputTrust = 
 | `create_agent_run_summary` | `LOW_WRITE` | Sí | `agentExecutionId` |
 | `get_hypothesis` | `READ` | No | — (hipótesis con empresa, señal y decision maker, `depth=1`) |
 | `create_note` | `LOW_WRITE` | Sí | Empresa + título; adopta una nota huérfana con el mismo título |
+| `get_note` | `READ` | No | — (título y markdown de una nota; salida `untrusted`) |
+| `update_note` | `LOW_WRITE` | Sí | Solo añade líneas al final; las que ya están (coincidencia exacta) se omiten. Nunca edita ni borra contenido |
 | `fetch_url` | `READ` | No | — (consulta [Seguridad del contenido web](#seguridad-del-contenido-web)) |
 | `render_url` | `READ` | No | — (consulta [Render de JavaScript](#render-de-javascript-render_url)) |
 
@@ -584,7 +591,7 @@ Entrada (`ScoutInput`):
 { "event_url": "https://www.gastronoma.es", "event_name": "Mediterránea Gastrónoma 2026" }
 ```
 
-`max_events` (1-3), `max_exhibitors` (1-100), `max_catalog_pages` (1-5) y `max_profile_lookups` (0-30) bajan los límites de la configuración para una ejecución; nunca los suben. Se elige este modo si `mode = "scout"` o si la entrada tiene `sector` o `event_url` y no tiene `event` ni `exhibitors`.
+`max_events` (1-3), `max_exhibitors` (1-200), `max_catalog_pages` (1-20), `max_profile_lookups` (0-100) y `scout_time_budget_ms` (10 000-1 500 000) bajan los límites de la configuración para una ejecución; nunca los suben. Se elige este modo si `mode = "scout"` o si la entrada tiene `sector` o `event_url` y no tiene `event` ni `exhibitors`.
 
 Flujo:
 
@@ -599,41 +606,80 @@ Flujo:
    1. **PDF de catálogo enlazados**: hasta `max_pdfs_per_event` enlaces a `.pdf` de la página (estática o renderizada) cuyo texto o URL sugiere catálogo o listado (`expositores`, `exhibitors`, `catálogo`, `listado`, `participantes`, `marcas`, `directorio`, `plano`…) se descargan con `fetch_url` y se extraen también, aunque la página ya haya dado expositores.
 
    Máximo `max_pages_per_event` páginas por feria (sin contar renders ni PDF enlazados), `max_fetches` descargas y `max_renders` renders por ejecución.
-1. **Paginación del listado**, hasta `max_catalog_pages` páginas (3 por defecto, unos 60 expositores en Gastrónoma):
-   - **en el cliente**: si la URL renderizada parece un listado (`expositores`, `exhibitors`, `catalog`, `directorio`, `participantes`, `empresas`, `marcas`, `listado`…), el scout pide al renderer `maxPages`. El renderer pulsa el control "siguiente" del paginador y devuelve todas las páginas en un solo `render_url` (consulta [Paginación](../../services/renderer/README.md#paginación)). Es el caso de Gastrónoma: los botones no son enlaces y la URL no cambia;
-   - **por enlaces**: si no, el scout sigue los enlaces de la misma ruta que solo cambian un parámetro de página (`?page=2`, `offset`, `start`…), los segmentos `/page/2` o los enlaces "Siguiente"/"Next", y lee cada página igual que la primera (`fetch_url` o `render_url`).
+1. **Paginación del listado hasta el final**, hasta `max_catalog_pages` páginas (10 por defecto, tope 20; Gastrónoma tiene 5 de 20 expositores):
+   - **en el cliente**: si la URL renderizada parece un listado (`expositores`, `exhibitors`, `catalog`, `directorio`, `participantes`, `empresas`, `marcas`, `listado`…), el scout pide al renderer `maxPages`. El renderer pulsa el control "siguiente" del paginador y devuelve todas las páginas en un solo `render_url` (consulta [Paginación](../../services/renderer/README.md#paginación)). Es el caso de Gastrónoma: los botones no son enlaces y la URL no cambia. El renderer para antes si no encuentra el control, si la lista no cambia o si la página nueva no aporta ninguna línea nueva (`pagination_stop` en la página leída);
+   - **por enlaces**: si no, el scout sigue los enlaces de la misma ruta que solo cambian un parámetro de página (`?page=2`, `offset`, `start`…), los segmentos `/page/2` o los enlaces "Siguiente"/"Next", y lee cada página igual que la primera (`fetch_url` o `render_url`). **Parada temprana**: la primera página sin expositores nuevos termina la paginación (`pagination_stop = no_new_exhibitors`).
 
-   Un renderer anterior, sin `max_pages`, ignora el parámetro: el scout sigue con la primera página.
-1. **Extracción**: el LLM extrae `{name, domain?, description?, sector?}` solo del texto leído (HTML, página renderizada o PDF; el prompt indica el tipo). El código descarta los nombres que no aparecen en **esa** página y los dominios que no están en su texto o sus enlaces (ni el de la propia feria ni redes sociales). Los expositores de varias páginas de la misma feria se fusionan sin duplicados (por nombre), hasta `max_exhibitors_per_event`.
+   Un renderer sin `max_pages` ignora el parámetro y el scout sigue con la primera página. Un renderer anterior a pxos-renderer 0.2 (máximo 5 páginas) responde `INVALID_INPUT` a `max_pages` mayor: el scout repite el render con 5.
+1. **Atajo de la API JSON** (`scout.capture_json`, activo por defecto): los renders de catálogo piden `captureJson`. Si entre las respuestas JSON capturadas (mismo origen que la página, como máximo 5 de 200 KB) hay una lista de expositores, es la **fuente preferente**: da la lista completa, también más allá de las páginas renderizadas, sin llamada de extracción al LLM. Consulta [Atajo de la API JSON](#atajo-de-la-api-json).
+1. **Extracción**: el LLM extrae `{name, domain?, description?, sector?}` solo del texto leído (HTML, página renderizada o PDF; el prompt indica el tipo). Un listado renderizado de varias páginas se extrae en **trozos de hasta 5 páginas** (una llamada por trozo, unos 100 expositores; cada expositor se extrae una sola vez). Si un trozo después del primero no aporta expositores nuevos, no se extraen los siguientes (`pagination_stop = no_new_exhibitors`). El código descarta los nombres que no aparecen en **ese** texto y los dominios que no están en su texto o sus enlaces (ni el de la propia feria ni redes sociales). Los expositores de varias páginas de la misma feria se fusionan sin duplicados (por nombre), hasta `max_exhibitors_per_event` (100 por defecto, tope 200).
 1. **Evaluación con el LLM de todos los expositores**, antes de escribir nada (`decideExhibitor`): relevancia, confianza e hipótesis, igual que en el modo directo.
-1. **Fichas de los relevantes sin dominio**: solo los que se van a escribir (relevantes y con confianza ≥ `min_confidence`), de mayor a menor confianza, hasta `max_profile_lookups` por ejecución (10 por defecto). Para cada uno:
-   1. La ficha es el enlace de la lista cuyo texto es el nombre del expositor, en el mismo sitio que la lista (Gastrónoma: `/catalog/gastronoma/exhibitors/{id}`). Sin enlace: `profile.status = no_profile_link`.
+1. **Fichas de los relevantes sin dominio**: solo los que se van a escribir (relevantes y con confianza ≥ `min_confidence`), de mayor a menor confianza, hasta `max_profile_lookups` por ejecución (60 por defecto, tope 100; el límite real lo pone el presupuesto de tiempo), `profile_concurrency` a la vez (2, los renders simultáneos del renderer). Para cada uno:
+   1. La ficha es el enlace de la lista cuyo texto es el nombre del expositor, en el mismo sitio que la lista (Gastrónoma: `/catalog/gastronoma/exhibitors/{id}`). Con la lista de la API JSON, si el expositor no salió en las páginas renderizadas, la URL se construye con la plantilla aprendida de los enlaces (`profile.url_source = json_template`). Sin enlace: `profile.status = no_profile_link`.
    1. Se lee con `fetch_url`; si es una app JavaScript (o su host ya dio un esqueleto JS en esta ejecución), se renderiza directamente con `render_url`. Los renders de fichas no gastan `max_renders`.
    1. La ficha tiene que ser del expositor: su nombre aparece antes de secciones como "Empresas similares" (`profile_mismatch` si no).
    1. La web es, por orden: el valor junto a la etiqueta "Web", "Website", "Sitio web" o "Página web"; el único enlace externo de la ficha; o el único dominio `www.` del texto. Nunca vale el dominio de la propia feria (web del evento, host del catálogo y páginas leídas, por dominio registrable), las redes sociales ni las plataformas genéricas (`gmail.com`, `linktr.ee`…). Facebook, Instagram, LinkedIn, X, YouTube, TikTok y Pinterest se guardan en `profile.social` como metadato.
    1. El dominio tiene que resolver a IP públicas: `fetch_url` de `https://{dominio}/` con las mismas guardas SSRF. `DNS_ERROR`, `SSRF_BLOCKED` o `URL_NOT_ALLOWED` lo rechazan (`domain_rejected`). Un 403 de un WAF, un error TLS o un timeout ocurren después de la comprobación de DNS y no lo rechazan.
+1. **Presupuesto de tiempo** (`scout.time_budget_ms`, 20 min por defecto; consulta [Presupuesto de tiempo](#presupuesto-de-tiempo)): se comprueba antes de cada página, render, extracción, evaluación y ficha.
 1. **Pipeline por expositor** (`writeExhibitor`), el mismo del modo directo, con `source_url` = la página de la que sale cada expositor (página de expositores, página renderizada o PDF), siempre una URL visitada. Con el dominio de la ficha se crea o reutiliza la empresa por dominio, y la hipótesis añade la evidencia "Web … tomada de la ficha del expositor" con la URL de la ficha. Sin dominio después de intentar la ficha, sigue como antes: `skipped_no_domain`.
 1. **Sin lista de expositores** (catálogo ilegible, página vacía, renderer no disponible): la feria se registra como señal `FAIR` a nivel de evento (`create_signal` sin `companyId`, con la URL visitada) y el `outcome` es `PARTIAL` con el motivo en `partial_reasons` y en el `agentRunSummary` (incluye `render JavaScript no disponible (…)` cuando el render se necesitaba y no se pudo hacer).
 
 `outcome`: `FAILED` si falla la búsqueda o todos los expositores; `PARTIAL` si hay errores, ninguna feria verificable o alguna feria sin lista de expositores; `SUCCESS` en otro caso. La salida incluye `events[]` (páginas leídas con `via` = `fetch` | `render` | `pdf`, `content_kind`, `js_app_likely`, expositores extraídos y verificados por página; verificación; expositores descartados), `discarded_events[]` con el motivo, `sources` (URL visitadas y fuentes de grounding), `render` (`calls`, `ok`, `retries`, `max`, `disabled` con el motivo si se desactivó), los contadores `fetches`, `renders`, `renders_ok`, `render_retries`, `pdfs_read`, `catalog_pages` (páginas del listado de las que salen expositores), `profile_lookups` (fichas abiertas), `profile_renders`, `domain_checks` y `domains_resolved` (dominios obtenidos de la ficha), `profiles` (resumen y límites), `profile` en cada resultado (`url`, `status`, `via`, `domain`, `domain_source`, `social`, `error`) y el coste de búsqueda.
 
-El catálogo JavaScript de Gastrónoma lista nombres, sector y país, pero no la web de cada expositor: está en su ficha (`/exhibitors/{id}`, etiqueta "Website"). Hasta la tanda 4 el scout solo leía la primera página (20 de 91) y los relevantes acababan como `skipped_no_domain`. Ahora lee 3 páginas en un render y abre las fichas de los relevantes.
+El catálogo JavaScript de Gastrónoma lista nombres, sector y país, pero no la web de cada expositor: está en su ficha (`/exhibitors/{id}`, etiqueta "Website"). Hasta la tanda 4 el scout solo leía la primera página (20 de 91) y los relevantes acababan como `skipped_no_domain`. La tanda 5 leía 3 páginas (60) y 20 fichas. Ahora lee el catálogo entero (o su API JSON) y abre las fichas de los relevantes mientras quede tiempo.
 
-Prueba en vivo del 2026-10-07 (`event_url = https://www.gastronoma.es`, Gemini y Twenty reales, renderer en Docker): 3 páginas de catálogo, 60 expositores evaluados, 56 relevantes, 10 fichas abiertas (las de mayor confianza), 6 dominios obtenidos y 6 empresas creadas en Twenty con señal `FAIR` e hipótesis `PROPOSED`. Las otras 4 fichas no publican web (`no_website`). Coste: 0,139 € (63 llamadas al LLM), unos 8 minutos.
+#### Atajo de la API JSON
+
+Muchos catálogos SPA descargan la lista completa como JSON y la paginan en el navegador. En Feria Valencia es `POST https://apps.feriavalencia.com/api/puisearch` (sesión anónima de la propia app): devuelve los 91 expositores de Gastrónoma en una respuesta de 52 KB con `name`, `exhibitor` (id), `country`, `province` y `sectorsname`, sin web.
+
+`src/agents/catalog-json.ts` busca, entre las respuestas capturadas con el render, el array que es la lista de expositores:
+
+- array de al menos 3 objetos con un campo de nombre (`name`, `nombre`, `companyName`, `*name`…; nunca `country`, `province`, `sector`…) presente en el 80 % y con valores distintos;
+- el que tiene más nombres en el texto de la página renderizada (la página muestra al menos su primera página de expositores), con un mínimo de 3. Las listas de provincias, sectores o países de las mismas respuestas no ganan;
+- de cada elemento toma `name` (sin HTML, entidades decodificadas) y, si existen, la web (`web`, `website`, `url`…) como dominio, la descripción, el sector y el id.
+
+Con la lista, el scout:
+
+- la valida igual que una página: los nombres se comprueban contra el contenido JSON, el dominio tiene que estar en él y nunca puede ser el de la feria ni una red social;
+- cita como fuente la página del listado renderizada (visitada, en el `SourceLedger`), nunca la URL de la API; la salida guarda la API usada en `events[].json_api` y `events[].catalog_source = json_api`;
+- no hace la extracción con el LLM del listado. Si aún no conoce el nombre o la fecha de la feria, hace una extracción sobre los primeros 6 000 caracteres de la página;
+- aprende la plantilla de URL de las fichas a partir de al menos 2 enlaces cuyo texto es un nombre de la lista y cuya URL contiene su id, y la aplica a los expositores que no salieron en las páginas renderizadas.
+
+El JSON es contenido web **no confiable** como cualquier página: no se ejecuta nada, sus textos solo llegan al LLM dentro de bloques `DATOS_NO_CONFIABLES` (evaluación) y las URL que se escriben en Twenty pasan por el `SourceLedger`. Sin captura (renderer anterior, `scout.capture_json = false` o ninguna lista reconocible), el flujo es el de antes: extracción del texto renderizado.
+
+#### Presupuesto de tiempo
+
+`scout.time_budget_ms` (20 min por defecto; tope 25 min, el timeout de 30 min de `weekly-event-scouting` menos 5 min para las escrituras y el resumen) gobierna toda la ejecución desde su inicio. La entrada `scout_time_budget_ms` puede bajarlo. El agente no recibe el timeout de la tarea: una tarea con un timeout menor necesita un `time_budget_ms` menor.
+
+Se comprueba antes de cada feria, página, render, extracción, evaluación y ficha. Al agotarse, la ejecución se corta limpia donde esté:
+
+- lo ya evaluado se escribe igualmente en Twenty: las escrituras no se cortan y no se pierde ninguna evaluación pagada;
+- los expositores leídos y no evaluados cuentan en `exhibitors_not_evaluated` (`events[].not_evaluated` guarda los 50 primeros nombres);
+- las fichas no abiertas quedan con `profile.status = time_budget_exhausted` y el expositor como `skipped_no_domain`; se cuentan en `profiles_skipped_time_budget`;
+- una feria de la que aún no se leyó ningún expositor queda en `status = time_budget_exhausted` y no se escribe nada para ella (ni la señal de feria sin lista, que sería engañosa);
+- el `outcome` es `PARTIAL` con el motivo `presupuesto de tiempo agotado (N min, en la fase de …)` y los contadores de lo conseguido. `output.time_budget` guarda `budget_ms`, `elapsed_ms`, `exhausted` y la fase.
+
+El corte llega en el siguiente punto de control: una ficha en curso (10-15 s) o un render de catálogo (hasta 60 s) terminan antes.
+
+El `agentRunSummary` pone primero los totales, el tiempo, el coste y los motivos, y después una línea por expositor: con un catálogo entero, las líneas por expositor superan los 4 000 caracteres del resumen y antes desplazaban los totales.
+
+Prueba en vivo del catálogo completo (2026-10-07, `event_url = https://www.gastronoma.es`, Gemini y Twenty reales, pxos-renderer 0.2 en Docker, configuración por defecto): un render de 5 páginas (19 s, `pagination_stop = not_changed`) con la lista tomada de la API JSON (`POST /api/puisearch`, 91 de 91 nombres en la página, sin extracción del listado con el LLM); 91 expositores evaluados, 87 relevantes, 60 fichas abiertas (2 a la vez; las 22 restantes quedaron fuera por `max_profile_lookups`, no por tiempo), 29 dominios obtenidos: 23 empresas nuevas en Twenty con señal `FAIR` e hipótesis `PROPOSED` y 6 ya existentes (5 de ellas ya `VALIDATED` por un comercial). 93 llamadas al LLM, 0,195 €, 16,4 min de 20 (lectura 43 s, evaluación 7,5 min, fichas 7,1 min, escrituras 1,1 min).
+
+Prueba anterior (2026-10-07, tanda 5, renderer en Docker): 3 páginas de catálogo, 60 expositores evaluados, 56 relevantes, 10 fichas abiertas (las de mayor confianza), 6 dominios obtenidos y 6 empresas creadas en Twenty con señal `FAIR` e hipótesis `PROPOSED`. Las otras 4 fichas no publican web (`no_website`). Coste: 0,139 € (63 llamadas al LLM), unos 8 minutos.
 
 #### Coste esperado por feria
 
-Con la configuración por defecto (`max_catalog_pages` 3, `max_exhibitors_per_event` 60, `max_profile_lookups` 10, `gemini-flash-latest` con `thinking_level = low`):
+Con la configuración por defecto (`max_catalog_pages` 10, `max_exhibitors_per_event` 100, `max_profile_lookups` 60, presupuesto de 20 min, `gemini-flash-latest` con `thinking_level = low`), para un catálogo de unos 90 expositores como Gastrónoma:
 
 | Paso | Llamadas | Coste |
 |---|---|---|
-| Lectura de la feria (portada, catálogo y listado de 3 páginas en un solo render) | 3 `fetch_url`, 2 `render_url`, 2-3 extracciones con el LLM | ~0,01 € |
-| Evaluación con el LLM de cada expositor | 60 llamadas | ~0,002 € cada una, ~0,13 € |
-| Fichas de los relevantes | hasta 10 `render_url` (o `fetch_url`) + hasta 10 `fetch_url` de comprobación del dominio | 0 € de modelo; unos 10-12 s por ficha renderizada |
+| Lectura de la feria (portada, catálogo y listado entero en un solo render) | 3 `fetch_url`, 2 `render_url`, 1-2 extracciones con el LLM (con la API JSON, la del listado no se hace) | ~0,01 € |
+| Evaluación con el LLM de cada expositor | ~90 llamadas | ~0,002 € cada una, ~0,2 € |
+| Fichas de los relevantes | hasta 60 `render_url` (o `fetch_url`) + otras tantas `fetch_url` de comprobación del dominio, 2 a la vez | 0 € de modelo; unos 10-12 s por ficha renderizada |
 | Escritura en Twenty | 3 llamadas por expositor escrito | 0 € |
-| **Total por feria** | | **~0,14 €** (en modo `sector`, la búsqueda con grounding suma ~0,10 €) |
+| **Total por feria** | | **~0,2-0,25 €** (en modo `sector`, la búsqueda con grounding suma ~0,10 €) |
 
-La ejecución semanal (`max_events` 3) puede llegar a unos 0,45 € si las tres ferias tienen listados de 60 expositores. Para bajar el coste, reduce `max_exhibitors_per_event` o `max_catalog_pages`: cada página de 20 expositores cuesta unos 0,045 €. Las fichas no tienen coste de modelo, solo tiempo; súbelas con `max_profile_lookups` (máximo 30) si quieres más empresas por feria (en Gastrónoma, 6 de cada 10 fichas tenían web).
+El coste de modelo crece con los expositores evaluados, no con las páginas: cada expositor se extrae una vez (por trozos de 5 páginas, o ninguna con la API JSON) y se evalúa una vez. La ejecución semanal (`max_events` 3) con tres catálogos de 100 expositores puede llegar a unos 0,7 €; el presupuesto de tiempo la acota. Para bajar el coste, reduce `max_exhibitors_per_event` (cada expositor evaluado cuesta unos 0,002 €). Las fichas no tienen coste de modelo, solo tiempo: el presupuesto de tiempo decide cuántas se abren.
 
 ### Seguridad del contenido web
 
@@ -674,9 +720,9 @@ Códigos de error de `fetch_url`: `URL_NOT_ALLOWED`, `REDIRECT_NOT_ALLOWED`, `SS
 |---|---|
 | Destino | `RENDERER_URL` + `/render` (por defecto `http://pxos-renderer:3000`, dentro de `pxos-net`). Es configuración de confianza: no pasa por la guarda SSRF |
 | Antes de llamar | La URL a renderizar pasa `checkUrl` con la misma política de hosts que `fetch_url` (esquema, credenciales, puertos, allow/denylist, nombres internos, IP literales). El renderer repite la comprobación con DNS y la aplica a cada petición del navegador |
-| Entrada | `url`, y opcionales `waitMs`, `maxChars`, `minTextChars` (espera de hidratación), `waitUntil` (`domcontentloaded`, `load`, `networkidle`) y `maxPages` (1-5, paginación en el cliente) |
-| Respuesta | Validada con zod: texto recortado a 40 000 caracteres, título, hasta 200 enlaces `http(s)`, `finalUrl` comprobada otra vez con `checkUrl`, `content_kind = "rendered"`, `renderMs`, `hydrated`, `pagesRead` y `pageUrls` (también comprobadas con `checkUrl`). Los enlaces con la misma URL se fusionan conservando el primer texto no vacío |
-| Tiempo | 25 s de JavaScript en el renderer; 40 s de espera en el cliente (`RENDER_TIMEOUT`) |
+| Entrada | `url`, y opcionales `waitMs`, `maxChars`, `minTextChars` (espera de hidratación), `waitUntil` (`domcontentloaded`, `load`, `networkidle`), `maxPages` (1-20, paginación en el cliente) y `captureJson` (respuestas JSON de la página) |
+| Respuesta | Validada con zod: texto recortado a 40 000 caracteres, título, hasta 200 enlaces `http(s)`, `finalUrl` comprobada otra vez con `checkUrl`, `content_kind = "rendered"`, `renderMs`, `hydrated`, `pagesRead` y `pageUrls` (también comprobadas con `checkUrl`), `paginationStop` y, con `captureJson`, `jsonResponses` (otra vez filtradas aquí: mismo origen que `finalUrl`, `checkUrl`, 200 KB y 5 como máximo) y `jsonSkipped` (con `refused_here`). Hasta 600 enlaces; los que tienen la misma URL se fusionan conservando el primer texto no vacío |
+| Tiempo | 25 s de JavaScript en el renderer, más 3 s por página adicional de `maxPages` (máximo 60 s); 40 s de espera en el cliente, más lo mismo (`RENDER_TIMEOUT`) |
 | Sin renderer | `RENDERER_URL` vacío u `off`, o el servicio no responde (DNS, conexión rechazada): `RENDERER_NOT_CONFIGURED`. El scout lo trata como "sin render" y sigue |
 
 Códigos de error de `render_url`: `RENDERER_NOT_CONFIGURED`, `INVALID_URL`, `URL_NOT_ALLOWED`, `REDIRECT_NOT_ALLOWED`, `RENDER_TIMEOUT`, `RENDERER_BAD_RESPONSE` y los del renderer (`SSRF_BLOCKED`, `NAVIGATION_BLOCKED`, `DOWNLOAD_BLOCKED`, `HTTP_ERROR`, `RENDERER_BUSY`…).
@@ -690,7 +736,7 @@ Cada llamada al LLM es un paso `MODEL` con `model` (el modelo real que respondi�
 | Clave de `configuration` | Por defecto | Uso |
 |---|---|---|
 | `implementation` | — | `prospector` |
-| `tool_policy` | — | `find_company`, `upsert_company`, `create_signal`, `create_hypothesis`, `create_agent_run_summary`, `fetch_url` (máximo 42 llamadas: páginas, PDF, redirecciones, fichas y comprobación de dominios) y `render_url` (máximo 15: catálogo y fichas); techo `LOW_WRITE`; 640 llamadas por ejecución |
+| `tool_policy` | — | `find_company`, `upsert_company`, `create_signal`, `create_hypothesis`, `create_agent_run_summary`, `fetch_url` (máximo 230 llamadas: páginas, PDF, redirecciones, fichas y comprobación de dominios) y `render_url` (máximo 115: catálogo y fichas); techo `LOW_WRITE`; 1 500 llamadas por ejecución (el límite real de una ejecución scout es su presupuesto de tiempo) |
 | `min_confidence` | `0.5` | Umbral para escribir en Twenty |
 | `usd_to_eur` | `0.86` | Conversión del coste para Twenty |
 | `model_options` | `{}` | `thinking_level` (Gemini 3.x), `thinking_budget` (Gemini 2.5), `temperature` |
@@ -698,13 +744,16 @@ Cada llamada al LLM es un paso `MODEL` con `model` (el modelo real que respondi�
 | `task_name` | `daily-event-prospecting` | Campo `task` del `agentRunSummary` (modo directo) |
 | `scout.task_name` | `weekly-event-scouting` | Campo `task` del `agentRunSummary` (modo scout) |
 | `scout.max_events` | `3` | Ferias por ejecución (máximo 3) |
-| `scout.max_exhibitors_per_event` | `60` | Expositores evaluados por feria (máximo 100) |
+| `scout.max_exhibitors_per_event` | `100` | Expositores evaluados por feria (máximo 200) |
 | `scout.max_fetches` | `18` | Descargas por ejecución (páginas y PDF) |
 | `scout.max_pages_per_event` | `3` | Páginas leídas por feria (portada → catálogo → lista); los renders y los PDF enlazados no cuentan |
 | `scout.max_renders` | `4` | Renders JavaScript (`render_url`) por ejecución. `0` = nunca renderizar |
 | `scout.max_pdfs_per_event` | `2` | PDF de catálogo o listado enlazados que se leen por feria (máximo 2) |
-| `scout.max_catalog_pages` | `3` | Páginas del listado de expositores por feria, la primera incluida (máximo 5). `1` = solo la primera |
-| `scout.max_profile_lookups` | `10` | Fichas de expositor abiertas por ejecución para buscar la web de los relevantes sin dominio (máximo 30). `0` = no abrir fichas |
+| `scout.max_catalog_pages` | `10` | Páginas del listado de expositores por feria, la primera incluida (máximo 20). `1` = solo la primera |
+| `scout.max_profile_lookups` | `60` | Fichas de expositor abiertas por ejecución para buscar la web de los relevantes sin dominio (máximo 100). `0` = no abrir fichas |
+| `scout.profile_concurrency` | `2` | Fichas abiertas a la vez (1-4; el renderer hace 2 renders simultáneos) |
+| `scout.time_budget_ms` | `1200000` | Presupuesto de tiempo de la ejecución scout, en ms (20 min; mínimo 10 s, máximo 25 min) |
+| `scout.capture_json` | `true` | Pedir al renderer las respuestas JSON de las páginas de catálogo (atajo de la API JSON). `false` = solo el texto |
 | `scout.max_redirect_resolutions` | `3` | Redirecciones de grounding resueltas para conocer su dominio |
 | `scout.event_signal_confidence` | `0.5` | Confianza de la señal de evento sin expositores |
 | `scout.verify_unsourced_by_fetch` | `true` | Sin fuentes de grounding, aceptar la URL si la página corrobora la feria. `false` = estricto |
@@ -721,12 +770,15 @@ Es idempotente:
 - **Agente `Prospector`**: si no existe, lo crea con la versión 1 `ACTIVE` (`model_provider = gemini`, `model = gemini-flash-latest`, `thinking_level = low`, la tool policy anterior y el prompt en español con los diferenciales de PubliEXPE: ofertas, trato cercano, taller propio y precio). Si existe y su versión activa es distinta, añade una versión nueva, la activa y pasa la anterior a `DEPRECATED`. Si es igual, no cambia nada.
 - **Tarea `daily-event-prospecting`**: `CRON 0 8 * * *` en `Europe/Madrid`, `timeout_ms = 900000`, sin reintentos, con `test/fixtures/feria-ejemplo.json` como `default_input`. Si cambia, se actualiza y se guarda una `TaskDefinitionVersion` nueva.
 - **Tarea `weekly-event-scouting`** (modo scout): `CRON 30 7 * * 1` (lunes 07:30) en `Europe/Madrid`, `timeout_ms = 1800000`, sin reintentos, `default_input = { "sector": "alimentación y bebidas", "region": "España", "horizon_months": 6 }`.
+- **Agente `BajasAgent` y tarea `process-unsubscribes`**: `CRON 0 */2 * * *` en `Europe/Madrid`, sin LLM (`model_provider = stub`), tool policy `get_note` + `update_note` (una escritura por ejecución). Consulta [Inbound de bajas](#inbound-de-bajas).
 
 Las dos tareas usan la misma versión del agente. La versión del seed añade `fetch_url` a la tool policy, la configuración `scout` y la skill `event-source-discovery` v1, y sube la skill `prospector-event-exhibitors` a v2 (datos en bloques `DATOS_NO_CONFIABLES`): al ejecutar el seed sobre una BD existente se crea una versión nueva del agente.
 
 La versión actual del seed añade `render_url` a la tool policy, sube los límites del scout (`max_fetches` 18, `max_pages_per_event` 3, `max_renders` 4, `max_pdfs_per_event` 2) y la skill `event-source-discovery` a v2 (PDF y páginas renderizadas): ejecuta `pnpm seed` después de desplegar para crear la versión nueva. Hasta entonces, la versión activa no tiene `render_url` en su política: el scout lee PDF pero no renderiza (`render.disabled = TOOL_NOT_ALLOWED`).
 
 La versión de la tanda 5 sube `max_exhibitors_per_event` a 60, añade `max_catalog_pages` (3) y `max_profile_lookups` (10), amplía la tool policy (`fetch_url` 42, `render_url` 15, 640 llamadas) y sube la skill `event-source-discovery` a v3 (paginación y fichas). Necesita el renderer con `max_pages` (imagen `pxos-renderer` reconstruida desde esta rama). Con un renderer anterior, el scout lee solo la primera página y, como los enlaces del listado llegan sin texto, no encuentra las fichas.
+
+La versión de la tanda 6 (catálogo completo) sube `max_catalog_pages` a 10, `max_profile_lookups` a 60 y `max_exhibitors_per_event` a 100, añade `time_budget_ms` (20 min), `profile_concurrency` (2) y `capture_json` (`true`), amplía la tool policy (`fetch_url` 230, `render_url` 115, 1 500 llamadas) y sube la skill `event-source-discovery` a v4. Para el atajo JSON y más de 5 páginas necesita pxos-renderer 0.2 (imagen reconstruida desde esta rama); con uno anterior, el scout lee 5 páginas y extrae el texto.
 
 > **Importante:** ejecuta el seed después de desplegar este código. Un runtime anterior trataría la entrada de `weekly-event-scouting` como entrada directa no válida y cerraría la ejecución del lunes como `FAILED`.
 
@@ -784,6 +836,94 @@ grep '^GEMINI_API_KEY=' ../../deployments/.env >> .env
 pnpm vitest run test/integration/prospector-live.test.ts
 ```
 
+## Inbound de bajas
+
+Primera pieza del Inbound Manager ([LLD v0.1, sección 10.2](../../docs/LLD-0.1-publiexpe-commercial-os.md#102-inbound-y-conversaciones)): procesa las peticiones de baja de forma automática, sin LLM y sin aprobación (cumplimiento). Todo lo que no es una baja se ignora; el triaje general del inbound llegará después.
+
+> **Importante:** este componente solo **lee** correo y solo **añade** líneas a la lista de supresión. No envía, responde, reenvía, mueve ni borra mensajes, y el runtime no usa SMTP en ningún sitio.
+
+### Cómo funciona
+
+La tarea `process-unsubscribes` (`CRON 0 */2 * * *`, `Europe/Madrid`, `max_concurrency = 1`) ejecuta el **BajasAgent** (`implementation = "inbound_bajas"`):
+
+1. Conecta por IMAP con TLS a `IONOS_IMAP_HOST` y abre la carpeta con `EXAMINE` (solo lectura).
+1. Busca los mensajes con UID mayor que el último procesado (tabla `inbound_state`). En la primera ejecución, o si el servidor cambia `UIDVALIDITY`, busca los recibidos desde `initial_since` (`2026-10-06`, inicio del warm-up).
+1. Descarga cada mensaje con `BODY.PEEK[]` (no lo marca como leído), hasta `max_message_bytes` (256 KB) y `max_messages_per_run` (200) por ejecución. Si hay más, la siguiente ejecución continúa.
+1. Clasifica cada mensaje con reglas fijas (consulta [Señales](#señales-de-baja)).
+1. Si hay bajas, lee la nota `Lista de supresión — NO contactar` (`get_note`), descarta las direcciones que ya están (o cuyo `@dominio` está) y añade al final una línea por dirección nueva con `update_note`:
+
+   ```
+   email — AAAA-MM-DD — baja solicitada (asunto: "...")
+   ```
+
+   La fecha es la de recepción en el servidor (`INTERNALDATE`), en `Europe/Madrid`. El asunto se limpia (sin comillas, `@`, ni sintaxis markdown o HTML) y se recorta a 80 caracteres.
+
+1. Solo si la escritura en Twenty ha ido bien, guarda el último UID. Si Twenty falla, el cursor no avanza y la siguiente ejecución lo reintenta (la deduplicación lo hace idempotente).
+
+El TaskRun y su trace guardan los contadores (`messages_reviewed`, `bajas_detected`, `new_entries`, `duplicates`, `ignored_*`, `parse_errors`, `marked_seen`). Del correo ignorado el trace solo guarda el UID y el motivo; de la nota, solo su tamaño.
+
+Sin `IONOS_IMAP_USER` o `IONOS_IMAP_PASSWORD`, la ejecución termina `COMPLETED` con `outcome = SKIPPED` y el motivo (`IMAP no configurado: faltan ...`), sin leer nada.
+
+### Señales de baja
+
+El cuerpo del correo es **dato no confiable**: no se interpreta como instrucciones. La dirección que se añade sale siempre de la cabecera `From` parseada, nunca del cuerpo ni de `Reply-To`.
+
+| Señal | Regla |
+|---|---|
+| `recipient_baja_address` | `baja@publiexpe.info` aparece en `To`, `Cc`, `Delivered-To`, `X-Forwarded-To`, `X-Original-To`, `Envelope-To` o `Resent-To` |
+| `subject_keyword` | El asunto, sin prefijos `Re:`/`RV:`/`Fwd:`, es exactamente `baja`, `stop`, `unsubscribe`, `no contactar`... o contiene la palabra `baja` o `unsubscribe`, o una de las frases de baja |
+| `body_phrase` | El texto que escribió el remitente contiene una frase como "darme de baja", "me deis de baja", "solicito la baja", "quitarme de la lista", "no me contactéis", "no volváis a escribir", "unsubscribe", "remove me from" |
+| `body_keyword_only` | La primera línea del texto es solo `BAJA`, `STOP` o `Unsubscribe` |
+
+Reglas comunes:
+
+- Las frases se comparan en minúsculas, sin tildes y con límites de palabra.
+- Del cuerpo se descarta el texto citado (líneas `>`, el bloque "El ... escribió:" y la cabecera "De: / Enviado:" de Outlook), nuestro pie de baja y la firma `-- `. Se analizan como máximo 4.000 caracteres.
+- Nunca es baja: el correo automático (`Auto-Submitted`, `List-Unsubscribe`, `List-Id`, `Precedence: bulk`, rebotes `multipart/report`, remitentes `mailer-daemon`, `no-reply`...), el de nuestros dominios (`publiexpe.info`, `publiexpe.com`) y el que no tiene un `From` válido.
+
+### Buzón: lo único que se modifica
+
+Por defecto, nada. Con `mark_seen: true` en la configuración de la versión, el agente añade el flag `\Seen` (y solo ese) a los mensajes que ha procesado como baja. El resto no se toca nunca. El valor por defecto es `false` para que un falso positivo no oculte la respuesta de un cliente en la bandeja.
+
+### Configuración de la versión
+
+| Clave | Por defecto | Uso |
+|---|---|---|
+| `suppression_note_id` | `6658e882-60f9-427f-808d-dc5c255570dc` | Nota de Twenty con la lista |
+| `suppression_note_title` | `Lista de supresión — NO contactar` | `update_note` se niega a escribir si el título no coincide |
+| `unsubscribe_addresses` | `["baja@publiexpe.info"]` | Destinatarios que significan baja |
+| `own_domains` | `["publiexpe.info", "publiexpe.com"]` | Remitentes que nunca son baja |
+| `imap_mailbox` | `INBOX` | Carpeta (gana sobre `IONOS_IMAP_MAILBOX`) |
+| `initial_since` | `2026-10-06` | Fecha desde la que se lee la primera vez |
+| `max_messages_per_run` / `max_message_bytes` | `200` / `262144` | Límites por ejecución y por mensaje |
+| `mark_seen` | `false` | Marca `\Seen` en las bajas procesadas |
+
+### Tabla `inbound_state`
+
+Migración `0004_inbound`. Un cursor por `(tenant_id, consumer, mailbox)`; se actualiza en sitio (el historial son los TaskRuns).
+
+| Columna | Tipo | Uso |
+|---|---|---|
+| `tenant_id` | `text` | Tenant |
+| `consumer` | `text` | Lector del buzón: `bajas` (el triaje general tendrá el suyo) |
+| `mailbox` | `text` | `usuario@host/CARPETA` (sin contraseña) |
+| `uid_validity` | `bigint` | `UIDVALIDITY` de la carpeta cuando se guardó el cursor |
+| `last_uid` | `bigint` | Último UID procesado; nunca retrocede con el mismo `UIDVALIDITY` |
+| `last_run_at` | `timestamptz` | Última ejecución que avanzó el cursor |
+| `last_summary` | `jsonb` | Contadores de esa ejecución (sin contenido de correos) |
+
+### Puesta en marcha
+
+1. Añade `IONOS_IMAP_USER` y `IONOS_IMAP_PASSWORD` (y, si cambian, `IONOS_IMAP_HOST`/`IONOS_IMAP_PORT`) al entorno del runtime. En Docker, el servicio `pxos-runtime` de `deployments/docker-compose.yml` tiene que pasarlas en `environment` (consulta [Docker](#docker)).
+1. Ejecuta `pnpm db:migrate` (o arranca con `RUN_MIGRATIONS=true`) y `pnpm seed`.
+1. Revisa la primera ejecución: `GET /task-runs/{id}` muestra los contadores y las direcciones añadidas.
+
+### Tests
+
+- `test/unit/inbound-bajas.test.ts`: clasificación con fixtures RFC 822 (incluidos citas, Outlook, HTML en base64, newsletters, rebotes, autorrespuestas e intentos de inyección), formato y deduplicación de la lista, cursor, degradación sin credenciales y el cliente imapflow real contra `FakeImapServer` (comprueba que solo se envían `EXAMINE`, `UID SEARCH` y `UID FETCH ... BODY.PEEK[]`).
+- `test/integration/inbound-bajas.test.ts` (PostgreSQL): seed, `process-unsubscribes` → `RunProcessor` → BajasAgent → servidor IMAP falso → nota en FakeTwenty → `inbound_state` y trace.
+- `test/integration/inbound-bajas-live.test.ts`: con `IONOS_IMAP_*` en el entorno o en `.env`, conecta al buzón real en solo lectura, lista y clasifica **sin escribir nada** (ni en el buzón ni en Twenty) e imprime lo que añadiría. Con `TWENTY_API_KEY`, prueba además `update_note` sobre una nota de prueba `[TEST] pxos-it ...` (nunca sobre la lista real). Sin credenciales se salta.
+
 ## Docker
 
 El `Dockerfile` es multi-stage (build con pnpm, imagen final solo con dependencias de producción, usuario `node`, healthcheck sobre `/health`).
@@ -812,6 +952,10 @@ Quien mantenga `deployments/` puede añadir este servicio a la red `pxos-net`:
       GEMINI_MODEL: ${GEMINI_MODEL:-}
       TWENTY_BASE_URL: http://pxos-twenty:3000
       TWENTY_API_KEY: ${TWENTY_API_KEY:-}
+      # Inbound de bajas (solo lectura IMAP). Sin ellas, process-unsubscribes sale SKIPPED.
+      IONOS_IMAP_HOST: ${IONOS_IMAP_HOST:-imap.ionos.es}
+      IONOS_IMAP_USER: ${IONOS_IMAP_USER:-}
+      IONOS_IMAP_PASSWORD: ${IONOS_IMAP_PASSWORD:-}
     ports:
       - "127.0.0.1:4020:4020"
     depends_on:
@@ -1059,7 +1203,7 @@ Una llamada a Gemini por borrador. En la prueba en vivo: 0,0021 USD (0,0018 €)
 - Exponer `EntityLocks` a las tools (el helper está listo en `RunProcessor.locks`).
 - Política de catch-up si el scheduler estuvo parado: hoy, al volver, se procesa el slot pendiente (tarde, con su `scheduled_at` original) y los demás slots perdidos se omiten.
 - Tools pendientes del registro del MVP-0: `search_web` (hoy la búsqueda es el grounding de Gemini, un paso `MODEL`; el LLD prevé fuentes ligadas a pasos `TOOL`), `create_activity` y las del Catalog Service.
-- Modo scout: la ficha de cada expositor se abre en serie (unos 10-12 s por ficha renderizada). Con muchos relevantes, `max_profile_lookups` deja sin dominio a los de menor confianza. Leer la API JSON del catálogo, cuando la haya, sería más barato que renderizar listado y fichas.
+- Modo scout: cada ficha renderizada tarda unos 10-12 s (2 a la vez). Con muchos relevantes, el presupuesto de tiempo deja sin dominio a los de menor confianza. La API JSON de la ficha (Feria Valencia: `/api/exhibitor/get?exhiid=`) podría dar la web sin renderizar la ficha. El agente no recibe el timeout de su tarea: `time_budget_ms` se configura aparte.
 - Integrar `pxos-renderer` en `deployments/docker-compose.yml` (fragmento en `services/renderer/docker-compose.renderer.yml`) y, opcionalmente, el perfil seccomp de Playwright para el sandbox de Chromium.
 - `GeminiProvider.stream()` no es incremental: devuelve la respuesta completa en un solo fragmento.
 - Validación de URL en campos de texto libre contra las fuentes del trace (LLD v0.2 sección 10.4, punto 4) en el modo directo: el modo scout ya la aplica con su `SourceLedger`.
@@ -1067,4 +1211,4 @@ Una llamada a Gemini por borrador. En la prueba en vivo: 0,0021 USD (0,0018 €)
 - Borradores de email: disparar también con `EDITED` (necesita una segunda tarea o un operador OR en el filtro), plantillas por sector y registro de si el comercial envió el borrador. Entrada de eventos externos (Twenty, n8n) por HTTP y entrega a n8n por webhook.
 - Harness, skills, memoria y verificador reales; promote, rollback y evaluate.
 - Export de los contratos zod a JSON Schema versionado en `schemas/`.
-- Métricas: AC-17 y AC-18 piden hipótesis `HOT`, pero el resumen de ejecución solo cuenta hipótesis creadas; falta el desglose por prioridad (en Twenty o en `output.counters`). El dashboard no filtra los agentes de prueba (`[TEST] …`) del tenant.
+- Métricas: AC-17 y AC-18 piden hipótesis `HOT`, pero el resumen de ejecución solo cuenta hipótesis creadas; falta el desglose por prioridad (en Twenty o en `output.counters`). El dashboard oculta por defecto los agentes `ARCHIVED` (los de prueba se archivan con `pnpm cleanup:archive-test-agents`); `include_archived=true` los muestra.

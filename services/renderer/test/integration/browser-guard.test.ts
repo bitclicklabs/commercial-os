@@ -106,6 +106,29 @@ describe.skipIf(skip)('renderer with a real browser: egress guard', () => {
           }
           setTimeout(paint, 300);
         </script>`)
+      // Pager whose "next" stays enabled on the last page and only repaints it with another counter.
+      .page('http://public.example:8080/stuck', `<title>Atascado</title><div id="app"><h1>Catálogo de expositores</h1><ul id="rows"></ul>
+        <nav class="pagination"><span id="info"></span><button aria-label="Siguiente" onclick="go(cur+1)">›</button></nav></div>
+        <script>
+          const all = Array.from({ length: 30 }, (_, i) => 'EMPRESA ATASCADA ' + (i + 1));
+          let cur = 1, clicks = 0;
+          function go(n) { clicks++; cur = Math.min(n, 2); setTimeout(paint, 150); }
+          function paint() {
+            document.getElementById('rows').innerHTML = all.slice((cur - 1) * 20, cur * 20).map((n) => '<li>' + n + '</li>').join('');
+            document.getElementById('info').textContent = ((cur - 1) * 20 + 1) + ' - ' + Math.min(cur * 20, 30) + ' de 30 · ' + clicks;
+          }
+          setTimeout(paint, 300);
+        </script>`)
+      // Catalog SPA that loads its list from a same-origin JSON API (and calls a third-party API too).
+      .page('http://public.example:8080/spa', `<title>SPA</title><div id="app"><h1>Catálogo de expositores</h1><ul id="l"></ul></div>
+        <script>
+          fetch('/api/session.json').then(r => r.json()).then(() => fetch('/api/puisearch', { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{"rows":999}' }))
+            .then(r => r.json()).then(j => { for (const e of j.data) { const li = document.createElement('li'); li.textContent = e.name; document.getElementById('l').appendChild(li); } });
+          fetch('http://www.public.example:8080/api/other.json').catch(() => {});
+        </script>`)
+      .page('http://public.example:8080/api/session.json', { headers: { 'content-type': 'application/json' }, body: JSON.stringify({ token: 'anonimo' }) })
+      .page('http://public.example:8080/api/puisearch', { headers: { 'content-type': 'application/json;charset=UTF-8' }, body: JSON.stringify({ totalRecords: 3, data: [{ exhibitor: 1, name: 'CONSERVAS ORTIZ' }, { exhibitor: 2, name: 'BODEGAS SOL' }, { exhibitor: 3, name: 'QUESOS DEL VALLE' }] }) })
+      .page('http://www.public.example:8080/api/other.json', { headers: { 'content-type': 'application/json' }, body: JSON.stringify([{ name: 'OTRO 1' }, { name: 'OTRO 2' }]) })
       .page('http://public.example:8080/loop', '<title>Bucle</title><script>while (true) {}</script>')
       .page('http://public.example:8080/doc.pdf', { headers: { 'content-type': 'application/pdf', 'content-disposition': 'attachment; filename="doc.pdf"' }, body: '%PDF-1.4' });
     renderer = new Renderer({ egress: web.deps(), jsTimeoutMs: 8_000 });
@@ -168,6 +191,27 @@ describe.skipIf(skip)('renderer with a real browser: egress guard', () => {
     const one = await renderer.render({ url: 'http://public.example:8080/paged', waitMs: 0, minTextChars: 100 });
     expect(one.pages_read).toBe(1);
     expect(one.text).not.toContain('EXPOSITOR PAGINADO 21');
+  }, 40_000);
+
+  it('max_pages: stops early when a page adds nothing new (the pager repaints the last page), and reports why', async () => {
+    const r = await renderer.render({ url: 'http://public.example:8080/stuck', waitMs: 0, minTextChars: 100, maxPages: 10 });
+    expect(r.pages_read).toBe(2);
+    expect(r.pagination_stop).toBe('no_new_content');
+    expect(r.text).toContain('EMPRESA ATASCADA 30');
+    const paged = await renderer.render({ url: 'http://public.example:8080/paged', waitMs: 0, minTextChars: 100, maxPages: 10 });
+    expect(paged.pages_read).toBe(3);
+    expect(['no_next_control', 'not_changed']).toContain(paged.pagination_stop);
+  }, 60_000);
+
+  it('capture_json: returns the same-origin JSON list the SPA loaded, never a third-party one nor list-less answers', async () => {
+    const r = await renderer.render({ url: 'http://public.example:8080/spa', waitMs: 500, minTextChars: 20, captureJson: true });
+    expect(r.text).toContain('QUESOS DEL VALLE');
+    expect(r.json_responses).toHaveLength(1);
+    expect(r.json_responses![0]).toMatchObject({ url: 'http://public.example:8080/api/puisearch', method: 'POST', status: 200, list_length: 3 });
+    expect((r.json_responses![0]!.body as { data: unknown[] }).data).toHaveLength(3);
+    expect(r.json_skipped).toMatchObject({ no_list: 1, cross_origin: 1 });
+    const plain = await renderer.render({ url: 'http://public.example:8080/spa', waitMs: 500, minTextChars: 20 });
+    expect(plain.json_responses).toBeUndefined();
   }, 40_000);
 
   it('a redirect to an internal address blocks the navigation', async () => {

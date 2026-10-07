@@ -65,11 +65,12 @@ export function desiredProspectorVersion() {
         allow: [...PROSPECTOR_TOOLS],
         max_risk_level: 'LOW_WRITE',
         // Direct: 50 exhibitors x (upsert + signal + hypothesis, or find) + summary.
-        // Scout: 3 fairs x 60 exhibitors x 3 + fetches + renders + profiles + event signals + summary.
-        max_calls_per_execution: 640,
-        // fetch_url: 18 pages/PDFs + 3 grounding redirects (+1) + 10 profiles + 10 domain checks;
-        // render_url: 4 renders (+1) + 10 profiles.
-        max_calls_per_tool: { fetch_url: 42, render_url: 15 },
+        // Scout: 3 fairs x 100 exhibitors x 3 writes + fetches + renders + profiles + event signals + summary.
+        // The real limit of a scout run is its time budget (scout.time_budget_ms).
+        max_calls_per_execution: 1_500,
+        // fetch_url: 18 pages/PDFs + 3 grounding redirects (+1) + 100 profiles + 100 domain checks;
+        // render_url: 4 catalog renders (+1 retry, +1 older-renderer retry each) + 100 profiles.
+        max_calls_per_tool: { fetch_url: 230, render_url: 115 },
       },
       min_confidence: 0.5,
       usd_to_eur: DEFAULT_USD_TO_EUR,
@@ -78,13 +79,16 @@ export function desiredProspectorVersion() {
       scout: {
         task_name: SCOUT_TASK_NAME,
         max_events: 3,
-        max_exhibitors_per_event: 60,
+        max_exhibitors_per_event: 100,
         max_fetches: 18,
         max_pages_per_event: 3,
         max_renders: 4,
         max_pdfs_per_event: 2,
-        max_catalog_pages: 3,
-        max_profile_lookups: 20,
+        max_catalog_pages: 10,
+        max_profile_lookups: 100,
+        profile_concurrency: 2,
+        time_budget_ms: 1_200_000,
+        capture_json: true,
         max_redirect_resolutions: 3,
         event_signal_confidence: 0.5,
         verify_unsourced_by_fetch: true,

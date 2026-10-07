@@ -177,6 +177,16 @@ export class FakeTwenty {
       const rec = this.seed(plural, { ...defaults, ...body });
       return json(201, { data: { [`create${SINGULAR[plural]}`]: rec } });
     }
+    if (method === 'PATCH' && id && body) {
+      const rec = table.find((r) => r.id === id);
+      if (!rec) return json(404, { statusCode: 404, error: 'NotFoundException', messages: ['Record not found'] });
+      if (plural === 'notes' && body.bodyV2) {
+        const v2 = body.bodyV2 as Rec;
+        body.bodyV2 = { markdown: v2.markdown ?? null, blocknote: v2.blocknote ?? (v2.markdown ? '[blocknote]' : null) };
+      }
+      Object.assign(rec, body, { updatedAt: new Date().toISOString() });
+      return json(200, { data: { [`update${SINGULAR[plural]}`]: rec } });
+    }
     return json(405, { messages: ['Method not supported by fake'] });
   };
 

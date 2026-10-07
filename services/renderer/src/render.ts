@@ -13,9 +13,13 @@
  * (127.0.0.1:9, loopback included) so any request that escaped interception fails
  * instead of reaching the network, and without UDP WebRTC.
  *
- * Time: a 25 s budget for navigation + JavaScript + waits; the context is force-closed
- * when it runs out.
+ * Time: a 25 s budget for navigation + JavaScript + waits, plus 3 s per extra list page
+ * asked with `maxPages` (at most 60 s); the context is force-closed when it runs out.
+ *
+ * `captureJson`: the JSON answers of the page's own origin that hold a list (catalog
+ * SPAs load their exhibitor list from an API) are returned too, at most 5 of 200 KB.
  */
+import { createHash } from 'node:crypto';
 import { chromium, type Browser, type Page, type Route } from 'playwright';
 import {
   checkTarget,
@@ -33,7 +37,7 @@ export const RENDER_JS_TIMEOUT_MS = 25_000;
 export const RENDER_MAX_CHARS = 40_000;
 export const RENDER_DEFAULT_WAIT_MS = 2_500;
 export const RENDER_MAX_WAIT_MS = 10_000;
-const MAX_LINKS = 300;
+const MAX_LINKS = 600;
 const MAX_REQUESTS = 400;
 const MAX_RESPONSE_BYTES = 5 * 1024 * 1024;
 const MAX_TOTAL_BYTES = 30 * 1024 * 1024;
@@ -67,6 +71,121 @@ export interface RenderRequest {
    * shares with page 1, after a `[Página N del listado]` marker.
    */
   maxPages?: number;
+  /**
+   * Return the JSON answers the page received while rendering (catalog SPAs load their
+   * list from a JSON API): only XHR/fetch answers of the page's OWN origin, 2xx,
+   * `application/json` (or `+json`), at most 200 KB each, that contain a list of
+   * objects; the 5 with the longest list are kept. Untrusted data, like the text.
+   */
+  captureJson?: boolean;
+}
+
+/** One JSON answer captured during the render (`captureJson`). */
+export interface CapturedJson {
+  url: string;
+  method: string;
+  status: number;
+  bytes: number;
+  /** Length of the longest array of objects inside the body (how the 5 kept are chosen). */
+  list_length: number;
+  body: unknown;
+}
+
+export const JSON_CAPTURE_MAX_RESPONSES = 5;
+export const JSON_CAPTURE_MAX_BYTES = 200 * 1024;
+/** Arrays shorter than this are not "a list" (config objects, a single record...). */
+const JSON_LIST_MIN_LENGTH = 2;
+const JSON_CONTENT_TYPE = /^\s*application\/(?:[\w.-]+\+)?json\s*(?:;|$)/i;
+
+/**
+ * Length of the longest array whose elements are (mostly) plain objects, searched up to
+ * 6 levels deep (`{ data: [...] }`, `{ result: { items: [...] } }`...). 0 = no list.
+ */
+export function jsonListLength(value: unknown, depth = 0): number {
+  if (depth > 6 || value === null || typeof value !== 'object') return 0;
+  if (Array.isArray(value)) {
+    const objects = value.filter((v) => v !== null && typeof v === 'object' && !Array.isArray(v)).length;
+    let best = value.length > 0 && objects / value.length >= 0.8 ? objects : 0;
+    for (const v of value.slice(0, 50)) best = Math.max(best, jsonListLength(v, depth + 1));
+    return best;
+  }
+  let best = 0;
+  for (const v of Object.values(value as Record<string, unknown>).slice(0, 200)) best = Math.max(best, jsonListLength(v, depth + 1));
+  return best;
+}
+
+/**
+ * Keeps the JSON answers worth returning (`captureJson`). Pure (no browser): every
+ * answer the page receives is offered and the verdict says why it was kept or not.
+ */
+export class JsonCapture {
+  private readonly kept: Array<CapturedJson & { order: number }> = [];
+  private offered = 0;
+  /** Same answer received twice (the SPA repeats the list call): kept once. */
+  private readonly digests = new Set<string>();
+  readonly skipped: Record<'cross_origin' | 'not_json' | 'status' | 'too_large' | 'invalid_json' | 'no_list' | 'evicted' | 'duplicate', number> = {
+    cross_origin: 0,
+    not_json: 0,
+    status: 0,
+    too_large: 0,
+    invalid_json: 0,
+    no_list: 0,
+    evicted: 0,
+    duplicate: 0,
+  };
+
+  constructor(
+    /** Origin of the rendered page: answers from any other origin are never kept. */
+    private readonly origin: string,
+    private readonly maxResponses = JSON_CAPTURE_MAX_RESPONSES,
+    private readonly maxBytes = JSON_CAPTURE_MAX_BYTES,
+  ) {}
+
+  offer(r: { url: string; method: string; resourceType: string; status: number; contentType: string | undefined; body: Buffer }): 'kept' | keyof JsonCapture['skipped'] | 'ignored' {
+    if (r.resourceType !== 'xhr' && r.resourceType !== 'fetch') return 'ignored';
+    let origin: string;
+    try {
+      origin = new URL(r.url).origin;
+    } catch {
+      return 'ignored';
+    }
+    const contentType = r.contentType ?? '';
+    // text/html, scripts, CSS...: not counted. "json" in an unusual type (text/json, x-json): counted.
+    if (!JSON_CONTENT_TYPE.test(contentType)) return /json/i.test(contentType) ? this.skip('not_json') : 'ignored';
+    if (origin !== this.origin) return this.skip('cross_origin');
+    if (r.status < 200 || r.status >= 300) return this.skip('status');
+    if (r.body.length > this.maxBytes) return this.skip('too_large');
+    let body: unknown;
+    try {
+      body = JSON.parse(r.body.toString('utf8'));
+    } catch {
+      return this.skip('invalid_json');
+    }
+    const listLength = jsonListLength(body);
+    if (listLength < JSON_LIST_MIN_LENGTH) return this.skip('no_list');
+    const digest = createHash('sha256').update(r.body).digest('hex');
+    if (this.digests.has(digest)) return this.skip('duplicate');
+    this.digests.add(digest);
+    const order = this.offered++;
+    this.kept.push({ url: r.url, method: r.method, status: r.status, bytes: r.body.length, list_length: listLength, body, order });
+    // Longest lists first; same length: the earliest answer.
+    this.kept.sort((a, b) => b.list_length - a.list_length || a.order - b.order);
+    if (this.kept.length > this.maxResponses) {
+      const dropped = this.kept.pop()!;
+      this.skipped.evicted += 1;
+      if (dropped.order === order) return 'evicted';
+    }
+    return 'kept';
+  }
+
+  private skip(why: keyof JsonCapture['skipped']): keyof JsonCapture['skipped'] {
+    this.skipped[why] += 1;
+    return why;
+  }
+
+  results(): CapturedJson[] {
+    return this.kept.map(({ order: _o, ...rest }) => rest);
+  }
 }
 
 export interface RenderResult {
@@ -87,13 +206,44 @@ export interface RenderResult {
   pages_read: number;
   /** URL of each page read (the same URL repeated for client-side pagination). */
   page_urls: string[];
+  /** Why the client-side pagination stopped (only with `max_pages` > 1). */
+  pagination_stop?: PaginationStop;
+  /** JSON answers captured (`capture_json` only). */
+  json_responses?: CapturedJson[];
+  /** Counters of the JSON answers not kept (`capture_json` only). */
+  json_skipped?: JsonCapture['skipped'];
 }
 
-export const RENDER_MAX_PAGES = 5;
+export type PaginationStop = 'max_pages' | 'no_next_control' | 'not_changed' | 'repeated_page' | 'no_new_content' | 'budget' | 'max_chars';
+
+export const RENDER_MAX_PAGES = 20;
+/** Extra JS budget per list page after the first (clicks + waits), on top of the 25 s. */
+export const RENDER_PAGE_EXTRA_MS = 3_000;
+/** Ceiling of the JS budget of one render, pagination included. */
+export const RENDER_MAX_JS_TIMEOUT_MS = 60_000;
 /** Time kept to read a page after a click (the read itself needs ~1-2 s). */
 const PAGE_READ_RESERVE_MS = 3_500;
 /** Wait for the list to change after clicking "next". */
 const PAGE_CHANGE_TIMEOUT_MS = 6_000;
+
+/** JS budget of one render: `base` (25 s) plus 3 s per list page after the first, at most 60 s. */
+export function renderBudgetMs(maxPages: number, base = RENDER_JS_TIMEOUT_MS): number {
+  const pages = Math.min(Math.max(Math.floor(maxPages), 1), RENDER_MAX_PAGES);
+  return Math.min(base + RENDER_PAGE_EXTRA_MS * (pages - 1), Math.max(base, RENDER_MAX_JS_TIMEOUT_MS));
+}
+
+/** Lines that carry content (at least 3 letters): page counters such as "21 - 40 de 91" or "2" do not count. */
+function contentLines(text: string): string[] {
+  return text
+    .split('\n')
+    .map((l) => l.trim())
+    .filter((l) => (l.match(/\p{L}/gu)?.length ?? 0) >= 3);
+}
+
+/** True when `body` (a page after the first) adds no content line that the pages already read did not have. */
+export function addsNoNewContent(seen: ReadonlySet<string>, body: string): boolean {
+  return contentLines(body).every((l) => seen.has(l));
+}
 
 /**
  * Marks (data-pxos-next) the most likely "next page" control of the page, or returns
@@ -399,8 +549,13 @@ export class Renderer {
     // Launching Chromium (cold start: seconds in a container) is not part of the JS budget.
     const browser = await this.getBrowser();
     const started = Date.now();
+    // First page (navigation, hydration, lazy scroll): the base 25 s. Pagination may use the
+    // extra time of the per-request budget (3 s per page after the first, at most 60 s).
+    const budgetMs = renderBudgetMs(maxPages, this.jsTimeoutMs);
     const deadline = started + this.jsTimeoutMs;
+    const totalDeadline = started + budgetMs;
     const remaining = () => Math.max(0, deadline - Date.now());
+    const remainingTotal = () => Math.max(0, totalDeadline - Date.now());
     const userAgent = `Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${browser.version()} Safari/537.36 ${RENDER_USER_AGENT_SUFFIX}`;
     const abort = new AbortController();
     const preTimer = setTimeout(() => abort.abort(), this.jsTimeoutMs);
@@ -430,6 +585,8 @@ export class Renderer {
     if (pre.res.status >= 400) throw new RenderError('HTTP_ERROR', `HTTP ${pre.res.status}`, 502);
     const navUrl = pre.url;
     const primed = new Map<string, EgressResponse>([[navUrl.toString(), pre.res]]);
+    // JSON answers of the page's own origin (the origin of the main document after its redirects).
+    const capture = req.captureJson ? new JsonCapture(navUrl.origin) : null;
     const context = await browser.newContext({
       acceptDownloads: false,
       serviceWorkers: 'block',
@@ -449,13 +606,13 @@ export class Renderer {
     const killer = setTimeout(() => {
       abort.abort();
       void context.close().catch(() => undefined);
-    }, this.jsTimeoutMs + 3_000);
+    }, budgetMs + 3_000);
     try {
       await context.routeWebSocket(/.*/, (ws) => {
         blocked += 1;
         ws.close({ code: 1008, reason: 'WebSockets are disabled in the renderer' });
       });
-      await context.route('**/*', (route) => this.serve(route, { userAgent, signal: abort.signal, count: () => ++requests, addBytes: (n) => (bytes += n) <= MAX_TOTAL_BYTES, onBlocked: () => (blocked += 1), primed }));
+      await context.route('**/*', (route) => this.serve(route, { userAgent, signal: abort.signal, count: () => ++requests, addBytes: (n) => (bytes += n) <= MAX_TOTAL_BYTES, onBlocked: () => (blocked += 1), primed, capture }));
       const page: Page = await context.newPage();
       page.on('popup', (p) => void p.close().catch(() => undefined));
       page.on('dialog', (d) => void d.dismiss().catch(() => undefined));
@@ -535,9 +692,22 @@ export class Renderer {
       // Client-side pagination: click the "next" control, wait for the list to change, read again.
       const firstText = collapse(main.text);
       const seenTexts = new Set([firstText]);
-      for (let n = 2; n <= maxPages && text.length < maxChars && remaining() > PAGE_READ_RESERVE_MS; n++) {
+      const seenLines = new Set(contentLines(text));
+      let stop: PaginationStop = 'max_pages';
+      for (let n = 2; n <= maxPages; n++) {
+        if (text.length >= maxChars) {
+          stop = 'max_chars';
+          break;
+        }
+        if (remainingTotal() <= PAGE_READ_RESERVE_MS) {
+          stop = 'budget';
+          break;
+        }
         const marked = await page.evaluate(markNextControl).catch(() => false);
-        if (!marked) break;
+        if (!marked) {
+          stop = 'no_next_control';
+          break;
+        }
         const before = await page.evaluate(() => document.body?.innerText ?? '').catch(() => '');
         // DOM click, not a pointer click: a fixed cookie banner over the pager must not block it.
         const clicked = await page
@@ -547,9 +717,12 @@ export class Renderer {
             return el !== null;
           })
           .catch(() => false);
-        if (!clicked) break;
+        if (!clicked) {
+          stop = 'no_next_control';
+          break;
+        }
         // Changed and stable (two equal samples), within the budget.
-        const until = Date.now() + Math.min(PAGE_CHANGE_TIMEOUT_MS, Math.max(0, remaining() - PAGE_READ_RESERVE_MS));
+        const until = Date.now() + Math.min(PAGE_CHANGE_TIMEOUT_MS, Math.max(0, remainingTotal() - PAGE_READ_RESERVE_MS));
         let changed = false;
         let previous: string | null = null;
         while (Date.now() < until) {
@@ -562,14 +735,29 @@ export class Renderer {
           }
           previous = now;
         }
-        if (!changed) break;
-        const next = await withTimeout(page.evaluate(readPage, maxChars), Math.max(2_000, remaining() + 2_000), 'reading a page').catch(() => null);
-        if (!next) break;
+        if (!changed) {
+          stop = 'not_changed';
+          break;
+        }
+        const next = await withTimeout(page.evaluate(readPage, maxChars), Math.max(2_000, remainingTotal() + 2_000), 'reading a page').catch(() => null);
+        if (!next) {
+          stop = 'budget';
+          break;
+        }
         const full = collapse(next.text);
-        if (seenTexts.has(full)) break;
+        if (seenTexts.has(full)) {
+          stop = 'repeated_page';
+          break;
+        }
         seenTexts.add(full);
         const body = stripSharedFrame(firstText, full);
-        if (!body) break;
+        // Early stop: a page that adds no content line the previous pages did not have (the
+        // pager wrapped around, or showed the last page again with another counter).
+        if (!body || addsNoNewContent(seenLines, body)) {
+          stop = 'no_new_content';
+          break;
+        }
+        for (const l of contentLines(body)) seenLines.add(l);
         text += `\n\n[Página ${n} del listado]\n${body}`;
         links.push(...next.links);
         try {
@@ -595,10 +783,12 @@ export class Renderer {
         hydrated,
         pages_read: pageUrls.length,
         page_urls: pageUrls,
+        ...(maxPages > 1 ? { pagination_stop: stop } : {}),
+        ...(capture ? { json_responses: capture.results(), json_skipped: { ...capture.skipped } } : {}),
       };
     } catch (err) {
       if (err instanceof RenderError) throw err;
-      if (abort.signal.aborted || remaining() <= 0) throw new RenderError('RENDER_TIMEOUT', `render exceeded ${this.jsTimeoutMs} ms`, 504);
+      if (abort.signal.aborted || remainingTotal() <= 0) throw new RenderError('RENDER_TIMEOUT', `render exceeded ${budgetMs} ms`, 504);
       throw new RenderError('RENDER_FAILED', (err instanceof Error ? err.message : String(err)).split('\n')[0]!.slice(0, 300), 502);
     } finally {
       clearTimeout(killer);
@@ -663,6 +853,8 @@ export class Renderer {
       onBlocked: () => void;
       /** Main document already fetched (redirects resolved) before page.goto: served once. */
       primed: Map<string, EgressResponse>;
+      /** `captureJson`: every answer is offered; the capture keeps the relevant JSON ones. */
+      capture: JsonCapture | null;
     },
   ): Promise<void> {
     const request = route.request();
@@ -696,6 +888,8 @@ export class Renderer {
         );
         if (!out.ok) return refuse(`${out.code}: ${out.reason}`);
         res = out.res;
+        // Origin checked on the URL that really answered (after the redirects followed here).
+        ctx.capture?.offer({ url: out.url.toString(), method: request.method(), resourceType: request.resourceType(), status: res.status, contentType: res.headers['content-type'], body: res.body });
       }
       if (!ctx.addBytes(res.body.length)) return refuse('byte budget exhausted');
       await route.fulfill({ status: res.status, headers: deliverableResponseHeaders(res.headers), body: res.body });

@@ -12,18 +12,32 @@
  *     downloaded with `fetch_url` (text extracted from the PDF) and read too;
  *  c) the LLM extracts `{name, domain?, description?}` from the DOWNLOADED TEXT only
  *     (static HTML, rendered page or PDF);
- *  d) a paginated list is read up to `max_catalog_pages`: client-side pagination in the
- *     same render_url call (`maxPages`, the renderer clicks "next"), or the list's
- *     "next" / `?page=N` links;
+ *  d) a paginated list is read up to `max_catalog_pages` (10 by default): client-side
+ *     pagination in the same render_url call (`maxPages`, the renderer clicks "next" and
+ *     stops early when a page brings nothing new), or the list's "next" / `?page=N`
+ *     links (stopping at the first page without new exhibitors). The rendered text is
+ *     extracted in chunks of up to 5 list pages (one LLM call each; a chunk without new
+ *     exhibitors ends the extraction);
+ *  d2) JSON shortcut: catalog renders ask for `captureJson`; when one of the captured
+ *     same-origin JSON answers holds the exhibitor list (array of named objects whose
+ *     names appear in the rendered page), it is the preferred source: no LLM extraction,
+ *     the whole list even beyond the rendered pages (see `catalog-json.ts`). Same checks
+ *     as for a page; the cited source stays the rendered list page;
  *  e) every exhibitor is evaluated by the LLM FIRST (no write); then, only for the
  *     RELEVANT ones without a domain, best confidence first and up to
- *     `max_profile_lookups` per run, the exhibitor profile linked from the list
+ *     `max_profile_lookups` per run (60 by default; the time budget is the real limit),
+ *     two at a time, the exhibitor profile linked from the list
  *     (`/exhibitors/{id}`) is opened (fetch_url, or render_url if it is a JS app) and
  *     its website taken ("Web/Website" label, only external link or only www. domain),
  *     refusing the fair's own sites and social networks (kept as metadata); the domain
  *     must resolve to public addresses (fetch_url of its home page, same guards);
  *  f) the existing pipeline writes company -> signal -> hypothesis (no domain after the
  *     lookup: `skipped_no_domain`, as before).
+ * Time budget (`scout.time_budget_ms`, input `scout_time_budget_ms`; 20 min by default):
+ * checked before every page, render, extraction, evaluation and profile. When it runs out
+ * the run stops cleanly where it is: what was evaluated is still written (writes are not
+ * cut: no paid evaluation is lost), the rest is counted as not evaluated / profile not
+ * opened, and the outcome is PARTIAL with "presupuesto de tiempo agotado".
  * Without an exhibitor list the fair is recorded as an event-level FAIR signal and
  * the run ends PARTIAL with the reason. Without a renderer (`RENDERER_NOT_CONFIGURED`,
  * render_url not in the tool policy) the flow is the same minus step b's rendering.
@@ -41,6 +55,7 @@ import { z } from 'zod';
 import { normalizeDomain } from '../integrations/twenty/index.js';
 import type { FetchUrlOutput } from '../tools/web/fetch-url.js';
 import type { RenderUrlOutput } from '../tools/web/render-url.js';
+import { findExhibitorListInJson, inferProfileUrls, type JsonAnswer, type JsonCatalogList } from './catalog-json.js';
 import {
   extractProfileWebsite,
   findProfileLink,
@@ -59,6 +74,10 @@ import {
   parseWith,
   resultLine,
   round6,
+  SCOUT_CATALOG_PAGES_CAP,
+  SCOUT_MAX_EXHIBITORS_CAP,
+  SCOUT_PROFILE_LOOKUPS_CAP,
+  SCOUT_TIME_BUDGET_CAP_MS,
   toolError,
   type ExhibitorInput,
   type ExhibitorResult,
@@ -90,9 +109,11 @@ export const ScoutInput = z
     event_name: z.string().trim().min(1).max(255).optional(),
     /** Lower caps for one run (never above the agent configuration). */
     max_events: z.number().int().min(1).max(3).optional(),
-    max_exhibitors: z.number().int().min(1).max(100).optional(),
-    max_catalog_pages: z.number().int().min(1).max(5).optional(),
-    max_profile_lookups: z.number().int().min(0).max(30).optional(),
+    max_exhibitors: z.number().int().min(1).max(SCOUT_MAX_EXHIBITORS_CAP).optional(),
+    max_catalog_pages: z.number().int().min(1).max(SCOUT_CATALOG_PAGES_CAP).optional(),
+    max_profile_lookups: z.number().int().min(0).max(SCOUT_PROFILE_LOOKUPS_CAP).optional(),
+    /** Time budget of the run (ms); lowers `scout.time_budget_ms`, never raises it. */
+    scout_time_budget_ms: z.number().int().min(10_000).max(SCOUT_TIME_BUDGET_CAP_MS).optional(),
   })
   .refine((v) => v.sector !== undefined || v.event_url !== undefined, { message: 'sector or event_url is required' });
 export type ScoutInput = z.infer<typeof ScoutInput>;
@@ -330,7 +351,7 @@ export function addMonths(day: string, months: number): string {
 // Run
 // ---------------------------------------------------------------------------
 
-type ContentKind = 'html' | 'text' | 'pdf' | 'rendered';
+type ContentKind = 'html' | 'text' | 'pdf' | 'rendered' | 'json';
 
 /** A page the scout read: fetch_url (HTML, text, PDF) or render_url output. */
 export type ScoutPage = Pick<FetchUrlOutput, 'url' | 'finalUrl' | 'title' | 'text' | 'truncated' | 'links' | 'redirects'> & {
@@ -338,7 +359,49 @@ export type ScoutPage = Pick<FetchUrlOutput, 'url' | 'finalUrl' | 'title' | 'tex
   js_app_likely: boolean;
   /** render_url with `maxPages`: list pages read in that call (null/undefined: one). */
   pages_read?: number | null;
+  /** render_url with `captureJson`: same-origin JSON answers the page received (untrusted). */
+  json?: JsonAnswer[];
+  /** render_url with `maxPages`: why the renderer stopped paginating. */
+  pagination_stop?: string | null;
 };
+
+/** List pages per LLM extraction call of a rendered list (about 100 exhibitors at 20 per page). */
+export const PAGES_PER_EXTRACTION = 5;
+/** Characters per extraction chunk (well under the 40 000 of PAGE_TEXT_FOR_EXTRACTION). */
+const CHUNK_MAX_CHARS = 30_000;
+const LIST_PAGE_MARK = /\n*\[Página (\d+) del listado\]\n/g;
+
+/**
+ * Splits the text of a rendered list (pages 2+ after a `[Página N del listado]` marker)
+ * into chunks of up to `maxPages` list pages and `maxChars` characters, markers kept.
+ * One chunk per LLM extraction call. Pure; unit-tested.
+ */
+export function splitListPages(text: string, maxPages = PAGES_PER_EXTRACTION, maxChars = CHUNK_MAX_CHARS): Array<{ text: string; pages: number }> {
+  const pages: string[] = [];
+  let last = 0;
+  for (const m of text.matchAll(LIST_PAGE_MARK)) {
+    pages.push(text.slice(last, m.index));
+    last = m.index;
+  }
+  pages.push(text.slice(last));
+  const chunks: Array<{ text: string; pages: number }> = [];
+  let cur: string[] = [];
+  let chars = 0;
+  for (const p of pages) {
+    if (cur.length > 0 && (cur.length >= maxPages || chars + p.length > maxChars)) {
+      chunks.push({ text: cur.join('').trim(), pages: cur.length });
+      cur = [];
+      chars = 0;
+    }
+    cur.push(p);
+    chars += p.length;
+  }
+  if (cur.length > 0) chunks.push({ text: cur.join('').trim(), pages: cur.length });
+  return chunks.filter((c) => c.text.length > 0);
+}
+
+/** Renderer limit before pxos-renderer 0.2 (an older renderer answers INVALID_INPUT above it). */
+const LEGACY_RENDER_MAX_PAGES = 5;
 
 type PageAttempt = {
   url: string;
@@ -358,6 +421,13 @@ type PageAttempt = {
   list_pages?: number;
   /** A next page of an exhibitor list (link-based pagination). */
   pagination?: boolean;
+  /** LLM extraction calls made on this page (chunks of a long rendered list). */
+  extraction_calls?: number;
+  /** Why reading this list stopped early (`no_new_exhibitors`, `time_budget`) or the renderer's pagination stop. */
+  pagination_stop?: string;
+  /** `captureJson`: JSON answers received with the render, and the exhibitor list found in them. */
+  json_answers?: number;
+  json_list?: { url: string; method: string; path: string; name_key: string; items: number; matched_in_page: number; used: boolean };
 };
 
 /** render_url answers that switch rendering off for the rest of the run. */
@@ -382,7 +452,8 @@ export interface ScoutEventResult {
   website_url: string | null;
   exhibitors_url: string | null;
   source_url: string | null;
-  status: 'exhibitors_processed' | 'event_signal' | 'event_signal_error' | 'unreachable';
+  /** `time_budget_exhausted`: the time budget ran out before any exhibitor was read (nothing written). */
+  status: 'exhibitors_processed' | 'event_signal' | 'event_signal_error' | 'unreachable' | 'time_budget_exhausted';
   verification: 'operator_url' | 'grounding_domain' | 'fetch_corroboration';
   reason?: string;
   pages: PageAttempt[];
@@ -391,6 +462,13 @@ export interface ScoutEventResult {
   domains_removed: number;
   /** Pages of the exhibitor list from which exhibitors were read (pagination included). */
   catalog_pages: number;
+  /** Where the exhibitor list came from: the text of the pages (LLM extraction) or the catalog's JSON API. */
+  catalog_source: 'pages' | 'json_api' | null;
+  /** JSON shortcut: the API answer used (never cited as a source: the cited one is the rendered list page). */
+  json_api?: { url: string; method: string; path: string; name_key: string; id_key: string | null; items: number; matched_in_page: number; profile_template: string | null };
+  /** Exhibitors read but not evaluated because the time budget ran out (first 50 names). */
+  not_evaluated: string[];
+  exhibitors_not_evaluated: number;
   signal_id?: string;
   error?: { code: string; message: string };
   results: ExhibitorResult[];
@@ -457,6 +535,25 @@ export async function runScout(run: ProspectorRun, rawInput: Record<string, unkn
   const renderCache = new Map<string, ScoutPage>();
   const maxCatalogPages = Math.max(1, Math.min(input.max_catalog_pages ?? cfg.maxCatalogPages, cfg.maxCatalogPages));
   const maxProfileLookups = Math.max(0, Math.min(input.max_profile_lookups ?? cfg.maxProfileLookups, cfg.maxProfileLookups));
+
+  // ------------------------------------------------------------ time budget
+  const timeBudgetMs = Math.min(input.scout_time_budget_ms ?? cfg.timeBudgetMs, cfg.timeBudgetMs);
+  const startedMs = run.startedAt.getTime();
+  const deadlineMs = startedMs + timeBudgetMs;
+  /** Set once, when a checkpoint finds the budget spent: the phase where the run was cut. */
+  let timeUp: { phase: string; elapsed_ms: number } | null = null;
+  /** Checkpoint before each unit of work (page, render, extraction, evaluation, profile). */
+  const outOfTime = (phase: string): boolean => {
+    if (timeUp) return true;
+    const now = run.clock().getTime();
+    if (now < deadlineMs) return false;
+    timeUp = { phase, elapsed_ms: now - startedMs };
+    return true;
+  };
+  const elapsedMs = () => run.clock().getTime() - startedMs;
+  let profilesSkippedForTime = 0;
+  let jsonListsUsed = 0;
+  let extractionCalls = 0;
   /** render_url calls for exhibitor lists / event pages (budget `max_renders`); profile renders are counted apart. */
   let catalogRenders = 0;
   let profileLookups = 0;
@@ -497,7 +594,12 @@ export async function runScout(run: ProspectorRun, rawInput: Record<string, unkn
   /** One render_url call (counted in the budget). */
   const callRender = async (url: string, opts: Record<string, unknown>): Promise<{ ok: true; out: RenderUrlOutput } | { ok: false; code: string; message: string }> => {
     renders += 1;
-    const out = await run.callTool('render_url', { url, ...opts });
+    let out = await run.callTool('render_url', { url, ...opts });
+    // A renderer older than this runtime accepts at most 5 pages: ask again within its limit.
+    if (out.result.status !== 'ok' && toolError(out).code === 'INVALID_INPUT' && typeof opts.maxPages === 'number' && opts.maxPages > LEGACY_RENDER_MAX_PAGES) {
+      renders += 1;
+      out = await run.callTool('render_url', { url, ...opts, maxPages: LEGACY_RENDER_MAX_PAGES });
+    }
     if (out.result.status !== 'ok') {
       const e = toolError(out);
       if (RENDER_OFF_CODES.has(e.code)) renderOff = e.code;
@@ -522,16 +624,17 @@ export async function runScout(run: ProspectorRun, rawInput: Record<string, unkn
     if (!budgetLeft()) return { ok: false, code: 'RENDER_BUDGET_EXHAUSTED', message: `max_renders (${cfg.maxRenders}) reached` };
     // Exhibitor lists: ask the renderer to click through client-side pagination.
     const paginate = !opts.profile && maxCatalogPages > 1 && (opts.paginate ?? looksLikeExhibitorList(url));
-    const firstOpts = paginate ? { ...RENDER_FIRST, maxPages: maxCatalogPages } : RENDER_FIRST;
+    // Catalog renders (not profiles) also bring the page's JSON answers: the API shortcut.
+    const extra = { ...(paginate ? { maxPages: maxCatalogPages } : {}), ...(!opts.profile && cfg.captureJson ? { captureJson: true } : {}) };
     if (opts.profile) profileRenders += 1;
     else catalogRenders += 1;
-    const first = await callRender(url, firstOpts);
+    const first = await callRender(url, { ...RENDER_FIRST, ...extra });
     if (!first.ok) return first;
     let r = first.out;
-    if (!opts.profile && r.text.trim().length < EMPTY_SHELL_CHARS && budgetLeft() && !renderOff) {
+    if (!opts.profile && r.text.trim().length < EMPTY_SHELL_CHARS && budgetLeft() && !renderOff && !outOfTime('pages')) {
       renderRetries += 1;
       catalogRenders += 1;
-      const second = await callRender(url, paginate ? { ...RENDER_RETRY, maxPages: maxCatalogPages } : RENDER_RETRY);
+      const second = await callRender(url, { ...RENDER_RETRY, ...extra });
       if (second.ok && second.out.text.trim().length > r.text.trim().length) r = second.out;
     }
     const page: ScoutPage = {
@@ -545,6 +648,8 @@ export async function runScout(run: ProspectorRun, rawInput: Record<string, unkn
       content_kind: 'rendered',
       js_app_likely: false,
       pages_read: r.pagesRead ?? null,
+      pagination_stop: r.paginationStop ?? null,
+      ...((r.jsonResponses ?? []).length > 0 ? { json: (r.jsonResponses ?? []).map((j) => ({ url: j.url, method: j.method, body: j.body })) } : {}),
     };
     ledger.addVisited(url, r.finalUrl, ...(r.pageUrls ?? []));
     for (const u of [url, r.finalUrl]) {
@@ -585,11 +690,23 @@ export async function runScout(run: ProspectorRun, rawInput: Record<string, unkn
   type ProfileInfo = NonNullable<ExhibitorResult['profile']>;
 
   /** Opens the exhibitor's profile linked from the list page and returns its verified website, if any. */
-  const lookupProfile = async (exhibitor: ExhibitorInput, listPage: ScoutPage, fairDomains: string[]): Promise<{ info: ProfileInfo; domain: string | null; profileUrl: string | null }> => {
+  const lookupProfile = async (
+    exhibitor: ExhibitorInput,
+    listPage: ScoutPage,
+    fairDomains: string[],
+    /** JSON shortcut: profile URL built from the catalog's link template and the item id (same site as the list). */
+    inferred: string | null = null,
+  ): Promise<{ info: ProfileInfo; domain: string | null; profileUrl: string | null }> => {
     const none = (info: ProfileInfo) => ({ info, domain: null, profileUrl: null });
-    const url = findProfileLink(exhibitor.name, listPage);
+    const linked = findProfileLink(exhibitor.name, listPage);
+    const url = linked ?? inferred;
     if (!url) return none({ url: null, status: 'no_profile_link' });
-    if (profileLookups >= maxProfileLookups) return none({ url, status: 'budget_exhausted' });
+    const urlSource = linked ? {} : { url_source: 'json_template' as const };
+    if (profileLookups >= maxProfileLookups) return none({ url, status: 'budget_exhausted', ...urlSource });
+    if (outOfTime('profiles')) {
+      profilesSkippedForTime += 1;
+      return none({ url, status: 'time_budget_exhausted', ...urlSource });
+    }
     profileLookups += 1;
     let profile: ScoutPage | null = null;
     let via: 'fetch' | 'render' = 'fetch';
@@ -606,17 +723,17 @@ export async function runScout(run: ProspectorRun, rawInput: Record<string, unkn
     if (!profile) {
       via = 'render';
       const r = await renderPage(url, { profile: true });
-      if (!r.ok) return none({ url, status: 'profile_unreadable', via, error: lastCode ? `${r.code} (fetch: ${lastCode})` : r.code });
+      if (!r.ok) return none({ url, ...urlSource, status: 'profile_unreadable', via, error: lastCode ? `${r.code} (fetch: ${lastCode})` : r.code });
       profile = r.page;
     }
-    if (!profileMatchesExhibitor(exhibitor.name, profile.text)) return none({ url, status: 'profile_mismatch', via });
+    if (!profileMatchesExhibitor(exhibitor.name, profile.text)) return none({ url, ...urlSource, status: 'profile_mismatch', via });
     const w = extractProfileWebsite(profile, fairDomains);
     const social = Object.keys(w.social).length > 0 ? { social: w.social } : {};
-    if (!w.domain) return none({ url, status: w.candidates.length > 1 ? 'website_ambiguous' : 'no_website', via, ...social });
+    if (!w.domain) return none({ url, ...urlSource, status: w.candidates.length > 1 ? 'website_ambiguous' : 'no_website', via, ...social });
     const check = await checkDomain(w.domain);
-    if (!check.ok) return none({ url, status: 'domain_rejected', via, domain: w.domain, error: check.code, ...social });
+    if (!check.ok) return none({ url, ...urlSource, status: 'domain_rejected', via, domain: w.domain, error: check.code, ...social });
     domainsResolved += 1;
-    return { info: { url: profile.finalUrl, status: 'domain_resolved', via, domain: w.domain, domain_source: w.source ?? 'unknown', ...social }, domain: w.domain, profileUrl: profile.finalUrl };
+    return { info: { url: profile.finalUrl, ...urlSource, status: 'domain_resolved', via, domain: w.domain, domain_source: w.source ?? 'unknown', ...social }, domain: w.domain, profileUrl: profile.finalUrl };
   };
 
   // ------------------------------------------------------------- a) candidates
@@ -698,9 +815,14 @@ export async function runScout(run: ProspectorRun, rawInput: Record<string, unkn
 
   // --------------------------------------------------- b) + c) + d) per event
   const events: ScoutEventResult[] = [];
-  for (const cand of candidates) {
+  let eventsSkippedForTime = 0;
+  for (const [ci, cand] of candidates.entries()) {
     if (events.length >= maxEvents) break;
     run.ctx.signal.throwIfAborted();
+    if (outOfTime('events')) {
+      eventsSkippedForTime = Math.min(candidates.length - ci, maxEvents - events.length);
+      break;
+    }
     const usable = (u: string | null) => (u && normalizeUrl(u) ? u : null);
     const exhibitorsUrl =
       cand.origin === 'input' ? null : cand.origin === 'search_unsourced' ? usable(cand.exhibitors_url) : await groundedUrl(cand.exhibitors_url);
@@ -725,12 +847,15 @@ export async function runScout(run: ProspectorRun, rawInput: Record<string, unkn
       exhibitors_dropped: [],
       domains_removed: 0,
       catalog_pages: 0,
+      catalog_source: null,
+      not_evaluated: [],
+      exhibitors_not_evaluated: 0,
       results: [],
     };
     events.push(ev);
 
     const queue = [...new Set([exhibitorsUrl, websiteUrl].filter((u): u is string => u !== null))];
-    // Exhibitors per source page (static HTML, rendered page, PDF), deduplicated by name.
+    // Exhibitors per source page (static HTML, rendered page, PDF, JSON list), deduplicated by name.
     const batches: Array<{ page: ScoutPage; exhibitors: ExhibitorInput[] }> = [];
     const seenNames = new Set<string>();
     let collected = 0;
@@ -743,9 +868,45 @@ export async function runScout(run: ProspectorRun, rawInput: Record<string, unkn
     let corroborationFailed = false;
     let renderBlocked: string | null = null;
     const triedPdfs = new Set<string>();
+    /** JSON shortcut: profile URLs built from the catalog's link template (folded name -> URL). */
+    let inferredProfiles = new Map<string, string>();
 
-    /** One LLM extraction over one page; verified, new exhibitors are added to `batches`. */
+    /**
+     * Verified exhibitors of one source (page, chunk of a rendered list or JSON list): names
+     * must appear in THAT source's text, domains in its text or links. New ones go to `batches`.
+     */
+    const addVerified = (page: ScoutPage, attempt: PageAttempt, list: ExtractAnswer['exhibitors']): number => {
+      const verified = verifyExhibitors(list, page, maxExhibitors);
+      ev.exhibitors_extracted += list.length;
+      ev.exhibitors_dropped.push(...verified.dropped.slice(0, Math.max(0, 50 - ev.exhibitors_dropped.length)));
+      ev.domains_removed += verified.domainsRemoved;
+      const fresh = verified.exhibitors
+        .filter((e) => {
+          const k = foldText(e.name);
+          if (seenNames.has(k)) return false;
+          seenNames.add(k);
+          return true;
+        })
+        .slice(0, Math.max(0, maxExhibitors - collected));
+      attempt.exhibitors_verified = (attempt.exhibitors_verified ?? 0) + fresh.length;
+      if (fresh.length > 0) {
+        batches.push({ page, exhibitors: fresh });
+        collected += fresh.length;
+        if (page.content_kind !== 'pdf') {
+          const listPages = page.pages_read ?? 1;
+          ev.catalog_pages += listPages;
+          const total = (attempt.list_pages ?? 0) + listPages;
+          if (total > 1) attempt.list_pages = total;
+          listPage ??= { page, via: attempt.via === 'render' ? 'render' : 'fetch' };
+        }
+      }
+      return fresh.length;
+    };
+
+    /** One LLM extraction over one page (or chunk); verified, new exhibitors are added to `batches`. */
     const extractFrom = async (page: ScoutPage, attempt: PageAttempt): Promise<{ added: number; next: string | null; kind: string | null }> => {
+      extractionCalls += 1;
+      attempt.extraction_calls = (attempt.extraction_calls ?? 0) + 1;
       const extract = await run.completeJson({
         label: { step: 'scout_extract', event: ev.name || cand.website_url, url: page.finalUrl, via: attempt.via },
         system: SCOUT_EXTRACT_SYSTEM_PROMPT,
@@ -766,47 +927,83 @@ export async function runScout(run: ProspectorRun, rawInput: Record<string, unkn
         ],
         parse: (text) => parseWith(ExtractAnswer, text),
         schema: EXTRACT_JSON_SCHEMA,
-        // Up to ~60 exhibitors of a paginated list in one answer.
-        maxTokens: 12_288,
+        // Up to ~100 exhibitors (a chunk of 5 list pages) in one answer.
+        maxTokens: 16_384,
       });
       if (extract.status !== 'ok') {
         attempt.code = extract.status === 'model_error' ? extract.code : 'LLM_INVALID_OUTPUT';
         return { added: 0, next: null, kind: null };
       }
       const x = extract.value;
-      attempt.page_kind = x.page_kind;
-      attempt.exhibitors_extracted = x.exhibitors.length;
+      attempt.page_kind ??= x.page_kind;
+      attempt.exhibitors_extracted = (attempt.exhibitors_extracted ?? 0) + x.exhibitors.length;
       lastNotes = x.notes;
       // Event facts read in the page win over the search answer.
       if (x.event.name && !ev.name) ev.name = x.event.name;
       ev.date = isoDate(x.event.start_date) ?? ev.date;
       ev.end_date = isoDate(x.event.end_date) ?? ev.end_date;
       ev.location = x.event.city ?? ev.location;
-      // Names must appear in THIS page's text, domains in its text or links.
-      const verified = verifyExhibitors(x.exhibitors, page, maxExhibitors);
-      ev.exhibitors_extracted += x.exhibitors.length;
-      ev.exhibitors_dropped.push(...verified.dropped.slice(0, Math.max(0, 50 - ev.exhibitors_dropped.length)));
-      ev.domains_removed += verified.domainsRemoved;
-      const fresh = verified.exhibitors
-        .filter((e) => {
-          const k = foldText(e.name);
-          if (seenNames.has(k)) return false;
-          seenNames.add(k);
-          return true;
-        })
-        .slice(0, Math.max(0, maxExhibitors - collected));
-      attempt.exhibitors_verified = fresh.length;
-      if (fresh.length > 0) {
-        batches.push({ page, exhibitors: fresh });
-        collected += fresh.length;
-        if (page.content_kind !== 'pdf') {
-          const listPages = page.pages_read ?? 1;
-          ev.catalog_pages += listPages;
-          if (listPages > 1) attempt.list_pages = listPages;
-          listPage ??= { page, via: attempt.via === 'render' ? 'render' : 'fetch' };
+      const added = addVerified(page, attempt, x.exhibitors);
+      if (added > 0 && page.content_kind !== 'pdf') ev.catalog_source ??= 'pages';
+      return { added, next: pickPageLink(x.exhibitors_page_url, page), kind: x.page_kind };
+    };
+
+    /**
+     * Rendered list: one extraction per chunk of up to PAGES_PER_EXTRACTION list pages (each
+     * exhibitor is extracted once: no model cost repeated). Stops at the first chunk after the
+     * first one without new exhibitors, or when the time budget runs out.
+     */
+    const extractRendered = async (rendered: ScoutPage, attempt: PageAttempt): Promise<{ added: number; next: string | null; kind: string | null }> => {
+      const chunks = splitListPages(rendered.text);
+      if (chunks.length <= 1) return extractFrom(rendered, attempt);
+      let out: { added: number; next: string | null; kind: string | null } = { added: 0, next: null, kind: null };
+      for (const [i, c] of chunks.entries()) {
+        if (outOfTime('extraction')) {
+          attempt.pagination_stop = 'time_budget';
+          break;
         }
+        const r = await extractFrom({ ...rendered, text: c.text, pages_read: c.pages }, attempt);
+        out = { added: out.added + r.added, next: out.next ?? r.next, kind: out.kind ?? r.kind };
+        if (i > 0 && r.added === 0) {
+          attempt.pagination_stop = 'no_new_exhibitors';
+          break;
+        }
+        if (collected >= maxExhibitors) break;
       }
-      return { added: fresh.length, next: pickPageLink(x.exhibitors_page_url, page), kind: x.page_kind };
+      return out;
+    };
+
+    /**
+     * JSON shortcut: the exhibitor list found in the JSON answers captured with the render,
+     * verified like a page (names and domains against the JSON content, never the fair's own
+     * domain nor a social network). Returns the list when it added exhibitors, else null.
+     */
+    const tryJsonList = (rendered: ScoutPage, attempt: PageAttempt): JsonCatalogList | null => {
+      if (!rendered.json || rendered.json.length === 0) return null;
+      attempt.json_answers = rendered.json.length;
+      const list = findExhibitorListInJson(rendered.json, rendered.text);
+      if (!list) return null;
+      // The cited source is the rendered list page (visited); the JSON content is the text the names are checked against.
+      const jsonPage: ScoutPage = {
+        ...rendered,
+        text: list.items.map((i) => [i.name, i.domain, i.sector, i.description].filter(Boolean).join('\n')).join('\n\n'),
+        truncated: false,
+        content_kind: 'json',
+        json: undefined,
+      };
+      const added = addVerified(
+        jsonPage,
+        attempt,
+        list.items.map((i) => ({ name: i.name, domain: i.domain, description: i.description, sector: i.sector })),
+      );
+      attempt.json_list = { url: list.url, method: list.method, path: list.path, name_key: list.nameKey, items: list.items.length, matched_in_page: list.matchedInPage, used: added > 0 };
+      if (added === 0) return null;
+      jsonListsUsed += 1;
+      ev.catalog_source = 'json_api';
+      const inferred = inferProfileUrls(list.items, rendered.links, rendered.finalUrl);
+      inferredProfiles = inferred.urls;
+      ev.json_api = { url: list.url, method: list.method, path: list.path, name_key: list.nameKey, id_key: list.idKey, items: list.items.length, matched_in_page: list.matchedInPage, profile_template: inferred.template };
+      return list;
     };
 
     /** First list page that gave exhibitors (start of the link-based pagination). */
@@ -815,15 +1012,17 @@ export async function runScout(run: ProspectorRun, rawInput: Record<string, unkn
     /**
      * Link-based pagination ("next" / ?page=N / /page/N links) of the list, up to
      * max_catalog_pages, each page read the same way as the first (fetch or render).
-     * Not used when the renderer already clicked through a client-side pagination.
+     * Not used when the renderer already clicked through a client-side pagination, nor
+     * when the list came from the JSON API. Stops at the first page without new exhibitors.
      */
     const paginateList = async (): Promise<void> => {
-      if (!listPage || (listPage.page.pages_read ?? 1) > 1) return;
+      if (!listPage || (listPage.page.pages_read ?? 1) > 1 || ev.catalog_source === 'json_api') return;
       const via = listPage.via;
       let current = listPage.page;
       let pages = 1;
       const read = new Set([normalizeUrl(current.finalUrl)]);
       while (pages < maxCatalogPages && collected < maxExhibitors) {
+        if (outOfTime('pages')) break;
         const nextUrl = paginationLinks(current.links, current.finalUrl, (u) => read.has(normalizeUrl(u)) || ledger.isVisited(u))[0];
         if (!nextUrl) break;
         read.add(normalizeUrl(nextUrl));
@@ -834,8 +1033,16 @@ export async function runScout(run: ProspectorRun, rawInput: Record<string, unkn
         }
         const att = okAttempt(nextUrl, via, pr.page);
         att.pagination = true;
+        if (outOfTime('extraction')) {
+          att.pagination_stop = 'time_budget';
+          break;
+        }
         const got = await extractFrom(pr.page, att);
-        if (got.added === 0) break;
+        if (got.added === 0) {
+          // Early stop: a page without new exhibitors ends the pagination.
+          att.pagination_stop = 'no_new_exhibitors';
+          break;
+        }
         pages += 1;
         current = pr.page;
       }
@@ -844,11 +1051,12 @@ export async function runScout(run: ProspectorRun, rawInput: Record<string, unkn
     const okAttempt = (url: string, via: PageAttempt['via'], page: ScoutPage): PageAttempt => {
       const attempt: PageAttempt = { url, via, final_url: page.finalUrl, status: 'ok', chars: page.text.length, content_kind: page.content_kind };
       if (page.content_kind === 'html') attempt.js_app_likely = page.js_app_likely;
+      if (page.pagination_stop) attempt.pagination_stop = page.pagination_stop;
       ev.pages.push(attempt);
       return attempt;
     };
 
-    while (queue.length > 0 && pagesRead < cfg.maxPagesPerEvent && collected === 0) {
+    while (queue.length > 0 && pagesRead < cfg.maxPagesPerEvent && collected === 0 && !outOfTime('pages')) {
       const url = queue.shift()!;
       const fetched = await fetchPage(url);
       if (!fetched.ok) {
@@ -883,11 +1091,12 @@ export async function runScout(run: ProspectorRun, rawInput: Record<string, unkn
       const attempt = okAttempt(url, 'fetch', page);
       let r: { added: number; next: string | null; kind: string | null } = { added: 0, next: null, kind: null };
       if (page.js_app_likely && page.text.trim().length < EMPTY_SHELL_CHARS) attempt.code = 'JS_APP_SHELL';
+      else if (outOfTime('extraction')) attempt.code = 'TIME_BUDGET_EXHAUSTED';
       else r = await extractFrom(page, attempt);
       let next = r.next;
 
       // (b) Render with a browser: JS app, or no exhibitors and no exhibitor link to follow first.
-      const wantRender = page.content_kind === 'html' && collected === 0 && (page.js_app_likely || r.kind === 'exhibitor_list' || !next);
+      const wantRender = page.content_kind === 'html' && collected === 0 && (page.js_app_likely || r.kind === 'exhibitor_list' || !next) && !outOfTime('pages');
       if (wantRender) {
         const rr: PageRead = rendered ? { ok: true, page: rendered } : await renderPage(url);
         if (rr.ok) {
@@ -898,8 +1107,14 @@ export async function runScout(run: ProspectorRun, rawInput: Record<string, unkn
             // Still empty after the retry: nothing to extract (and no LLM call to pay for).
             renderAttempt.code = 'RENDER_EMPTY';
             renderBlocked ??= 'RENDER_EMPTY';
+          } else if (tryJsonList(rendered, renderAttempt)) {
+            // The list came from the catalog's JSON API (no extraction call for it). The event facts
+            // (name, dates, city), if still unknown, come from one extraction over the page head.
+            if ((!ev.name || !ev.date) && !outOfTime('extraction')) await extractFrom({ ...rendered, text: rendered.text.slice(0, 6_000), pages_read: 1 }, renderAttempt);
+          } else if (outOfTime('extraction')) {
+            renderAttempt.code = 'TIME_BUDGET_EXHAUSTED';
           } else {
-            const r2 = await extractFrom(rendered, renderAttempt);
+            const r2 = await extractRendered(rendered, renderAttempt);
             next ??= r2.next;
           }
         } else {
@@ -912,13 +1127,14 @@ export async function runScout(run: ProspectorRun, rawInput: Record<string, unkn
       await paginateList();
 
       // (c) Catalog / exhibitor-list PDFs linked from the page (static or rendered).
-      if (collected < maxExhibitors && pdfsThisEvent < cfg.maxPdfsPerEvent) {
+      if (collected < maxExhibitors && pdfsThisEvent < cfg.maxPdfsPerEvent && ev.catalog_source !== 'json_api') {
         const pdfLinks = catalogPdfLinks(
           [...page.links, ...(rendered?.links ?? [])],
           (u) => ledger.isVisited(u) || triedPdfs.has(normalizeUrl(u) ?? u),
           cfg.maxPdfsPerEvent - pdfsThisEvent,
         );
         for (const pdfUrl of pdfLinks) {
+          if (outOfTime('pages')) break;
           triedPdfs.add(normalizeUrl(pdfUrl) ?? pdfUrl);
           pdfsThisEvent += 1;
           const pdf = await fetchPage(pdfUrl);
@@ -932,6 +1148,7 @@ export async function runScout(run: ProspectorRun, rawInput: Record<string, unkn
           }
           pdfsRead += 1;
           lastPage = pdf.page;
+          if (outOfTime('extraction')) break;
           await extractFrom(pdf.page, okAttempt(pdfUrl, 'pdf', pdf.page));
           if (collected >= maxExhibitors) break;
         }
@@ -950,10 +1167,18 @@ export async function runScout(run: ProspectorRun, rawInput: Record<string, unkn
     if (batches.length > 0) {
       ev.status = 'exhibitors_processed';
       ev.source_url = batches[0]!.page.finalUrl;
-      // 1. LLM evaluation of EVERY exhibitor first (no CRM write yet).
+      // 1. LLM evaluation of EVERY exhibitor first (no CRM write yet), while the time budget lasts.
       const items: Array<{ event: ProspectorEvent; page: ScoutPage; exhibitor: ExhibitorInput; decided: DecidedExhibitor; evidence: Array<{ claim: string; sourceUrl?: string }> }> = [];
-      for (const batch of batches) {
-        // Each exhibitor cites the page (HTML, rendered page or PDF) it was read from.
+      const pending = batches.flatMap((batch) => batch.exhibitors.map((exhibitor) => ({ batch, exhibitor })));
+      for (const [i, { batch, exhibitor }] of pending.entries()) {
+        run.ctx.signal.throwIfAborted();
+        if (outOfTime('evaluation')) {
+          const rest = pending.slice(i);
+          ev.exhibitors_not_evaluated = rest.length;
+          ev.not_evaluated = rest.slice(0, 50).map((p) => p.exhibitor.name);
+          break;
+        }
+        // Each exhibitor cites the page (HTML, rendered page, PDF; the rendered list page for the JSON API) it was read from.
         const event: ProspectorEvent = {
           name: ev.name.slice(0, 255),
           type: 'FAIR',
@@ -961,32 +1186,42 @@ export async function runScout(run: ProspectorRun, rawInput: Record<string, unkn
           ...(ev.location ? { location: ev.location.slice(0, 255) } : {}),
           source_url: batch.page.finalUrl,
         };
-        for (const exhibitor of batch.exhibitors) {
-          run.ctx.signal.throwIfAborted();
-          items.push({ event, page: batch.page, exhibitor, decided: await decideExhibitor(run, event, exhibitor, { today, system }), evidence: [] });
-        }
+        items.push({ event, page: batch.page, exhibitor, decided: await decideExhibitor(run, event, exhibitor, { today, system }), evidence: [] });
       }
-      // 2. Profiles ONLY of the relevant exhibitors without a domain, best confidence first, up to the run budget.
+      // 2. Profiles ONLY of the relevant exhibitors without a domain, best confidence first, while the
+      //    budgets last (max_profile_lookups and time), `profile_concurrency` at a time.
       const fairDomains = fairDomainsOf(ev);
       const needDomain = items
         .filter((it) => it.decided.writable && !normalizeDomain(it.exhibitor.domain))
         .sort((a, b) => (b.decided.result.confidence ?? 0) - (a.decided.result.confidence ?? 0));
-      for (const it of needDomain) {
-        run.ctx.signal.throwIfAborted();
-        const found = await lookupProfile(it.exhibitor, it.page, fairDomains);
-        it.decided.result.profile = found.info;
-        if (found.domain) {
-          it.exhibitor = { ...it.exhibitor, domain: found.domain };
-          it.evidence.push({ claim: `Web ${found.domain} tomada de la ficha del expositor en el catálogo de la feria.`, ...(found.profileUrl ? { sourceUrl: found.profileUrl } : {}) });
+      const work = [...needDomain];
+      const worker = async (): Promise<void> => {
+        for (let it = work.shift(); it; it = work.shift()) {
+          run.ctx.signal.throwIfAborted();
+          const found = await lookupProfile(it.exhibitor, it.page, fairDomains, inferredProfiles.get(foldText(it.exhibitor.name)) ?? null);
+          it.decided.result.profile = found.info;
+          if (found.domain) {
+            it.exhibitor = { ...it.exhibitor, domain: found.domain };
+            it.evidence.push({ claim: `Web ${found.domain} tomada de la ficha del expositor en el catálogo de la feria.`, ...(found.profileUrl ? { sourceUrl: found.profileUrl } : {}) });
+          }
         }
-      }
-      // 3. CRM writes (same pipeline as before; still no domain: skipped_no_domain).
+      };
+      await Promise.all(Array.from({ length: Math.min(cfg.profileConcurrency, work.length) }, worker));
+      // 3. CRM writes of everything evaluated (same pipeline as before; still no domain: skipped_no_domain).
+      //    Not cut by the time budget: the evaluations are already paid for.
       for (const it of items) {
         run.ctx.signal.throwIfAborted();
         ev.results.push(
           it.decided.writable ? await writeExhibitor(run, it.event, it.exhibitor, it.decided, { today, system, ledger, extraEvidence: it.evidence }) : it.decided.result,
         );
       }
+      continue;
+    }
+
+    if (timeUp) {
+      // Out of time before any exhibitor was read: nothing is written for this fair (no misleading "no list" signal).
+      ev.status = 'time_budget_exhausted';
+      ev.reason = 'presupuesto de tiempo agotado antes de leer la lista de expositores';
       continue;
     }
 
@@ -1045,6 +1280,7 @@ export async function runScout(run: ProspectorRun, rawInput: Record<string, unkn
 
   // ----------------------------------------------------------------- outcome
   const results = events.flatMap((e) => e.results);
+  const exhibitorsNotEvaluated = events.reduce((n, e) => n + e.exhibitors_not_evaluated, 0);
   const counters = {
     ...exhibitorCounters(results),
     events_proposed: searchInfo?.proposed ?? candidates.length,
@@ -1052,23 +1288,38 @@ export async function runScout(run: ProspectorRun, rawInput: Record<string, unkn
     events_with_exhibitors: events.filter((e) => e.status === 'exhibitors_processed').length,
     event_signals: events.filter((e) => e.status === 'event_signal').length,
     events_discarded: discarded.length,
+    events_skipped_time_budget: eventsSkippedForTime + events.filter((e) => e.status === 'time_budget_exhausted').length,
     fetches,
     renders,
     renders_ok: rendersOk,
     render_retries: renderRetries,
     pdfs_read: pdfsRead,
     catalog_pages: events.reduce((n, e) => n + e.catalog_pages, 0),
+    json_lists_used: jsonListsUsed,
+    extraction_calls: extractionCalls,
+    exhibitors_read: events.reduce((n, e) => n + e.results.length + e.exhibitors_not_evaluated, 0),
+    exhibitors_not_evaluated: exhibitorsNotEvaluated,
     profile_lookups: profileLookups,
     profile_renders: profileRenders,
+    profiles_skipped_time_budget: profilesSkippedForTime,
     domain_checks: domainChecks,
     domains_resolved: domainsResolved,
     llm_calls: run.llmCalls,
     grounding_calls: run.groundingCalls,
     grounding_queries: searchInfo?.queries.length ?? 0,
+    elapsed_ms: elapsedMs(),
   };
+  // Assigned inside closures (outOfTime): TS narrows it to null otherwise.
+  const cut = timeUp as { phase: string; elapsed_ms: number } | null;
+  if (cut) {
+    const phase = TIME_PHASE_ES[cut.phase] ?? cut.phase;
+    partialReasons.push(
+      `presupuesto de tiempo agotado (${Math.round(timeBudgetMs / 60_000)} min, en la fase de ${phase}): ${counters.exhibitors_read} expositores leídos, ${counters.evaluated} evaluados, ${exhibitorsNotEvaluated} sin evaluar, ${profileLookups} fichas abiertas, ${profilesSkippedForTime} fichas sin abrir, ${domainsResolved} dominios obtenidos`,
+    );
+  }
   const eventErrors = events.filter((e) => e.status === 'event_signal_error').length;
   const errors = counters.errors + eventErrors;
-  if (events.length === 0 && !searchFailed) partialReasons.push('no se encontró ninguna feria verificable dentro del horizonte');
+  if (events.length === 0 && !searchFailed && !cut) partialReasons.push('no se encontró ninguna feria verificable dentro del horizonte');
   let outcome: RunOutcome;
   if (searchFailed) outcome = 'FAILED';
   else if (results.length > 0 && counters.errors === results.length && counters.event_signals === 0) outcome = 'FAILED';
@@ -1076,6 +1327,9 @@ export async function runScout(run: ProspectorRun, rawInput: Record<string, unkn
   else outcome = 'SUCCESS';
 
   const groundingEur = run.currency === 'EUR' ? round6(run.groundingCost) : round6(run.groundingCost * run.cfg.usdToEur);
+  const minutes = (ms: number) => (ms / 60_000).toLocaleString('es-ES', { maximumFractionDigits: 1 });
+  // Totals, cost and reasons first: the agentRunSummary is cut at 4,000 characters and a whole
+  // catalog (90+ exhibitors, one line each) would push them out.
   const lines: string[] = [
     input.event_url
       ? `Modo scout sobre ${input.event_url}.`
@@ -1084,20 +1338,20 @@ export async function runScout(run: ProspectorRun, rawInput: Record<string, unkn
     ...(searchInfo
       ? [`Búsqueda con Google (grounding): ${searchInfo.queries.length} consultas, ${searchInfo.sources} fuentes; ferias propuestas: ${searchInfo.proposed}, verificadas: ${events.length}, descartadas: ${discarded.length}.`]
       : []),
+    `Páginas de catálogo leídas: ${counters.catalog_pages}${jsonListsUsed > 0 ? ` (lista tomada de la API JSON del catálogo en ${jsonListsUsed} feria(s))` : ''}; expositores leídos: ${counters.exhibitors_read}, evaluados: ${counters.evaluated}${exhibitorsNotEvaluated > 0 ? `, sin evaluar por tiempo: ${exhibitorsNotEvaluated}` : ''}; fichas de expositor abiertas: ${profileLookups} (de ${maxProfileLookups} posibles${profilesSkippedForTime > 0 ? `, ${profilesSkippedForTime} sin abrir por tiempo` : ''}), dominios obtenidos de la ficha: ${domainsResolved}.`,
+    `Totales: relevantes ${counters.relevant}, hipótesis nuevas ${counters.hypotheses_created}, ya existentes ${counters.hypotheses_existing}, descartados ${counters.discarded_irrelevant + counters.discarded_low_confidence}, sin dominio verificado ${counters.skipped_no_domain}, errores ${errors}.`,
+    `Coste del modelo: ${formatEur(run.costEur())} (${run.llmCalls} llamadas, ${run.groundingCalls} con búsqueda: ${formatEur(groundingEur)} de búsqueda; ${run.usage.inputTokens} tokens de entrada y ${run.usage.outputTokens} de salida). Tiempo: ${minutes(counters.elapsed_ms)} min de ${minutes(timeBudgetMs)} min de presupuesto.`,
+    ...(partialReasons.length > 0 ? [`Motivos: ${partialReasons.join(' | ')}`] : []),
     ...events.flatMap((e) => [
       `Feria: ${e.name}${e.date ? ` (${e.date})` : ''}${e.location ? `, ${e.location}` : ''} — ${
         e.status === 'exhibitors_processed'
-          ? `${e.results.length} expositores evaluados desde ${e.source_url}`
+          ? `${e.results.length} expositores evaluados desde ${e.source_url}${e.catalog_source === 'json_api' ? ' (lista de la API JSON del catálogo)' : ''}`
           : e.status === 'event_signal'
             ? `señal de evento creada (${e.reason})`
             : `sin registrar (${e.reason ?? e.error?.code ?? 'error'})`
       }.`,
       ...e.results.map(resultLine),
     ]),
-    `Páginas de catálogo leídas: ${counters.catalog_pages}; fichas de expositor abiertas: ${profileLookups} (de ${maxProfileLookups} posibles), dominios obtenidos de la ficha: ${domainsResolved}.`,
-    `Totales: relevantes ${counters.relevant}, hipótesis nuevas ${counters.hypotheses_created}, ya existentes ${counters.hypotheses_existing}, descartados ${counters.discarded_irrelevant + counters.discarded_low_confidence}, sin dominio verificado ${counters.skipped_no_domain}, errores ${errors}.`,
-    `Coste del modelo: ${formatEur(run.costEur())} (${run.llmCalls} llamadas, ${run.groundingCalls} con búsqueda: ${formatEur(groundingEur)} de búsqueda; ${run.usage.inputTokens} tokens de entrada y ${run.usage.outputTokens} de salida).`,
-    ...(partialReasons.length > 0 ? [`Motivos: ${partialReasons.join(' | ')}`] : []),
   ];
 
   return {
@@ -1114,9 +1368,27 @@ export async function runScout(run: ProspectorRun, rawInput: Record<string, unkn
       results,
       partial_reasons: partialReasons,
       sources: ledger.snapshot(),
-      render: { calls: renders, ok: rendersOk, retries: renderRetries, max: cfg.maxRenders, catalog_calls: catalogRenders, profile_calls: profileRenders, disabled: renderOff },
-      profiles: { lookups: profileLookups, max: maxProfileLookups, domains_resolved: domainsResolved, domain_checks: domainChecks, max_catalog_pages: maxCatalogPages },
+      render: { calls: renders, ok: rendersOk, retries: renderRetries, max: cfg.maxRenders, catalog_calls: catalogRenders, profile_calls: profileRenders, disabled: renderOff, capture_json: cfg.captureJson },
+      profiles: {
+        lookups: profileLookups,
+        max: maxProfileLookups,
+        concurrency: cfg.profileConcurrency,
+        skipped_time_budget: profilesSkippedForTime,
+        domains_resolved: domainsResolved,
+        domain_checks: domainChecks,
+        max_catalog_pages: maxCatalogPages,
+      },
+      time_budget: { budget_ms: timeBudgetMs, elapsed_ms: counters.elapsed_ms, exhausted: cut !== null, ...(cut ? { phase: cut.phase, exhausted_at_ms: cut.elapsed_ms } : {}) },
       errors_by_status: ERROR_STATUSES.reduce<Record<string, number>>((acc, s) => ({ ...acc, [s]: results.filter((r) => r.status === s).length }), {}),
     },
   };
 }
+
+/** Phase names of the time-budget checkpoints, for the commercial-facing summary. */
+const TIME_PHASE_ES: Record<string, string> = {
+  events: 'ferias',
+  pages: 'lectura de páginas',
+  extraction: 'extracción de expositores',
+  evaluation: 'evaluación de expositores',
+  profiles: 'fichas de expositor',
+};

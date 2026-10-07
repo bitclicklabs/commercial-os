@@ -22,6 +22,7 @@ import { HYPOTHESIS_STATUSES } from '../integrations/twenty/index.js';
 import type { GetHypothesisOutput } from '../tools/twenty/hypothesis-tools.js';
 import type { AgentContext, AgentImplementation, AgentResult } from './agent.js';
 import {
+  DEFAULT_COMPANY_DESCRIPTOR,
   DEFAULT_SENDER,
   WORD_RANGE,
   buildDraftNoteMarkdown,
@@ -119,6 +120,8 @@ export function differentiatorsFromEvidence(evidence: Array<{ claim: string }>):
 export interface DrafterConfig {
   sender: SenderConfig;
   wordRange: { min: number; max: number };
+  /** `configuration.company_descriptor`: what the company is, said at its first mention in the body. */
+  companyDescriptor: string;
 }
 
 export function readDrafterConfig(configuration: Record<string, unknown>): DrafterConfig {
@@ -136,6 +139,7 @@ export function readDrafterConfig(configuration: Record<string, unknown>): Draft
       unsubscribeEmail: str(configuration.unsubscribe_email, DEFAULT_SENDER.unsubscribeEmail),
     },
     wordRange: { min: int(range.min, WORD_RANGE.min), max: int(range.max, WORD_RANGE.max) },
+    companyDescriptor: str(configuration.company_descriptor, DEFAULT_COMPANY_DESCRIPTOR),
   };
 }
 
@@ -213,7 +217,7 @@ export class EmailDrafterAgent implements AgentImplementation {
           role: 'user',
           content: buildDraftPrompt({
             today,
-            sender: { name: cfg.sender.name, company: cfg.sender.company },
+            sender: { name: cfg.sender.name, company: cfg.sender.company, descriptor: cfg.companyDescriptor },
             company: { name: company.name, domain: company.domain },
             contact: contact ? { firstName: contact.firstName, lastName: contact.lastName, jobTitle: contact.jobTitle } : null,
             signal: data.signal
@@ -236,12 +240,13 @@ export class EmailDrafterAgent implements AgentImplementation {
     if (call.status === 'model_error') return { outcome: 'FAILED', hypothesis_id: h.id, company_id: companyId, error: { code: call.code, message: call.message } };
     if (call.status === 'invalid') return { outcome: 'FAILED', hypothesis_id: h.id, company_id: companyId, error: { code: 'LLM_INVALID_OUTPUT', message: call.message } };
 
-    // 3. Compliance by code: signature + unsubscribe line, no invented names.
+    // 3. Compliance by code: signature + unsubscribe line, no invented names, company descriptor.
     const draft: FinalDraft = finalizeDraft(call.value, {
       sender: cfg.sender,
       companyName: company.name,
       contact: contact ? { firstName: contact.firstName, lastName: contact.lastName } : null,
       wordRange: cfg.wordRange,
+      companyDescriptor: cfg.companyDescriptor,
     });
 
     // 4. Note on the company (+ hypothesis). Idempotent per company + title.

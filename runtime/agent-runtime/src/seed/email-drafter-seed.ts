@@ -15,7 +15,7 @@
 import type { Db } from '../db/client.js';
 import { EMAIL_DRAFTER_TOOLS } from '../agents/email-drafter.js';
 import { EMAIL_DRAFTER_SKILL_ID, EMAIL_DRAFTER_SKILL_VERSION, EMAIL_DRAFTER_SYSTEM_PROMPT } from '../agents/email-drafter-prompt.js';
-import { DEFAULT_SENDER, WORD_RANGE } from '../agents/email-draft.js';
+import { DEFAULT_COMPANY_DESCRIPTOR, DEFAULT_SENDER, WORD_RANGE } from '../agents/email-draft.js';
 import { DEFAULT_USD_TO_EUR } from '../providers/gemini-pricing.js';
 import type { SkillRef } from '../db/schema.js';
 import { upsertAgent, upsertTask, type AgentVersionSpec, type TaskSpec } from './prospector-seed.js';
@@ -45,6 +45,7 @@ export function desiredEmailDrafterVersion(): AgentVersionSpec {
         signature_lines: [...DEFAULT_SENDER.signatureLines],
       },
       unsubscribe_email: DEFAULT_SENDER.unsubscribeEmail,
+      company_descriptor: DEFAULT_COMPANY_DESCRIPTOR,
       word_range: { min: WORD_RANGE.min, max: WORD_RANGE.max },
       usd_to_eur: DEFAULT_USD_TO_EUR,
       max_output_tokens: 4096,

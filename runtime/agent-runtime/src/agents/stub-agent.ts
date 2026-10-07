@@ -1,4 +1,6 @@
+import type { Db } from '../db/client.js';
 import type { AgentContext, AgentImplementation, AgentResult, AgentStep } from './agent.js';
+import { BAJAS_IMPLEMENTATION, BajasAgent } from './bajas-agent.js';
 import { EmailDrafterAgent } from './email-drafter.js';
 import { ProspectorAgent } from './prospector-agent.js';
 import { SmokeAgent } from './smoke-agent.js';
@@ -69,7 +71,12 @@ export class StubAgent implements AgentImplementation {
   }
 }
 
-export function resolveAgentImplementation(configuration: Record<string, unknown>): AgentImplementation {
+/** Runtime services some implementations need (e.g. the inbound cursor in the database). */
+export interface AgentImplementationDeps {
+  db?: Db;
+}
+
+export function resolveAgentImplementation(configuration: Record<string, unknown>, deps: AgentImplementationDeps = {}): AgentImplementation {
   const kind = typeof configuration.implementation === 'string' ? configuration.implementation : 'stub';
   switch (kind) {
     case 'stub':
@@ -80,6 +87,8 @@ export function resolveAgentImplementation(configuration: Record<string, unknown
       return new ProspectorAgent();
     case 'email_drafter':
       return new EmailDrafterAgent();
+    case BAJAS_IMPLEMENTATION:
+      return new BajasAgent(deps.db ? { db: deps.db } : {});
     default:
       throw new Error(`Unknown agent implementation: ${kind}`);
   }

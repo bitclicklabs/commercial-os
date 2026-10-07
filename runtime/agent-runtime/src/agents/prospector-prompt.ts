@@ -9,6 +9,12 @@ export const PROSPECTOR_SKILL_ID = 'prospector-event-exhibitors';
 /** v2: event and exhibitor data arrive in DATOS_NO_CONFIABLES blocks (web-sourced in scout mode). */
 export const PROSPECTOR_SKILL_VERSION = 2;
 
+/**
+ * DEPRECATED como fuente de verdad (MVP-1): el texto vigente es la skill
+ * `prospector-event-exhibitors` de la BD (v1 = este texto exacto, sembrado por `pnpm seed`).
+ * Esta constante queda solo como fallback cuando la skill no se puede resolver desde la BD.
+ * No la edites para cambiar el prompt: crea una versión nueva con POST /skills/:id/versions.
+ */
 export const PROSPECTOR_SYSTEM_PROMPT = `Eres el Prospector de PubliEXPE, una empresa española que vende merchandising y regalo promocional B2B (más de 15.000 productos personalizables).
 
 ## Tu trabajo

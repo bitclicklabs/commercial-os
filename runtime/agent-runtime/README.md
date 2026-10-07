@@ -33,7 +33,8 @@ runtime/agent-runtime/
 │   ├── providers/            ModelProvider, StubProvider, AnthropicProvider, GeminiProvider y tabla de precios
 │   ├── queue/                RunQueue (BullMQ y en memoria)
 │   ├── scheduler/            TaskScheduler sobre BullMQ, parseo de schedules y rutas
-│   ├── seed/                 Seed idempotente del Prospector, el EmailDrafter, el BajasAgent y sus tareas (pnpm seed)
+│   ├── seed/                 Seed idempotente de las skills, el Prospector, el EmailDrafter, el BajasAgent y sus tareas (pnpm seed)
+│   ├── skills/               Skills versionadas (MVP-1): render, resolución desde la BD con fallback a las constantes, ciclo de estados
 │   ├── services/             Lanzamiento idempotente de TaskRuns
 │   └── worker/               RunProcessor, worker BullMQ, locks por entidad y reconciliador
 └── test/
@@ -138,6 +139,7 @@ El esquema vive en `src/db/schema.ts`. Todas las tablas llevan `tenant_id` (C6).
 | `0002_events` | Tabla `events` (log de eventos de dominio, *append-only* con trigger anti-`DELETE`) |
 | `0003_evaluations` | Tabla `evaluations` del evaluador HUMAN. SQL idempotente (`IF NOT EXISTS`) |
 | `0004_inbound` | Tabla `inbound_state` (cursor IMAP del inbound de bajas). SQL idempotente (`IF NOT EXISTS`) |
+| `0005_skills` | Tablas `skills` y `skill_versions` (triggers anti-`DELETE` y de contenido inmutable) y columna `traces.skill_versions`. SQL idempotente |
 
 Importante: el migrador de Drizzle aplica solo las migraciones con fecha posterior a la última aplicada. Si dos ramas generan migraciones en paralelo contra la misma BD de desarrollo, aplica primero la más antigua o regenera la nueva tras el merge.
 
@@ -212,6 +214,11 @@ Cabecera opcional `x-tenant-id` en todas las rutas. Las respuestas usan `snake_c
 | `GET /metrics/evaluations` | Veredictos por día y por sujeto. Filtros `since`, `until`, `tz`, `subject_limit` |
 | `GET /metrics/runs` | Últimos `TaskRun` (`limit`, 10 por defecto) con coste, duración y enlace al trace |
 | `GET /dashboard` | Mini dashboard HTML. Solo para peticiones locales |
+| `GET /skills`, `GET /skills/:id` | Lista de skills o detalle con versiones. `:id` admite el uuid o el nombre |
+| `POST /skills` | Crea la skill y su versión 1 en `DRAFT` |
+| `POST /skills/:id/versions` | Versión nueva en `DRAFT`, desde texto o copiando la activa (`copy_from`) |
+| `POST /skills/:id/versions/:v/activate` | La versión pasa a `ACTIVE` y la anterior a `DEPRECATED`, en una transacción |
+| `POST /skills/:id/versions/:v/deprecate` | `DRAFT` a `DEPRECATED`; sobre la `ACTIVE`, vuelve a la versión activa anterior. No hay `DELETE` |
 
 ### Idempotencia
 
@@ -430,6 +437,86 @@ Salida esperada del paso 4:
 ```
 
 Nota: `POST /agents` devuelve `409` si el nombre ya existe en el tenant. Para repetir el ejemplo, cambia el nombre o el valor de `x-tenant-id`.
+
+## Skills
+
+Las skills son objetos versionados en la BD (LLD v0.1 §6.3, MVP-1, sin optimizador). Hasta el MVP-0 eran constantes de TypeScript. Ahora la fuente de verdad es la BD y las constantes quedan como fallback.
+
+| Skill | Agente | Texto de la v1 |
+|---|---|---|
+| `prospector-event-exhibitors` | Prospector (evaluación de cada expositor) | `PROSPECTOR_SYSTEM_PROMPT` |
+| `event-source-discovery` | Prospector, modo scout (búsqueda de ferias) | `SCOUT_SEARCH_SYSTEM_PROMPT` |
+| `exhibitor-list-extraction` | Prospector, modo scout (extracción de expositores) | `SCOUT_EXTRACT_SYSTEM_PROMPT` |
+| `email-first-contact-draft` | EmailDrafter | `EMAIL_DRAFTER_SYSTEM_PROMPT` |
+
+`exhibitor-list-extraction` formaba parte de `event-source-discovery` v4 en el código; en la BD es una skill propia para poder versionarla por separado.
+
+### Tablas
+
+- `skills`: `id`, `tenant_id`, `name` (kebab-case, único por tenant), `description`, `domain`, `status` (`DRAFT` hasta que se activa una versión, `ACTIVE`, `DEPRECATED`), `active_version_id`, `created_at`, `updated_at`.
+- `skill_versions`: `id`, `tenant_id`, `skill_id`, `version` (1, 2, 3… por skill), `status` (`DRAFT`, `ACTIVE`, `DEPRECATED`), `instructions`, `constraints`, `examples` (jsonb), `anti_patterns`, `metadata` (jsonb), `content_hash`, `activated_at`, `deprecated_at`, `created_at`, `created_by`.
+
+Reglas que aplica la BD:
+
+- No hay `DELETE` físico en ninguna de las dos tablas (trigger).
+- El contenido de una versión es inmutable (trigger): solo cambian `status`, `activated_at` y `deprecated_at`. Para cambiar una skill, crea una versión nueva.
+- Como mucho una versión `ACTIVE` por skill (índice único parcial).
+
+El texto que se inyecta es `instructions` tal cual, seguido de `constraints`, `anti_patterns` y `examples` como secciones (`## Restricciones`, `## Antipatrones (no lo hagas)`, `## Ejemplos`) si existen. `content_hash` es el sha256 de ese texto.
+
+### Referencias desde `agent_versions.skill_refs`
+
+| Ref | Resolución |
+|---|---|
+| `{"name": "x"}` | Versión `ACTIVE` de la skill `x`, leída al arrancar cada ejecución |
+| `{"name": "x", "version": 3}` | Exactamente la versión 3, sea cual sea su estado (sirve para probar un `DRAFT`) |
+| `{"skill_id": "x", "version": 2}` | Ref del MVP-0 a una constante de código. No se busca en la BD: su `version` es la del código, no la de `skill_versions` |
+
+Activar una versión no toca los agentes en marcha: las ejecuciones nuevas la recogen al resolver sus skills.
+
+### Fallback
+
+Si una ref no se resuelve (la skill no existe, la versión no existe, no hay versión `ACTIVE` o la BD falla), el agente usa el mismo prompt que en el MVP-0 (su `system_prompt` si no está vacío o la constante) y el runtime registra un aviso (`skill not found in the database; falling back to the code constant`). Una skill que falta no hace fallar ninguna ejecución.
+
+> **Importante:** el código necesita la migración `0005_skills` (añade `traces.skill_versions`). Con `RUN_MIGRATIONS=true` se aplica al arrancar. Si aplicas las migraciones a mano en la BD compartida, aplica la `0005` antes de desplegar.
+
+### Qué guarda la ejecución
+
+`traces.skill_versions` guarda qué se inyectó exactamente (LLD P4). Cada elemento tiene `name`, `version`, `skill_version_id`, `content_hash`, `source` y `requested` (la ref de la versión del agente):
+
+- `source: "db"`: versión de la BD (`skill_version_id` y `content_hash` del texto inyectado).
+- `source: "code"`: fallback. Incluye `fallback_reason` y el texto exacto en `text`, porque las constantes no están versionadas en la BD. `version` es la versión de código de la constante.
+- `source: "none"`: la ref no se resolvió y el agente no la usó.
+
+`task_runs.skill_versions` guarda lo mismo sin `text`.
+
+### Ciclo de vida por API
+
+1. Crea una versión nueva a partir de la activa, cambiando lo que necesites:
+
+   ```sh
+   curl -s -X POST localhost:4020/skills/prospector-event-exhibitors/versions \
+     -H 'content-type: application/json' \
+     -d '{"copy_from": "active", "instructions": "…texto nuevo…", "change_reason": "Prioriza lanzamientos", "created_by": "jesus"}'
+   ```
+
+   La versión se crea en `DRAFT`. La respuesta incluye `warnings` si `instructions` no contiene la regla de contenido web no confiable (`UNTRUSTED_SYSTEM_RULE`).
+
+1. Actívala. La versión anterior pasa a `DEPRECATED` en la misma transacción:
+
+   ```sh
+   curl -s -X POST localhost:4020/skills/prospector-event-exhibitors/versions/2/activate
+   ```
+
+1. Para volver atrás, depreca la versión activa. Se reactiva la versión anterior con número menor que se activó más recientemente:
+
+   ```sh
+   curl -s -X POST localhost:4020/skills/prospector-event-exhibitors/versions/2/deprecate
+   ```
+
+   Si no hay ninguna versión anterior que restaurar, la llamada devuelve `409`. También puedes activar directamente una versión `DEPRECATED`.
+
+Las transiciones son idempotentes: repetir `activate` o `deprecate` devuelve `200` con `changed: false`.
 
 ## Tools
 
@@ -767,6 +854,7 @@ pnpm seed -- --tenant=otro --input=evento.json
 
 Es idempotente:
 
+- **Skills** (primero): crea las que faltan con su versión 1 `ACTIVE` y el texto exacto de las constantes de código. No modifica las que ya existen. Consulta [Skills](#skills).
 - **Agente `Prospector`**: si no existe, lo crea con la versión 1 `ACTIVE` (`model_provider = gemini`, `model = gemini-flash-latest`, `thinking_level = low`, la tool policy anterior y el prompt en español con los diferenciales de PubliEXPE: ofertas, trato cercano, taller propio y precio). Si existe y su versión activa es distinta, añade una versión nueva, la activa y pasa la anterior a `DEPRECATED`. Si es igual, no cambia nada.
 - **Tarea `daily-event-prospecting`**: `CRON 0 8 * * *` en `Europe/Madrid`, `timeout_ms = 900000`, sin reintentos, con `test/fixtures/feria-ejemplo.json` como `default_input`. Si cambia, se actualiza y se guarda una `TaskDefinitionVersion` nueva.
 - **Tarea `weekly-event-scouting`** (modo scout): `CRON 30 7 * * 1` (lunes 07:30) en `Europe/Madrid`, `timeout_ms = 1800000`, sin reintentos, `default_input = { "sector": "alimentación y bebidas", "region": "España", "horizon_months": 6 }`.
@@ -781,6 +869,8 @@ La versión de la tanda 5 sube `max_exhibitors_per_event` a 60, añade `max_cata
 La versión de la tanda 6 (catálogo completo) sube `max_catalog_pages` a 10, `max_profile_lookups` a 60 y `max_exhibitors_per_event` a 100, añade `time_budget_ms` (20 min), `profile_concurrency` (2) y `capture_json` (`true`), amplía la tool policy (`fetch_url` 230, `render_url` 115, 1 500 llamadas) y sube la skill `event-source-discovery` a v4. Para el atajo JSON y más de 5 páginas necesita pxos-renderer 0.2 (imagen reconstruida desde esta rama); con uno anterior, el scout lee 5 páginas y extrae el texto.
 
 > **Importante:** ejecuta el seed después de desplegar este código. Un runtime anterior trataría la entrada de `weekly-event-scouting` como entrada directa no válida y cerraría la ejecución del lunes como `FAILED`.
+
+La versión MVP-1 del seed deja `system_prompt` vacío y referencia las skills de la BD por nombre y sin versión (`[{"name": "prospector-event-exhibitors"}, {"name": "event-source-discovery"}, {"name": "exhibitor-list-extraction"}]`; en el EmailDrafter, `[{"name": "email-first-contact-draft"}]`): al ejecutar el seed se crea una versión nueva de los dos agentes. El texto que recibe el modelo no cambia.
 
 La fixture tiene tres expositores ficticios: uno claramente relevante (fabricante de conservas con stand propio), uno dudoso (distribuidor de envases que también imprime bolsas promocionales) y uno irrelevante (organismo público que compra por licitación).
 
@@ -1209,6 +1299,6 @@ Una llamada a Gemini por borrador. En la prueba en vivo: 0,0021 USD (0,0018 €)
 - Validación de URL en campos de texto libre contra las fuentes del trace (LLD v0.2 sección 10.4, punto 4) en el modo directo: el modo scout ya la aplica con su `SourceLedger`.
 - Eventos aún no emitidos: `task.failed` cuando el reconciliador cierra un huérfano, cancelaciones y `signal.detected`.
 - Borradores de email: disparar también con `EDITED` (necesita una segunda tarea o un operador OR en el filtro), plantillas por sector y registro de si el comercial envió el borrador. Entrada de eventos externos (Twenty, n8n) por HTTP y entrega a n8n por webhook.
-- Harness, skills, memoria y verificador reales; promote, rollback y evaluate.
+- Harness, memoria y verificador reales; promote, rollback y evaluate. Skills: versionadas en BD (MVP-1), falta el optimizador (operaciones acotadas, experimentos y gate de validación), `workflow` y `optimization_budget` del LLD §6.3 y la comprobación del `content_hash` al cargar.
 - Export de los contratos zod a JSON Schema versionado en `schemas/`.
 - Métricas: AC-17 y AC-18 piden hipótesis `HOT`, pero el resumen de ejecución solo cuenta hipótesis creadas; falta el desglose por prioridad (en Twenty o en `output.counters`). El dashboard oculta por defecto los agentes `ARCHIVED` (los de prueba se archivan con `pnpm cleanup:archive-test-agents`); `include_archived=true` los muestra.

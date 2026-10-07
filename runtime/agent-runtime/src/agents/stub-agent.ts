@@ -9,7 +9,8 @@ import { SmokeAgent } from './smoke-agent.js';
  * StubAgent: no LLM reasoning. Emits a fixed THINK -> TOOL -> FINAL trace and a
  * fixed result. The FINAL step goes through the configured ModelProvider so the
  * provider plumbing (tokens / cost accounting) is exercised end to end; with the
- * StubProvider everything is zero.
+ * StubProvider everything is zero. The system prompt is the version's `system_prompt`
+ * followed by the text of the skills resolved from the database (if any).
  */
 export class StubAgent implements AgentImplementation {
   readonly kind = 'stub';
@@ -39,7 +40,7 @@ export class StubAgent implements AgentImplementation {
     ctx.signal.throwIfAborted();
     const completion = await ctx.provider.complete({
       model: ctx.version.model,
-      system: ctx.version.systemPrompt,
+      system: [ctx.version.systemPrompt, ...(ctx.skills?.dbTexts() ?? [])].filter((t) => t.length > 0).join('\n\n'),
       messages: [{ role: 'user', content: JSON.stringify(ctx.input) }],
       signal: ctx.signal,
     });

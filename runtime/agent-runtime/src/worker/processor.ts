@@ -13,6 +13,7 @@ import {
   type Agent,
   type AgentExecution,
   type AgentVersion,
+  type SkillVersionUsed,
 } from '../db/schema.js';
 import { allowedSources } from '../domain/run-state.js';
 import { NOOP_EVENT_PUBLISHER, type EventPublisher } from '../events/event-bus.js';
@@ -26,6 +27,7 @@ import {
 import type { RunStatus } from '../domain/statuses.js';
 import type { ProviderFactory } from '../providers/index.js';
 import type { RunJob } from '../queue/run-queue.js';
+import { resolveSkillRefs, type SkillSet } from '../skills/resolver.js';
 import { createDefaultToolRegistry, parseToolPolicy, ToolExecutor, type ToolRegistry } from '../tools/index.js';
 import { EntityLocks } from './entity-locks.js';
 import { recoverOrphanRun } from './recovery.js';
@@ -158,6 +160,9 @@ export class RunProcessor {
     const resolved = task ? await this.resolveActiveVersion(tenantId, task.agentId) : null;
     const queuedRun = run;
     if (resolved) await this.gateOnTwenty(taskRunId, resolved.version, attempt.twentyWait);
+    // Skills are resolved once per attempt, when it starts: a version activated later only
+    // affects later runs.
+    const skills = resolved ? await this.resolveSkills(tenantId, resolved.version) : null;
 
     // max_concurrency gate + guarded QUEUED -> RUNNING, serialised per task by a transaction-
     // scoped advisory lock so two workers cannot both see a free slot.
@@ -181,7 +186,7 @@ export class RunProcessor {
           agentVersionId: resolved?.version.id ?? null,
           agentVersion: resolved?.version.version ?? null,
           harnessVersion: resolved?.version.harnessVersionId ?? null,
-          skillVersions: resolved?.version.skillRefs ?? [],
+          skillVersions: skills?.runRecords() ?? resolved?.version.skillRefs ?? [],
           environmentVersion: task?.environmentId ?? null,
           updatedAt: new Date(),
         })
@@ -192,7 +197,7 @@ export class RunProcessor {
     if (started === 'deferred') throw new ConcurrencyLimitError(task!.id, task!.maxConcurrency);
     if (!started) return;
 
-    if (!task || !resolved) {
+    if (!task || !resolved || !skills) {
       await this.finishTaskRun(run.id, 'FAILED', {
         error: { message: !task ? 'task definition not found' : 'agent has no ACTIVE version or is not ACTIVE' },
       });
@@ -219,11 +224,11 @@ export class RunProcessor {
 
     let outcome: Outcome;
     try {
-      outcome = await this.runAgent(execution, resolved.agent, resolved.version, task.timeoutMs);
+      outcome = await this.runAgent(execution, resolved.agent, resolved.version, task.timeoutMs, skills);
       await this.persistOutcome(execution, resolved.agent, resolved.version, outcome, {
         taskRunId: run.id,
         taskDefinitionId: task.id,
-      });
+      }, skills);
     } finally {
       await this.releaseLocks(execution.id);
     }
@@ -231,6 +236,7 @@ export class RunProcessor {
     if (outcome.status === 'COMPLETED' && outcome.result) {
       const r = outcome.result;
       await this.finishTaskRun(run.id, 'COMPLETED', {
+        skillVersions: skills.runRecords(),
         output: r.output,
         cost: r.modelCost + r.toolCost,
         inputTokens: r.usage.inputTokens,
@@ -252,7 +258,7 @@ export class RunProcessor {
       throw new RetryableRunError(String(outcome.error?.message ?? 'execution failed'));
     }
 
-    await this.finishTaskRun(run.id, outcome.status, { error: outcome.error ?? null, latencyMs: outcome.latencyMs });
+    await this.finishTaskRun(run.id, outcome.status, { skillVersions: skills.runRecords(), error: outcome.error ?? null, latencyMs: outcome.latencyMs });
   }
 
   // -------------------------------------------------------------------------
@@ -286,9 +292,10 @@ export class RunProcessor {
       return;
     }
     await this.events.emit(executionStartedEvent(execution, this.eventContext(agent, version, null, null)));
+    const skills = await this.resolveSkills(tenantId, version);
     try {
-      const outcome = await this.runAgent(execution, agent, version, 300_000);
-      await this.persistOutcome(execution, agent, version, outcome, {});
+      const outcome = await this.runAgent(execution, agent, version, 300_000, skills);
+      await this.persistOutcome(execution, agent, version, outcome, {}, skills);
     } finally {
       await this.releaseLocks(execution.id);
     }
@@ -349,7 +356,14 @@ export class RunProcessor {
     return version ? { agent, version } : null;
   }
 
-  private async runAgent(execution: AgentExecution, agent: Agent, version: AgentVersion, timeoutMs: number): Promise<Outcome> {
+  /** Skill refs of the version against the database; never throws (falls back to code). */
+  private resolveSkills(tenantId: string, version: AgentVersion): Promise<SkillSet> {
+    return resolveSkillRefs(this.db, tenantId, version.skillRefs, {
+      warn: (obj, msg) => this.logger.warn({ tenantId, agentVersionId: version.id, ...obj }, msg),
+    });
+  }
+
+  private async runAgent(execution: AgentExecution, agent: Agent, version: AgentVersion, timeoutMs: number, skills: SkillSet): Promise<Outcome> {
     const startedAt = Date.now();
     const controller = new AbortController();
     let timer: NodeJS.Timeout | undefined;
@@ -396,6 +410,7 @@ export class RunProcessor {
           provider,
           signal: controller.signal,
           tools,
+          skills,
         }),
         timeout,
       ]);
@@ -416,6 +431,7 @@ export class RunProcessor {
     version: AgentVersion,
     outcome: Outcome,
     link: { taskRunId?: string; taskDefinitionId?: string },
+    skills: SkillSet,
   ): Promise<void> {
     const r = outcome.result;
     const toolSteps = r?.steps.filter((s) => s.type === 'TOOL') ?? [];
@@ -431,6 +447,7 @@ export class RunProcessor {
           agentId: agent.id,
           agentVersionId: version.id,
           harnessVersion: version.harnessVersionId,
+          skillVersions: skills.traceRecords(),
           toolCalls: toolSteps.map((s) => ({ tool: s.tool, input: s.toolInput, output: s.toolOutput })),
           errors: outcome.error ? [outcome.error] : [],
           finalOutput: r?.output ?? null,
@@ -513,6 +530,7 @@ export class RunProcessor {
     id: string,
     status: Extract<RunStatus, 'COMPLETED' | 'FAILED' | 'TIMED_OUT'>,
     patch: Partial<{
+      skillVersions: SkillVersionUsed[];
       output: Record<string, unknown>;
       error: Record<string, unknown> | null;
       cost: number;

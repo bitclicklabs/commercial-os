@@ -14,7 +14,7 @@
  */
 import type { Db } from '../db/client.js';
 import { EMAIL_DRAFTER_TOOLS } from '../agents/email-drafter.js';
-import { EMAIL_DRAFTER_SKILL_ID, EMAIL_DRAFTER_SKILL_VERSION, EMAIL_DRAFTER_SYSTEM_PROMPT } from '../agents/email-drafter-prompt.js';
+import { EMAIL_DRAFTER_SKILL_ID } from '../agents/email-drafter-prompt.js';
 import { DEFAULT_COMPANY_DESCRIPTOR, DEFAULT_SENDER, WORD_RANGE } from '../agents/email-draft.js';
 import { DEFAULT_USD_TO_EUR } from '../providers/gemini-pricing.js';
 import type { SkillRef } from '../db/schema.js';
@@ -27,7 +27,8 @@ export function desiredEmailDrafterVersion(): AgentVersionSpec {
   return {
     model: 'gemini-flash-latest',
     modelProvider: 'gemini',
-    systemPrompt: EMAIL_DRAFTER_SYSTEM_PROMPT,
+    // MVP-1: the prompt is the database skill (skillRefs, ACTIVE version); fallback: the code constant.
+    systemPrompt: '',
     configuration: {
       implementation: 'email_drafter',
       stage: 'EMAIL_DRAFTER',
@@ -51,7 +52,7 @@ export function desiredEmailDrafterVersion(): AgentVersionSpec {
       max_output_tokens: 4096,
       model_options: { thinking_level: 'low' },
     },
-    skillRefs: [{ skill_id: EMAIL_DRAFTER_SKILL_ID, version: EMAIL_DRAFTER_SKILL_VERSION }] as SkillRef[],
+    skillRefs: [{ name: EMAIL_DRAFTER_SKILL_ID }] as SkillRef[],
   };
 }
 

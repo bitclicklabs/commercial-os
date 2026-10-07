@@ -14,7 +14,17 @@ export const SCOUT_SKILL_ID = 'event-source-discovery';
  *     catalog's JSON API as preferred source, and a time budget for the run.
  */
 export const SCOUT_SKILL_VERSION = 4;
+/**
+ * MVP-1: the extraction prompt is its own skill in the database (it was part of
+ * `event-source-discovery` v4 in code); `event-source-discovery` keeps the search prompt.
+ */
+export const SCOUT_EXTRACT_SKILL_ID = 'exhibitor-list-extraction';
 
+/**
+ * DEPRECATED como fuente de verdad (MVP-1): el texto vigente es la skill
+ * `event-source-discovery` de la BD (v1 = este texto exacto, sembrado por `pnpm seed`).
+ * Esta constante queda solo como fallback cuando la skill no se puede resolver desde la BD.
+ */
 export const SCOUT_SEARCH_SYSTEM_PROMPT = `Eres el explorador de eventos del Prospector de PubliEXPE (merchandising y regalo promocional B2B, España).
 Tu trabajo es localizar ferias profesionales REALES y próximas usando la búsqueda de Google, para que después el sistema descargue su lista de expositores.
 
@@ -28,6 +38,11 @@ Tu trabajo es localizar ferias profesionales REALES y próximas usando la búsqu
 
 ${UNTRUSTED_SYSTEM_RULE}`;
 
+/**
+ * DEPRECATED como fuente de verdad (MVP-1): el texto vigente es la skill
+ * `exhibitor-list-extraction` de la BD (v1 = este texto exacto, sembrado por `pnpm seed`).
+ * Esta constante queda solo como fallback cuando la skill no se puede resolver desde la BD.
+ */
 export const SCOUT_EXTRACT_SYSTEM_PROMPT = `Eres el extractor de expositores del Prospector de PubliEXPE.
 Recibes el texto de UNA página web de una feria (descargada por el sistema, renderizada con un navegador si es una aplicación JavaScript, o extraída de un PDF de catálogo) y su lista de enlaces. Extraes datos, no opinas.
 

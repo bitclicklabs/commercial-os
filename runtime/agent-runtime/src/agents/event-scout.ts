@@ -89,10 +89,13 @@ import {
   buildEventSearchPrompt,
   buildExtractPrompt,
   buildSearchRepairPrompt,
+  SCOUT_EXTRACT_SKILL_ID,
   SCOUT_EXTRACT_SYSTEM_PROMPT,
   SCOUT_SEARCH_SYSTEM_PROMPT,
+  SCOUT_SKILL_ID,
 } from './event-scout-prompt.js';
-import { PROSPECTOR_SYSTEM_PROMPT } from './prospector-prompt.js';
+import { PROSPECTOR_SKILL_ID, PROSPECTOR_SYSTEM_PROMPT } from './prospector-prompt.js';
+import { useSkill } from '../skills/resolver.js';
 import { hostOf, normalizeUrl, scrubUnknownUrls, SourceLedger } from './source-ledger.js';
 
 // ---------------------------------------------------------------------------
@@ -521,7 +524,7 @@ export async function runScout(run: ProspectorRun, rawInput: Record<string, unkn
   const maxEvents = Math.max(1, Math.min(input.max_events ?? cfg.maxEvents, cfg.maxEvents));
   const maxExhibitors = Math.max(1, Math.min(input.max_exhibitors ?? cfg.maxExhibitorsPerEvent, cfg.maxExhibitorsPerEvent));
   const until = addMonths(today, input.horizon_months);
-  const system = run.ctx.version.systemPrompt.trim().length > 0 ? run.ctx.version.systemPrompt : PROSPECTOR_SYSTEM_PROMPT;
+  const system = useSkill(run.ctx, PROSPECTOR_SKILL_ID, run.ctx.version.systemPrompt.trim().length > 0 ? run.ctx.version.systemPrompt : PROSPECTOR_SYSTEM_PROMPT);
   const ledger = new SourceLedger();
   const pageCache = new Map<string, FetchUrlOutput>();
   const partialReasons: string[] = [];
@@ -748,7 +751,7 @@ export async function runScout(run: ProspectorRun, rawInput: Record<string, unkn
   } else {
     const search = await run.completeJson({
       label: { step: 'scout_search', sector: input.sector, region: input.region },
-      system: SCOUT_SEARCH_SYSTEM_PROMPT,
+      system: useSkill(run.ctx, SCOUT_SKILL_ID, SCOUT_SEARCH_SYSTEM_PROMPT),
       messages: [{ role: 'user', content: buildEventSearchPrompt({ sector: input.sector!, region: input.region, today, until, maxEvents }) }],
       parse: (text) => parseWith(SearchAnswer, text),
       grounding: true,
@@ -909,7 +912,7 @@ export async function runScout(run: ProspectorRun, rawInput: Record<string, unkn
       attempt.extraction_calls = (attempt.extraction_calls ?? 0) + 1;
       const extract = await run.completeJson({
         label: { step: 'scout_extract', event: ev.name || cand.website_url, url: page.finalUrl, via: attempt.via },
-        system: SCOUT_EXTRACT_SYSTEM_PROMPT,
+        system: useSkill(run.ctx, SCOUT_EXTRACT_SKILL_ID, SCOUT_EXTRACT_SYSTEM_PROMPT),
         messages: [
           {
             role: 'user',

@@ -13,6 +13,12 @@ import { UNTRUSTED_SYSTEM_RULE, wrapUntrusted } from './untrusted.js';
 export const EMAIL_DRAFTER_SKILL_ID = 'email-first-contact-draft';
 export const EMAIL_DRAFTER_SKILL_VERSION = 2;
 
+/**
+ * DEPRECATED como fuente de verdad (MVP-1): el texto vigente es la skill
+ * `email-first-contact-draft` de la BD (v1 = este texto exacto, sembrado por `pnpm seed`).
+ * Esta constante queda solo como fallback cuando la skill no se puede resolver desde la BD.
+ * No la edites para cambiar el prompt: crea una versión nueva con POST /skills/:id/versions.
+ */
 export const EMAIL_DRAFTER_SYSTEM_PROMPT = `Eres el redactor de borradores de email de PubliEXPE, una empresa española que vende merchandising y regalo promocional B2B personalizado.
 
 ## Tu trabajo

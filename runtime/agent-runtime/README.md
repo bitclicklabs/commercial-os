@@ -23,7 +23,7 @@ runtime/agent-runtime/
 │   ├── api/                  Servidor Fastify, contratos zod y rutas
 │   ├── agents/               Interfaz de agente, StubAgent, SmokeAgent, ProspectorAgent (modos directo y scout, prompts, SourceLedger) EmailDrafterAgent (borradores, nunca envía) y BajasAgent (inbound de bajas, sin LLM)
 │   ├── inbound/              Inbound de bajas: lector IMAP de solo lectura, clasificador determinista, lista de supresión y cursor (inbound_state)
-│   ├── integrations/twenty/  TwentyClient REST tipado y mapeo de objetos de la App
+│   ├── integrations/twenty/  TwentyClient REST tipado, mapeo de objetos de la App y MemoryTwenty (CRM en memoria para los experimentos del optimizador)
 │   ├── tools/                Interfaz Tool, registry, tool_policy, executor, tools de Twenty y web/ (fetch_url con texto de PDF, render_url y guarda SSRF)
 │   ├── db/                   Esquema Drizzle, cliente y migrador
 │   ├── events/               Event bus: sobre event.envelope.v1, EventBus, payloads, triggers EVENT y GET /events; puente externo (POST /events/external, event_subscriptions y webhooks firmados con guarda SSRF)
@@ -40,6 +40,7 @@ runtime/agent-runtime/
 │   ├── harness/              Harness versionado (MVP-1): config v1 por dimensiones, precedencia, resolución desde la BD con fallback y ciclo de estados
 │   ├── datasets/             Datasets de evaluación (MVP-2): cosecha de trazas y veredictos, split determinista, registro de exclusiones de EXP-001/EXP-002 y control de contaminación (markUsed)
 │   ├── experiments/          Experiments y Release Gate (MVP-2): runner de pnpm experiment:run, criterios del gate (seesaw, PASS_FORM), tabla experiments y candado de la activación
+│   ├── optimizer/            Skill Optimizer (MVP-3): cosecha de fallos, clustering, candidata con edit-ops, P5, experimento, nota de promoción, tabla optimization_runs y cola {QUEUE_NAME}-optimizer
 │   ├── services/             Lanzamiento idempotente de TaskRuns
 │   └── worker/               RunProcessor, worker BullMQ, locks por entidad y reconciliador
 └── test/
@@ -158,6 +159,7 @@ El esquema vive en `src/db/schema.ts`. Todas las tablas llevan `tenant_id` (C6).
 | `0009_knowledge` | Tabla `knowledge_entries` (memoria semántica, LLD §6.4): triggers anti-`DELETE`, de transiciones válidas y de contenido inmutable fuera de `PROPOSED`/`VALIDATED`; CHECK que impide `ACTIVE` sin evidencia. SQL idempotente. La `0008` es de `feat/harness-v1` (`when` 1791375700000); la `0009` lleva `when` 1791375800000 e idx 9 (ADR-31) |
 | `0010_eval_datasets` | Tablas `evaluation_datasets` y `evaluation_cases` (LLD §11.4 y P5): triggers anti-`DELETE`, versión de dataset inmutable salvo el estado, caso inmutable salvo `used_by` (solo crece) y casos solo en datasets `DRAFT`. SQL idempotente. `when` 1791375900000 e idx 10; la `0011` la reserva la rama de experiments (ADR-31). Consulta [Datasets de evaluación](#datasets-de-evaluación) |
 | `0011_experiments` | Tabla `experiments` (LLD §11.5-11.6): triggers anti-`DELETE`, un experimento nace `DRAFT` o `RUNNING`, identidad y `config` inmutables, transiciones válidas y un experimento terminado (`COMPLETED`, `FAILED`, `CANCELLED`) inmutable entero. SQL idempotente. `when` 1791376000000 e idx 11. Consulta [Experiments y Release Gate](#experiments-y-release-gate) |
+| `0012_optimization_runs` | Tabla `optimization_runs` del Skill Optimizer (LLD §18): trigger anti-`DELETE`, CHECK de estados y veredicto, e índice único parcial que permite un solo run abierto por skill. Las transiciones son `UPDATE` guardados por estado en el código (sin trigger de inmutabilidad). SQL idempotente. `when` 1791376100000 e idx 12; la `0013` la reserva la rama de experiments (ADR-31). Consulta [Skill Optimizer](#skill-optimizer) |
 
 Importante: el migrador de Drizzle aplica solo las migraciones con fecha posterior a la última aplicada. Si dos ramas generan migraciones en paralelo contra la misma BD de desarrollo, aplica primero la más antigua o regenera la nueva tras el merge.
 
@@ -247,6 +249,9 @@ Cabecera opcional `x-tenant-id` en todas las rutas. Las respuestas usan `snake_c
 | `POST /datasets/:id/mark-used` | Registra qué experimento usó qué casos y en qué papel (`design`, `validation`, `test`) |
 | `POST /datasets/:id/activate`, `/archive` | Ciclo de vida de una versión. No hay `DELETE` |
 | `GET /experiments`, `GET /experiments/:id` | Experimentos (solo lectura; `:id` admite el uuid o `EXP-003`). Filtros `subject_type`, `subject_name`, `candidate_version`, `status`. Consulta [Experiments y Release Gate](#experiments-y-release-gate) |
+| `POST /optimizer/skills/:name/run` | Lanza un run del [Skill Optimizer](#skill-optimizer) sobre la versión `ACTIVE` (`202`, lo procesa el worker). `409` si la skill ya tiene un run abierto, `422` si no hay runner para la skill |
+| `GET /optimizer/runs`, `GET /optimizer/runs/:id` | Runs del optimizador (filtros `skill`, `status`, `limit`); el detalle incluye los fallos cosechados |
+| `POST /optimizer/runs/:id/close` | Cierre humano: `PROMOTED` (solo si la candidata ya es la `ACTIVE`) o `DISCARDED`. No hay `DELETE` |
 
 ### Idempotencia
 
@@ -1044,6 +1049,72 @@ curl -s -X POST localhost:4020/skills/prospector-event-exhibitors/canary/rollbac
 
 ```sh
 DATABASE_URL=postgres://agentos:agentos_dev@127.0.0.1:5440/agentos_wt10_experiments pnpm vitest run test/integration/experiments.test.ts
+```
+
+## Skill Optimizer
+
+El Skill Optimizer (LLD v0.1 §18, MVP-3) recorre solo el ciclo de mejora de una skill: cosecha sus fallos en producción, los agrupa por patrón, propone una candidata acotada, la pasa por un experimento contra la versión `ACTIVE` y deja la decisión del Release Gate. **Nunca activa nada:** si el gate da `PASS` o `PASS_FORM`, deja en Twenty una nota «Propuesta de promoción — `<skill>` v`<N>`», y la activación sigue siendo una decisión humana por `POST /skills/:id/versions/:v/activate`, que vuelve a comprobar el gate. El código está en `src/optimizer/`.
+
+Hoy solo hay optimizador para `prospector-event-exhibitors` (la única skill con runner de experimentos), con el dominio de datasets `prospeccion`.
+
+### Tabla `optimization_runs`
+
+`id`, `tenant_id`, `skill_name`, `base_version` (la `ACTIVE` al pedir el run), `status`, `config` (dataset, presupuestos, mínimos), `failure_clusters` (clusters con sus fallos), `proposed_ops` (operaciones aplicadas con su tamaño), `candidate_version`, `experiment_id`, `verdict` (decisión del gate), `cost_eur` (optimizador + experimento), `details` (cosecha, fallos, comprobación de datos, dataset, marcas P5, intentos del modelo, experimento, nota y cierre humano), `error`, `created_at`, `updated_at` y `created_by`. Sin `DELETE` (trigger) y con un solo run abierto por skill (índice único parcial).
+
+```
+PENDING → HARVESTING → CLUSTERED → CANDIDATE_CREATED → EXPERIMENT_RUNNING → GATE_PASS | GATE_FAIL
+              │                           │                    │
+              └──── BLOCKED_NO_DATA ──────┴────────────────────┘     (cualquier estado abierto → ERROR)
+GATE_PASS → PROMOTED | DISCARDED (humano)        GATE_FAIL → DISCARDED (humano)
+```
+
+Cada transición es un `UPDATE … WHERE status IN (<orígenes válidos>)`: dos procesos nunca mueven el mismo run y una transición no válida no escribe nada.
+
+### Qué hace un run
+
+1. **Cosecha de fallos** (solo lectura) de las ejecuciones reales que inyectaron exactamente la versión `ACTIVE` (`traces.skill_versions` con `source: db`; sin modelo `stub` ni agentes `[TEST]`):
+   - Veredictos humanos negativos (`kind = 'HUMAN'`, `details.actor.human = true`). Por hipótesis cuenta el último; `DISCARDED` y `EDITED` son fallos, y el `EDITED` lleva la corrección del comercial (`edited_fields`).
+   - Fallos de los evaluadores RULE duros (`rule.discard_confidence_low`, `rule.source_urls_known`) sobre las últimas trazas, como `pnpm evaluate` (sin LLM).
+
+   Con menos de `min_failures` fallos (3 por defecto) termina en `BLOCKED_NO_DATA` sin llamar a ningún modelo.
+1. **Comprobación de datos (P5)**, en simulación: cosecha el dataset (`prospeccion-v1` por defecto) sin escribir y cuenta los casos etiquetados de `VALIDATION` sin quemar, quitando las entidades de los fallos (son material de diseño de este run). Con menos de `min_labeled_validation` (5 por defecto) termina en `BLOCKED_NO_DATA` y el mensaje dice cuántos faltan y cuántos están quemados.
+1. **Clustering** con el modelo ejecutor (`GEMINI_MODEL`, `gemini-flash-latest`). Los fallos van en un bloque `DATOS_NO_CONFIABLES`; la respuesta se valida con zod (ids conocidos, un fallo en un cluster como mucho) y se reintenta una vez con el error.
+1. **Candidata:** el modelo propone como mucho 5 operaciones (`ADD`, `REMOVE`, `REPLACE`, `MOVE`, `REORDER`) sobre el texto `ACTIVE`, cada una con su `why` y los clusters que ataca. `src/skills/edit-ops.ts` las aplica con los topes de 35 % borrado y 50 % añadido, y la regla de contenido web no confiable debe quedar intacta. Si los topes la rechazan, reintenta una vez pidiendo ser más conservador; si vuelve a fallar, `ERROR` con los dos intentos en `details.proposal_attempts`. La versión se crea `DRAFT` con el servicio de skills, con un `change_reason` que cita el run y los clusters, y `metadata` con las operaciones, su tamaño y los datos de diseño.
+1. **Dataset y P5:** construye la versión siguiente del dataset (los casos quemados siguen quemados y van a `TRAIN`) y marca con `markUsed` como `design` (experimento `OPT-xxxxxxxx`) los casos de las entidades de los fallos **antes** del experimento. Vuelve a contar `VALIDATION` y, si no llega al mínimo, `BLOCKED_NO_DATA`.
+1. **Experimento:** el runner de `pnpm experiment:run`, con la `ACTIVE` como baseline y la candidata, sobre ese dataset (por uuid) y con un CRM en memoria (`MemoryTwenty`: nada llega a Twenty). Registra `experiment_id` y el veredicto.
+1. **Gate:** `PASS` o `PASS_FORM` → `GATE_PASS` y nota en Twenty (idempotente por título) con los clusters que ataca, el Δ del composite, el coste y los comandos de activación, de cierre del run y de rollback. `FAIL` o `INCONCLUSIVE` → `GATE_FAIL`. Un fallo al escribir la nota no deshace el `GATE_PASS`: queda en `details.note.error`.
+
+### API y CLI
+
+```sh
+# Lanza un run (lo procesa el worker: cola {QUEUE_NAME}-optimizer, un intento, concurrencia 1)
+curl -s -X POST localhost:4020/optimizer/skills/prospector-event-exhibitors/run -H 'x-tenant-id: publiexpe' \
+  -H 'content-type: application/json' -d '{"datasetName": "prospeccion-v1"}'
+curl -s "localhost:4020/optimizer/runs?skill=prospector-event-exhibitors" -H 'x-tenant-id: publiexpe'
+# Tras activar la candidata (POST /skills/:id/versions/:v/activate), cierra el run
+curl -s -X POST localhost:4020/optimizer/runs/<id>/close -H 'x-tenant-id: publiexpe' \
+  -H 'content-type: application/json' -d '{"outcome": "PROMOTED", "by": "<quién>"}'
+
+# Lo mismo en este proceso (Gemini; escribe en DATABASE_URL y la nota en Twenty)
+pnpm optimize:run --skill prospector-event-exhibitors --dry-run   # cosecha y comprobación de datos: no escribe ni llama a modelos
+pnpm optimize:run --skill prospector-event-exhibitors --dataset prospeccion-v1 --budget 0.30 --today 2026-10-07
+```
+
+El cuerpo de `POST /optimizer/skills/:name/run` es opcional: `datasetName` (o `dataset_name`), `budget_eur` (experimento, 0,30), `llm_budget_eur` (clustering y propuesta, 0,05), `repeat` (2), `min_labeled_validation` (5), `min_failures` (3), `today` y `created_by`. La CLI admite las mismas opciones (`--dataset`, `--budget`, `--llm-budget`, `--repeat`, `--min-labeled`, `--min-failures`, `--today`), además de `--tenant`, `--created-by`, `--no-judge` y `--no-note`. Código de salida de la CLI: `0` `GATE_PASS`, `3` `GATE_FAIL`, `4` `BLOCKED_NO_DATA`, `1` `ERROR` y `2` argumentos no válidos.
+
+- Sin cola (rol `api` sin Redis), la API responde `503`. Si Redis falla al encolar, el run pasa a `ERROR` y la API responde `503`: repite la petición.
+- Al arrancar, el worker cierra como `ERROR` los runs abiertos sin progreso desde hace 6 horas (un worker que murió), para que la skill se pueda optimizar de nuevo.
+- Solo manual en este MVP: ninguna tarea programada lanza el optimizador. El scheduler programa `TaskDefinition` de agentes y el optimizador no es un agente, así que no se registra como tipo de tarea.
+- Coste: el clustering y la propuesta son de dos a cuatro llamadas a Gemini Flash (céntimos, con techo `llm_budget_eur`); el experimento gasta como mucho su presupuesto (`budget_eur`). Un run bloqueado no gasta nada.
+
+> **Importante:** con los datos del 2026-10-07 (`publiexpe`), un run de `prospector-event-exhibitors` termina en `BLOCKED_NO_DATA` sin coste: la v3 activa no tiene fallos registrados y `prospeccion-v1` no tiene casos etiquetados de `VALIDATION` sin quemar (los 10 casos etiquetados ya están quemados por experimentos anteriores). Hacen falta veredictos humanos nuevos en Twenty. Compruébalo con `pnpm optimize:run --skill prospector-event-exhibitors --dry-run`.
+
+### Tests
+
+`test/unit/optimizer.test.ts` (sin red ni BD) fija las transiciones, la configuración, la validación del clustering y de la propuesta, los topes rechazados → reintento conservador → error, la comprobación de datos P5, el `change_reason` y la nota (idempotente, sin activar). `test/integration/optimizer.test.ts` (PostgreSQL, proveedores guionizados y CRM en memoria) recorre un run completo hasta `GATE_PASS` con nota, marcas P5 de diseño y activación humana por el Release Gate (`PROMOTED`); `GATE_FAIL`; `BLOCKED_NO_DATA` por `VALIDATION` quemada y por falta de fallos; `ERROR` por los topes; la API y la recuperación de runs huérfanos:
+
+```sh
+DATABASE_URL=postgres://agentos:agentos_dev@127.0.0.1:5440/agentos_wt11_optimizer pnpm vitest run test/integration/optimizer.test.ts
 ```
 
 ## Research

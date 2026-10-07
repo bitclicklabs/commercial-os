@@ -72,6 +72,11 @@ export function authenticateTwentyWebhook(input: AuthInput): AuthResult {
 
 const TENANT_RE = /^[a-z0-9][a-z0-9_-]{0,62}$/i;
 
+/** Tenant of a webhook record: its `tenantId` field when valid (C6), else null. */
+export function tenantOfRecord(record: Record<string, unknown>): string | null {
+  return typeof record.tenantId === 'string' && TENANT_RE.test(record.tenantId) ? record.tenantId : null;
+}
+
 function actorOf(payload: TwentyWebhookPayload): { evaluatedBy: string | null; actor: Record<string, unknown> } {
   const updatedBy = (payload.record.updatedBy ?? null) as { source?: string; workspaceMemberId?: string | null; name?: string } | null;
   const memberId = payload.workspaceMemberId ?? updatedBy?.workspaceMemberId ?? null;
@@ -119,7 +124,7 @@ export async function processTwentyWebhook(db: Db, payload: TwentyWebhookPayload
   const record = payload.record;
   const hypothesisId = typeof record.id === 'string' ? record.id : null;
   if (!hypothesisId) return { status: 'ignored', reason: 'record has no id' };
-  const recordTenant = typeof record.tenantId === 'string' && TENANT_RE.test(record.tenantId) ? record.tenantId : null;
+  const recordTenant = tenantOfRecord(record);
   const tenantId = recordTenant ?? opts.defaultTenantId;
   const updatedFields = Array.isArray(payload.updatedFields) ? payload.updatedFields.filter((f): f is string => typeof f === 'string') : [];
 

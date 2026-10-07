@@ -5,6 +5,7 @@ import { loadConfig } from './config.js';
 import { createDb } from './db/client.js';
 import { BullEventQueue, EventBus, eventsQueueName } from './events/event-bus.js';
 import { BullWebhookDeliveryQueue, WebhookDeliveryWorker, WebhookDispatcher, webhooksQueueName } from './events/webhook-delivery.js';
+import { twentyClientFromEnv } from './integrations/twenty/index.js';
 import { createProviderRegistry } from './providers/index.js';
 import { BullRunQueue } from './queue/run-queue.js';
 import { EventTriggerConsumer } from './scheduler/event-triggers.js';
@@ -48,7 +49,7 @@ async function main(): Promise<void> {
 
   if (has('api')) {
     app = await buildServer(
-      { db: dbHandle.db, queue, config, events: eventBus, ...(scheduler ? { scheduler } : {}) },
+      { db: dbHandle.db, queue, config, events: eventBus, twenty: twentyClientFromEnv(), ...(scheduler ? { scheduler } : {}) },
       { logger: { level: config.logLevel } },
     );
     await app.listen({ host: config.host, port: config.port });

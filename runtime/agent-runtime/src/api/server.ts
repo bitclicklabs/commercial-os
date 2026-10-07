@@ -13,6 +13,7 @@ import { metricsRoutes } from './routes/metrics.js';
 import { skillRoutes } from './routes/skills.js';
 import { harnessRoutes } from './routes/harnesses.js';
 import { knowledgeRoutes } from './routes/knowledge.js';
+import { datasetRoutes } from './routes/datasets.js';
 
 export async function buildServer(
   ctx: ApiContext,
@@ -41,5 +42,6 @@ export async function buildServer(
   await skillRoutes(app, ctx);
   await harnessRoutes(app, ctx);
   await knowledgeRoutes(app, ctx);
+  await datasetRoutes(app, ctx);
   return app;
 }

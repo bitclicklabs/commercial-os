@@ -48,6 +48,11 @@ export const COMMERCIAL_HYPOTHESIS_FIELD_IDS = {
   company: '5d397a52-7b85-4e35-ad3c-3ed7868909fd',
   commercialSignal: '93bc0e3e-4d8c-424d-85f9-56401d0e3e15',
   decisionMaker: '71d255d6-fdfd-4fb9-ac7d-7cb3a81f7e33',
+  // Email draft fields (send-from-Twenty flow, docs/twenty-envio-email.md).
+  emailTo: 'cbf36652-2387-430c-8642-d57135858897',
+  emailSubject: '63fecdc5-dab9-4a80-91a1-76b34cef3d32',
+  emailBody: '6719aadd-92cc-4133-85e5-d1f776d80854',
+  emailStatus: '2872782f-4712-498e-a80f-2df15cb5b51f',
 } as const;
 
 export const AGENT_RUN_SUMMARY_FIELD_IDS = {

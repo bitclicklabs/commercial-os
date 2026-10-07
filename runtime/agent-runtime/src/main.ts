@@ -71,6 +71,13 @@ async function main(): Promise<void> {
       logger,
     );
     processor.events = eventBus;
+    processor.heartbeatMs = config.runHeartbeatMs;
+    if (config.runHeartbeatMs === 0 || config.runHeartbeatMs * 2 > config.reconcileGraceMs) {
+      logger.warn(
+        { runHeartbeatMs: config.runHeartbeatMs, reconcileGraceMs: config.reconcileGraceMs },
+        'RUN_HEARTBEAT_MS is off or too close to RECONCILE_GRACE_MS: long runs may be taken for orphans',
+      );
+    }
     worker = startBullWorker(processor, {
       queueName: config.queueName,
       redisUrl: config.redisUrl,

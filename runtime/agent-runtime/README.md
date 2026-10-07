@@ -94,6 +94,7 @@ Requisitos: Node.js 22, pnpm, y los contenedores `pxos-postgres` (127.0.0.1:5440
 | `SCHEDULER_SYNC_INTERVAL_MS` | `60000` | Cada cuánto el scheduler reconcilia todas las tareas con BullMQ |
 | `RECONCILE_INTERVAL_MS` | `60000` | Cada cuánto el worker busca `TaskRun` huérfanos |
 | `RECONCILE_GRACE_MS` | `120000` | Antigüedad mínima de un `TaskRun` para considerarlo huérfano |
+| `RUN_HEARTBEAT_MS` | `30000` | Latido de un `TaskRun` `RUNNING`: el worker refresca `updated_at` mientras dura el intento. Debe quedar muy por debajo de `RECONCILE_GRACE_MS`; `0` lo desactiva |
 | `CONCURRENCY_DEFER_MS` | `2000` | Espera antes de reintentar un job aplazado por `max_concurrency` |
 | `STALLED_INTERVAL_MS` | `30000` | Frecuencia del chequeo de jobs stalled de BullMQ |
 | `MAX_STALLED_COUNT` | `1` | Veces que un job puede quedar stalled antes de que BullMQ lo marque `failed` |
@@ -318,6 +319,13 @@ El rol `worker` (o `all`) ejecuta `OrphanReconciler` al arrancar y cada `RECONCI
 | `RUNNING` | No existe, `completed` o `failed` | `RUNNING -> QUEUED` y re-encola, o `RUNNING -> FAILED` si `attempts >= max_attempts` |
 
 La ejecución (`AgentExecution`) del intento muerto pasa a `FAILED` con `error.name = "OrphanedRun"`. Todas las transiciones son `UPDATE` guardados por estado en SQL, así que el reconciliador nunca pisa a un worker que haya terminado entre medias.
+
+El reconciliador solo ve su propia cola: un run procesado en proceso por un test o un script sobre la misma base de datos, o un job que BullMQ marcó `failed` tras un *stall* mientras su worker seguía trabajando, le parece "sin job". Para que no sentencie un intento vivo:
+
+- Mientras dura un intento, el worker refresca `task_runs.updated_at` cada `RUN_HEARTBEAT_MS` (latido guardado por `status = 'RUNNING'` y por el número de intento). Un run vivo nunca supera `RECONCILE_GRACE_MS` sin cambios.
+- El `UPDATE` del reconciliador vuelve a comprobar lo que decidió: mismo intento (`attempts`) y `updated_at` todavía anterior al corte. Si entre su lectura y su escritura llega un latido, un reintento o el final del run, la escritura no hace nada.
+
+Antes de este latido, los scouts largos (más de dos minutos) lanzados por los tests en vivo acababan `FAILED` con `orphaned RUNNING run (job missing)` aunque su traza terminaba en `SUCCESS`.
 
 Los jobs `active` de un worker caído los gestiona el chequeo de stalled de BullMQ (`STALLED_INTERVAL_MS`, `MAX_STALLED_COUNT`): los devuelve a `wait`. Cuando el processor recibe un job cuyo run sigue `RUNNING`, sabe que el intento anterior murió y aplica la misma recuperación antes de continuar. Si BullMQ lo marca `failed` por superar `MAX_STALLED_COUNT`, lo recoge el reconciliador.
 

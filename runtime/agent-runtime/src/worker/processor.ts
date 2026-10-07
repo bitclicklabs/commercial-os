@@ -14,6 +14,8 @@ import {
   type AgentExecution,
   type AgentVersion,
   type SkillVersionUsed,
+  type TaskDefinition,
+  type TaskRun,
 } from '../db/schema.js';
 import { allowedSources } from '../domain/run-state.js';
 import { NOOP_EVENT_PUBLISHER, type EventPublisher } from '../events/event-bus.js';
@@ -42,6 +44,9 @@ export interface ProcessorLogger {
 }
 
 const silentLogger: ProcessorLogger = { info() {}, warn() {}, error() {} };
+
+/** Default TaskRun heartbeat: 30 s, a quarter of the default RECONCILE_GRACE_MS (120 s). */
+export const DEFAULT_RUN_HEARTBEAT_MS = 30_000;
 
 export interface AttemptInfo {
   /** 1-based attempt number. */
@@ -120,6 +125,11 @@ export class RunProcessor {
   readonly locks: EntityLocks;
   /** Domain events (task.*, agent.execution.*). Best-effort: emission never fails a run. */
   events: EventPublisher = NOOP_EVENT_PUBLISHER;
+  /**
+   * Interval of the TaskRun heartbeat (`updated_at`) while an attempt runs; must stay well
+   * below RECONCILE_GRACE_MS. 0 disables it (then only BullMQ's job state protects a long run).
+   */
+  heartbeatMs: number = DEFAULT_RUN_HEARTBEAT_MS;
 
   constructor(
     private readonly db: Db,
@@ -218,6 +228,54 @@ export class RunProcessor {
       return;
     }
 
+    // Liveness for the OrphanReconciler while the attempt runs (a weekly scout takes minutes).
+    const heartbeat = this.startHeartbeat(run.id, started.attempts);
+    try {
+      await this.runStartedAttempt(tenantId, run, started, task, resolved, skills, harness, attempt);
+    } finally {
+      heartbeat.stop();
+    }
+  }
+
+  /**
+   * Keeps `task_runs.updated_at` fresh every `heartbeatMs` while this attempt is RUNNING, so
+   * the reconciler (which only sees its own queue) never takes a live attempt for an orphan.
+   * Guarded by status and attempt: it never touches a run that moved on. Stops by itself when
+   * the guard stops matching; the caller always stops it when the attempt ends.
+   */
+  private startHeartbeat(taskRunId: string, attempts: number): { stop(): void } {
+    if (!(this.heartbeatMs > 0)) return { stop() {} };
+    let busy = false;
+    const timer = setInterval(() => {
+      if (busy) return;
+      busy = true;
+      void this.db
+        .update(taskRuns)
+        .set({ updatedAt: new Date() })
+        .where(and(eq(taskRuns.id, taskRunId), eq(taskRuns.status, 'RUNNING'), eq(taskRuns.attempts, attempts)))
+        .returning({ id: taskRuns.id })
+        .then((rows) => {
+          if (rows.length === 0) clearInterval(timer);
+        })
+        .catch((err: unknown) => this.logger.warn({ taskRunId, err: errorPayload(err) }, 'task run heartbeat failed'))
+        .finally(() => {
+          busy = false;
+        });
+    }, this.heartbeatMs);
+    timer.unref();
+    return { stop: () => clearInterval(timer) };
+  }
+
+  private async runStartedAttempt(
+    tenantId: string,
+    run: TaskRun,
+    started: TaskRun,
+    task: TaskDefinition,
+    resolved: { agent: Agent; version: AgentVersion },
+    skills: SkillSet,
+    harness: AttemptHarness,
+    attempt: AttemptInfo,
+  ): Promise<void> {
     const [execution] = await this.db
       .insert(agentExecutions)
       .values({

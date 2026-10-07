@@ -16,6 +16,13 @@
  *
  * Every transition is a guarded UPDATE (`WHERE status = 'RUNNING'`), so the reconciler never
  * overrides a worker that finished in the meantime and never leaves the state machine.
+ *
+ * Liveness: the job state is only known for the reconciler's own queue (a run processed
+ * in-process by a test or script on the same database, or a job BullMQ failed after a stall
+ * while its worker kept going, looks "missing"). So the processor heartbeats
+ * `task_runs.updated_at` while an attempt runs (RunProcessor.heartbeatMs, < graceMs), and the
+ * reconciler's UPDATE re-checks what it decided on: same attempt and still older than the
+ * cutoff. A heartbeat, a retry or a finish landing between its SELECT and its UPDATE wins.
  */
 import { and, eq, inArray, lt, sql } from 'drizzle-orm';
 import type { Db } from '../db/client.js';
@@ -50,16 +57,23 @@ export function decideRecovery(input: RecoveryInput): RecoveryAction {
 
 export type RecoveryOutcome = 'requeued' | 'failed' | 'noop';
 
+export interface RecoveryGuard {
+  /** Only recover if the run was not touched since this instant (no heartbeat, no new attempt). */
+  staleBefore?: Date;
+}
+
 /**
  * RUNNING -> QUEUED (attempts left) or RUNNING -> FAILED (attempts exhausted), plus
  * RUNNING -> FAILED on the dangling AgentExecution of the dead attempt. Guarded: returns
- * 'noop' if the run is no longer RUNNING.
+ * 'noop' if the run is no longer RUNNING, is on another attempt than the one read, or (with
+ * `guard.staleBefore`) was updated after the cutoff.
  */
 export async function recoverOrphanRun(
   db: Db,
   run: Pick<TaskRun, 'id' | 'attempts' | 'executionId'>,
   maxAttempts: number,
   reason: string,
+  guard: RecoveryGuard = {},
 ): Promise<RecoveryOutcome> {
   const exhausted = run.attempts >= maxAttempts;
   const to: RunStatus = exhausted ? 'FAILED' : 'QUEUED';
@@ -73,7 +87,15 @@ export async function recoverOrphanRun(
         ...(exhausted ? { finishedAt: new Date() } : {}),
         updatedAt: new Date(),
       })
-      .where(and(eq(taskRuns.id, run.id), eq(taskRuns.status, 'RUNNING'), inArray(taskRuns.status, allowedSources(to))))
+      .where(
+        and(
+          eq(taskRuns.id, run.id),
+          eq(taskRuns.status, 'RUNNING'),
+          inArray(taskRuns.status, allowedSources(to)),
+          eq(taskRuns.attempts, run.attempts),
+          guard.staleBefore ? lt(taskRuns.updatedAt, guard.staleBefore) : undefined,
+        ),
+      )
       .returning({ id: taskRuns.id });
     if (!updated) return 'noop';
     if (run.executionId) {
@@ -154,7 +176,10 @@ export class OrphanReconciler {
         this.opts.logger?.warn({ taskRunId: run.id, jobState }, 'queued run without live job; re-enqueued');
         continue;
       }
-      const outcome = await recoverOrphanRun(this.db, run, maxAttempts, `orphaned RUNNING run (job ${jobState ?? 'missing'})`);
+      // Guarded by the same cutoff as the SELECT: a heartbeat since then means it is alive.
+      const outcome = await recoverOrphanRun(this.db, run, maxAttempts, `orphaned RUNNING run (job ${jobState ?? 'missing'})`, {
+        staleBefore: cutoff,
+      });
       if (outcome === 'requeued') {
         await this.queue.requeue(job, enqueueOpts);
         summary.requeued++;

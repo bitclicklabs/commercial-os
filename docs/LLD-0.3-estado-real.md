@@ -26,7 +26,7 @@ Este documento **no reescribe** el LLD v0.1 ni el v0.2. Sirve para tres cosas:
 | **Implementado igual** | El código sigue el diseño del v0.1 o del v0.2. |
 | **Implementado distinto** | Existe, pero con otra forma. La fila enlaza a la ADR que explica el cambio. |
 | **Pendiente** | No existe. Se dice claro, sin matices. |
-| `[TANDA 8, EN CURSO]` | Trabajo que el PM ha encargado y que aún no está fusionado en `main`. No lo des por existente. (La marca `[TANDA 6, EN CURSO]` de la primera edición ya no se usa: la tanda 6 está fusionada.) |
+| `[TANDA N, EN CURSO]` | Trabajo encargado y aún no fusionado en `main`. No lo des por existente. (Las marcas de las tandas 6 y 8 ya no se usan: están fusionadas.) |
 | `[NO VERIFICADO]` | Las fuentes no permiten confirmarlo. Se redacta en condicional. |
 | `[DE FACTO]` | Decisión que se deduce de lo construido, pero que ninguna fuente registra como decisión explícita. |
 
@@ -125,7 +125,7 @@ Acción humana diaria: el comercial revisa **Commercial OS → Hypotheses** en T
 - **El runtime no envía emails.** No hay dependencia SMTP, ni API de correo, ni tool de envío en el registro. El envío lo hace una persona con un workflow manual de Twenty ([ADR-27](#adr-27)), y la API key del runtime no puede usar las tools de correo de Twenty ([ADR-28](#adr-28)).
 - **No tiene Researcher ni Scorer.** No hay registros `research`, ni `score`, ni prioridad `HOT/WARM/COLD`.
 - **No tiene Catalog Service.** Los productos recomendados son familias genéricas, sin `productId` ni SKU.
-- **No tiene harness, memoria ni optimizadores.** Las skills sí son objetos versionados en BD ([ADR-29](#adr-29)), pero sin optimizador. Consulta [Mapa de pendientes](#5-mapa-de-pendientes).
+- **Plataforma evolutiva ya operativa (tandas 9-11).** Harness versionado, memoria semántica (KnowledgeEntry), datasets, evaluadores, Experiments con Release Gate (tanda 10) y el Skill Optimizer automático con canario (tanda 11). Las skills son objetos versionados en BD ([ADR-29](#adr-29)). Quedan sin cubrir environments sintéticos (MVP-4) y el routing de modelos.
 - **No hace triaje general del inbound.** Solo detecta bajas ([ADR-24](#adr-24)): no clasifica respuestas, no responde ni mueve correos. La comprobación de la lista antes de enviar sigue siendo una tarea de la persona.
 - **No tiene workflows de negocio en n8n.** Existe el puente de eventos y un ejemplo importable ([ADR-30](#adr-30)); n8n no contiene inteligencia.
 - **No borra nada.** El `TwentyClient` no tiene método de borrado y el registry rechaza cualquier tool `DESTRUCTIVE`.
@@ -398,7 +398,7 @@ Total: **31 ADR**.
 - **Decisión:** hasta que exista el Inbound Manager, la lista de supresión es **una única nota** en Twenty titulada `Lista de supresión — NO contactar`, con una línea `email — fecha — motivo` por baja. Se añade el mismo día, no se borra ni se edita ninguna línea, y se consulta **antes de cada envío en frío**. La nota ya está creada.
 - **Motivo:** cumplir LSSI y RGPD sin esperar a MVP-1.
 - **Modifica:** v0.1 §10.1 y v0.2 §13 (lista de supresión global en MVP-1). **La comprobación previa al envío depende de una persona**: el `EmailDrafter` no tiene ninguna tool que lea notas (su política es `find_company`, `get_company`, `get_hypothesis` y `create_note`), así que no consulta la lista.
-- **Estado:** vigente, provisional hasta MVP-1. Desde la tanda 6 las **altas** en la lista las hace el `BajasAgent` ([ADR-24](#adr-24)); la **comprobación antes de enviar** sigue siendo de la persona. `[TANDA 8, EN CURSO]` Otro agente trabaja en una comprobación de red de seguridad en el flujo de envío (rama `feat/email-ops-flujo`, sin fusionar); no la des por existente.
+- **Estado:** vigente. Desde la tanda 6 las **altas** en la lista las hace el `BajasAgent` ([ADR-24](#adr-24)). Desde la tanda 8 (fusionada) existe la red de seguridad automática en el flujo: al marcar READY se comprueba la lista (si está suprimido, vuelve a DRAFT con nota ⛔) y hay doble chequeo en SENT; la lectura humana previa sigue recomendada.
 
 
 <a id="adr-23"></a>
@@ -474,7 +474,7 @@ Total: **31 ADR**.
 - **Motivo:** mantener el principio HITL del v0.1 §15 (enviar exige a una persona) y que «el runtime no puede enviar» siga siendo cierto, a la vez que se quita la copia manual entre la nota y el webmail.
 - **Modifica:** completa [ADR-15](#adr-15): el v0.1 §10 y §26 situaban el envío fuera del MVP-0. Añade 4 campos a `commercialHypothesis` ([ADR-03](#adr-03)) y la tool `set_hypothesis_draft`.
 - **Estado:** **operativo desde 2026-10-07**: el usuario conectó la cuenta SMTP, activó el workflow y el primer envío real llegó bien (confirmación del PM; el repositorio solo contiene la preparación). Límites conocidos:
-  - el workflow **no consulta la lista de supresión**: la comprobación previa es de la persona. `[TANDA 8, EN CURSO]` Otro agente trabaja en una comprobación de red de seguridad (rama `feat/email-ops-flujo`); no la des por existente hasta que se fusione;
+  - el workflow no consulta la lista de supresión, pero desde la tanda 8 el runtime sí: la comprobación automática al marcar READY (revierte a DRAFT con nota ⛔) y el doble chequeo en SENT hacen de red de seguridad;
   - el remitente es la primera cuenta capaz de enviar del usuario: un buzón por usuario en Twenty;
   - con solo SMTP el correo no se copia en *Enviados* de IONOS;
   - Twenty 2.45 no verifica el certificado TLS del servidor de correo (`rejectUnauthorized: false` en su código);
@@ -817,7 +817,7 @@ Qué existe y adelanta trabajo de MVP-2: la tabla `evaluations` (veredictos huma
 
 - Warm-up en curso (semanas 3 y 4: 2026-10-20 a 2026-11-02).
 - Hito DMARC `p=none` → `p=quarantine` el **2026-11-03**, si los informes de `dmarc@publiexpe.info` salen limpios.
-- Lista de supresión: las altas son automáticas ([ADR-24](#adr-24)); la comprobación previa al envío depende de la persona. `[TANDA 8, EN CURSO]` Hay una comprobación de red de seguridad en desarrollo ([ADR-27](#adr-27)).
+- Lista de supresión: las altas son automáticas ([ADR-24](#adr-24)) y desde la tanda 8 la comprobación en READY/SENT es automática ([ADR-27](#adr-27)); la lectura humana previa sigue recomendada.
 - Envío desde Twenty: con solo SMTP no hay copia en *Enviados* de IONOS, Twenty no verifica el certificado TLS del servidor de correo y el remitente es la primera cuenta capaz de enviar del usuario ([ADR-27](#adr-27)).
 - Rotar la API key de Twenty exige reasignar el rol restringido a la key nueva ([ADR-28](#adr-28)).
 - Plantillas por sector. El estado de envío consta en `Email status` de la hipótesis; no hay métrica de envíos.
@@ -862,4 +862,4 @@ Las fuentes se contradicen en estos puntos. Para cada uno se indica cuál está 
 | 2026-10-20 a 2026-11-02 | Semanas 3 y 4 del warm-up (30 a 40 correos por buzón y día). |
 | 2026-11-03 | Revisión de informes DMARC y, si están limpios, paso a `p=quarantine`. |
 | 2027-01-01 | El precio de `gemini-3.8-flash` se duplica según la tabla del runtime. |
-| `[TANDA 8, EN CURSO]` | Comprobación de red de seguridad contra la lista de supresión en el flujo de envío y otros trabajos de la tanda 8, no recogidos aún en las fuentes. |
+| 2026-10-07 (tandas 8-11) | Red de seguridad de supresión en el flujo de envío (tanda 8), MVP-1 cerrado (tanda 9), evaluación formal con Release Gate (tanda 10) y Skill Optimizer con canario (tanda 11), todos fusionados. |

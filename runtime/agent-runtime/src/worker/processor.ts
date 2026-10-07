@@ -21,6 +21,7 @@ import type { RunJob } from '../queue/run-queue.js';
 import { createDefaultToolRegistry, parseToolPolicy, ToolExecutor, type ToolRegistry } from '../tools/index.js';
 import { EntityLocks } from './entity-locks.js';
 import { recoverOrphanRun } from './recovery.js';
+import { policyRequiresTwenty, twentyGateFromEnv, type TwentyGate, type TwentyWaitState } from './twenty-gate.js';
 
 export interface ProcessorLogger {
   info(obj: object, msg?: string): void;
@@ -34,6 +35,8 @@ export interface AttemptInfo {
   /** 1-based attempt number. */
   attempt: number;
   maxAttempts: number;
+  /** Twenty wait window of this job from earlier TwentyUnavailableError deferrals. */
+  twentyWait?: TwentyWaitState | undefined;
 }
 
 /** Thrown to ask the queue to retry (BullMQ re-runs the job with backoff). */
@@ -55,6 +58,21 @@ export class ConcurrencyLimitError extends Error {
   ) {
     super(`task ${taskDefinitionId} reached max_concurrency=${maxConcurrency}`);
     this.name = 'ConcurrencyLimitError';
+  }
+}
+
+/**
+ * Thrown when the agent version needs Twenty and Twenty does not answer `/healthz` yet (e.g.
+ * the host just booted). Like ConcurrencyLimitError: the run stays QUEUED and the BullMQ
+ * worker parks the job in `delayed` for `delayMs` without consuming an attempt.
+ */
+export class TwentyUnavailableError extends Error {
+  constructor(
+    readonly delayMs: number,
+    readonly state: TwentyWaitState,
+  ) {
+    super(`Twenty not healthy; run deferred ${delayMs} ms (deferral ${state.deferrals})`);
+    this.name = 'TwentyUnavailableError';
   }
 }
 
@@ -86,6 +104,8 @@ export class RunProcessor {
     private readonly logger: ProcessorLogger = silentLogger,
     /** Tool registry; defaults to the MVP-0 tools with the Twenty client from env. */
     private readonly tools: ToolRegistry = createDefaultToolRegistry(),
+    /** Holds runs that need Twenty until it is healthy; null disables it. Defaults to env. */
+    private readonly twentyGate: TwentyGate | null = twentyGateFromEnv(),
   ) {
     this.locks = new EntityLocks(db);
   }
@@ -127,6 +147,7 @@ export class RunProcessor {
     }
     const resolved = task ? await this.resolveActiveVersion(tenantId, task.agentId) : null;
     const queuedRun = run;
+    if (resolved) await this.gateOnTwenty(taskRunId, resolved.version, attempt.twentyWait);
 
     // max_concurrency gate + guarded QUEUED -> RUNNING, serialised per task by a transaction-
     // scoped advisory lock so two workers cannot both see a free slot.
@@ -254,6 +275,31 @@ export class RunProcessor {
       await this.persistOutcome(execution, agent, version, outcome, {});
     } finally {
       await this.releaseLocks(execution.id);
+    }
+  }
+
+  /**
+   * Twenty health gate before QUEUED -> RUNNING. Throws TwentyUnavailableError to defer the
+   * job; past TWENTY_WAIT_MAX_MS it lets the run go (tools fail, agent reports PARTIAL).
+   */
+  private async gateOnTwenty(taskRunId: string, version: AgentVersion, state: TwentyWaitState | undefined): Promise<void> {
+    if (!this.twentyGate) return;
+    const requires = policyRequiresTwenty(this.tools, parseToolPolicy(version.configuration));
+    const decision = await this.twentyGate.check(requires, state);
+    if (decision.action === 'defer') {
+      this.logger.warn(
+        { taskRunId, deferral: decision.state.deferrals, delayMs: decision.delayMs, waitedMs: decision.waitedMs, maxWaitMs: this.twentyGate.maxWaitMs },
+        'Twenty not healthy; deferring task run',
+      );
+      throw new TwentyUnavailableError(decision.delayMs, decision.state);
+    }
+    if (decision.reason === 'wait_exceeded') {
+      this.logger.warn(
+        { taskRunId, waitedMs: decision.waitedMs, deferrals: decision.deferrals, maxWaitMs: this.twentyGate.maxWaitMs },
+        'Twenty still not healthy after TWENTY_WAIT_MAX_MS; running anyway',
+      );
+    } else if (state) {
+      this.logger.info({ taskRunId, waitedMs: Date.now() - state.since, deferrals: state.deferrals }, 'Twenty healthy again; starting deferred task run');
     }
   }
 

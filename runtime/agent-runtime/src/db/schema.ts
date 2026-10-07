@@ -5,8 +5,9 @@
  * - Every table carries `tenant_id` (C6). No multi-tenant infra yet, only the column.
  * - No physical DELETE: lifecycle is expressed through status columns (section 22).
  * - Executions, traces and versions are append-only / immutable once terminal (P3, P4).
- * - Entities not yet modelled (harness, router, skills, policies, environments) are
- *   referenced by opaque text ids until their tables exist.
+ * - Entities not yet modelled (router, policies, environments) are referenced by opaque
+ *   text ids until their tables exist. Skills (0005) and harnesses (0008) have tables and
+ *   are referenced by name (`skill_refs`, `harness_ref`).
  */
 import { sql } from 'drizzle-orm';
 import {
@@ -87,6 +88,66 @@ export interface SkillVersionUsed {
   text?: string;
 }
 
+/**
+ * MVP-1 reference to a harness in the database (`harnesses.name`), like `DbSkillRef`: with
+ * `version` it pins that exact `harness_versions.version`; without it, the run uses the
+ * harness's ACTIVE version, read when the attempt starts.
+ */
+export interface HarnessRef {
+  name: string;
+  version?: number;
+}
+
+/**
+ * Policies of one harness version (LLD v0.1 section 7.2), v1 scope. `null` (or a missing
+ * key) means "not set by the harness": the run keeps today's source (task, env, agent
+ * version, code). Fields marked placeholder are stored but have no effect yet. Normalised
+ * by src/harness/config.ts (every key present), so the content hash is stable.
+ */
+export interface HarnessConfig {
+  execution: {
+    /** Live: overrides `task_definitions.timeout_ms` (and the 300 s of direct executions). */
+    timeout_seconds: number | null;
+    /** Live: overrides `task_definitions.retry_policy` (BullMQ attempts at enqueue + run attempts). */
+    retry: { max_attempts: number; backoff_ms: number } | null;
+    /** Placeholder: agents orchestrate their own loop (no processor graph yet). */
+    max_turns: number | null;
+  };
+  tools: {
+    /** Live, ceiling: min with the version's `tool_policy.max_calls_per_execution`. */
+    max_calls_per_execution: number | null;
+    /** Live, ceiling: the lower of the version's `tool_policy.max_risk_level` and this one. */
+    max_risk_level: 'READ' | 'LOW_WRITE' | 'HIGH_WRITE' | 'EXTERNAL_SIDE_EFFECT' | null;
+    /** Placeholder: tool calls are sequential per agent. */
+    parallel_calls: boolean | null;
+  };
+  context: {
+    /** Live, ceiling: min with `configuration.max_output_tokens` (or this value when the version sets none). */
+    max_output_tokens: number | null;
+  };
+  safety: {
+    /** Live: overrides env `TWENTY_WAIT_MAX_MS` for the Twenty health gate (0 disables it). */
+    twenty_wait_max_ms: number | null;
+    /** Placeholder: no semantic validator yet (LLD v0.2 section 10.4, point 8). */
+    verify_before_commit: boolean | null;
+  };
+}
+
+/** What a run used for its harness (traces.harness; `task_runs/traces.harness_version` keep `name@version`). */
+export interface HarnessUsed {
+  name: string | null;
+  version: number | null;
+  harness_version_id: string | null;
+  /** sha256 of the normalised config (null when nothing was resolved). */
+  content_hash: string | null;
+  source: 'db' | 'none';
+  requested: HarnessRef | null;
+  fallback_reason?: 'no_ref' | 'invalid_ref' | 'harness_not_found' | 'version_not_found' | 'no_active_version' | 'invalid_config' | 'db_error';
+  /** Effective values of the run (after precedence) and which of them came from the harness. */
+  effective: Record<string, unknown>;
+  overrides: string[];
+}
+
 export interface ScheduleSpec {
   type: string;
   expression?: string;
@@ -156,6 +217,8 @@ export const agentVersions = pgTable(
     configuration: jsonb('configuration').$type<Record<string, unknown>>().notNull().default({}),
     skillRefs: jsonb('skill_refs').$type<SkillRef[]>().notNull().default([]),
     harnessVersionId: text('harness_version_id'),
+    /** MVP-1 (0008_harness): `{ name }` or `{ name, version }` of a harness in the database; null = no harness. */
+    harnessRef: jsonb('harness_ref').$type<HarnessRef | null>(),
     routerVersionId: text('router_version_id'),
     toolPolicyId: text('tool_policy_id'),
     memoryPolicyId: text('memory_policy_id'),
@@ -231,6 +294,70 @@ export const skillVersions = pgTable(
     index('skill_versions_tenant_idx').on(t.tenantId),
     check('skill_versions_status_ck', sql`${t.status} in ('DRAFT', 'ACTIVE', 'DEPRECATED')`),
     check('skill_versions_version_ck', sql`${t.version} > 0`),
+  ],
+);
+
+// ---------------------------------------------------------------------------
+// 7.1 Harness + HarnessVersion (MVP-1, migration 0008_harness; same pattern as skills)
+// ---------------------------------------------------------------------------
+export const HARNESS_STATUSES = ['DRAFT', 'ACTIVE', 'DEPRECATED'] as const;
+export type HarnessStatus = (typeof HARNESS_STATUSES)[number];
+export const HARNESS_VERSION_STATUSES = ['DRAFT', 'ACTIVE', 'DEPRECATED'] as const;
+export type HarnessVersionStatus = (typeof HARNESS_VERSION_STATUSES)[number];
+
+/**
+ * A versioned harness (LLD v0.1 section 7.1): the policies a run executes under. `name` is
+ * the stable kebab-case id agent versions reference (`harness_ref.name`). DRAFT until a
+ * version is activated. No DELETE (trigger): a harness is retired with status DEPRECATED.
+ */
+export const harnesses = pgTable(
+  'harnesses',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    tenantId: tenantId(),
+    name: text('name').notNull(),
+    description: text('description'),
+    status: text('status').$type<HarnessStatus>().notNull().default('DRAFT'),
+    activeVersionId: uuid('active_version_id').references((): AnyPgColumn => harnessVersions.id),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [
+    uniqueIndex('harnesses_tenant_name_uq').on(t.tenantId, t.name),
+    check('harnesses_status_ck', sql`${t.status} in ('DRAFT', 'ACTIVE', 'DEPRECATED')`),
+  ],
+);
+
+/**
+ * Immutable policies of one harness version: a trigger rejects UPDATE of the content
+ * columns and any DELETE; only `status`, `activated_at` and `deprecated_at` change. At most
+ * one ACTIVE version per harness (partial unique index). `content_hash` = sha256 of the
+ * normalised config (src/harness/config.ts).
+ */
+export const harnessVersions = pgTable(
+  'harness_versions',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    tenantId: tenantId(),
+    harnessId: uuid('harness_id')
+      .notNull()
+      .references((): AnyPgColumn => harnesses.id),
+    version: integer('version').notNull(),
+    status: text('status').$type<HarnessVersionStatus>().notNull().default('DRAFT'),
+    config: jsonb('config').$type<HarnessConfig>().notNull(),
+    metadata: jsonb('metadata').$type<Record<string, unknown>>().notNull().default({}),
+    contentHash: text('content_hash').notNull(),
+    activatedAt: timestamp('activated_at', { withTimezone: true }),
+    deprecatedAt: timestamp('deprecated_at', { withTimezone: true }),
+    createdAt: createdAt(),
+    createdBy: text('created_by'),
+  },
+  (t) => [
+    uniqueIndex('harness_versions_harness_version_uq').on(t.harnessId, t.version),
+    uniqueIndex('harness_versions_one_active_uq').on(t.harnessId).where(sql`${t.status} = 'ACTIVE'`),
+    index('harness_versions_tenant_idx').on(t.tenantId),
+    check('harness_versions_status_ck', sql`${t.status} in ('DRAFT', 'ACTIVE', 'DEPRECATED')`),
+    check('harness_versions_version_ck', sql`${t.version} > 0`),
   ],
 );
 
@@ -395,6 +522,8 @@ export const traces = pgTable(
       .references(() => agents.id),
     agentVersionId: uuid('agent_version_id').references(() => agentVersions.id),
     harnessVersion: text('harness_version'),
+    /** Harness the execution used (LLD P4): exact version, effective values, fallback reason (0008_harness). */
+    harness: jsonb('harness').$type<HarnessUsed | null>(),
     /** Skill versions the execution used (LLD P4), with the code text when it fell back. */
     skillVersions: jsonb('skill_versions').$type<SkillVersionUsed[]>().notNull().default([]),
     toolCalls: jsonb('tool_calls').$type<unknown[]>().notNull().default([]),
@@ -669,3 +798,5 @@ export type Skill = typeof skills.$inferSelect;
 export type SkillVersion = typeof skillVersions.$inferSelect;
 export type EventSubscription = typeof eventSubscriptions.$inferSelect;
 export type EmailSend = typeof emailSends.$inferSelect;
+export type Harness = typeof harnesses.$inferSelect;
+export type HarnessVersion = typeof harnessVersions.$inferSelect;

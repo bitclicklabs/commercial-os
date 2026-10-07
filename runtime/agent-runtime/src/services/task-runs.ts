@@ -6,6 +6,7 @@ import type { EnqueueResult, RunQueue } from '../queue/run-queue.js';
 import type { EventProducer } from '../events/envelope.js';
 import type { EventPublisher } from '../events/event-bus.js';
 import { taskScheduledEvent } from '../events/runtime-events.js';
+import { resolveTaskRetryPolicy } from '../harness/index.js';
 
 export interface RequestTaskRunInput {
   scheduledAt?: string | Date;
@@ -87,10 +88,12 @@ export async function requestTaskRun(
   }
   if (taskRun.status !== 'QUEUED') return { taskRun, deduplicated, enqueue: null };
 
+  // Harness `execution.retry` takes precedence over the task's retry_policy (falls back to it).
+  const retry = await resolveTaskRetryPolicy(db, task);
   try {
     const enqueue = await queue.enqueue(
       { kind: 'task_run', tenantId: task.tenantId, taskRunId: taskRun.id, idempotencyKey },
-      { attempts: task.retryPolicy.max_attempts, backoffMs: task.retryPolicy.backoff_ms, priority: task.priority },
+      { attempts: retry.max_attempts, backoffMs: retry.backoff_ms, priority: task.priority },
     );
     return { taskRun, deduplicated, enqueue };
   } catch (err) {

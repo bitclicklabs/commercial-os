@@ -1,7 +1,8 @@
 /**
  * `pnpm seed [--tenant=publiexpe] [--input=path/to/event.json]`
  *
- * Seeds first the skills migrated from the code constants (v1 ACTIVE if missing; existing
+ * Seeds first the harness `default-commercial` (v1 ACTIVE with today's values if missing;
+ * an existing harness is never touched), then the skills migrated from the code constants (v1 ACTIVE if missing; existing
  * skills are never touched), then the Prospector agent and its tasks `daily-event-prospecting` and
  * `weekly-event-scouting`, and the EmailDrafter agent with its task
  * `draft-email-on-validated`, and the BajasAgent with its task `process-unsubscribes`
@@ -17,6 +18,7 @@ import { loadConfig } from '../config.js';
 import { createDb } from '../db/client.js';
 import { seedBajas } from './bajas-seed.js';
 import { seedEmailDrafter } from './email-drafter-seed.js';
+import { seedHarnesses } from './harness-seed.js';
 import { seedProspector } from './prospector-seed.js';
 import { seedSkills } from './skills-seed.js';
 
@@ -40,8 +42,9 @@ if (isMain) {
   const handle = createDb(config.databaseUrl);
   const log = (m: string) => console.log(`[seed] ${m}`);
   const defaultInput = loadSeedInput(input ? path.resolve(input) : DEFAULT_FIXTURE);
-  seedSkills(handle.db, { tenantId, log })
-    .then(async (skills) => ({ skills, prospector: await seedProspector(handle.db, { tenantId, defaultInput, log }) }))
+  seedHarnesses(handle.db, { tenantId, log })
+    .then(async (harness) => ({ harness, skills: await seedSkills(handle.db, { tenantId, log }) }))
+    .then(async (r) => ({ ...r, prospector: await seedProspector(handle.db, { tenantId, defaultInput, log }) }))
     .then(async (r) => ({ ...r, emailDrafter: await seedEmailDrafter(handle.db, { tenantId, log }) }))
     .then(async (r) => ({ ...r, bajas: await seedBajas(handle.db, { tenantId, log }) }))
     .then((r) => console.log(JSON.stringify({ tenant: tenantId, ...r }, null, 2)))

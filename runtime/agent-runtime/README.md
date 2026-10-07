@@ -21,7 +21,8 @@ runtime/agent-runtime/
 │   ├── main.ts               Entrada: API, worker y/o scheduler según RUNTIME_ROLE o --role=
 │   ├── config.ts             Configuración desde variables de entorno
 │   ├── api/                  Servidor Fastify, contratos zod y rutas
-│   ├── agents/               Interfaz de agente, StubAgent, SmokeAgent, ProspectorAgent (modos directo y scout, prompts, SourceLedger) y EmailDrafterAgent (borradores, nunca envía)
+│   ├── agents/               Interfaz de agente, StubAgent, SmokeAgent, ProspectorAgent (modos directo y scout, prompts, SourceLedger) EmailDrafterAgent (borradores, nunca envía) y BajasAgent (inbound de bajas, sin LLM)
+│   ├── inbound/              Inbound de bajas: lector IMAP de solo lectura, clasificador determinista, lista de supresión y cursor (inbound_state)
 │   ├── integrations/twenty/  TwentyClient REST tipado y mapeo de objetos de la App
 │   ├── tools/                Interfaz Tool, registry, tool_policy, executor, tools de Twenty y web/ (fetch_url con texto de PDF, render_url y guarda SSRF)
 │   ├── db/                   Esquema Drizzle, cliente y migrador
@@ -32,13 +33,13 @@ runtime/agent-runtime/
 │   ├── providers/            ModelProvider, StubProvider, AnthropicProvider, GeminiProvider y tabla de precios
 │   ├── queue/                RunQueue (BullMQ y en memoria)
 │   ├── scheduler/            TaskScheduler sobre BullMQ, parseo de schedules y rutas
-│   ├── seed/                 Seed idempotente del Prospector, el EmailDrafter y sus tareas (pnpm seed)
+│   ├── seed/                 Seed idempotente del Prospector, el EmailDrafter, el BajasAgent y sus tareas (pnpm seed)
 │   ├── services/             Lanzamiento idempotente de TaskRuns
 │   └── worker/               RunProcessor, worker BullMQ, locks por entidad y reconciliador
 └── test/
     ├── unit/                 Corren siempre, sin BD ni Redis
     ├── integration/          API, worker, scheduler, locks y tools (PostgreSQL, Redis y Twenty); se saltan si falta el servicio
-    ├── helpers/              FakeTwenty (API REST de Twenty en memoria), FakeWeb (DNS y HTTP simulados), FakeRenderer (pxos-renderer simulado) y makePdf (PDF de prueba en memoria)
+    ├── helpers/              FakeTwenty (API REST de Twenty en memoria), FakeWeb (DNS y HTTP simulados), FakeRenderer (pxos-renderer simulado), FakeImapServer (servidor IMAP en proceso) y makePdf (PDF de prueba en memoria)
     ├── fixtures/             feria-ejemplo.json (evento de demo) y payloads reales de webhooks de Twenty 2.45
     └── setup-env.ts          Carga .env (si existe) antes de los tests
 ```
@@ -109,6 +110,9 @@ Requisitos: Node.js 22, pnpm, y los contenedores `pxos-postgres` (127.0.0.1:5440
 | `FETCH_URL_ALLOWLIST` | vacío | Dominios que `fetch_url` puede descargar, separados por comas (incluye subdominios). Vacío = cualquier host público |
 | `FETCH_URL_DENYLIST` | vacío | Dominios que `fetch_url` nunca descarga. Gana sobre la allowlist |
 | `FETCH_URL_ALLOWED_PORTS` | `80,443,8080,8443` | Puertos permitidos en las URL de `fetch_url` |
+| `IONOS_IMAP_HOST` / `IONOS_IMAP_PORT` | `imap.ionos.es` / `993` | Servidor IMAP del buzón de bajas (siempre TLS) |
+| `IONOS_IMAP_USER` / `IONOS_IMAP_PASSWORD` | vacío | Buzón que lee el BajasAgent (`jesus.abril@publiexpe.info`). Sin ellas, `process-unsubscribes` termina `SKIPPED` |
+| `IONOS_IMAP_MAILBOX` | `INBOX` | Carpeta que lee el BajasAgent |
 | `RENDERER_URL` | `http://pxos-renderer:3000` | Servicio de render JavaScript de `render_url`. En desarrollo, `http://127.0.0.1:4030` si el renderer está publicado ahí. Vacío u `off` = desactivado (`render_url` devuelve `RENDERER_NOT_CONFIGURED`) |
 
 ## Migraciones
@@ -133,6 +137,7 @@ El esquema vive en `src/db/schema.ts`. Todas las tablas llevan `tenant_id` (C6).
 | `0001_scheduler_locks` | Tabla `entity_locks` e índice `task_runs (status, updated_at)` para el reconciliador |
 | `0002_events` | Tabla `events` (log de eventos de dominio, *append-only* con trigger anti-`DELETE`) |
 | `0003_evaluations` | Tabla `evaluations` del evaluador HUMAN. SQL idempotente (`IF NOT EXISTS`) |
+| `0004_inbound` | Tabla `inbound_state` (cursor IMAP del inbound de bajas). SQL idempotente (`IF NOT EXISTS`) |
 
 Importante: el migrador de Drizzle aplica solo las migraciones con fecha posterior a la última aplicada. Si dos ramas generan migraciones en paralelo contra la misma BD de desarrollo, aplica primero la más antigua o regenera la nueva tras el merge.
 
@@ -457,6 +462,8 @@ Las de Twenty usan `TWENTY_BASE_URL` y `TWENTY_API_KEY` y tienen `outputTrust = 
 | `create_agent_run_summary` | `LOW_WRITE` | Sí | `agentExecutionId` |
 | `get_hypothesis` | `READ` | No | — (hipótesis con empresa, señal y decision maker, `depth=1`) |
 | `create_note` | `LOW_WRITE` | Sí | Empresa + título; adopta una nota huérfana con el mismo título |
+| `get_note` | `READ` | No | — (título y markdown de una nota; salida `untrusted`) |
+| `update_note` | `LOW_WRITE` | Sí | Solo añade líneas al final; las que ya están (coincidencia exacta) se omiten. Nunca edita ni borra contenido |
 | `fetch_url` | `READ` | No | — (consulta [Seguridad del contenido web](#seguridad-del-contenido-web)) |
 | `render_url` | `READ` | No | — (consulta [Render de JavaScript](#render-de-javascript-render_url)) |
 
@@ -721,6 +728,7 @@ Es idempotente:
 - **Agente `Prospector`**: si no existe, lo crea con la versión 1 `ACTIVE` (`model_provider = gemini`, `model = gemini-flash-latest`, `thinking_level = low`, la tool policy anterior y el prompt en español con los diferenciales de PubliEXPE: ofertas, trato cercano, taller propio y precio). Si existe y su versión activa es distinta, añade una versión nueva, la activa y pasa la anterior a `DEPRECATED`. Si es igual, no cambia nada.
 - **Tarea `daily-event-prospecting`**: `CRON 0 8 * * *` en `Europe/Madrid`, `timeout_ms = 900000`, sin reintentos, con `test/fixtures/feria-ejemplo.json` como `default_input`. Si cambia, se actualiza y se guarda una `TaskDefinitionVersion` nueva.
 - **Tarea `weekly-event-scouting`** (modo scout): `CRON 30 7 * * 1` (lunes 07:30) en `Europe/Madrid`, `timeout_ms = 1800000`, sin reintentos, `default_input = { "sector": "alimentación y bebidas", "region": "España", "horizon_months": 6 }`.
+- **Agente `BajasAgent` y tarea `process-unsubscribes`**: `CRON 0 */2 * * *` en `Europe/Madrid`, sin LLM (`model_provider = stub`), tool policy `get_note` + `update_note` (una escritura por ejecución). Consulta [Inbound de bajas](#inbound-de-bajas).
 
 Las dos tareas usan la misma versión del agente. La versión del seed añade `fetch_url` a la tool policy, la configuración `scout` y la skill `event-source-discovery` v1, y sube la skill `prospector-event-exhibitors` a v2 (datos en bloques `DATOS_NO_CONFIABLES`): al ejecutar el seed sobre una BD existente se crea una versión nueva del agente.
 
@@ -784,6 +792,94 @@ grep '^GEMINI_API_KEY=' ../../deployments/.env >> .env
 pnpm vitest run test/integration/prospector-live.test.ts
 ```
 
+## Inbound de bajas
+
+Primera pieza del Inbound Manager ([LLD v0.1, sección 10.2](../../docs/LLD-0.1-publiexpe-commercial-os.md#102-inbound-y-conversaciones)): procesa las peticiones de baja de forma automática, sin LLM y sin aprobación (cumplimiento). Todo lo que no es una baja se ignora; el triaje general del inbound llegará después.
+
+> **Importante:** este componente solo **lee** correo y solo **añade** líneas a la lista de supresión. No envía, responde, reenvía, mueve ni borra mensajes, y el runtime no usa SMTP en ningún sitio.
+
+### Cómo funciona
+
+La tarea `process-unsubscribes` (`CRON 0 */2 * * *`, `Europe/Madrid`, `max_concurrency = 1`) ejecuta el **BajasAgent** (`implementation = "inbound_bajas"`):
+
+1. Conecta por IMAP con TLS a `IONOS_IMAP_HOST` y abre la carpeta con `EXAMINE` (solo lectura).
+1. Busca los mensajes con UID mayor que el último procesado (tabla `inbound_state`). En la primera ejecución, o si el servidor cambia `UIDVALIDITY`, busca los recibidos desde `initial_since` (`2026-10-06`, inicio del warm-up).
+1. Descarga cada mensaje con `BODY.PEEK[]` (no lo marca como leído), hasta `max_message_bytes` (256 KB) y `max_messages_per_run` (200) por ejecución. Si hay más, la siguiente ejecución continúa.
+1. Clasifica cada mensaje con reglas fijas (consulta [Señales](#señales-de-baja)).
+1. Si hay bajas, lee la nota `Lista de supresión — NO contactar` (`get_note`), descarta las direcciones que ya están (o cuyo `@dominio` está) y añade al final una línea por dirección nueva con `update_note`:
+
+   ```
+   email — AAAA-MM-DD — baja solicitada (asunto: "...")
+   ```
+
+   La fecha es la de recepción en el servidor (`INTERNALDATE`), en `Europe/Madrid`. El asunto se limpia (sin comillas, `@`, ni sintaxis markdown o HTML) y se recorta a 80 caracteres.
+
+1. Solo si la escritura en Twenty ha ido bien, guarda el último UID. Si Twenty falla, el cursor no avanza y la siguiente ejecución lo reintenta (la deduplicación lo hace idempotente).
+
+El TaskRun y su trace guardan los contadores (`messages_reviewed`, `bajas_detected`, `new_entries`, `duplicates`, `ignored_*`, `parse_errors`, `marked_seen`). Del correo ignorado el trace solo guarda el UID y el motivo; de la nota, solo su tamaño.
+
+Sin `IONOS_IMAP_USER` o `IONOS_IMAP_PASSWORD`, la ejecución termina `COMPLETED` con `outcome = SKIPPED` y el motivo (`IMAP no configurado: faltan ...`), sin leer nada.
+
+### Señales de baja
+
+El cuerpo del correo es **dato no confiable**: no se interpreta como instrucciones. La dirección que se añade sale siempre de la cabecera `From` parseada, nunca del cuerpo ni de `Reply-To`.
+
+| Señal | Regla |
+|---|---|
+| `recipient_baja_address` | `baja@publiexpe.info` aparece en `To`, `Cc`, `Delivered-To`, `X-Forwarded-To`, `X-Original-To`, `Envelope-To` o `Resent-To` |
+| `subject_keyword` | El asunto, sin prefijos `Re:`/`RV:`/`Fwd:`, es exactamente `baja`, `stop`, `unsubscribe`, `no contactar`... o contiene la palabra `baja` o `unsubscribe`, o una de las frases de baja |
+| `body_phrase` | El texto que escribió el remitente contiene una frase como "darme de baja", "me deis de baja", "solicito la baja", "quitarme de la lista", "no me contactéis", "no volváis a escribir", "unsubscribe", "remove me from" |
+| `body_keyword_only` | La primera línea del texto es solo `BAJA`, `STOP` o `Unsubscribe` |
+
+Reglas comunes:
+
+- Las frases se comparan en minúsculas, sin tildes y con límites de palabra.
+- Del cuerpo se descarta el texto citado (líneas `>`, el bloque "El ... escribió:" y la cabecera "De: / Enviado:" de Outlook), nuestro pie de baja y la firma `-- `. Se analizan como máximo 4.000 caracteres.
+- Nunca es baja: el correo automático (`Auto-Submitted`, `List-Unsubscribe`, `List-Id`, `Precedence: bulk`, rebotes `multipart/report`, remitentes `mailer-daemon`, `no-reply`...), el de nuestros dominios (`publiexpe.info`, `publiexpe.com`) y el que no tiene un `From` válido.
+
+### Buzón: lo único que se modifica
+
+Por defecto, nada. Con `mark_seen: true` en la configuración de la versión, el agente añade el flag `\Seen` (y solo ese) a los mensajes que ha procesado como baja. El resto no se toca nunca. El valor por defecto es `false` para que un falso positivo no oculte la respuesta de un cliente en la bandeja.
+
+### Configuración de la versión
+
+| Clave | Por defecto | Uso |
+|---|---|---|
+| `suppression_note_id` | `6658e882-60f9-427f-808d-dc5c255570dc` | Nota de Twenty con la lista |
+| `suppression_note_title` | `Lista de supresión — NO contactar` | `update_note` se niega a escribir si el título no coincide |
+| `unsubscribe_addresses` | `["baja@publiexpe.info"]` | Destinatarios que significan baja |
+| `own_domains` | `["publiexpe.info", "publiexpe.com"]` | Remitentes que nunca son baja |
+| `imap_mailbox` | `INBOX` | Carpeta (gana sobre `IONOS_IMAP_MAILBOX`) |
+| `initial_since` | `2026-10-06` | Fecha desde la que se lee la primera vez |
+| `max_messages_per_run` / `max_message_bytes` | `200` / `262144` | Límites por ejecución y por mensaje |
+| `mark_seen` | `false` | Marca `\Seen` en las bajas procesadas |
+
+### Tabla `inbound_state`
+
+Migración `0004_inbound`. Un cursor por `(tenant_id, consumer, mailbox)`; se actualiza en sitio (el historial son los TaskRuns).
+
+| Columna | Tipo | Uso |
+|---|---|---|
+| `tenant_id` | `text` | Tenant |
+| `consumer` | `text` | Lector del buzón: `bajas` (el triaje general tendrá el suyo) |
+| `mailbox` | `text` | `usuario@host/CARPETA` (sin contraseña) |
+| `uid_validity` | `bigint` | `UIDVALIDITY` de la carpeta cuando se guardó el cursor |
+| `last_uid` | `bigint` | Último UID procesado; nunca retrocede con el mismo `UIDVALIDITY` |
+| `last_run_at` | `timestamptz` | Última ejecución que avanzó el cursor |
+| `last_summary` | `jsonb` | Contadores de esa ejecución (sin contenido de correos) |
+
+### Puesta en marcha
+
+1. Añade `IONOS_IMAP_USER` y `IONOS_IMAP_PASSWORD` (y, si cambian, `IONOS_IMAP_HOST`/`IONOS_IMAP_PORT`) al entorno del runtime. En Docker, el servicio `pxos-runtime` de `deployments/docker-compose.yml` tiene que pasarlas en `environment` (consulta [Docker](#docker)).
+1. Ejecuta `pnpm db:migrate` (o arranca con `RUN_MIGRATIONS=true`) y `pnpm seed`.
+1. Revisa la primera ejecución: `GET /task-runs/{id}` muestra los contadores y las direcciones añadidas.
+
+### Tests
+
+- `test/unit/inbound-bajas.test.ts`: clasificación con fixtures RFC 822 (incluidos citas, Outlook, HTML en base64, newsletters, rebotes, autorrespuestas e intentos de inyección), formato y deduplicación de la lista, cursor, degradación sin credenciales y el cliente imapflow real contra `FakeImapServer` (comprueba que solo se envían `EXAMINE`, `UID SEARCH` y `UID FETCH ... BODY.PEEK[]`).
+- `test/integration/inbound-bajas.test.ts` (PostgreSQL): seed, `process-unsubscribes` → `RunProcessor` → BajasAgent → servidor IMAP falso → nota en FakeTwenty → `inbound_state` y trace.
+- `test/integration/inbound-bajas-live.test.ts`: con `IONOS_IMAP_*` en el entorno o en `.env`, conecta al buzón real en solo lectura, lista y clasifica **sin escribir nada** (ni en el buzón ni en Twenty) e imprime lo que añadiría. Con `TWENTY_API_KEY`, prueba además `update_note` sobre una nota de prueba `[TEST] pxos-it ...` (nunca sobre la lista real). Sin credenciales se salta.
+
 ## Docker
 
 El `Dockerfile` es multi-stage (build con pnpm, imagen final solo con dependencias de producción, usuario `node`, healthcheck sobre `/health`).
@@ -812,6 +908,10 @@ Quien mantenga `deployments/` puede añadir este servicio a la red `pxos-net`:
       GEMINI_MODEL: ${GEMINI_MODEL:-}
       TWENTY_BASE_URL: http://pxos-twenty:3000
       TWENTY_API_KEY: ${TWENTY_API_KEY:-}
+      # Inbound de bajas (solo lectura IMAP). Sin ellas, process-unsubscribes sale SKIPPED.
+      IONOS_IMAP_HOST: ${IONOS_IMAP_HOST:-imap.ionos.es}
+      IONOS_IMAP_USER: ${IONOS_IMAP_USER:-}
+      IONOS_IMAP_PASSWORD: ${IONOS_IMAP_PASSWORD:-}
     ports:
       - "127.0.0.1:4020:4020"
     depends_on:

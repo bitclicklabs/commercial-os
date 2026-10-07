@@ -15,6 +15,7 @@ import { harnessRoutes } from './routes/harnesses.js';
 import { knowledgeRoutes } from './routes/knowledge.js';
 import { datasetRoutes } from './routes/datasets.js';
 import { experimentRoutes } from './routes/experiments.js';
+import { optimizerRoutes } from './routes/optimizer.js';
 
 export async function buildServer(
   ctx: ApiContext,
@@ -45,5 +46,6 @@ export async function buildServer(
   await knowledgeRoutes(app, ctx);
   await datasetRoutes(app, ctx);
   await experimentRoutes(app, ctx);
+  await optimizerRoutes(app, ctx);
   return app;
 }

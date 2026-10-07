@@ -16,9 +16,13 @@
  * The live agent is brought to the current seed configuration (a new version is added
  * when it changed, as the seed does), so a run uses the current limits and tool policy.
  *
- * Exhibitor domains (pagination + profiles): SCOUT_LIVE_DOMAINS=1 with
- * SCOUT_LIVE_EVENT_URL=https://www.gastronoma.es (and RENDERER_URL pointing to a renderer
- * with `max_pages`): `-t "exhibitor domains"`. Up to 60 exhibitors: ~0.2 EUR.
+ * Whole catalog (pagination up to the end, JSON API shortcut, profiles under the time
+ * budget): SCOUT_LIVE_DOMAINS=1 with SCOUT_LIVE_EVENT_URL=https://www.gastronoma.es (and
+ * RENDERER_URL pointing to pxos-renderer 0.2, with `max_pages` up to 20 and
+ * `capture_json`): `-t "whole catalog"`. Gastrónoma: 91 exhibitors, ~0.25 EUR, up to
+ * 20 min (the default time budget). SCOUT_LIVE_MIN_EVALUATED (85) and
+ * SCOUT_LIVE_MIN_DOMAINS (10, companies with a domain from their profile, the ones
+ * already in Twenty included) set the acceptance thresholds.
  */
 import type { FastifyInstance } from 'fastify';
 import { and, eq } from 'drizzle-orm';
@@ -113,6 +117,7 @@ describe.skipIf(!live)('Prospector scout live (Gemini grounding + web + Twenty +
 
   interface ScoutOutput {
     outcome: string;
+    time_budget?: Record<string, unknown>;
     counters: Record<string, number>;
     search?: { queries: string[]; sources: number; proposed: number; verification: string };
     events: Array<{
@@ -123,6 +128,8 @@ describe.skipIf(!live)('Prospector scout live (Gemini grounding + web + Twenty +
       verification: string;
       source_url: string | null;
       reason?: string;
+      catalog_source?: string | null;
+      json_api?: unknown;
       pages: unknown[];
       signal_id?: string;
       results: Array<{ name: string; domain: string | null; status: string; confidence?: number; signal_id?: string; company_id?: string; company_created?: boolean; hypothesis_id?: string; profile?: Record<string, unknown> }>;
@@ -173,7 +180,8 @@ describe.skipIf(!live)('Prospector scout live (Gemini grounding + web + Twenty +
         method: 'POST',
         url: '/tasks',
         headers,
-        payload: { name: TASK_NAME, agent_id: agent!.id, default_input: SCOUT_DEFAULT_INPUT, schedule: { type: 'MANUAL' }, timeout_ms: 1_200_000 },
+        // Same timeout as weekly-event-scouting: the scout's time budget (20 min) plus the writes.
+        payload: { name: TASK_NAME, agent_id: agent!.id, default_input: SCOUT_DEFAULT_INPUT, schedule: { type: 'MANUAL' }, timeout_ms: 1_800_000 },
       });
       expect(res.statusCode).toBe(201);
       task = res.json().task;
@@ -248,13 +256,17 @@ describe.skipIf(!live)('Prospector scout live (Gemini grounding + web + Twenty +
     600_000,
   );
 
-  // Paginated JS catalog + exhibitor profiles (tanda 5): SCOUT_LIVE_DOMAINS=1 SCOUT_LIVE_EVENT_URL=https://www.gastronoma.es
+  // Whole JS catalog + exhibitor profiles (tanda 6): SCOUT_LIVE_DOMAINS=1 SCOUT_LIVE_EVENT_URL=https://www.gastronoma.es
   it.skipIf(!process.env.SCOUT_LIVE_DOMAINS || !process.env.SCOUT_LIVE_EVENT_URL)(
-    'exhibitor domains: paginated catalog, profiles of the relevant exhibitors, >= 5 real companies with domain, FAIR signal and PROPOSED hypothesis',
+    'whole catalog: every page (or the JSON API), profiles under the time budget, real companies with domain, FAIR signal and PROPOSED hypothesis',
     async () => {
-      const { output } = await runScout({ event_url: process.env.SCOUT_LIVE_EVENT_URL }, { exhibitors: 100 });
+      const started = Date.now();
+      const { output } = await runScout({ event_url: process.env.SCOUT_LIVE_EVENT_URL }, { exhibitors: 200 });
+      const o = output;
+      console.log('[scout-live] whole catalog', JSON.stringify({ wall_ms: Date.now() - started, time_budget: o.time_budget, catalog_source: o.events.map((e) => e.catalog_source), json_api: o.events.map((e) => e.json_api) }, null, 2));
       expect(output.counters.grounding_calls).toBe(0);
       expect(output.counters.catalog_pages).toBeGreaterThanOrEqual(2);
+      expect(output.counters.evaluated).toBeGreaterThanOrEqual(Number(process.env.SCOUT_LIVE_MIN_EVALUATED ?? 85));
       expect(output.counters.profile_lookups).toBeGreaterThan(0);
       const written = output.events.flatMap((e) => e.results).filter((r) => r.status === 'hypothesis_created' || r.status === 'hypothesis_existing');
       const withDomain = written.filter((r) => r.domain && (r.profile as { status?: string } | undefined)?.status === 'domain_resolved');
@@ -265,12 +277,15 @@ describe.skipIf(!live)('Prospector scout live (Gemini grounding + web + Twenty +
         const hyp = await twenty.get<{ status: string; companyId: string }>(TWENTY_OBJECTS.commercialHypothesis, r.hypothesis_id!);
         expect(company!.domainName.primaryLinkUrl).toContain(r.domain!);
         expect(signal).toMatchObject({ signalType: 'FAIR', companyId: r.company_id });
-        expect(hyp).toMatchObject({ status: 'PROPOSED', companyId: r.company_id });
+        expect(hyp).toMatchObject({ companyId: r.company_id });
+        // A new hypothesis is PROPOSED; an existing one may already have been reviewed by a person (VALIDATED...).
+        if (r.status === 'hypothesis_created') expect(hyp!.status).toBe('PROPOSED');
         created.push({ name: company!.name, domain: r.domain!, companyCreated: r.company_created === true });
       }
       console.log('[scout-live] companies with domain from their profile', JSON.stringify(created, null, 2));
-      expect(created.length).toBeGreaterThanOrEqual(5);
+      console.log('[scout-live] new companies', created.filter((c) => c.companyCreated).length, 'of', created.length);
+      expect(created.length).toBeGreaterThanOrEqual(Number(process.env.SCOUT_LIVE_MIN_DOMAINS ?? 10));
     },
-    1_500_000,
+    1_900_000,
   );
 });

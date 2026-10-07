@@ -2,7 +2,7 @@
 
 Servicio del Agent OS de PubliEXPE Commercial OS (LLD v0.1, sección 8). Expone la API HTTP del runtime, planifica tareas (`ONCE`, `CRON`, `INTERVAL`) y ejecuta un worker BullMQ que lanza agentes y persiste `TaskRun`, `AgentExecution`, `Trace` y `TraceStep` en PostgreSQL.
 
-Estado: MVP. Además de `StubAgent` (sin LLM) y `SmokeAgent` (tools reales contra Twenty, consulta [Tools](#tools)), el runtime ejecuta el **Prospector v1** con Gemini (consulta [Prospector](#prospector)). `AnthropicProvider` existe como esqueleto y no se llama en los tests.
+Estado: MVP. Además de `StubAgent` (sin LLM) y `SmokeAgent` (tools reales contra Twenty, consulta [Tools](#tools)), el runtime ejecuta el **Prospector** con Gemini (consulta [Prospector](#prospector)), que también trabaja sobre ferias reales con búsqueda de Google y `fetch_url` ([modo scout](#modo-scout-ferias-reales)). `AnthropicProvider` existe como esqueleto y no se llama en los tests.
 
 ## Stack
 
@@ -21,24 +21,21 @@ runtime/agent-runtime/
 │   ├── main.ts               Entrada: API, worker y/o scheduler según RUNTIME_ROLE o --role=
 │   ├── config.ts             Configuración desde variables de entorno
 │   ├── api/                  Servidor Fastify, contratos zod y rutas
-│   ├── agents/               Interfaz de agente, StubAgent, SmokeAgent y ProspectorAgent (+ prompt)
+│   ├── agents/               Interfaz de agente, StubAgent, SmokeAgent y ProspectorAgent (modos directo y scout, prompts, SourceLedger)
 │   ├── integrations/twenty/  TwentyClient REST tipado y mapeo de objetos de la App
-│   ├── tools/                Interfaz Tool, registry, tool_policy, executor y tools de Twenty
+│   ├── tools/                Interfaz Tool, registry, tool_policy, executor, tools de Twenty y web/ (fetch_url y guarda SSRF)
 │   ├── db/                   Esquema Drizzle, cliente y migrador
 │   ├── domain/               Estados, máquina de estados e idempotency keys
 │   ├── providers/            ModelProvider, StubProvider, AnthropicProvider, GeminiProvider y tabla de precios
 │   ├── queue/                RunQueue (BullMQ y en memoria)
-<<<<<<< HEAD
 │   ├── scheduler/            TaskScheduler sobre BullMQ, parseo de schedules y rutas
-=======
-│   ├── seed/                 Seed idempotente del Prospector y su tarea (pnpm seed)
->>>>>>> feat/prospector
+│   ├── seed/                 Seed idempotente del Prospector y sus tareas (pnpm seed)
 │   ├── services/             Lanzamiento idempotente de TaskRuns
 │   └── worker/               RunProcessor, worker BullMQ, locks por entidad y reconciliador
 └── test/
     ├── unit/                 Corren siempre, sin BD ni Redis
     ├── integration/          API, worker, scheduler, locks y tools (PostgreSQL, Redis y Twenty); se saltan si falta el servicio
-    ├── helpers/              FakeTwenty: API REST de Twenty en memoria para los unitarios
+    ├── helpers/              FakeTwenty (API REST de Twenty en memoria) y FakeWeb (DNS y HTTP simulados)
     ├── fixtures/             feria-ejemplo.json: evento de demo con 3 expositores
     └── setup-env.ts          Carga .env (si existe) antes de los tests
 ```
@@ -98,6 +95,9 @@ Requisitos: Node.js 22, pnpm, y los contenedores `pxos-postgres` (127.0.0.1:5440
 | `TWENTY_BASE_URL` | `http://localhost:3020` | API REST de Twenty. En el contenedor: `http://pxos-twenty:3000` |
 | `TWENTY_API_KEY` | vacío | API key de Twenty. Sin ella, las tools de Twenty responden `TWENTY_NOT_CONFIGURED` |
 | `TWENTY_TIMEOUT_MS` | `10000` | Timeout por petición a Twenty |
+| `FETCH_URL_ALLOWLIST` | vacío | Dominios que `fetch_url` puede descargar, separados por comas (incluye subdominios). Vacío = cualquier host público |
+| `FETCH_URL_DENYLIST` | vacío | Dominios que `fetch_url` nunca descarga. Gana sobre la allowlist |
+| `FETCH_URL_ALLOWED_PORTS` | `80,443,8080,8443` | Puertos permitidos en las URL de `fetch_url` |
 
 ## Migraciones
 
@@ -324,7 +324,7 @@ El `ToolRegistry` rechaza al registrar:
 
 ### Tools disponibles
 
-Todas usan Twenty (`TWENTY_BASE_URL`, `TWENTY_API_KEY`) y tienen `outputTrust = trusted`.
+Las de Twenty usan `TWENTY_BASE_URL` y `TWENTY_API_KEY` y tienen `outputTrust = trusted`. `fetch_url` descarga de la web y su salida es `untrusted`.
 
 | Tool | Riesgo | Efectos | Idempotencia |
 |---|---|---|---|
@@ -335,6 +335,9 @@ Todas usan Twenty (`TWENTY_BASE_URL`, `TWENTY_API_KEY`) y tienen `outputTrust = 
 | `create_research` | `LOW_WRITE` | Sí | Ejecución + empresa + `researchType` |
 | `create_hypothesis` | `LOW_WRITE` | Sí | Empresa + `name` (por defecto `{empresa} — {need}`) |
 | `create_agent_run_summary` | `LOW_WRITE` | Sí | `agentExecutionId` |
+| `fetch_url` | `READ` | No | — (consulta [Seguridad del contenido web](#seguridad-del-contenido-web)) |
+
+`create_signal` acepta `companyId` opcional: sin él crea una **señal a nivel de evento** (una feria sin empresa asociada todavía), deduplicada entre las señales sin empresa por tipo + `eventDate` + `sourceDomain`.
 
 Los objetos de la App no tienen campo `idempotencyKey`, así que cada tool de escritura busca primero un registro con su clave natural. Si existe, devuelve `created: false` y el registro existente en vez de crear un duplicado. Todos los `create_*` escriben `tenantId` (el tenant de la ejecución, `publiexpe` por defecto) y aceptan `companyId` y, según el objeto, `signalId` o `decisionMakerId`.
 
@@ -414,7 +417,14 @@ El `StubAgent` sigue usando su tool simulada (`stub.lookup`), que no pasa por el
 
 ## Prospector
 
-`ProspectorAgent` (`configuration.implementation = "prospector"`) evalúa los expositores de un evento y propone hipótesis de merchandising para PubliEXPE. Es la versión 1: recibe el evento y los expositores ya extraídos (todavía no busca en la web).
+`ProspectorAgent` (`configuration.implementation = "prospector"`) evalúa los expositores de un evento y propone hipótesis de merchandising para PubliEXPE. Tiene dos modos, que elige por la forma de la entrada:
+
+| Modo | Entrada | Tarea | Qué hace |
+|---|---|---|---|
+| Directo | `{ event, exhibitors[] }` | `daily-event-prospecting` | Evalúa los expositores ya extraídos (fixture de demo) |
+| Scout | `{ sector, region?, horizon_months? }` o `{ event_url }` | `weekly-event-scouting` | Busca ferias reales, descarga su página de expositores y evalúa los expositores reales. Consulta [Modo scout](#modo-scout-ferias-reales) |
+
+El modo scout es un modo del mismo agente, no un agente hermano: el LLD v0.2 asigna al Prospector tanto el descubrimiento de eventos (`search_web`, `fetch_url`) como la evaluación de expositores, y así los dos modos comparten versión, prompt de evaluación, pipeline por expositor, tool policy y trazas.
 
 ### Entrada
 
@@ -442,21 +452,82 @@ El `StubAgent` sigue usando su tool simulada (`stub.lookup`), que no pasa por el
 
 Un error en un expositor (modelo o Twenty) no detiene la ejecución: queda en `output.results[]` y cuenta como error. El agente devuelve su resultado aunque el `outcome` sea `FAILED`, para que el trace conserve todos los pasos y el coste; el estado de negocio está en `output.outcome` y en el `agentRunSummary` de Twenty.
 
+### Modo scout (ferias reales)
+
+Entrada (`ScoutInput`):
+
+```json
+{ "sector": "alimentación y bebidas", "region": "España", "horizon_months": 6 }
+{ "event_url": "https://www.gastronoma.es", "event_name": "Mediterránea Gastrónoma 2026" }
+```
+
+`max_events` (1-3) y `max_exhibitors` (1-50) bajan los límites de la configuración para una ejecución; nunca los suben. Se elige este modo si `mode = "scout"` o si la entrada tiene `sector` o `event_url` y no tiene `event` ni `exhibitors`.
+
+Flujo:
+
+1. **Búsqueda con grounding** (solo con `sector`): una llamada a Gemini con la tool nativa `google_search`. El modelo devuelve hasta `max_events` ferias con `website_url` y `exhibitors_url`. Se descartan las que caen fuera del horizonte.
+1. **Verificación de las URL** antes de descargarlas:
+   - si el grounding devuelve fuentes, solo se descargan URL cuyo dominio está en esas fuentes (si una fuente solo trae la URL de redirección de `vertexaisearch`, se resuelve con `fetch_url` para conocer su dominio);
+   - si el modelo ejecutó búsquedas pero la API no devolvió fuentes (comportamiento observado con `gemini-3.8-flash` el 2026-10-07), la URL se descarga y **la página tiene que corroborar la feria** (el nombre aparece en el dominio o en el título y el texto); si no, se descarta sin escribir nada. `scout.verify_unsourced_by_fetch = false` desactiva esta vía (modo estricto);
+   - con `event_url`, la URL la da el operador.
+1. **`fetch_url`** de la página de expositores (o de la portada y, después, del enlace de expositores que aparezca entre sus enlaces). Máximo `max_pages_per_event` páginas por feria y `max_fetches` descargas por ejecución.
+1. **Extracción**: el LLM extrae `{name, domain?, description?, sector?}` solo del texto descargado. El código descarta los nombres que no aparecen en la página y los dominios que no están en su texto o sus enlaces (ni el de la propia feria ni redes sociales).
+1. **Pipeline por expositor**, el mismo del modo directo, con `source_url` = la página de expositores visitada.
+1. **Sin lista de expositores** (catálogo dinámico, PDF, página vacía): la feria se registra como señal `FAIR` a nivel de evento (`create_signal` sin `companyId`, con la URL visitada) y el `outcome` es `PARTIAL` con el motivo en `partial_reasons` y en el `agentRunSummary`.
+
+`outcome`: `FAILED` si falla la búsqueda o todos los expositores; `PARTIAL` si hay errores, ninguna feria verificable o alguna feria sin lista de expositores; `SUCCESS` en otro caso. La salida incluye `events[]` (páginas leídas, verificación, expositores descartados), `discarded_events[]` con el motivo, `sources` (URL visitadas y fuentes de grounding) y el coste de búsqueda.
+
+### Seguridad del contenido web
+
+Regla del LLD v0.1 §22 y v0.2 §10.4: `WEB CONTENT ≠ INSTRUCTIONS`.
+
+- **Separación de canales.** El contenido web (páginas descargadas, respuesta de la búsqueda, datos extraídos de ellas) entra **solo** en mensajes `user`, nunca en `systemInstruction`.
+- **Delimitación.** Siempre va dentro de un bloque `<<<DATOS_NO_CONFIABLES id=… origen="…">>> … <<<FIN_DATOS_NO_CONFIABLES id=…>>>` con un id aleatorio por bloque, precedido de la instrucción de ignorar cualquier orden que contenga. Las secuencias que imitan los marcadores se neutralizan, así que el contenido no puede cerrar el bloque. Los prompts de sistema (texto fijo, de confianza) repiten la regla.
+- **El modelo no elige tools.** El código decide qué tool llamar y con qué argumentos; el modelo solo devuelve JSON validado con zod. Una instrucción inyectada no puede provocar una llamada.
+- **Fuentes verificadas.** Todo `sourceUrl` que se escribe en Twenty se comprueba contra el registro de fuentes de la ejecución (`SourceLedger`): URL visitadas por `fetch_url` o devueltas por el grounding. Las URL propuestas por el modelo solo se descargan si su dominio está respaldado por el grounding, si son enlaces de una página ya descargada o, sin fuentes, si la página corrobora la feria. Los textos libres que van a Twenty (descripción, necesidad, por qué ahora, evidencias) pierden cualquier URL que no sea una fuente conocida (`[enlace omitido]`).
+- **Elementos ocultos.** `fetch_url` elimina `script`, `style`, `template`, `svg`, `iframe` y los elementos con `hidden`, `aria-hidden="true"` o `display:none`, vehículos habituales de inyección.
+
+Controles de egreso de `fetch_url` (protección SSRF), aplicados a la primera petición **y a cada redirección**:
+
+| Control | Valor |
+|---|---|
+| Esquemas | Solo `http` y `https`; sin credenciales en la URL |
+| Puertos | `FETCH_URL_ALLOWED_PORTS` (por defecto 80, 443, 8080, 8443) |
+| Hosts | Allowlist y denylist (`FETCH_URL_ALLOWLIST`, `FETCH_URL_DENYLIST`); siempre bloqueados `localhost`, `*.local`, `*.internal`, `metadata.google.internal` y nombres de una sola etiqueta |
+| DNS | **Todas** las IP resueltas deben ser públicas. Se rechazan loopback, privadas, link-local (169.254.169.254 incluida), CGNAT, multicast, documentación, benchmark y reservadas, también incrustadas en IPv6 (`::ffff:`, NAT64, 6to4, Teredo) |
+| Rebinding | El socket se conecta a la IP ya comprobada (`lookup` fijado): no hay segunda resolución DNS |
+| Redirecciones | Máximo 3 |
+| Tiempo | 15 s en total |
+| Tamaño | 2 MB, contado tras descomprimir (gzip, deflate, br) |
+| Texto devuelto | 40 000 caracteres como máximo; también título y enlaces absolutos |
+| Tipos | Solo texto (HTML, XHTML, XML, JSON, `text/*`); un PDF devuelve `UNSUPPORTED_CONTENT_TYPE` |
+| Cabeceras | `User-Agent: PubliexpeCommercialOS/0.1` (solo ASCII: un carácter no ASCII provocaba 403 en ifema.es y alimentaria.com), sin cookies ni cabeceras de autenticación |
+
+Códigos de error de `fetch_url`: `URL_NOT_ALLOWED`, `REDIRECT_NOT_ALLOWED`, `SSRF_BLOCKED`, `DNS_ERROR`, `TOO_MANY_REDIRECTS`, `FETCH_TIMEOUT`, `HTTP_ERROR`, `UNSUPPORTED_CONTENT_TYPE`, `NETWORK_ERROR`.
+
 ### Trace y coste
 
-Cada llamada al LLM es un paso `MODEL` con `model` (el modelo real que respondió, por ejemplo `gemini-3.8-flash`), tokens y `output.cost` (`amount`, `currency`). Cada tool es un paso `TOOL` con `output.costEur`. `AgentExecution.model_cost` y `TaskRun.cost` acumulan el coste del proveedor en USD; `output.cost.eur` y el `agentRunSummary` lo convierten a EUR con `configuration.usd_to_eur` (por defecto `0.86`).
+Cada llamada al LLM es un paso `MODEL` con `model` (el modelo real que respondió, por ejemplo `gemini-3.8-flash`), tokens y `output.cost` (`amount`, `currency` y, con grounding, `grounding` y `grounding_units`). La llamada con búsqueda guarda además `output.grounding` (consultas, fuentes, `source_trust = untrusted`). Cada tool es un paso `TOOL` con `output.costEur`. `AgentExecution.model_cost` y `TaskRun.cost` acumulan el coste del proveedor en USD; `output.cost.eur` y el `agentRunSummary` lo convierten a EUR con `configuration.usd_to_eur` (por defecto `0.86`).
 
 ### Configuración de la versión
 
 | Clave de `configuration` | Por defecto | Uso |
 |---|---|---|
 | `implementation` | — | `prospector` |
-| `tool_policy` | — | `find_company`, `upsert_company`, `create_signal`, `create_hypothesis`, `create_agent_run_summary`; techo `LOW_WRITE` |
+| `tool_policy` | — | `find_company`, `upsert_company`, `create_signal`, `create_hypothesis`, `create_agent_run_summary`, `fetch_url` (máximo 15 llamadas); techo `LOW_WRITE`; 240 llamadas por ejecución |
 | `min_confidence` | `0.5` | Umbral para escribir en Twenty |
 | `usd_to_eur` | `0.86` | Conversión del coste para Twenty |
 | `model_options` | `{}` | `thinking_level` (Gemini 3.x), `thinking_budget` (Gemini 2.5), `temperature` |
 | `max_output_tokens` | `4096` | Por llamada; incluye los tokens de razonamiento |
-| `task_name` | `daily-event-prospecting` | Campo `task` del `agentRunSummary` |
+| `task_name` | `daily-event-prospecting` | Campo `task` del `agentRunSummary` (modo directo) |
+| `scout.task_name` | `weekly-event-scouting` | Campo `task` del `agentRunSummary` (modo scout) |
+| `scout.max_events` | `3` | Ferias por ejecución (máximo 3) |
+| `scout.max_exhibitors_per_event` | `20` | Expositores evaluados por feria |
+| `scout.max_fetches` | `12` | Descargas por ejecución |
+| `scout.max_pages_per_event` | `2` | Páginas leídas por feria |
+| `scout.max_redirect_resolutions` | `3` | Redirecciones de grounding resueltas para conocer su dominio |
+| `scout.event_signal_confidence` | `0.5` | Confianza de la señal de evento sin expositores |
+| `scout.verify_unsourced_by_fetch` | `true` | Sin fuentes de grounding, aceptar la URL si la página corrobora la feria. `false` = estricto |
 
 ### Seed
 
@@ -468,7 +539,12 @@ pnpm seed -- --tenant=otro --input=evento.json
 Es idempotente:
 
 - **Agente `Prospector`**: si no existe, lo crea con la versión 1 `ACTIVE` (`model_provider = gemini`, `model = gemini-flash-latest`, `thinking_level = low`, la tool policy anterior y el prompt en español con los diferenciales de PubliEXPE: ofertas, trato cercano, taller propio y precio). Si existe y su versión activa es distinta, añade una versión nueva, la activa y pasa la anterior a `DEPRECATED`. Si es igual, no cambia nada.
-- **Tarea `daily-event-prospecting`**: `CRON 0 8 * * *` en `Europe/Madrid`, `timeout_ms = 900000`, sin reintentos, con `test/fixtures/feria-ejemplo.json` como `default_input`. Si cambia, se actualiza y se guarda una `TaskDefinitionVersion` nueva. El scheduler que la dispara a las 08:00 llega en otra rama; mientras tanto, lánzala con `POST /tasks/:id/run`.
+- **Tarea `daily-event-prospecting`**: `CRON 0 8 * * *` en `Europe/Madrid`, `timeout_ms = 900000`, sin reintentos, con `test/fixtures/feria-ejemplo.json` como `default_input`. Si cambia, se actualiza y se guarda una `TaskDefinitionVersion` nueva.
+- **Tarea `weekly-event-scouting`** (modo scout): `CRON 30 7 * * 1` (lunes 07:30) en `Europe/Madrid`, `timeout_ms = 1800000`, sin reintentos, `default_input = { "sector": "alimentación y bebidas", "region": "España", "horizon_months": 6 }`.
+
+Las dos tareas usan la misma versión del agente. La versión del seed añade `fetch_url` a la tool policy, la configuración `scout` y la skill `event-source-discovery` v1, y sube la skill `prospector-event-exhibitors` a v2 (datos en bloques `DATOS_NO_CONFIABLES`): al ejecutar el seed sobre una BD existente se crea una versión nueva del agente.
+
+> **Importante:** ejecuta el seed después de desplegar este código. Un runtime anterior trataría la entrada de `weekly-event-scouting` como entrada directa no válida y cerraría la ejecución del lunes como `FAILED`.
 
 La fixture tiene tres expositores ficticios: uno claramente relevante (fabricante de conservas con stand propio), uno dudoso (distribuidor de envases que también imprime bolsas promocionales) y uno irrelevante (organismo público que compra por licitación).
 
@@ -493,10 +569,26 @@ El coste se calcula con la tabla editable de `src/providers/gemini-pricing.ts`, 
 
 Cuando Google cambie un precio, añade un periodo nuevo con su fecha `from` en vez de sobrescribir el anterior.
 
+**Grounding con Google Search.** `options.grounding = true` (por llamada, desactivado por defecto) añade `tools: [{ google_search: {} }]` y `toolConfig.includeServerSideToolInvocations = true`. El resultado trae `grounding` con las consultas ejecutadas y las fuentes web, leídas de `groundingMetadata` (`webSearchQueries`, `groundingChunks[].web`) y de las partes `toolCall` / `toolResponse` de tipo `GOOGLE_SEARCH_WEB`. El coste de búsqueda se suma a `cost.modelCost` y se desglosa en `cost.groundingCost` y `cost.groundingUnits`. Tabla `GEMINI_GROUNDING_PRICING`, consultada el 2026-10-07 en la misma página de precios:
+
+| Familia | Precio (capa de pago) | Unidad facturada |
+|---|---|---|
+| Gemini 3.x (3.8, 3.7, 3.6, 3.5 Flash, Flash-Lite, 3 Flash Preview) | 5 000 búsquedas gratis al mes compartidas entre modelos 3.x; después **14 USD por 1 000 búsquedas** | Cada consulta a Google que ejecuta el modelo (una llamada puede lanzar varias) |
+| Gemini 2.5 Flash / Flash-Lite | 1 500 RPD gratis; después 35 USD por 1 000 prompts con grounding | Cada prompt con grounding |
+
+El runtime cobra al precio de lista y no descuenta la cuota gratuita (no la puede ver): el coste registrado es una cota superior. En la capa gratuita el grounding de Gemini 3.x no está disponible.
+
+Observado el 2026-10-07 con `gemini-3.8-flash`: el modelo ejecuta las búsquedas (7 consultas en una llamada, 0,098 USD) pero la respuesta no incluye `groundingMetadata` y la `toolResponse` solo trae las sugerencias de búsqueda (HTML con enlaces a google.com), sin URL de resultados. Por eso existe la verificación por descarga del modo scout.
+
 ### Tests del Prospector
 
 - `test/unit/prospector-agent.test.ts` y `test/unit/gemini-provider.test.ts`: con `StubProvider` (respuestas guionizadas) y `FakeTwenty`. Cubren el parseo, el reintento por JSON inválido, el flujo de tools, la idempotencia y la agregación de coste.
 - `test/integration/prospector-live.test.ts`: **en vivo**. Ejecuta el seed y un `TaskRun` con la fixture contra Gemini, Twenty y PostgreSQL reales, y comprueba empresa, señal, hipótesis y `agentRunSummary` en Twenty. Se salta si falta `GEMINI_API_KEY`, `TWENTY_API_KEY`, Twenty o PostgreSQL, o si `SKIP_LLM_TESTS=1`. Usa los nombres de la fixture (datos de demo, sin prefijo `[TEST]`) en el tenant `publiexpe`; como todas las escrituras son idempotentes, repetirlo solo añade un `agentRunSummary`. Cuesta unos 0,005 € por ejecución.
+
+- `test/unit/fetch-url.test.ts`: guardas SSRF (rangos IPv4/IPv6, URL internas, allow/denylist, IP privada en DNS, DNS mixto, redirección a IP privada o a host privado, límite de redirecciones), truncado de texto y de bytes (también tras gzip, con un servidor local real), timeout, tipos de contenido, charset y `htmlToText`.
+- `test/unit/gemini-grounding.test.ts`: cuerpo con `google_search`, parseo de `groundingMetadata` y de las partes `toolCall` / `toolResponse`, y precio por consulta.
+- `test/unit/event-scout.test.ts`: modo scout con `StubProvider`, `FakeWeb` (DNS y transporte simulados) y `FakeTwenty`: extracción y verificación de expositores, delimitación del contenido web e intento de inyección, validación de `source_url`, URL no respaldadas, señal de evento, redirecciones de grounding, verificación por corroboración, horizonte y fallos.
+- `test/integration/event-scout-live.test.ts`: **en vivo**, con grounding real. No ejecuta el seed: usa su propio agente (`Prospector Scout (live test)`) y una tarea `MANUAL` (`event-scouting-live-test`), así no programa nada. Limitado a 1 feria y 5 expositores; cuesta unos 0,10 USD (casi todo, búsquedas). `SKIP_LLM_TESTS=1` lo salta. Con `SCOUT_LIVE_EVENT_URL=https://…` (y `-t event_url`) ejecuta el modo `event_url`, sin grounding.
 
 Para ejecutarlo en local, copia también la clave de Gemini a tu `.env`:
 
@@ -548,21 +640,14 @@ Para escalar, separa roles: un servicio con `RUNTIME_ROLE=api`, N réplicas con 
 
 ## Pendiente
 
-<<<<<<< HEAD
 - Triggers `EVENT`, `DEPENDENCY` y `CONDITION` (hoy no registran nada).
 - Columna `trigger` (`SCHEDULE`, `MANUAL`...) en `task_runs` para distinguir el origen de cada run (LLD v0.2, AC-04).
 - Exponer `EntityLocks` a las tools (el helper está listo en `RunProcessor.locks`).
 - Política de catch-up si el scheduler estuvo parado: hoy, al volver, se procesa el slot pendiente (tarde, con su `scheduled_at` original) y los demás slots perdidos se omiten.
-- Tools pendientes del registro del MVP-0: `search_web`, `fetch_url`, `create_activity` y las del Catalog Service.
-=======
-- Scheduler (`CRON`, `INTERVAL`, `EVENT`...): hoy solo hay lanzamiento manual con `POST /tasks/:id/run`.
-- `max_concurrency` por tarea y locks por entidad (LLD sección 21).
-- Recuperación de jobs atascados (`RUNNING` tras caída del worker).
 - Harness, skills, memoria y verificador reales; promote, rollback y evaluate.
-- Tools pendientes del registro del MVP-0: `search_web`, `fetch_url`, `create_activity` y las del Catalog Service. Con ellas, el Prospector descubrirá eventos y expositores por sí mismo y recomendará productos reales del catálogo.
+- Tools pendientes del registro del MVP-0: `search_web` (hoy la búsqueda es el grounding de Gemini, un paso `MODEL`; el LLD prevé fuentes ligadas a pasos `TOOL`), `create_activity` y las del Catalog Service.
+- Modo scout: muchas ferias publican el catálogo de expositores como aplicación JavaScript o PDF, que `fetch_url` no lee (queda como señal de evento). Falta extracción de PDF o render de JavaScript.
 - `GeminiProvider.stream()` no es incremental: devuelve la respuesta completa en un solo fragmento.
->>>>>>> feat/prospector
-- Validación de URL en campos de texto libre contra las fuentes del trace (LLD v0.2 sección 10.4, punto 4).
-- Harness, skills, memoria y verificador reales; promote, rollback y evaluate.
+- Validación de URL en campos de texto libre contra las fuentes del trace (LLD v0.2 sección 10.4, punto 4) en el modo directo: el modo scout ya la aplica con su `SourceLedger`.
 - Publicación de eventos (`task.started`, `task.completed`...) en el event bus.
 - Export de los contratos zod a JSON Schema versionado en `schemas/`.

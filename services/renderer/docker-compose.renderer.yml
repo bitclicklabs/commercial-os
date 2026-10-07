@@ -1,0 +1,46 @@
+# PubliEXPE Commercial OS - fragmento del servicio pxos-renderer.
+#
+# NO sustituye a deployments/docker-compose.yml: es el bloque que hay que copiar en su
+# sección `services:` (las rutas `build.context` son relativas a deployments/).
+# Prueba aislada del fragmento, desde la raíz del repositorio:
+#   docker compose -f deployments/docker-compose.yml -f services/renderer/docker-compose.renderer.yml config
+#
+# Seguridad:
+# - SIN `ports:`: el renderer solo es accesible dentro de pxos-net (el runtime lo llama
+#   como http://pxos-renderer:3000). Para probarlo desde el host en desarrollo, publica
+#   como mucho "127.0.0.1:4030:3000" y pon RENDERER_URL=http://127.0.0.1:4030 en el
+#   runtime local.
+# - Usuario sin privilegios (pwuser), sin capabilities, no-new-privileges, raíz de
+#   solo lectura con /tmp en memoria, límites de memoria, CPU y procesos.
+# - Chromium se ejecuta sin su sandbox propio (por defecto de Playwright en Docker). Para
+#   activarlo hace falta el perfil seccomp de Playwright: consulta services/renderer/README.md.
+
+services:
+  pxos-renderer:
+    build:
+      context: ../services/renderer
+    image: pxos/renderer:0.1.0
+    container_name: pxos-renderer
+    init: true
+    environment:
+      HOST: 0.0.0.0
+      PORT: "3000"
+      LOG_LEVEL: ${RENDERER_LOG_LEVEL:-info}
+      RENDER_MAX_CONCURRENCY: "2"
+      HOME: /tmp
+      FETCH_URL_ALLOWLIST: ${FETCH_URL_ALLOWLIST:-}
+      FETCH_URL_DENYLIST: ${FETCH_URL_DENYLIST:-}
+      FETCH_URL_ALLOWED_PORTS: ${FETCH_URL_ALLOWED_PORTS:-}
+    expose:
+      - "3000"
+    read_only: true
+    tmpfs:
+      - /tmp:size=512m
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 1536m
+    cpus: 1.5
+    pids_limit: 512
+    restart: unless-stopped
+    networks: [pxos-net]

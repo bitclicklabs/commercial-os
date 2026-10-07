@@ -1,0 +1,515 @@
+/**
+ * Headless Chromium renderer (Playwright).
+ *
+ * Isolation per request: a NEW browser context (no cookies, storage or cache shared
+ * between requests), closed in `finally`. At most `maxConcurrency` (2) renders run at
+ * once; a few more wait in a short queue, the rest get RENDERER_BUSY.
+ *
+ * Network: EVERY request of the page goes through `context.route` and is served by
+ * `egress.ts` (URL rules + public-IP DNS check + pinned connection) with
+ * `route.fulfill`. Images, media and fonts are aborted (only text is needed).
+ * WebSockets are closed (`routeWebSocket`), service workers are blocked, downloads are
+ * refused, popups and dialogs are closed. Chromium itself is launched with a dead proxy
+ * (127.0.0.1:9, loopback included) so any request that escaped interception fails
+ * instead of reaching the network, and without UDP WebRTC.
+ *
+ * Time: a 25 s budget for navigation + JavaScript + waits; the context is force-closed
+ * when it runs out.
+ */
+import { chromium, type Browser, type Page, type Route } from 'playwright';
+import {
+  checkTarget,
+  deliverableResponseHeaders,
+  forwardableRequestHeaders,
+  nodeTransport,
+  RENDER_USER_AGENT_SUFFIX,
+  systemResolver,
+  type EgressDeps,
+  type EgressResponse,
+} from './egress.js';
+import { hostPolicyFromEnv } from './ip-guard.js';
+
+export const RENDER_JS_TIMEOUT_MS = 25_000;
+export const RENDER_MAX_CHARS = 40_000;
+export const RENDER_DEFAULT_WAIT_MS = 2_500;
+export const RENDER_MAX_WAIT_MS = 10_000;
+const MAX_LINKS = 300;
+const MAX_REQUESTS = 400;
+const MAX_RESPONSE_BYTES = 5 * 1024 * 1024;
+const MAX_TOTAL_BYTES = 30 * 1024 * 1024;
+const MAX_REDIRECTS = 5;
+const BLOCKED_RESOURCE_TYPES = new Set(['image', 'media', 'font', 'manifest', 'texttrack', 'eventsource', 'websocket', 'beacon', 'ping', 'cspviolationreport']);
+/** Dead proxy for Chromium's own network stack (nothing listens on the discard port). */
+export const DEAD_PROXY = 'http://127.0.0.1:9';
+
+export interface RenderRequest {
+  url: string;
+  waitMs?: number;
+  maxChars?: number;
+}
+
+export interface RenderResult {
+  text: string;
+  title: string | null;
+  links: Array<{ url: string; text: string }>;
+  final_url: string;
+  status: number | null;
+  truncated: boolean;
+  render_ms: number;
+  /** Requests of the page refused by the egress guard (private IPs, bad schemes...). */
+  blocked_requests: number;
+}
+
+export class RenderError extends Error {
+  constructor(
+    readonly code: string,
+    message: string,
+    readonly httpStatus: number,
+  ) {
+    super(message);
+  }
+}
+
+export interface RendererOptions {
+  egress?: Partial<EgressDeps>;
+  maxConcurrency?: number;
+  maxQueue?: number;
+  queueTimeoutMs?: number;
+  jsTimeoutMs?: number;
+  /** Launch options override (tests); the proxy and security flags are always applied. */
+  headless?: boolean;
+  /**
+   * Chromium's own sandbox. Off by default (Playwright's default; in Docker it needs the
+   * Playwright seccomp profile or extra capabilities). RENDER_CHROMIUM_SANDBOX=true.
+   */
+  chromiumSandbox?: boolean;
+  log?: (msg: string, meta?: Record<string, unknown>) => void;
+}
+
+/** Text, title and links of the page and its frames, read inside the page. */
+function readPage(maxChars: number): { title: string; text: string; links: Array<{ url: string; text: string }>; frames: string[] } {
+  // Elements hidden from people are a classic prompt-injection carrier: drop them.
+  for (const el of Array.from(document.querySelectorAll('script,style,noscript,template,[hidden],[aria-hidden="true"]'))) el.remove();
+  const body = document.body as HTMLElement | null;
+  const text = (body?.innerText ?? document.documentElement?.textContent ?? '').slice(0, maxChars + 1000);
+  const links: Array<{ url: string; text: string }> = [];
+  for (const a of Array.from(document.querySelectorAll('a[href]')).slice(0, 2000)) {
+    const href = (a as HTMLAnchorElement).href;
+    if (!/^https?:/i.test(href)) continue;
+    links.push({ url: href, text: ((a as HTMLElement).innerText || a.getAttribute('title') || '').replace(/\s+/g, ' ').trim().slice(0, 200) });
+  }
+  const frames = Array.from(document.querySelectorAll('iframe[src]'))
+    .map((f) => (f as HTMLIFrameElement).src)
+    .filter((s) => /^https?:/i.test(s));
+  return { title: document.title, text, links, frames };
+}
+
+function collapse(text: string): string {
+  return text
+    .replace(/\r\n?/g, '\n')
+    .replace(/[\t\f\v  -​  　]+/g, ' ')
+    .split('\n')
+    .map((l) => l.replace(/ {2,}/g, ' ').trim())
+    .join('\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+}
+
+export class Semaphore {
+  private active = 0;
+  private readonly waiting: Array<() => void> = [];
+  constructor(
+    private readonly max: number,
+    private readonly maxQueue: number,
+  ) {}
+  get stats() {
+    return { active: this.active, queued: this.waiting.length };
+  }
+  async acquire(timeoutMs: number): Promise<() => void> {
+    const release = () => {
+      this.active -= 1;
+      this.waiting.shift()?.();
+    };
+    if (this.active < this.max) {
+      this.active += 1;
+      return release;
+    }
+    if (this.waiting.length >= this.maxQueue) throw new RenderError('RENDERER_BUSY', `${this.active} renders running and ${this.waiting.length} queued`, 503);
+    return new Promise<() => void>((resolve, reject) => {
+      const grant = () => {
+        clearTimeout(timer);
+        this.active += 1;
+        resolve(release);
+      };
+      const timer = setTimeout(() => {
+        const i = this.waiting.indexOf(grant);
+        if (i >= 0) this.waiting.splice(i, 1);
+        reject(new RenderError('RENDERER_BUSY', `waited ${timeoutMs} ms for a render slot`, 503));
+      }, timeoutMs);
+      this.waiting.push(grant);
+    });
+  }
+}
+
+export class Renderer {
+  private browser: Promise<Browser> | null = null;
+  private readonly slots: Semaphore;
+  readonly egress: EgressDeps;
+  private readonly jsTimeoutMs: number;
+  private readonly queueTimeoutMs: number;
+  private readonly log: (msg: string, meta?: Record<string, unknown>) => void;
+
+  constructor(private readonly opts: RendererOptions = {}) {
+    this.egress = {
+      resolver: opts.egress?.resolver ?? systemResolver,
+      transport: opts.egress?.transport ?? nodeTransport,
+      policy: opts.egress?.policy ?? hostPolicyFromEnv(),
+    };
+    this.slots = new Semaphore(opts.maxConcurrency ?? 2, opts.maxQueue ?? 4);
+    this.jsTimeoutMs = opts.jsTimeoutMs ?? RENDER_JS_TIMEOUT_MS;
+    this.queueTimeoutMs = opts.queueTimeoutMs ?? 30_000;
+    this.log = opts.log ?? (() => undefined);
+  }
+
+  get stats() {
+    return this.slots.stats;
+  }
+
+  private async getBrowser(): Promise<Browser> {
+    if (!this.browser) {
+      const launching = chromium.launch({
+        headless: this.opts.headless ?? true,
+        chromiumSandbox: this.opts.chromiumSandbox ?? process.env.RENDER_CHROMIUM_SANDBOX === 'true',
+        // Second barrier: anything not served through route.fulfill hits a dead proxy.
+        proxy: { server: DEAD_PROXY, bypass: '<-loopback>' },
+        args: [
+          '--force-webrtc-ip-handling-policy=disable_non_proxied_udp',
+          '--webrtc-ip-handling-policy=disable_non_proxied_udp',
+          '--disable-quic',
+          '--dns-prefetch-disable',
+          '--no-pings',
+          '--disable-background-networking',
+          '--disable-component-update',
+          '--disable-domain-reliability',
+          '--disable-sync',
+          '--metrics-recording-only',
+          '--no-first-run',
+          '--disable-dev-shm-usage',
+        ],
+      });
+      this.browser = launching;
+      launching.then(
+        (b) => b.on('disconnected', () => {
+          if (this.browser === launching) this.browser = null;
+        }),
+        () => {
+          if (this.browser === launching) this.browser = null;
+        },
+      );
+    }
+    return this.browser;
+  }
+
+  async close(): Promise<void> {
+    const b = this.browser;
+    this.browser = null;
+    if (b) await (await b).close().catch(() => undefined);
+  }
+
+  /** Validates the target BEFORE any browser work (same rules as fetch_url). */
+  async validate(url: string): Promise<URL> {
+    let parsed: URL;
+    try {
+      parsed = new URL(url);
+    } catch {
+      throw new RenderError('INVALID_URL', 'URL could not be parsed', 400);
+    }
+    const verdict = await checkTarget(parsed, this.egress);
+    if (!verdict.ok) throw new RenderError(verdict.code, verdict.reason, verdict.code === 'DNS_ERROR' ? 422 : 400);
+    parsed.hash = '';
+    return parsed;
+  }
+
+  async render(req: RenderRequest): Promise<RenderResult> {
+    const target = await this.validate(req.url);
+    const release = await this.slots.acquire(this.queueTimeoutMs);
+    try {
+      return await this.renderValidated(target, req);
+    } finally {
+      release();
+    }
+  }
+
+  private async renderValidated(target: URL, req: RenderRequest): Promise<RenderResult> {
+    const started = Date.now();
+    const deadline = started + this.jsTimeoutMs;
+    const remaining = () => Math.max(0, deadline - Date.now());
+    const maxChars = Math.min(Math.max(req.maxChars ?? RENDER_MAX_CHARS, 500), RENDER_MAX_CHARS);
+    const waitMs = Math.min(Math.max(req.waitMs ?? RENDER_DEFAULT_WAIT_MS, 0), RENDER_MAX_WAIT_MS);
+    const browser = await this.getBrowser();
+    const userAgent = `Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${browser.version()} Safari/537.36 ${RENDER_USER_AGENT_SUFFIX}`;
+    const abort = new AbortController();
+    const preTimer = setTimeout(() => abort.abort(), this.jsTimeoutMs);
+    // Main document first, outside the browser: resolves its redirects hop by hop through
+    // the guard, so the page is opened at its real URL (relative links resolve correctly).
+    let pre: Awaited<ReturnType<Renderer['fetchFollowing']>>;
+    try {
+      pre = await this.fetchFollowing(
+        target,
+        {
+          method: 'GET',
+          headers: forwardableRequestHeaders({ accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8', 'accept-language': 'es-ES,es;q=0.9,en;q=0.6' }, userAgent),
+          body: null,
+        },
+        abort.signal,
+      );
+    } catch (err) {
+      clearTimeout(preTimer);
+      if (abort.signal.aborted) throw new RenderError('RENDER_TIMEOUT', `navigation exceeded ${this.jsTimeoutMs} ms`, 504);
+      throw new RenderError('NAVIGATION_FAILED', (err instanceof Error ? err.message : String(err)).slice(0, 300), 502);
+    }
+    clearTimeout(preTimer);
+    if (!pre.ok) {
+      if (pre.code === 'TOO_MANY_REDIRECTS') throw new RenderError('TOO_MANY_REDIRECTS', pre.reason, 502);
+      throw new RenderError('NAVIGATION_BLOCKED', `a redirect points to a refused destination (${pre.reason})`, 400);
+    }
+    if (pre.res.status >= 400) throw new RenderError('HTTP_ERROR', `HTTP ${pre.res.status}`, 502);
+    const navUrl = pre.url;
+    const primed = new Map<string, EgressResponse>([[navUrl.toString(), pre.res]]);
+    const context = await browser.newContext({
+      acceptDownloads: false,
+      serviceWorkers: 'block',
+      javaScriptEnabled: true,
+      ignoreHTTPSErrors: false,
+      bypassCSP: false,
+      locale: 'es-ES',
+      timezoneId: 'Europe/Madrid',
+      viewport: { width: 1366, height: 900 },
+      userAgent,
+      permissions: [],
+    });
+    let blocked = 0;
+    let requests = 0;
+    let bytes = 0;
+    // Hard stop: whatever is still running when the budget is over is torn down.
+    const killer = setTimeout(() => {
+      abort.abort();
+      void context.close().catch(() => undefined);
+    }, this.jsTimeoutMs + 3_000);
+    try {
+      await context.routeWebSocket(/.*/, (ws) => {
+        blocked += 1;
+        ws.close({ code: 1008, reason: 'WebSockets are disabled in the renderer' });
+      });
+      await context.route('**/*', (route) => this.serve(route, { userAgent, signal: abort.signal, count: () => ++requests, addBytes: (n) => (bytes += n) <= MAX_TOTAL_BYTES, onBlocked: () => (blocked += 1), primed }));
+      const page: Page = await context.newPage();
+      page.on('popup', (p) => void p.close().catch(() => undefined));
+      page.on('dialog', (d) => void d.dismiss().catch(() => undefined));
+      page.on('download', (d) => void d.cancel().catch(() => undefined));
+      page.setDefaultTimeout(Math.max(1_000, remaining()));
+
+      let status: number | null = null;
+      try {
+        const res = await page.goto(navUrl.toString(), { waitUntil: 'domcontentloaded', timeout: Math.max(1_000, remaining()) });
+        status = res?.status() ?? null;
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        if (/ERR_BLOCKED_BY_CLIENT/.test(msg)) throw new RenderError('NAVIGATION_BLOCKED', 'the page (or one of its redirects) points to a refused destination', 400);
+        if (/Download is starting|ERR_ABORTED/.test(msg)) throw new RenderError('DOWNLOAD_BLOCKED', 'the URL is a download, not a page (use fetch_url for PDFs)', 422);
+        if (/Timeout|timeout/.test(msg)) throw new RenderError('RENDER_TIMEOUT', `navigation exceeded ${this.jsTimeoutMs} ms`, 504);
+        throw new RenderError('NAVIGATION_FAILED', msg.split('\n')[0]!.slice(0, 300), 502);
+      }
+      if (status !== null && status >= 400) throw new RenderError('HTTP_ERROR', `HTTP ${status}`, 502);
+
+      // Let the app fetch its data: network idle (bounded) and then the requested wait.
+      await page.waitForLoadState('networkidle', { timeout: Math.min(8_000, remaining()) }).catch(() => undefined);
+      if (remaining() > 0) await page.waitForTimeout(Math.min(waitMs, remaining()));
+      // Lazy lists: a few scrolls to the bottom while there is time left.
+      for (let i = 0; i < 4 && remaining() > 2_500; i++) {
+        const grew = await page
+          .evaluate(() => {
+            const before = document.body?.scrollHeight ?? 0;
+            window.scrollTo(0, before);
+            return before;
+          })
+          .catch(() => 0);
+        await page.waitForTimeout(Math.min(700, remaining()));
+        const after = await page.evaluate(() => document.body?.scrollHeight ?? 0).catch(() => 0);
+        if (after <= grew) break;
+      }
+
+      const finalUrl = page.url();
+      let final: URL;
+      try {
+        final = new URL(finalUrl);
+      } catch {
+        throw new RenderError('NAVIGATION_FAILED', 'the page ended on an unparseable URL', 502);
+      }
+      if (final.protocol !== 'http:' && final.protocol !== 'https:') throw new RenderError('NAVIGATION_FAILED', `the page ended on ${final.protocol}`, 502);
+
+      const main = await withTimeout(page.evaluate(readPage, maxChars), Math.max(2_000, remaining() + 2_000), 'reading the page');
+      let text = collapse(main.text);
+      const links = [...main.links];
+      // Same-document frames (catalog widgets embedded in an iframe): their text and URL.
+      for (const frame of page.frames().slice(1, 6)) {
+        if (text.length > maxChars || remaining() <= 0) break;
+        const sub = await withTimeout(frame.evaluate(readPage, maxChars), 2_000, 'reading a frame').catch(() => null);
+        if (!sub) continue;
+        const subText = collapse(sub.text);
+        if (subText) text += `\n\n${subText}`;
+        links.push(...sub.links);
+      }
+      links.push(...main.frames.map((url) => ({ url, text: '(iframe)' })));
+      const seen = new Set<string>();
+      const cleanLinks: Array<{ url: string; text: string }> = [];
+      for (const l of links) {
+        if (cleanLinks.length >= MAX_LINKS) break;
+        try {
+          const u = new URL(l.url);
+          if (u.protocol !== 'http:' && u.protocol !== 'https:') continue;
+          u.hash = '';
+          const key = u.toString();
+          if (seen.has(key) || key.length > 2048) continue;
+          seen.add(key);
+          cleanLinks.push({ url: key, text: l.text });
+        } catch {
+          continue;
+        }
+      }
+      final.hash = '';
+      const truncated = text.length > maxChars;
+      return {
+        text: truncated ? text.slice(0, maxChars) : text,
+        title: collapse(main.title).replace(/\n+/g, ' ').slice(0, 300) || null,
+        links: cleanLinks,
+        final_url: final.toString(),
+        status,
+        truncated,
+        render_ms: Date.now() - started,
+        blocked_requests: blocked,
+      };
+    } catch (err) {
+      if (err instanceof RenderError) throw err;
+      if (abort.signal.aborted || remaining() <= 0) throw new RenderError('RENDER_TIMEOUT', `render exceeded ${this.jsTimeoutMs} ms`, 504);
+      throw new RenderError('RENDER_FAILED', (err instanceof Error ? err.message : String(err)).split('\n')[0]!.slice(0, 300), 502);
+    } finally {
+      clearTimeout(killer);
+      abort.abort();
+      await context.close().catch(() => undefined);
+      this.log('render finished', { host: target.hostname, ms: Date.now() - started, requests, blocked, bytes });
+    }
+  }
+
+  /**
+   * GET/POST through the guarded egress, FOLLOWING redirects here: Chromium does not
+   * route the follow-up request of a fulfilled 3xx (observed with Playwright 1.63: it
+   * goes to its own network stack, i.e. the dead proxy), so every hop is checked and
+   * fetched by us. Cookies / Authorization are dropped when a hop changes origin.
+   */
+  async fetchFollowing(
+    start: URL,
+    init: { method: string; headers: Record<string, string>; body: Buffer | null },
+    signal: AbortSignal,
+  ): Promise<{ ok: true; res: EgressResponse; url: URL; hops: number } | { ok: false; code: string; reason: string }> {
+    let url = start;
+    let method = init.method;
+    let body = init.body;
+    let headers = { ...init.headers };
+    for (let hop = 0; hop <= MAX_REDIRECTS; hop++) {
+      const verdict = await checkTarget(url, this.egress);
+      if (!verdict.ok) return { ok: false, code: verdict.code, reason: verdict.reason };
+      const res = await this.egress.transport({ url, address: verdict.address, method, headers, body, maxBytes: MAX_RESPONSE_BYTES, signal });
+      const location = res.headers.location;
+      if (res.status >= 300 && res.status < 400 && res.status !== 304 && location) {
+        let next: URL;
+        try {
+          next = new URL(location, url);
+        } catch {
+          return { ok: true, res, url, hops: hop };
+        }
+        next.hash = '';
+        if ((res.status === 301 || res.status === 302 || res.status === 303) && method !== 'GET' && method !== 'HEAD') {
+          method = 'GET';
+          body = null;
+        }
+        if (next.origin !== url.origin) {
+          const { cookie: _c, authorization: _a, ...rest } = headers;
+          headers = rest;
+        }
+        url = next;
+        continue;
+      }
+      return { ok: true, res, url, hops: hop };
+    }
+    return { ok: false, code: 'TOO_MANY_REDIRECTS', reason: `more than ${MAX_REDIRECTS} redirects` };
+  }
+
+  /** Serves one browser request through the guarded egress, or refuses it. */
+  private async serve(
+    route: Route,
+    ctx: {
+      userAgent: string;
+      signal: AbortSignal;
+      count: () => number;
+      addBytes: (n: number) => boolean;
+      onBlocked: () => void;
+      /** Main document already fetched (redirects resolved) before page.goto: served once. */
+      primed: Map<string, EgressResponse>;
+    },
+  ): Promise<void> {
+    const request = route.request();
+    const refuse = async (why?: string) => {
+      ctx.onBlocked();
+      if (why) this.log('request refused', { reason: why });
+      await route.abort('blockedbyclient').catch(() => undefined);
+    };
+    if (BLOCKED_RESOURCE_TYPES.has(request.resourceType())) {
+      await route.abort('blockedbyclient').catch(() => undefined);
+      return;
+    }
+    if (ctx.count() > MAX_REQUESTS) return refuse('request budget exhausted');
+    let url: URL;
+    try {
+      url = new URL(request.url());
+    } catch {
+      return refuse('unparseable URL');
+    }
+    try {
+      const primed = request.isNavigationRequest() ? ctx.primed.get(url.toString()) : undefined;
+      let res: EgressResponse;
+      if (primed) {
+        ctx.primed.delete(url.toString());
+        res = primed;
+      } else {
+        const out = await this.fetchFollowing(
+          url,
+          { method: request.method(), headers: forwardableRequestHeaders(await request.allHeaders(), ctx.userAgent), body: request.postDataBuffer() },
+          ctx.signal,
+        );
+        if (!out.ok) return refuse(`${out.code}: ${out.reason}`);
+        res = out.res;
+      }
+      if (!ctx.addBytes(res.body.length)) return refuse('byte budget exhausted');
+      await route.fulfill({ status: res.status, headers: deliverableResponseHeaders(res.headers), body: res.body });
+    } catch {
+      await route.abort('failed').catch(() => undefined);
+    }
+  }
+}
+
+function withTimeout<T>(p: Promise<T>, ms: number, what: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const t = setTimeout(() => reject(new RenderError('RENDER_TIMEOUT', `timed out ${what}`, 504)), ms);
+    p.then(
+      (v) => {
+        clearTimeout(t);
+        resolve(v);
+      },
+      (e) => {
+        clearTimeout(t);
+        reject(e);
+      },
+    );
+  });
+}
+

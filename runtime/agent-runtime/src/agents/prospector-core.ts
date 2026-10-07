@@ -189,8 +189,8 @@ export function parseExhibitorDecision(text: string): Parsed<ExhibitorDecision> 
 // Configuration
 // ---------------------------------------------------------------------------
 
-/** Tools the Prospector may use (both modes). `fetch_url` is READ and only used by the scout mode. */
-export const PROSPECTOR_TOOLS = ['find_company', 'upsert_company', 'create_signal', 'create_hypothesis', 'create_agent_run_summary', 'fetch_url'] as const;
+/** Tools the Prospector may use (both modes). `fetch_url` and `render_url` are READ and only used by the scout mode. */
+export const PROSPECTOR_TOOLS = ['find_company', 'upsert_company', 'create_signal', 'create_hypothesis', 'create_agent_run_summary', 'fetch_url', 'render_url'] as const;
 
 export interface ScoutConfig {
   taskName: string;
@@ -200,6 +200,10 @@ export interface ScoutConfig {
   maxFetches: number;
   /** Pages read per event (event page + exhibitor list page...). */
   maxPagesPerEvent: number;
+  /** render_url calls per run (JavaScript catalogs), all events included. 0 = never render. */
+  maxRenders: number;
+  /** Catalog / exhibitor-list PDFs linked from the pages downloaded per event (fetch_url). */
+  maxPdfsPerEvent: number;
   /** Grounding redirects resolved to learn a source's domain when grounding did not report it. */
   maxRedirectResolutions: number;
   eventSignalConfidence: number;
@@ -239,8 +243,10 @@ export function readConfig(configuration: Record<string, unknown>): ProspectorCo
       taskName: typeof s.task_name === 'string' ? s.task_name : 'weekly-event-scouting',
       maxEvents: int(s.max_events, 3, 3),
       maxExhibitorsPerEvent: int(s.max_exhibitors_per_event, 20, 50),
-      maxFetches: int(s.max_fetches, 12, 30),
-      maxPagesPerEvent: int(s.max_pages_per_event, 2, 4),
+      maxFetches: int(s.max_fetches, 18, 30),
+      maxPagesPerEvent: int(s.max_pages_per_event, 3, 4),
+      maxRenders: int(s.max_renders, 4, 6),
+      maxPdfsPerEvent: int(s.max_pdfs_per_event, 2, 2),
       maxRedirectResolutions: int(s.max_redirect_resolutions, 3, 5),
       eventSignalConfidence: Math.min(1, Math.max(0, num(s.event_signal_confidence, 0.5))),
       verifyUnsourcedByFetch: s.verify_unsourced_by_fetch !== false,

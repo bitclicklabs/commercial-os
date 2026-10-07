@@ -14,3 +14,7 @@ if (existsSync(envPath)) {
     if (process.env[key] === undefined && value !== undefined) process.env[key] = value;
   }
 }
+
+// Hermetic unit tests: without an explicit RENDERER_URL (env or .env), render_url is
+// "not configured" instead of trying to reach http://pxos-renderer:3000.
+process.env.RENDERER_URL ??= 'off';

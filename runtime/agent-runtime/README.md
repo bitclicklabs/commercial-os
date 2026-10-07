@@ -2,7 +2,7 @@
 
 Servicio del Agent OS de PubliEXPE Commercial OS (LLD v0.1, sección 8). Expone la API HTTP del runtime, planifica tareas (`ONCE`, `CRON`, `INTERVAL`) y ejecuta un worker BullMQ que lanza agentes y persiste `TaskRun`, `AgentExecution`, `Trace` y `TraceStep` en PostgreSQL.
 
-Estado: MVP. Además de `StubAgent` (sin LLM) y `SmokeAgent` (tools reales contra Twenty, consulta [Tools](#tools)), el runtime ejecuta el **Prospector** con Gemini (consulta [Prospector](#prospector)), que también trabaja sobre ferias reales con búsqueda de Google y `fetch_url` ([modo scout](#modo-scout-ferias-reales)). `AnthropicProvider` existe como esqueleto y no se llama en los tests.
+Estado: MVP. Además de `StubAgent` (sin LLM) y `SmokeAgent` (tools reales contra Twenty, consulta [Tools](#tools)), el runtime ejecuta el **Prospector** con Gemini (consulta [Prospector](#prospector)), que también trabaja sobre ferias reales con búsqueda de Google, `fetch_url` (HTML y PDF) y `render_url` (catálogos JavaScript, con el servicio [`pxos-renderer`](../../services/renderer/README.md)) ([modo scout](#modo-scout-ferias-reales)). `AnthropicProvider` existe como esqueleto y no se llama en los tests.
 
 ## Stack
 
@@ -23,7 +23,7 @@ runtime/agent-runtime/
 │   ├── api/                  Servidor Fastify, contratos zod y rutas
 │   ├── agents/               Interfaz de agente, StubAgent, SmokeAgent, ProspectorAgent (modos directo y scout, prompts, SourceLedger) y EmailDrafterAgent (borradores, nunca envía)
 │   ├── integrations/twenty/  TwentyClient REST tipado y mapeo de objetos de la App
-│   ├── tools/                Interfaz Tool, registry, tool_policy, executor, tools de Twenty y web/ (fetch_url y guarda SSRF)
+│   ├── tools/                Interfaz Tool, registry, tool_policy, executor, tools de Twenty y web/ (fetch_url con texto de PDF, render_url y guarda SSRF)
 │   ├── db/                   Esquema Drizzle, cliente y migrador
 │   ├── events/               Event bus: sobre event.envelope.v1, EventBus, payloads, triggers EVENT y GET /events
 │   ├── domain/               Estados, máquina de estados e idempotency keys
@@ -38,7 +38,7 @@ runtime/agent-runtime/
 └── test/
     ├── unit/                 Corren siempre, sin BD ni Redis
     ├── integration/          API, worker, scheduler, locks y tools (PostgreSQL, Redis y Twenty); se saltan si falta el servicio
-    ├── helpers/              FakeTwenty (API REST de Twenty en memoria) y FakeWeb (DNS y HTTP simulados)
+    ├── helpers/              FakeTwenty (API REST de Twenty en memoria), FakeWeb (DNS y HTTP simulados), FakeRenderer (pxos-renderer simulado) y makePdf (PDF de prueba en memoria)
     ├── fixtures/             feria-ejemplo.json (evento de demo) y payloads reales de webhooks de Twenty 2.45
     └── setup-env.ts          Carga .env (si existe) antes de los tests
 ```
@@ -109,6 +109,7 @@ Requisitos: Node.js 22, pnpm, y los contenedores `pxos-postgres` (127.0.0.1:5440
 | `FETCH_URL_ALLOWLIST` | vacío | Dominios que `fetch_url` puede descargar, separados por comas (incluye subdominios). Vacío = cualquier host público |
 | `FETCH_URL_DENYLIST` | vacío | Dominios que `fetch_url` nunca descarga. Gana sobre la allowlist |
 | `FETCH_URL_ALLOWED_PORTS` | `80,443,8080,8443` | Puertos permitidos en las URL de `fetch_url` |
+| `RENDERER_URL` | `http://pxos-renderer:3000` | Servicio de render JavaScript de `render_url`. En desarrollo, `http://127.0.0.1:4030` si el renderer está publicado ahí. Vacío u `off` = desactivado (`render_url` devuelve `RENDERER_NOT_CONFIGURED`) |
 
 ## Migraciones
 
@@ -443,7 +444,7 @@ El `ToolRegistry` rechaza al registrar:
 
 ### Tools disponibles
 
-Las de Twenty usan `TWENTY_BASE_URL` y `TWENTY_API_KEY` y tienen `outputTrust = trusted`. `fetch_url` descarga de la web y su salida es `untrusted`.
+Las de Twenty usan `TWENTY_BASE_URL` y `TWENTY_API_KEY` y tienen `outputTrust = trusted`. `fetch_url` y `render_url` leen la web y su salida es `untrusted`.
 
 | Tool | Riesgo | Efectos | Idempotencia |
 |---|---|---|---|
@@ -457,6 +458,7 @@ Las de Twenty usan `TWENTY_BASE_URL` y `TWENTY_API_KEY` y tienen `outputTrust = 
 | `get_hypothesis` | `READ` | No | — (hipótesis con empresa, señal y decision maker, `depth=1`) |
 | `create_note` | `LOW_WRITE` | Sí | Empresa + título; adopta una nota huérfana con el mismo título |
 | `fetch_url` | `READ` | No | — (consulta [Seguridad del contenido web](#seguridad-del-contenido-web)) |
+| `render_url` | `READ` | No | — (consulta [Render de JavaScript](#render-de-javascript-render_url)) |
 
 `create_signal` acepta `companyId` opcional: sin él crea una **señal a nivel de evento** (una feria sin empresa asociada todavía), deduplicada entre las señales sin empresa por tipo + `eventDate` + `sourceDomain`.
 
@@ -545,7 +547,7 @@ El `StubAgent` sigue usando su tool simulada (`stub.lookup`), que no pasa por el
 | Directo | `{ event, exhibitors[] }` | `daily-event-prospecting` | Evalúa los expositores ya extraídos (fixture de demo) |
 | Scout | `{ sector, region?, horizon_months? }` o `{ event_url }` | `weekly-event-scouting` | Busca ferias reales, descarga su página de expositores y evalúa los expositores reales. Consulta [Modo scout](#modo-scout-ferias-reales) |
 
-El modo scout es un modo del mismo agente, no un agente hermano: el LLD v0.2 asigna al Prospector tanto el descubrimiento de eventos (`search_web`, `fetch_url`) como la evaluación de expositores, y así los dos modos comparten versión, prompt de evaluación, pipeline por expositor, tool policy y trazas.
+El modo scout es un modo del mismo agente, no un agente hermano: el LLD v0.2 asigna al Prospector tanto el descubrimiento de eventos (`search_web`, `fetch_url`, `render_url`) como la evaluación de expositores, y así los dos modos comparten versión, prompt de evaluación, pipeline por expositor, tool policy y trazas.
 
 ### Entrada
 
@@ -591,12 +593,19 @@ Flujo:
    - si el grounding devuelve fuentes, solo se descargan URL cuyo dominio está en esas fuentes (si una fuente solo trae la URL de redirección de `vertexaisearch`, se resuelve con `fetch_url` para conocer su dominio);
    - si el modelo ejecutó búsquedas pero la API no devolvió fuentes (comportamiento observado con `gemini-3.8-flash` el 2026-10-07), la URL se descarga y **la página tiene que corroborar la feria** (el nombre aparece en el dominio o en el título y el texto); si no, se descarta sin escribir nada. `scout.verify_unsourced_by_fetch = false` desactiva esta vía (modo estricto);
    - con `event_url`, la URL la da el operador.
-1. **`fetch_url`** de la página de expositores (o de la portada y, después, del enlace de expositores que aparezca entre sus enlaces). Máximo `max_pages_per_event` páginas por feria y `max_fetches` descargas por ejecución.
-1. **Extracción**: el LLM extrae `{name, domain?, description?, sector?}` solo del texto descargado. El código descarta los nombres que no aparecen en la página y los dominios que no están en su texto o sus enlaces (ni el de la propia feria ni redes sociales).
-1. **Pipeline por expositor**, el mismo del modo directo, con `source_url` = la página de expositores visitada.
-1. **Sin lista de expositores** (catálogo dinámico, PDF, página vacía): la feria se registra como señal `FAIR` a nivel de evento (`create_signal` sin `companyId`, con la URL visitada) y el `outcome` es `PARTIAL` con el motivo en `partial_reasons` y en el `agentRunSummary`.
+1. **Lectura de cada página** de la feria (la de expositores; o la portada y, después, el enlace de expositores que aparezca entre sus enlaces), en tres pasos:
+   1. **`fetch_url`**. Lee HTML, texto y **PDF** (si la URL de expositores es directamente un PDF, se lee su texto). Si la página es el esqueleto vacío de una app JavaScript (`js_app_likely` y menos de 200 caracteres), no se gasta una llamada al LLM en ella (`code: JS_APP_SHELL`).
+   1. **`render_url`** si la página parece una app JavaScript (`js_app_likely`: poco texto, mucho script, punto de montaje de SPA vacío o aviso `<noscript>`) o si la extracción no da expositores y no hay un enlace de expositores que seguir antes (o el modelo la clasifica como lista de expositores). El texto renderizado pasa por la misma extracción. Los enlaces de la página renderizada también sirven para seguir al enlace de expositores (cadena real de Gastrónoma: `gastronoma.es` → app del catálogo en `apps.feriavalencia.com` → `/exhibitors`). Si el renderer no está desplegado (`RENDERER_NOT_CONFIGURED`) o `render_url` no está en la tool policy, el render se desactiva para toda la ejecución y el flujo sigue sin él.
+   1. **PDF de catálogo enlazados**: hasta `max_pdfs_per_event` enlaces a `.pdf` de la página (estática o renderizada) cuyo texto o URL sugiere catálogo o listado (`expositores`, `exhibitors`, `catálogo`, `listado`, `participantes`, `marcas`, `directorio`, `plano`…) se descargan con `fetch_url` y se extraen también, aunque la página ya haya dado expositores.
 
-`outcome`: `FAILED` si falla la búsqueda o todos los expositores; `PARTIAL` si hay errores, ninguna feria verificable o alguna feria sin lista de expositores; `SUCCESS` en otro caso. La salida incluye `events[]` (páginas leídas, verificación, expositores descartados), `discarded_events[]` con el motivo, `sources` (URL visitadas y fuentes de grounding) y el coste de búsqueda.
+   Máximo `max_pages_per_event` páginas por feria (sin contar renders ni PDF enlazados), `max_fetches` descargas y `max_renders` renders por ejecución.
+1. **Extracción**: el LLM extrae `{name, domain?, description?, sector?}` solo del texto leído (HTML, página renderizada o PDF; el prompt indica el tipo). El código descarta los nombres que no aparecen en **esa** página y los dominios que no están en su texto o sus enlaces (ni el de la propia feria ni redes sociales). Los expositores de varias páginas de la misma feria se fusionan sin duplicados (por nombre), hasta `max_exhibitors_per_event`.
+1. **Pipeline por expositor**, el mismo del modo directo, con `source_url` = la página de la que sale cada expositor (página de expositores, página renderizada o PDF), siempre una URL visitada.
+1. **Sin lista de expositores** (catálogo ilegible, página vacía, renderer no disponible): la feria se registra como señal `FAIR` a nivel de evento (`create_signal` sin `companyId`, con la URL visitada) y el `outcome` es `PARTIAL` con el motivo en `partial_reasons` y en el `agentRunSummary` (incluye `render JavaScript no disponible (…)` cuando el render se necesitaba y no se pudo hacer).
+
+`outcome`: `FAILED` si falla la búsqueda o todos los expositores; `PARTIAL` si hay errores, ninguna feria verificable o alguna feria sin lista de expositores; `SUCCESS` en otro caso. La salida incluye `events[]` (páginas leídas con `via` = `fetch` | `render` | `pdf`, `content_kind`, `js_app_likely`, expositores extraídos y verificados por página; verificación; expositores descartados), `discarded_events[]` con el motivo, `sources` (URL visitadas y fuentes de grounding), `render` (`calls`, `ok`, `max`, `disabled` con el motivo si se desactivó), los contadores `fetches`, `renders`, `renders_ok` y `pdfs_read`, y el coste de búsqueda.
+
+Limitación observada el 2026-10-07: el catálogo JavaScript de Gastrónoma lista nombres, sector y país, pero no la web de cada expositor (está en la ficha `/exhibitors/{id}`, que el scout no abre). Esos expositores se evalúan, pero los relevantes acaban como `skipped_no_domain`: el pipeline nunca crea una empresa sin dominio verificado.
 
 ### Seguridad del contenido web
 
@@ -605,8 +614,9 @@ Regla del LLD v0.1 §22 y v0.2 §10.4: `WEB CONTENT ≠ INSTRUCTIONS`.
 - **Separación de canales.** El contenido web (páginas descargadas, respuesta de la búsqueda, datos extraídos de ellas) entra **solo** en mensajes `user`, nunca en `systemInstruction`.
 - **Delimitación.** Siempre va dentro de un bloque `<<<DATOS_NO_CONFIABLES id=… origen="…">>> … <<<FIN_DATOS_NO_CONFIABLES id=…>>>` con un id aleatorio por bloque, precedido de la instrucción de ignorar cualquier orden que contenga. Las secuencias que imitan los marcadores se neutralizan, así que el contenido no puede cerrar el bloque. Los prompts de sistema (texto fijo, de confianza) repiten la regla.
 - **El modelo no elige tools.** El código decide qué tool llamar y con qué argumentos; el modelo solo devuelve JSON validado con zod. Una instrucción inyectada no puede provocar una llamada.
-- **Fuentes verificadas.** Todo `sourceUrl` que se escribe en Twenty se comprueba contra el registro de fuentes de la ejecución (`SourceLedger`): URL visitadas por `fetch_url` o devueltas por el grounding. Las URL propuestas por el modelo solo se descargan si su dominio está respaldado por el grounding, si son enlaces de una página ya descargada o, sin fuentes, si la página corrobora la feria. Los textos libres que van a Twenty (descripción, necesidad, por qué ahora, evidencias) pierden cualquier URL que no sea una fuente conocida (`[enlace omitido]`).
-- **Elementos ocultos.** `fetch_url` elimina `script`, `style`, `template`, `svg`, `iframe` y los elementos con `hidden`, `aria-hidden="true"` o `display:none`, vehículos habituales de inyección.
+- **Fuentes verificadas.** Todo `sourceUrl` que se escribe en Twenty se comprueba contra el registro de fuentes de la ejecución (`SourceLedger`): URL visitadas por `fetch_url` o `render_url`, o devueltas por el grounding. Las URL propuestas por el modelo solo se descargan si su dominio está respaldado por el grounding, si son enlaces de una página ya descargada o, sin fuentes, si la página corrobora la feria. Los textos libres que van a Twenty (descripción, necesidad, por qué ahora, evidencias) pierden cualquier URL que no sea una fuente conocida (`[enlace omitido]`).
+- **Elementos ocultos.** `fetch_url` elimina `script`, `style`, `template`, `svg`, `iframe` y los elementos con `hidden`, `aria-hidden="true"` o `display:none`, vehículos habituales de inyección. El renderer hace lo mismo sobre el DOM final (`innerText` ya excluye lo que no se ve).
+- **Mismas reglas para todo el texto.** El texto de un PDF o de una página renderizada entra igual que el HTML: en bloques `DATOS_NO_CONFIABLES`, sin elegir tools, con la verificación de nombres y dominios contra esa misma página y con el `SourceLedger`.
 
 Controles de egreso de `fetch_url` (protección SSRF), aplicados a la primera petición **y a cada redirección**:
 
@@ -621,10 +631,26 @@ Controles de egreso de `fetch_url` (protección SSRF), aplicados a la primera pe
 | Tiempo | 15 s en total |
 | Tamaño | 2 MB, contado tras descomprimir (gzip, deflate, br) |
 | Texto devuelto | 40 000 caracteres como máximo; también título y enlaces absolutos |
-| Tipos | Solo texto (HTML, XHTML, XML, JSON, `text/*`); un PDF devuelve `UNSUPPORTED_CONTENT_TYPE` |
+| Tipos | Texto (HTML, XHTML, XML, JSON, `text/*`) y **PDF** (`application/pdf` o firma `%PDF-`, también como `application/octet-stream`). El resto devuelve `UNSUPPORTED_CONTENT_TYPE` |
+| PDF | Texto extraído en memoria con `unpdf` (PDF.js sin binarios nativos, sin `eval`, sin fuentes del sistema ni peticiones externas), máximo 300 páginas, dentro de los mismos 2 MB / 40 000 caracteres / 15 s. Salida con `content_kind = "pdf"`, `pdf_pages`, título de los metadatos y enlaces `http(s)` de las anotaciones |
+| Detección de app JS | `js_app_likely` en las páginas HTML: poco texto visible con scripts, mucho más script que texto, punto de montaje de SPA vacío (`#app`, `#root`, `app-root`…), aviso `<noscript>` de JavaScript o marcadores de framework con poco texto |
 | Cabeceras | `User-Agent: PubliexpeCommercialOS/0.1` (solo ASCII: un carácter no ASCII provocaba 403 en ifema.es y alimentaria.com), sin cookies ni cabeceras de autenticación |
 
-Códigos de error de `fetch_url`: `URL_NOT_ALLOWED`, `REDIRECT_NOT_ALLOWED`, `SSRF_BLOCKED`, `DNS_ERROR`, `TOO_MANY_REDIRECTS`, `FETCH_TIMEOUT`, `HTTP_ERROR`, `UNSUPPORTED_CONTENT_TYPE`, `NETWORK_ERROR`.
+Códigos de error de `fetch_url`: `URL_NOT_ALLOWED`, `REDIRECT_NOT_ALLOWED`, `SSRF_BLOCKED`, `DNS_ERROR`, `TOO_MANY_REDIRECTS`, `FETCH_TIMEOUT`, `HTTP_ERROR`, `UNSUPPORTED_CONTENT_TYPE`, `NETWORK_ERROR`, `PDF_UNREADABLE`, `PDF_ENCRYPTED` y `PDF_TOO_LARGE` (PDF cortado por el límite de 2 MB que no se puede leer).
+
+### Render de JavaScript (`render_url`)
+
+`render_url` no ejecuta un navegador en el runtime: llama por HTTP al servicio interno `pxos-renderer` (`services/renderer/`, Playwright + Chromium en su propio contenedor), así que la imagen del runtime no crece. Consulta [services/renderer/README.md](../../services/renderer/README.md) para la API, los controles de seguridad del navegador y la integración en Docker.
+
+| Aspecto | Comportamiento |
+|---|---|
+| Destino | `RENDERER_URL` + `/render` (por defecto `http://pxos-renderer:3000`, dentro de `pxos-net`). Es configuración de confianza: no pasa por la guarda SSRF |
+| Antes de llamar | La URL a renderizar pasa `checkUrl` con la misma política de hosts que `fetch_url` (esquema, credenciales, puertos, allow/denylist, nombres internos, IP literales). El renderer repite la comprobación con DNS y la aplica a cada petición del navegador |
+| Respuesta | Validada con zod: texto recortado a 40 000 caracteres, título, hasta 200 enlaces `http(s)`, `finalUrl` comprobada otra vez con `checkUrl`, `content_kind = "rendered"`, `renderMs` |
+| Tiempo | 25 s de JavaScript en el renderer; 40 s de espera en el cliente (`RENDER_TIMEOUT`) |
+| Sin renderer | `RENDERER_URL` vacío u `off`, o el servicio no responde (DNS, conexión rechazada): `RENDERER_NOT_CONFIGURED`. El scout lo trata como "sin render" y sigue |
+
+Códigos de error de `render_url`: `RENDERER_NOT_CONFIGURED`, `INVALID_URL`, `URL_NOT_ALLOWED`, `REDIRECT_NOT_ALLOWED`, `RENDER_TIMEOUT`, `RENDERER_BAD_RESPONSE` y los del renderer (`SSRF_BLOCKED`, `NAVIGATION_BLOCKED`, `DOWNLOAD_BLOCKED`, `HTTP_ERROR`, `RENDERER_BUSY`…).
 
 ### Trace y coste
 
@@ -635,7 +661,7 @@ Cada llamada al LLM es un paso `MODEL` con `model` (el modelo real que respondi�
 | Clave de `configuration` | Por defecto | Uso |
 |---|---|---|
 | `implementation` | — | `prospector` |
-| `tool_policy` | — | `find_company`, `upsert_company`, `create_signal`, `create_hypothesis`, `create_agent_run_summary`, `fetch_url` (máximo 15 llamadas); techo `LOW_WRITE`; 240 llamadas por ejecución |
+| `tool_policy` | — | `find_company`, `upsert_company`, `create_signal`, `create_hypothesis`, `create_agent_run_summary`, `fetch_url` (máximo 22 llamadas) y `render_url` (máximo 5); techo `LOW_WRITE`; 240 llamadas por ejecución |
 | `min_confidence` | `0.5` | Umbral para escribir en Twenty |
 | `usd_to_eur` | `0.86` | Conversión del coste para Twenty |
 | `model_options` | `{}` | `thinking_level` (Gemini 3.x), `thinking_budget` (Gemini 2.5), `temperature` |
@@ -644,8 +670,10 @@ Cada llamada al LLM es un paso `MODEL` con `model` (el modelo real que respondi�
 | `scout.task_name` | `weekly-event-scouting` | Campo `task` del `agentRunSummary` (modo scout) |
 | `scout.max_events` | `3` | Ferias por ejecución (máximo 3) |
 | `scout.max_exhibitors_per_event` | `20` | Expositores evaluados por feria |
-| `scout.max_fetches` | `12` | Descargas por ejecución |
-| `scout.max_pages_per_event` | `2` | Páginas leídas por feria |
+| `scout.max_fetches` | `18` | Descargas por ejecución (páginas y PDF) |
+| `scout.max_pages_per_event` | `3` | Páginas leídas por feria (portada → catálogo → lista); los renders y los PDF enlazados no cuentan |
+| `scout.max_renders` | `4` | Renders JavaScript (`render_url`) por ejecución. `0` = nunca renderizar |
+| `scout.max_pdfs_per_event` | `2` | PDF de catálogo o listado enlazados que se leen por feria (máximo 2) |
 | `scout.max_redirect_resolutions` | `3` | Redirecciones de grounding resueltas para conocer su dominio |
 | `scout.event_signal_confidence` | `0.5` | Confianza de la señal de evento sin expositores |
 | `scout.verify_unsourced_by_fetch` | `true` | Sin fuentes de grounding, aceptar la URL si la página corrobora la feria. `false` = estricto |
@@ -664,6 +692,8 @@ Es idempotente:
 - **Tarea `weekly-event-scouting`** (modo scout): `CRON 30 7 * * 1` (lunes 07:30) en `Europe/Madrid`, `timeout_ms = 1800000`, sin reintentos, `default_input = { "sector": "alimentación y bebidas", "region": "España", "horizon_months": 6 }`.
 
 Las dos tareas usan la misma versión del agente. La versión del seed añade `fetch_url` a la tool policy, la configuración `scout` y la skill `event-source-discovery` v1, y sube la skill `prospector-event-exhibitors` a v2 (datos en bloques `DATOS_NO_CONFIABLES`): al ejecutar el seed sobre una BD existente se crea una versión nueva del agente.
+
+La versión actual del seed añade `render_url` a la tool policy, sube los límites del scout (`max_fetches` 18, `max_pages_per_event` 3, `max_renders` 4, `max_pdfs_per_event` 2) y la skill `event-source-discovery` a v2 (PDF y páginas renderizadas): ejecuta `pnpm seed` después de desplegar para crear la versión nueva. Hasta entonces, la versión activa no tiene `render_url` en su política: el scout lee PDF pero no renderiza (`render.disabled = TOOL_NOT_ALLOWED`).
 
 > **Importante:** ejecuta el seed después de desplegar este código. Un runtime anterior trataría la entrada de `weekly-event-scouting` como entrada directa no válida y cerraría la ejecución del lunes como `FAILED`.
 
@@ -706,9 +736,11 @@ Observado el 2026-10-07 con `gemini-3.8-flash`: el modelo ejecuta las búsquedas
 - `test/unit/prospector-agent.test.ts` y `test/unit/gemini-provider.test.ts`: con `StubProvider` (respuestas guionizadas) y `FakeTwenty`. Cubren el parseo, el reintento por JSON inválido, el flujo de tools, la idempotencia y la agregación de coste.
 - `test/integration/prospector-live.test.ts`: **en vivo**. Ejecuta el seed y un `TaskRun` con la fixture contra Gemini, Twenty y PostgreSQL reales, y comprueba empresa, señal, hipótesis y `agentRunSummary` en Twenty. Se salta si falta `GEMINI_API_KEY`, `TWENTY_API_KEY`, Twenty o PostgreSQL, o si `SKIP_LLM_TESTS=1`. Usa los nombres de la fixture (datos de demo, sin prefijo `[TEST]`) en el tenant `publiexpe`; como todas las escrituras son idempotentes, repetirlo solo añade un `agentRunSummary`. Cuesta unos 0,005 € por ejecución.
 
-- `test/unit/fetch-url.test.ts`: guardas SSRF (rangos IPv4/IPv6, URL internas, allow/denylist, IP privada en DNS, DNS mixto, redirección a IP privada o a host privado, límite de redirecciones), truncado de texto y de bytes (también tras gzip, con un servidor local real), timeout, tipos de contenido, charset y `htmlToText`.
+- `test/unit/fetch-url.test.ts`: guardas SSRF (rangos IPv4/IPv6, URL internas, allow/denylist, IP privada en DNS, DNS mixto, redirección a IP privada o a host privado, límite de redirecciones), truncado de texto y de bytes (también tras gzip, con un servidor local real), timeout, tipos de contenido, charset y `htmlToText`; PDF (detección por tipo y por firma, texto, título y enlaces de una fixture generada con `test/helpers/make-pdf.ts`, recorte, PDF corrupto o cortado) y detección de app JavaScript.
+- `test/unit/render-url.test.ts`: `render_url` con `FakeRenderer` y con un servidor HTTP local: configuración (`RENDERER_URL`), renderer no configurado o caído, URL rechazadas antes de llamar (privadas, internas, puertos, denylist), validación y recorte de la respuesta, mapeo de errores y timeout.
 - `test/unit/gemini-grounding.test.ts`: cuerpo con `google_search`, parseo de `groundingMetadata` y de las partes `toolCall` / `toolResponse`, y precio por consulta.
-- `test/unit/event-scout.test.ts`: modo scout con `StubProvider`, `FakeWeb` (DNS y transporte simulados) y `FakeTwenty`: extracción y verificación de expositores, delimitación del contenido web e intento de inyección, validación de `source_url`, URL no respaldadas, señal de evento, redirecciones de grounding, verificación por corroboración, horizonte y fallos.
+- `test/unit/event-scout.test.ts`: modo scout con `StubProvider`, `FakeWeb` (DNS y transporte simulados), `FakeRenderer` y `FakeTwenty`: extracción y verificación de expositores, delimitación del contenido web e intento de inyección, validación de `source_url`, URL no respaldadas, señal de evento, redirecciones de grounding, verificación por corroboración, horizonte y fallos; catálogo JavaScript renderizado (y cadena portada → app → lista de Gastrónoma), renderer no configurado o fuera de la tool policy, PDF de catálogo enlazado (inyección incluida) y fusión de expositores de HTML y PDF.
+- Integración del renderer (Chromium real): consulta [services/renderer/README.md](../../services/renderer/README.md#tests).
 - `test/integration/event-scout-live.test.ts`: **en vivo**, con grounding real. No ejecuta el seed: usa su propio agente (`Prospector Scout (live test)`) y una tarea `MANUAL` (`event-scouting-live-test`), así no programa nada. Limitado a 1 feria y 5 expositores; cuesta unos 0,10 USD (casi todo, búsquedas). `SKIP_LLM_TESTS=1` lo salta. Con `SCOUT_LIVE_EVENT_URL=https://…` (y `-t event_url`) ejecuta el modo `event_url`, sin grounding.
 
 Para ejecutarlo en local, copia también la clave de Gemini a tu `.env`:
@@ -756,6 +788,8 @@ Quien mantenga `deployments/` puede añadir este servicio a la red `pxos-net`:
     restart: unless-stopped
     networks: [pxos-net]
 ```
+
+`render_url` necesita el servicio `pxos-renderer` en la misma red (fragmento y pasos en [services/renderer/README.md](../../services/renderer/README.md#integración-en-deploymentsdocker-composeyml)). El runtime no necesita ninguna variable nueva: `RENDERER_URL` vale por defecto `http://pxos-renderer:3000`. Sin el servicio, el scout funciona como antes.
 
 Para escalar, separa roles: un servicio con `RUNTIME_ROLE=api`, N réplicas con `RUNTIME_ROLE=worker` y `RUN_MIGRATIONS=false`, y un servicio con `RUNTIME_ROLE=scheduler`. Puedes tener varias réplicas del scheduler: los disparos se deduplican por idempotency key.
 
@@ -991,7 +1025,8 @@ Una llamada a Gemini por borrador. En la prueba en vivo: 0,0021 USD (0,0018 €)
 - Exponer `EntityLocks` a las tools (el helper está listo en `RunProcessor.locks`).
 - Política de catch-up si el scheduler estuvo parado: hoy, al volver, se procesa el slot pendiente (tarde, con su `scheduled_at` original) y los demás slots perdidos se omiten.
 - Tools pendientes del registro del MVP-0: `search_web` (hoy la búsqueda es el grounding de Gemini, un paso `MODEL`; el LLD prevé fuentes ligadas a pasos `TOOL`), `create_activity` y las del Catalog Service.
-- Modo scout: muchas ferias publican el catálogo de expositores como aplicación JavaScript o PDF, que `fetch_url` no lee (queda como señal de evento). Falta extracción de PDF o render de JavaScript.
+- Modo scout: los catálogos JavaScript paginados solo se leen en su primera página (Gastrónoma: 20 de 91) y sin la web de cada expositor, que está en su ficha. Falta paginar y abrir fichas con un presupuesto propio, o leer la API JSON del catálogo cuando la haya.
+- Integrar `pxos-renderer` en `deployments/docker-compose.yml` (fragmento en `services/renderer/docker-compose.renderer.yml`) y, opcionalmente, el perfil seccomp de Playwright para el sandbox de Chromium.
 - `GeminiProvider.stream()` no es incremental: devuelve la respuesta completa en un solo fragmento.
 - Validación de URL en campos de texto libre contra las fuentes del trace (LLD v0.2 sección 10.4, punto 4) en el modo directo: el modo scout ya la aplica con su `SourceLedger`.
 - Eventos aún no emitidos: `task.failed` cuando el reconciliador cierra un huérfano, cancelaciones y `signal.detected`.

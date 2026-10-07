@@ -68,6 +68,6 @@ Canal de email (recordatorio operativo): warm-up iniciado el 2026-10-06; DMARC p
 |---|---|---|---|
 | Catálogo completo: paginación hasta el final (91) y fichas de todos los relevantes con presupuesto por tiempo | `feat/catalog-full` | Opus | 🔄 en curso |
 | Afinado: el borrador presenta qué es PubliEXPE (garantizado por código) + fix del flaky de events | `fix/afinado` | Opus | ✅ fusionado (descriptor inyectable; flaky = carrera del test, outbox correcto; 4 pasadas limpias) |
-| Inbound de bajas: lector IMAP del buzón → alta automática en la lista de supresión (HITL para el resto) | `feat/inbound-bajas` | Opus | 🔄 en curso (necesita credenciales IMAP en .env) |
+| Inbound de bajas: lector IMAP del buzón → alta automática en la lista de supresión (HITL para el resto) | `feat/inbound-bajas` | Opus | ✅ fusionado (solo-lectura verificado a nivel de comandos IMAP; live contra el buzón real OK; task cada 2 h) |
 | LLD v0.3: consolidación de todas las decisiones de implementación | `docs/lld-0.3` | Sonnet | ✅ fusionado (22 ADRs, 34 puntos mapeados, 9 contradicciones de docs — reconciliadas por el PM salvo README del runtime, pendiente del cierre) |
 | Integración, e2e y PR | `feat/tanda6` | PM | ⏸️ |

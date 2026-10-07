@@ -1,0 +1,38 @@
+{
+  "event": {
+    "name": "Gastrónoma 2026",
+    "type": "FAIR",
+    "date": "2026-10-26",
+    "location": "Valencia",
+    "source_url": "https://apps.feriavalencia.com/catalog/gastronoma/exhibitors"
+  },
+  "exhibitors": [
+    {
+      "name": "MYBAOS SL"
+    },
+    {
+      "name": "PREZO"
+    },
+    {
+      "name": "QBO DELICIAS SL"
+    },
+    {
+      "name": "SERHS PROJECTS"
+    },
+    {
+      "name": "TEMPLO CAFÉS",
+      "sector": "Alimentación / Food"
+    },
+    {
+      "name": "UNOX",
+      "sector": "Maquinaria y mobiliario / Restaurant machinery and furniture"
+    },
+    {
+      "name": "VINO CAÑAS Y BARRO - VIÑAS DEL PORTILLO",
+      "sector": "Bodegas, vinos y cavas / Celars, wines & cavas"
+    },
+    {
+      "name": "ZERO,O MIXERS"
+    }
+  ]
+}

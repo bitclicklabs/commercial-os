@@ -1,0 +1,21 @@
+{
+  "event": {
+    "name": "Expo Alimentaria Ibérica 2026",
+    "type": "FAIR",
+    "date": "2026-11-24",
+    "location": "Madrid (IFEMA)",
+    "source_url": "https://expoalimentariaiberica.example/expositores"
+  },
+  "exhibitors": [
+    {
+      "name": "DIPUTACIÓN PROVINCIAL DE MONTEALTO",
+      "sector": "Organismos públicos,asociaciones / Public institutions, associations"
+    },
+    {
+      "name": "Mercamontealto, Unidad Alimentaria de Montealto S.A.",
+      "domain": "mercamontealto.example",
+      "sector": "Distribución alimentaria",
+      "description": "Sociedad mercantil de capital íntegramente público, participada por el ayuntamiento y la comunidad autónoma, que gestiona la unidad alimentaria mayorista de la región. Expone en un stand de 40 m² para captar operadores logísticos. Sus contratos de suministro se adjudican por licitación pública conforme a la Ley de Contratos del Sector Público."
+    }
+  ]
+}

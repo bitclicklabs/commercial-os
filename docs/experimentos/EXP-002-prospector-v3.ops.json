@@ -1,0 +1,63 @@
+{
+  "experiment": "EXP-002",
+  "skill": "prospector-event-exhibitors",
+  "base_version": 1,
+  "change_reason": "EXP-002 (iteración de EXP-001, ver docs/experimentos/EXP-002-prospector-v3.md). v3 = v1 (ACTIVE) + las 5 operaciones de v2 sin cambios (OP1 techo de confianza según los datos, F2; OP2-OP4 need con desglose, cantidades desde el desglose con máx./mín. <= 2,5 y presupuesto derivado, F1; OP5 suposiciones del nombre marcadas como tales, F3) + OP6. El texto es idéntico byte a byte a v2 + OP6. Motivo de OP6: la validación de EXP-001 (compare-v1-v2) detectó que v2 invierte la semántica de la confianza en los descartes: XUNTA DE GALICIA (holdout de Gastrónoma) y el Instituto Regional de Promoción Agroalimentaria (fixture feria-ejemplo) salen relevant=false con 0,95 en una de dos repeticiones, donde v1 daba 0,05 en todas (métrica 'no relevantes con confianza > 0,19': v1 0, v2 2 de 4 decisiones sobre organismos públicos). Causa probable: el 'techo de confianza' de OP1 hace que el modelo lea confidence como seguridad del veredicto y no como encaje comercial. OP6 REPLACE del título de la sección de calibración: la confianza mide el encaje comercial con PubliEXPE, no la seguridad en la decisión; si relevant es false, está entre 0 y 0,19, con un contraejemplo en línea (organismo público claro: 0,05, nunca 0,95). Sin campo examples: un ejemplo JSON completo añadiría tokens, se renderiza al final del prompt, lejos de la calibración, y podría anclar cantidades (riesgo F1). Datos de diseño: trazas e67cba89, 44e35e27 y 7eaa0dd4 (expositores 1-60) y, para OP6, el holdout quemado de EXP-001 (posiciones 62-90 de cuatro en cuatro) y feria-ejemplo. Validación nueva (P5): Gastrónoma posiciones 63, 67, 71, 75, 79, 83, 87 y 91, más 2 organismos públicos sintéticos nuevos; feria-ejemplo solo como control de regresión. DRAFT: no se activa sin decisión humana.",
+  "design_data": {
+    "inherited_from_v2": "OP1-OP5 de EXP-001 (docs/experimentos/EXP-001-prospector-v2.ops.json), copiadas sin cambios",
+    "traces": [
+      "e67cba89-4252-45bd-bb25-b15ca0268a6c (scout Gastrónoma, expositores 1-20)",
+      "44e35e27-b991-467e-988a-6f0c591669cb (scout Gastrónoma, expositores 1-60)",
+      "7eaa0dd4-930b-4ea6-bdd2-c558c597b97a (scout Gastrónoma, solo expositores 1-60 de 91)"
+    ],
+    "op6_evidence": "docs/experimentos/EXP-001/compare-v1-v2.json: XUNTA DE GALICIA (gastronoma-holdout.json, posición 90) 0,05 / 0,95 e Instituto Regional de Promoción Agroalimentaria (feria-ejemplo.json) 0,95 / 0,05 con relevant=false en v2; 0,05 en todas las repeticiones de v1",
+    "burned": "gastronoma-holdout.json (posiciones 62, 66, 70, 74, 78, 82, 86, 90) y feria-ejemplo.json pasan a ser datos de diseño de OP6",
+    "excluded": "posiciones 61-91 de Gastrónoma salvo las del holdout quemado: nunca se miraron decisiones del modelo sobre ellas"
+  },
+  "validation_data": {
+    "fixtures": [
+      "runtime/agent-runtime/test/fixtures/organismos-publicos-sinteticos.json",
+      "runtime/agent-runtime/test/fixtures/gastronoma-holdout-2.json",
+      "runtime/agent-runtime/test/fixtures/feria-ejemplo.json"
+    ],
+    "rule": "Gastrónoma: posiciones 63, 67, 71, 75, 79, 83, 87 y 91 del catálogo (orden alfabético del JSON puisearch; uno de cada cuatro desde el 63, regla escrita en EXP-001 §7 antes de este experimento). Organismos públicos sintéticos: 2 casos nuevos escritos para EXP-002 (nombre + sector público, como XUNTA; empresa pública con datos ricos y nombre comercial). feria-ejemplo: control de regresión, no prueba de OP6 (su organismo público ya informó OP6)"
+  },
+  "operations": [
+    {
+      "op": "ADD",
+      "anchor": "- 0-0,19: no hay encaje.",
+      "text": "- Techo según los datos recibidos: si del expositor solo tienes el nombre (sin sector, descripción ni dominio), la confianza no pasa de 0,6; con nombre y sector, no pasa de 0,75. Solo superas el techo si la empresa es notoriamente conocida en su sector, y entonces dices en \"reason\" que te basas en conocimiento general y no en los datos recibidos.",
+      "why": "OP1 de EXP-001 (heredada de v2). F2: confianza alta sin datos (7eaa0dd4: 34/46 expositores solo con nombre por encima de 0,6; INNOVA CHEF 0,75 en 44e35e27 con 'solo disponemos del nombre comercial'; MEDITERRÁNEO CULINARY CENTER 0,75; BICO DE XEADO 0,85 solo con nombre y sector)."
+    },
+    {
+      "op": "REPLACE",
+      "find": "- need: necesidad concreta de merchandising ligada al evento (qué y para qué), 1-3 frases.",
+      "text": "- need: necesidad concreta de merchandising ligada al evento (qué, cuántas unidades aproximadas de cada producto y para qué), 1-3 frases. Ejemplo de desglose: «unas 300 bolsas tote para visitantes y 15 polos bordados para el equipo del stand».",
+      "why": "OP2 de EXP-001 (heredada de v2). F1: 0/57 'need' con cantidades en 7eaa0dd4 (0/56 en 44e35e27, 0/20 en e67cba89; el change_reason de v2 decía 2/57 por contar el año del evento, errata documentada en EXP-001 §10)."
+    },
+    {
+      "op": "REPLACE",
+      "find": "- quantity_min / quantity_max: unidades totales estimadas, coherentes con el tamaño de la empresa y del evento.",
+      "text": "- quantity_min / quantity_max: unidades totales que salen del desglose de \"need\", ajustado a lo que sabes de este expositor (sector, tipo de entidad, presencia en la feria). Si no conoces su tamaño, calcula para un stand pequeño o mediano y dilo en \"reason\". quantity_max no supera 2,5 veces quantity_min.",
+      "why": "OP3 de EXP-001 (heredada de v2). F1: rangos de plantilla (44e35e27: 250-800 u / 600-2.200 € repetido en 10 de 56 hipótesis; 7eaa0dd4: 57/57 hipótesis con máx./mín. > 2,5 y amplitud media 3,6)."
+    },
+    {
+      "op": "REPLACE",
+      "find": "- budget_min_eur / budget_max_eur: presupuesto en euros sin IVA, coherente con las cantidades y con precios unitarios competitivos (de 0,50 € a 15 € por unidad según producto).",
+      "text": "- budget_min_eur / budget_max_eur: presupuesto en euros sin IVA calculado a partir de ese desglose (unidades × precio unitario orientativo de cada producto, de 0,50 € a 15 € por unidad), no una horquilla genérica.",
+      "why": "OP4 de EXP-001 (heredada de v2). F1: presupuestos repetidos sin relación con el expositor (7eaa0dd4: budget_min 600 € en 27/57 hipótesis, budget_max 2.200 € en 21/57 y 1.800 € en 15/57)."
+    },
+    {
+      "op": "ADD",
+      "anchor": "- No inventes hechos sobre la empresa: usa solo los datos recibidos y conocimiento general del sector; si supones algo, dilo en \"reason\" y baja la confianza.",
+      "text": "- Lo que deduces solo a partir del nombre (actividad, tipo de entidad, tamaño, a qué grupo pertenece) es una suposición: escríbelo en \"reason\" como tal («por el nombre, parece…») y nunca como un hecho.",
+      "why": "OP5 de EXP-001 (heredada de v2). F3: suposiciones escritas como hechos: FEGREPPA identificada como dos entidades distintas en 44e35e27 y 7eaa0dd4; GRECARVAL y HOSTELERÍA VALENCIA identificados sin ningún dato de entrada que lo diga."
+    },
+    {
+      "op": "REPLACE",
+      "find": "## Calibración de \"confidence\" (0 a 1)",
+      "text": "## Calibración de \"confidence\" (0 a 1): mide el encaje comercial del expositor con PubliEXPE, no tu seguridad en la decisión\n- Si relevant es false, la confianza está siempre entre 0 y 0,19, por muy seguro que estés del descarte: un organismo público claro lleva 0,05, nunca 0,95.",
+      "why": "OP6 (nueva en EXP-002). Regresión de v2 en EXP-001: relevant=false con confianza 0,95 en 2 de 4 decisiones sobre organismos públicos (XUNTA DE GALICIA, holdout de Gastrónoma, repetición 2: 0,05 / 0,95; Instituto Regional de Promoción Agroalimentaria, feria-ejemplo, repetición 1: 0,95 / 0,05), donde v1 daba 0,05 en las cuatro. La escala de v1 ya dice '0-0,19: no hay encaje', pero el techo de OP1 empuja a leer la confianza como seguridad del veredicto. OP6 fija la semántica en el título de la sección (lo primero que lee el modelo) y da el contraejemplo exacto en línea, sin campo examples."
+    }
+  ]
+}

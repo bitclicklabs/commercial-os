@@ -28,11 +28,8 @@ runtime/agent-runtime/
 │   ├── domain/               Estados, máquina de estados e idempotency keys
 │   ├── providers/            ModelProvider, StubProvider, AnthropicProvider, GeminiProvider y tabla de precios
 │   ├── queue/                RunQueue (BullMQ y en memoria)
-<<<<<<< HEAD
 │   ├── scheduler/            TaskScheduler sobre BullMQ, parseo de schedules y rutas
-=======
 │   ├── seed/                 Seed idempotente del Prospector y su tarea (pnpm seed)
->>>>>>> feat/prospector
 │   ├── services/             Lanzamiento idempotente de TaskRuns
 │   └── worker/               RunProcessor, worker BullMQ, locks por entidad y reconciliador
 └── test/
@@ -548,20 +545,12 @@ Para escalar, separa roles: un servicio con `RUNTIME_ROLE=api`, N réplicas con 
 
 ## Pendiente
 
-<<<<<<< HEAD
 - Triggers `EVENT`, `DEPENDENCY` y `CONDITION` (hoy no registran nada).
 - Columna `trigger` (`SCHEDULE`, `MANUAL`...) en `task_runs` para distinguir el origen de cada run (LLD v0.2, AC-04).
 - Exponer `EntityLocks` a las tools (el helper está listo en `RunProcessor.locks`).
 - Política de catch-up si el scheduler estuvo parado: hoy, al volver, se procesa el slot pendiente (tarde, con su `scheduled_at` original) y los demás slots perdidos se omiten.
-- Tools pendientes del registro del MVP-0: `search_web`, `fetch_url`, `create_activity` y las del Catalog Service.
-=======
-- Scheduler (`CRON`, `INTERVAL`, `EVENT`...): hoy solo hay lanzamiento manual con `POST /tasks/:id/run`.
-- `max_concurrency` por tarea y locks por entidad (LLD sección 21).
-- Recuperación de jobs atascados (`RUNNING` tras caída del worker).
-- Harness, skills, memoria y verificador reales; promote, rollback y evaluate.
 - Tools pendientes del registro del MVP-0: `search_web`, `fetch_url`, `create_activity` y las del Catalog Service. Con ellas, el Prospector descubrirá eventos y expositores por sí mismo y recomendará productos reales del catálogo.
 - `GeminiProvider.stream()` no es incremental: devuelve la respuesta completa en un solo fragmento.
->>>>>>> feat/prospector
 - Validación de URL en campos de texto libre contra las fuentes del trace (LLD v0.2 sección 10.4, punto 4).
 - Harness, skills, memoria y verificador reales; promote, rollback y evaluate.
 - Publicación de eventos (`task.started`, `task.completed`...) en el event bus.

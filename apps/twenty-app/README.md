@@ -120,12 +120,35 @@ Solo lectura para el comercial: no se crea ni se edita desde la UI. El LLD no de
 
 Todas las relaciones N:1 usan `onDelete: SET_NULL` para no perder histórico si se borra la empresa o la señal.
 
+### AgentOsDailyMetric (`agentOsDailyMetric` / `agentOsDailyMetrics`) — métricas del Agent OS
+
+No está en el LLD. Un registro por tenant y día local (Europe/Madrid) con las cifras de `GET /metrics/summary` del runtime. Lo escribe el rol scheduler del runtime (`METRICS_TWENTY_SYNC_ENABLED=true`); no se crea ni se edita desde la UI. Alimenta la página **Métricas**. Consulta [docs/estudio-dashboard-twenty.md](../../docs/estudio-dashboard-twenty.md).
+
+| Campo Twenty | Tipo | Notas |
+|---|---|---|
+| `name` | TEXT (etiqueta "Day") | `2026-10-07 · publiexpe` |
+| `day` | DATE | Día local |
+| `dayKey` | TEXT, único | `<tenant>:<YYYY-MM-DD>`; el runtime hace upsert por él |
+| `tenantId` | TEXT | |
+| `runs`, `runsSucceeded`, `runsFailed` | NUMBER (int) | TaskRuns del día; éxito = outcome SUCCESS; fallo = FAILED o TIMED_OUT |
+| `cost` | CURRENCY (EUR, 3 decimales) | Coste de modelo del día (todos los intentos) |
+| `hypothesesCreated` | NUMBER (int) | Contador `hypotheses_created` de los runs |
+| `emailSends` | NUMBER (int) | Envíos desde Twenty del día (`email_sends`) |
+| `warmupTarget` | NUMBER (int) | Objetivo blando del día, ambos buzones; vacío fuera del warm-up |
+| `warmupStage` | SELECT | BEFORE, WARMUP, POST_WARMUP |
+| `warmupPhase` | TEXT | Etiqueta de la fase («Semana 1»…) |
+| `humanReviewed`, `humanAccepted` | NUMBER (int) | Sujetos con veredicto humano ese día y, de ellos, ACCEPTED |
+| `acceptanceRate` | NUMBER (float, 1 decimal) | Aceptación acumulada hasta el final del día, en % |
+| `syncedAt` | DATE_TIME | Última escritura del runtime |
+
 ## Navegación y vistas (LLD §23)
 
 - Carpeta **Commercial OS** en la barra lateral con **Signals**, **Research**, **Hypotheses** y **Agent runs**. Cada entrada abre la vista "All" que Twenty genera para el objeto.
 - Vistas adicionales, disponibles en el selector de vistas de cada objeto:
   - Hypotheses → **By status**: kanban agrupado por `status`, para la validación humana (HITL) del MVP-0.
   - Signals → **Recent signals**: tabla ordenada por `detectedAt` descendente.
+- **Métricas** (en la carpeta Commercial OS): página nativa `STANDALONE_PAGE` «Agent OS · Métricas» (`src/page-layouts/`). Ocho KPI (runs y coste de hoy y de 7 días, tasa de aceptación, envíos de hoy, objetivo de warm-up de hoy, envíos de 7 días), cuatro gráficos de barras por día (envíos, objetivo de warm-up, coste y runs de los últimos 14 días) y la tabla **Últimos runs** (`agentRunSummary`, más recientes primero, sin los `[TEST]`). La tabla usa la vista `Latest agent runs (metrics widget)`, de tipo `TABLE_WIDGET`: no aparece en el selector de vistas.
+- **Agent OS (detalle técnico)**: enlace a `http://127.0.0.1:4020/dashboard` (tabla por agente y versión, latencias y trazas JSON). Solo funciona desde el equipo donde corre el runtime.
 
 ## Desviaciones respecto al LLD v0.1
 

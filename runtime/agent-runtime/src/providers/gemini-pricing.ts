@@ -36,6 +36,11 @@ export const GEMINI_PRICING: Readonly<Record<string, readonly PricingPeriod[]>> 
   'gemini-3.1-flash-lite': [{ inputPerMTok: 0.25, outputPerMTok: 1.5, cachedPerMTok: 0.025 }],
   'gemini-2.5-flash': [{ inputPerMTok: 0.3, outputPerMTok: 2.5, cachedPerMTok: 0.03 }],
   'gemini-2.5-flash-lite': [{ inputPerMTok: 0.1, outputPerMTok: 0.4, cachedPerMTok: 0.01 }],
+  // Pro (LLM_JUDGE of the evaluators). Prompts <= 200k tokens; above that the list price is
+  // higher (3.1 Pro: 4 / 18 / 0,40; 2.5 Pro: 2,50 / 15 / 0,25) and is not modelled here.
+  // Source: pricing page "Last updated 2026-10-07 UTC", checked on 2026-10-07.
+  'gemini-3.1-pro-preview': [{ inputPerMTok: 2, outputPerMTok: 12, cachedPerMTok: 0.2 }],
+  'gemini-2.5-pro': [{ inputPerMTok: 1.25, outputPerMTok: 10, cachedPerMTok: 0.125 }],
 };
 
 /**
@@ -47,6 +52,8 @@ export const GEMINI_PRICING: Readonly<Record<string, readonly PricingPeriod[]>> 
 export const GEMINI_MODEL_ALIASES: Readonly<Record<string, string>> = {
   'gemini-flash-latest': 'gemini-3.8-flash',
   'gemini-flash-lite-latest': 'gemini-3.5-flash-lite',
+  // Observed in `modelVersion` on 2026-10-07.
+  'gemini-pro-latest': 'gemini-3.1-pro-preview',
 };
 
 /**

@@ -29,6 +29,7 @@ runtime/agent-runtime/
 │   ├── events/               Event bus: sobre event.envelope.v1, EventBus, payloads, triggers EVENT y GET /events; puente externo (POST /events/external, event_subscriptions y webhooks firmados con guarda SSRF)
 │   ├── domain/               Estados, máquina de estados e idempotency keys
 │   ├── evaluations/          Evaluador HUMAN: mapeo de feedback, vínculo con la ejecución de origen, webhook de Twenty y evento evaluation.recorded
+│   ├── evaluators/           Evaluadores automáticos (MVP-2): RULE, EXACT, LLM_JUDGE y COMPOSITE, sujetos (trazas e informes de skill:compare), pipeline y persistencia en evaluations
 │   ├── email-ops/            Guardarraíles del envío desde Twenty: chequeo de supresión al marcar READY, registro de envíos (email_sends) y calendario del warm-up
 │   ├── metrics/              Consultas SQL de métricas (solo lectura) y HTML del dashboard
 │   ├── providers/            ModelProvider, StubProvider, AnthropicProvider, GeminiProvider y tabla de precios
@@ -1467,6 +1468,147 @@ Si no envías `agent_execution_id` (o `agentExecutionId`), el runtime resuelve e
 | `idempotency_key`, `evaluated_by`, `occurred_at`, `created_at` | |
 
 Índices: `(tenant_id, subject_type, subject_id, occurred_at)`, `(tenant_id, agent_execution_id)` y único `(tenant_id, idempotency_key)`. La tabla es solo de inserción.
+
+## Evaluadores
+
+Evaluadores automáticos del Evaluation Engine (LLD v0.1 §11.1-11.3, MVP-2), en `src/evaluators/`. La regla que lo gobierna: no es un botón que pregunta a otro LLM si la respuesta parece buena. Cada evaluador tiene tipo (`EXACT`, `RULE`, `LLM_JUDGE`, `COMPOSITE`), puntúa **una** dimensión del LLD, tiene versión y un `content_hash` de su definición (umbrales, expresiones regulares, rúbrica, modelo), y se registra como código, igual que las tools (`EvaluatorRegistry`, `defaultEvaluators()`). `BUSINESS` y `HUMAN` llegan por otra vía (el evaluador HUMAN es la sección anterior).
+
+La unidad que se evalúa es un **caso**: la decisión del Prospector para un expositor. `evaluate(caseInput, output, context)` devuelve `{ dimension, score 0..1, pass?, details }`, o `null` si el caso no aplica (por ejemplo, una regla de hipótesis sobre un descarte). Un **sujeto** es la salida de una ejecución y agrupa sus casos:
+
+| `subject_type` | Qué es | `subject_id` |
+|---|---|---|
+| `execution_output` | Una ejecución del Prospector leída de su traza (modo directo o scout) | id de la ejecución |
+| `comparison_case` | Una versión × una entrada × una repetición de un informe de `pnpm skill:compare` | `<skill>@v<versión>:<input_sha256[0:16]>:r<repetición>` |
+
+### Catálogo
+
+| Evaluador | Tipo | Dimensión | Dura | Qué comprueba | Origen |
+|---|---|---|---|---|---|
+| `rule.decision_valid@1` | RULE | `TASK_SUCCESS` | no | Sin error del modelo o del CRM, con `relevant` y `confidence`, e hipótesis si es relevante | Errores de las ejecuciones |
+| `rule.need_has_quantities@1` | RULE | `NEXT_ACTION_QUALITY` | no | `need` lleva unidades (un número que no es un año) | F1 (EXP-001/002) |
+| `rule.quantity_spread_le_2_5@1` | RULE | `NEXT_ACTION_QUALITY` | no | `quantity_max / quantity_min ≤ 2,5` | F1 |
+| `rule.budget_derived@1` | RULE | `FACTUALITY` | no | Precio unitario implícito entre 0,50 y 15 € y suma de unidades de `need` dentro de la horquilla (0,5 si `need` no enumera unidades) | F1, OP4 |
+| `rule.assumptions_marked@1` | RULE | `FACTUALITY` | no | Solo nombre: la razón marca la suposición (parece, por el nombre, suponemos…) | F3 |
+| `rule.confidence_capped_by_data@1` | RULE | `FACTUALITY` | no | Relevantes: solo nombre ≤ 0,6, nombre y sector ≤ 0,75, salvo notoriedad declarada en la razón | F2, OP1 |
+| `rule.discard_confidence_low@1` | RULE | `COMMERCIAL_RELEVANCE` | **sí** | Descartes (`relevant = false`) con confianza < 0,2 | F4: el criterio 4 de EXP-002 (veredicto NO) |
+| `rule.source_urls_known@1` | RULE | `SOURCE_QUALITY` | **sí** | Toda URL del caso (texto libre y fuentes escritas en el CRM) está en el SourceLedger (visitada o de grounding) o venía en la entrada (URL del evento, dominio del expositor o del CRM) | LLD §11.3: `hallucinated_source → FAIL` |
+| `judge.next_action_quality@1` | LLM_JUDGE | `NEXT_ACTION_QUALITY` | no | ¿La hipótesis es accionable para un comercial? Rúbrica cerrada de 5 niveles | — |
+| `judge.commercial_relevance@1` | LLM_JUDGE | `COMMERCIAL_RELEVANCE` | no | ¿El encaje con PubliEXPE es pertinente, razonado con los datos y con la confianza coherente? | — |
+| `composite.commercial_score@1` | COMPOSITE | — | — | Score compuesto del LLD §11.3 con restricciones duras | — |
+| `makeExactEvaluator(...)` | EXACT | la que se configure | configurable | Un campo (`relevant`, `writable`, `status`) igual al esperado por expositor | Datasets (§11.4) |
+
+Las expresiones regulares de `need_has_quantities` y `assumptions_marked` son copia de las de `src/skills/compare.ts` (congeladas por versión). Un test comprueba que las reglas reproducen las métricas que EXP-002 calculó a mano sobre su JSON.
+
+### Juez (LLM_JUDGE)
+
+- **Modelo distinto del ejecutor:** `JUDGE_MODEL`, por defecto `gemini-pro-latest` (servido por `gemini-3.1-pro-preview` el 2026-10-07; precio en `GEMINI_PRICING`). El pipeline rechaza un juez que sea el modelo del ejecutor, resolviendo los alias `*-latest`.
+- **Una dimensión por llamada**, con rúbrica cerrada (niveles 0-4; `score = nivel / 4`). Una llamada puntúa hasta `--judge-batch` casos (20 por defecto) de la misma dimensión, cada uno por separado. Los casos de todas las versiones van mezclados en orden pseudoaleatorio determinista y sin etiqueta de versión: el juez no sabe qué versión está puntuando y un corte de presupuesto afecta a todas por igual.
+- **Salida validada con zod:** una entrada por id, `level` entero de 0 a 4, `justification` de 50 palabras como máximo y `quote`, un fragmento que tiene que aparecer **literalmente** en la salida del caso (se comprueba). Un reintento con el error; si sigue sin ser válida, el caso queda sin nota del juez (se informa como error, nunca como 0).
+- **Datos no confiables:** la entrada y la salida del caso van en un bloque `DATOS_NO_CONFIABLES` en el mensaje de usuario; el prompt de sistema solo lleva la rúbrica y el contexto de negocio.
+- **Coste medido y acotado:** tokens y coste por llamada en el informe. `JudgeBudgetProvider` proyecta el coste de cada llamada antes de hacerla y la rechaza si `gastado + previsto > --judge-max-cost-eur`.
+- **Muestra en comparaciones:** solo la primera repetición de cada versión (las repeticiones son casi idénticas y su estabilidad ya la miden las reglas). En trazas, todos los casos con hipótesis.
+- Hoy las dos rúbricas aplican solo a casos con hipótesis: los descartes ya los cubre `discard_confidence_low`.
+
+### Composite y mapeo de dimensiones
+
+`commercial_score = 0,30 task_success + 0,20 factuality + 0,15 source_quality + 0,15 crm_correctness + 0,10 commercial_relevance + 0,10 next_action_quality` (pesos configurables con `CompositeEvaluator({ weights })`).
+
+| Dimensión (peso LLD) | Evaluadores hoy | Nota |
+|---|---|---|
+| `TASK_SUCCESS` (0,30) | `rule.decision_valid` | El veredicto HUMAN también es `TASK_SUCCESS`, pero llega después y por otra vía |
+| `FACTUALITY` (0,20) | `budget_derived`, `assumptions_marked`, `confidence_capped_by_data` | Las cifras y la confianza se derivan de los datos, y lo supuesto se dice |
+| `SOURCE_QUALITY` (0,15) | `source_urls_known` (dura) | |
+| `CRM_CORRECTNESS` (0,15) | ninguno | **No evaluable hoy:** las comparaciones usan un FakeTwenty. Su peso se reparte en proporción entre las dimensiones evaluadas y el informe lo lista en «Sin evaluar». Su umbral duro (≥ 0,95) solo se aplica cuando haya un evaluador |
+| `COMMERCIAL_RELEVANCE` (0,10) | `discard_confidence_low` (dura), `judge.commercial_relevance` | |
+| `NEXT_ACTION_QUALITY` (0,10) | `need_has_quantities`, `quantity_spread_le_2_5`, `judge.next_action_quality` | |
+| `POLICY_COMPLIANCE` (umbral 1,00) | ninguno | Umbral del LLD preparado; sin evaluador todavía |
+
+- La nota de una dimensión es la media de sus evaluadores; la de un evaluador, la media de sus casos aplicables.
+- **Restricciones duras:** si un evaluador marcado `hard` falla en **un** caso, el composite es `FAIL` sea cual sea el score. Igual con los umbrales por dimensión del LLD (`CRM_CORRECTNESS < 0,95`, `POLICY_COMPLIANCE < 1,00`).
+- El composite se calcula por sujeto y por grupo. En una comparación, el grupo es la versión y junta todos sus sujetos: ese es el veredicto que se compara entre versiones.
+
+### `pnpm evaluate`
+
+```sh
+# Informe de skill:compare (los fixtures que cita se leen si su hash coincide con input_sha256)
+pnpm evaluate -- --input ../../docs/experimentos/EXP-002/compare-v1-v3.json --out ../../docs/experimentos/EXP-002/evaluacion-v1-v3
+# Una ejecución real, por trace_id o id de ejecución (se lee del tenant --trace-tenant)
+pnpm evaluate -- --input 0b1893ee-a6e6-4acf-b76a-29b6d5650cbb
+```
+
+| Opción | Por defecto | Descripción |
+|---|---|---|
+| `--input` | — | Informe `.json` de `skill:compare` o un `trace_id` (o id de ejecución) |
+| `--tenant` | `experiments` | Tenant donde se **guardan** las evaluaciones (decisión del PM: las automáticas no se mezclan con los veredictos humanos de `publiexpe`) |
+| `--trace-tenant` | `DEFAULT_TENANT_ID` o `publiexpe` | Tenant del que se **lee** la traza |
+| `--no-judge` | — | Solo reglas y composite (sin coste) |
+| `--judge-model` | `JUDGE_MODEL` o `gemini-pro-latest` | Modelo del juez |
+| `--judge-max-cost-eur` | `0.10` | Presupuesto del juez |
+| `--judge-batch` | `20` | Casos por llamada al juez |
+| `--no-persist` | — | No escribe en la BD (con un `.json` no hace falta `DATABASE_URL`) |
+| `--min-confidence` | `0.5` | Umbral de escritura con el que corrió la comparación |
+| `--out <prefijo>` | — | Escribe `<prefijo>.md` y `<prefijo>.json` |
+| `--provider` | `gemini` | `gemini` o `stub` (prueba en seco del juez) |
+
+Imprime el veredicto y el score por grupo, la nota de cada dimensión con su peso efectivo, cada evaluador (score y fallos sobre aplicables), cada sujeto, las notas del juez (nivel, justificación y cita) y las llamadas al juez (modelo servido, tokens y coste).
+
+Resultado sobre el EXP-002 real (2026-10-07; juez `gemini-3.1-pro-preview`, 2 llamadas de 20 casos, 0,0636 € de 0,10 €; informe en `docs/experimentos/EXP-002/evaluacion-v1-v3.md`):
+
+| | v1 | v3 |
+|---|---|---|
+| Veredicto | PASS | PASS |
+| Score compuesto | 0,706 | 0,978 |
+| Restricciones duras incumplidas | ninguna | ninguna |
+| `NEXT_ACTION_QUALITY` | 0,167 | 1,000 |
+| `FACTUALITY` | 0,292 | 0,967 |
+| `COMMERCIAL_RELEVANCE` | 0,750 | 0,875 |
+
+### Persistencia en `evaluations`
+
+Sin migración: la tabla de la sección anterior, tal cual.
+
+| Columna | Valor |
+|---|---|
+| `kind` | `RULE`, `EXACT`, `LLM_JUDGE` o `COMPOSITE` |
+| `evaluator_id` | `<id>@<versión>`; el `content_hash` va en `details.evaluator` |
+| `subject_type`, `subject_id` | Ver la tabla de sujetos. El composite de grupo usa `comparison_case` y `<skill>@v<versión>:<hash de las salidas>` con `details.scope = 'group'` |
+| `agent_execution_id`, `task_run_id` | Los de la ejecución en `execution_output`; `null` en comparaciones |
+| `feedback` | `PASS` o `FAIL` (reglas y composite); `SCORED` (juez: nota sin aprobado) |
+| `score` | Media de los casos aplicables; en el composite, el score compuesto |
+| `details` | Evaluador, `output_hash`, agregado, desglose por caso (con la justificación y la cita del juez), metadatos del sujeto; en el composite, dimensiones, pesos efectivos, restricciones duras y componentes |
+| `source`, `evaluated_by` | `auto`; `evaluators` o el modelo servido del juez |
+| `idempotency_key` | `auto:<evaluador>:<hash del evaluador>:<subject_type>:<subject_id>:<output_hash>` |
+
+- **Idempotente** por (sujeto, evaluador con su versión y hash, `content_hash` de la salida): índice único `(tenant_id, idempotency_key)` y `ON CONFLICT DO NOTHING`. Repetir `pnpm evaluate` sobre la misma salida no guarda nada nuevo y **reutiliza** las notas del juez ya guardadas (0 llamadas, 0 €).
+- Una fila por evaluador con al menos un caso aplicable, un composite por sujeto y un composite por grupo cuando el grupo junta varios sujetos.
+- Un juez con casos sin nota (error, presupuesto) no se guarda, ni el composite que depende de él: otra ejecución los completa con las mismas claves.
+- **Nunca** emite `evaluation.recorded`: ese evento es de los veredictos humanos y dispara el EmailDrafter.
+
+### Integración con métricas
+
+`src/metrics/queries.ts` no filtra `evaluations` por `kind`. Si se guardaran evaluaciones automáticas en el tenant de producción, contaminarían `verdicts`, `avg_score` y la lista de sujetos de `/metrics` y del dashboard de Twenty (los recuentos `ACCEPTED`/`EDITED`/`DISCARDED` no, porque las automáticas usan `PASS`/`FAIL`/`SCORED`). Por eso `pnpm evaluate` escribe en `experiments` por defecto. Parche propuesto para quien sea dueño de `queries.ts` (pendiente; no se ha aplicado):
+
+```ts
+// metricsSummary (CTE latest y recuento verdicts, líneas 197 y 200): las dos apariciones de
+//   from evaluations ev where ${windowWhere('ev', 'occurred_at', w)}
+// pasan a
+//   from evaluations ev where ${windowWhere('ev', 'occurred_at', w)} and ev.kind = 'HUMAN'
+
+// metricsAgents (CTE linked, líneas 390-391):
+//   from evaluations ev join ex on ex.id = ev.agent_execution_id
+//   where ev.tenant_id = ${w.tenantId}
+// pasa a
+//   where ev.tenant_id = ${w.tenantId} and ev.kind = 'HUMAN'
+
+// metricsEvaluations (línea 460), que alimenta days, bySubjectType, subjects y totals:
+//   const where = windowWhere('ev', 'occurred_at', o);
+// pasa a
+//   const where = sql`${windowWhere('ev', 'occurred_at', o)} and ev.kind = 'HUMAN'`;
+```
+
+### Tests
+
+`test/unit/evaluators.test.ts` (sin red ni BD): cada regla con casos que pasan, fallan y no aplican; que las reglas reproducen las métricas de EXP-002; el juez con un proveedor guionizado (bloque no confiable, reintento por cita no literal o justificación larga, ids inventados, presupuesto); el composite (pesos, reparto de lo no evaluado, restricciones duras, umbrales); el pipeline sobre el JSON real de EXP-002 (v3 ≥ v1 sin restricciones duras, y `FAIL` si se inyecta un descarte con 0,95), y las filas idempotentes. `test/integration/evaluators.test.ts` (PostgreSQL, tenant nuevo): una traza real como `execution_output` con una fuente inventada, la persistencia idempotente y la reutilización de las notas del juez.
 
 ## Métricas y dashboard
 

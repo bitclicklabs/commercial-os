@@ -1022,3 +1022,78 @@ export type KnowledgeEntry = typeof knowledgeEntries.$inferSelect;
 export type EvaluationDataset = typeof evaluationDatasets.$inferSelect;
 export type EvaluationCase = typeof evaluationCases.$inferSelect;
 export type Experiment = typeof experiments.$inferSelect;
+
+// ---------------------------------------------------------------------------
+// Skill Optimizer (MVP-3, LLD v0.1 section 18). Migration 0012.
+// ---------------------------------------------------------------------------
+
+/**
+ * Lifecycle of an optimization run (src/optimizer/): the pipeline moves it forward, a human
+ * closes it. Terminal: BLOCKED_NO_DATA, ERROR, PROMOTED, DISCARDED. GATE_PASS and GATE_FAIL wait
+ * for the human (PROMOTED after activating the candidate, DISCARDED otherwise).
+ */
+export const OPTIMIZATION_RUN_STATUSES = [
+  'PENDING',
+  'HARVESTING',
+  'CLUSTERED',
+  'CANDIDATE_CREATED',
+  'EXPERIMENT_RUNNING',
+  'GATE_PASS',
+  'GATE_FAIL',
+  'BLOCKED_NO_DATA',
+  'ERROR',
+  'PROMOTED',
+  'DISCARDED',
+] as const;
+export type OptimizationRunStatus = (typeof OPTIMIZATION_RUN_STATUSES)[number];
+
+/**
+ * An automatic Skill Optimizer run (LLD v0.1 section 18): harvest of production failures,
+ * clustering, a bounded candidate (edit-ops, DRAFT), an experiment against the ACTIVE version
+ * and the Release Gate verdict. The run never activates anything. Trigger: no DELETE; status
+ * changes are guarded UPDATEs (`WHERE status IN (...)`) in src/optimizer/service.ts. At most one
+ * open run per (tenant, skill) (partial unique index).
+ */
+export const optimizationRuns = pgTable(
+  'optimization_runs',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    tenantId: tenantId(),
+    skillName: text('skill_name').notNull(),
+    /** ACTIVE version when the run was requested (the base of the candidate and the experiment baseline). */
+    baseVersion: integer('base_version').notNull(),
+    status: text('status').$type<OptimizationRunStatus>().notNull().default('PENDING'),
+    /** Options of the run (dataset, budgets, minimums). */
+    config: jsonb('config').$type<Record<string, unknown>>().notNull().default({}),
+    /** Failure clusters (with the failures they group) from the clustering step. */
+    failureClusters: jsonb('failure_clusters').$type<Record<string, unknown>[]>().notNull().default([]),
+    /** Edit operations of the candidate (as applied, with their size), and the attempts. */
+    proposedOps: jsonb('proposed_ops').$type<Record<string, unknown>[]>().notNull().default([]),
+    candidateVersion: integer('candidate_version'),
+    experimentId: uuid('experiment_id').references(() => experiments.id),
+    /** Release Gate decision of the experiment (PASS, PASS_FORM, FAIL, INCONCLUSIVE). */
+    verdict: text('verdict').$type<ExperimentDecision>(),
+    /** LLM cost of the optimizer itself plus the experiment, EUR. */
+    costEur: money('cost_eur'),
+    /** Harvest stats, data check, dataset, P5 marks, attempts, note, human close. */
+    details: jsonb('details').$type<Record<string, unknown>>().notNull().default({}),
+    error: text('error'),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+    createdBy: text('created_by'),
+  },
+  (t) => [
+    index('optimization_runs_skill_idx').on(t.tenantId, t.skillName, t.createdAt),
+    uniqueIndex('optimization_runs_open_uq')
+      .on(t.tenantId, t.skillName)
+      .where(sql`${t.status} in ('PENDING', 'HARVESTING', 'CLUSTERED', 'CANDIDATE_CREATED', 'EXPERIMENT_RUNNING')`),
+    check(
+      'optimization_runs_status_ck',
+      sql`${t.status} in ('PENDING', 'HARVESTING', 'CLUSTERED', 'CANDIDATE_CREATED', 'EXPERIMENT_RUNNING', 'GATE_PASS', 'GATE_FAIL', 'BLOCKED_NO_DATA', 'ERROR', 'PROMOTED', 'DISCARDED')`,
+    ),
+    check('optimization_runs_verdict_ck', sql`${t.verdict} is null or ${t.verdict} in ('PASS', 'PASS_FORM', 'FAIL', 'INCONCLUSIVE')`),
+    check('optimization_runs_versions_ck', sql`${t.baseVersion} >= 1 and (${t.candidateVersion} is null or (${t.candidateVersion} >= 1 and ${t.candidateVersion} <> ${t.baseVersion}))`),
+  ],
+);
+
+export type OptimizationRun = typeof optimizationRuns.$inferSelect;

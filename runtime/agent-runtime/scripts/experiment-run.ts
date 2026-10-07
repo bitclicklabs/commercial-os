@@ -1,5 +1,5 @@
 /**
- * pnpm experiment:run --subject skill:<nombre> --candidate <v> [--dataset prospeccion-v1]
+ * pnpm experiment:run --subject skill:<nombre>|harness:<nombre> --candidate <v> [--skill <nombre>] [--dataset prospeccion-v1]
  *                     [--budget 0.30] [--judge-budget <eur>] [--repeat 2] [--form-sample auto|N|0]
  *                     [--test-on-form] [--min-delta 0.02] [--max-cost-ratio 1.25]
  *                     [--seesaw-tolerance 0] [--no-judge] [--judge-model gemini-pro-latest]
@@ -16,6 +16,10 @@
  *   decision that the gate lets through only with PASS / PASS_FORM.
  * - Never writes to Twenty (FakeTwenty per run). Writes to DATABASE_URL: `experiments`,
  *   `evaluation_cases.used_by` (the P5 ledger) and `evaluations` (tenant `experiments`).
+ * - `--subject harness:<nombre>`: baseline = the ACTIVE harness version, candidate = `--candidate`;
+ *   every run injects the ACTIVE version of `--skill` (default prospector-event-exhibitors), fixed,
+ *   and only the harness policies vary (timeout, retry, tool caps, max_output_tokens). Activation:
+ *   `POST /harnesses/:id/versions/:v/activate`, same gate.
  * - `--dry-run`: shows the versions, the dataset and the cases it would reserve; writes nothing.
  *
  * Dev-only tool (it imports the FakeTwenty test helper); not part of the runtime build.
@@ -29,13 +33,15 @@ import { createDb } from '../src/db/client.js';
 import { listCases, listDatasets } from '../src/datasets/service.js';
 import { autoFormSampleSize, DEFAULT_EUR_PER_DECISION, ExperimentAbortedError, gateConfig, renderExperimentMarkdown, reportToJson, runExperiment, type ExperimentReport } from '../src/experiments/index.js';
 import { GeminiProvider } from '../src/providers/index.js';
+import { findHarness, listHarnessVersions } from '../src/harness/service.js';
 import { desiredProspectorVersion } from '../src/seed/prospector-seed.js';
+import { COMPARABLE_SKILLS } from '../src/skills/compare.js';
 import { findSkill, listVersions } from '../src/skills/service.js';
 import { createDefaultToolRegistry, parseToolPolicy, ToolExecutor } from '../src/tools/index.js';
 import { FakeTwenty } from '../test/helpers/fake-twenty.js';
 
 const USAGE =
-  'uso: pnpm experiment:run --subject skill:<nombre> --candidate <v> [--dataset prospeccion-v1] [--budget 0.30] [--judge-budget E] [--repeat 2] [--form-sample auto|N|0] [--test-on-form] [--min-delta 0.02] [--max-cost-ratio 1.25] [--seesaw-tolerance 0] [--no-judge] [--today AAAA-MM-DD] [--tenant publiexpe] [--created-by Q] [--out-dir DIR] [--dry-run]';
+  'uso: pnpm experiment:run --subject skill:<nombre>|harness:<nombre> --candidate <v> [--skill <nombre> (harness)] [--dataset prospeccion-v1] [--budget 0.30] [--judge-budget E] [--repeat 2] [--form-sample auto|N|0] [--test-on-form] [--min-delta 0.02] [--max-cost-ratio 1.25] [--seesaw-tolerance 0] [--no-judge] [--today AAAA-MM-DD] [--tenant publiexpe] [--created-by Q] [--out-dir DIR] [--dry-run]';
 const RUNTIME_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
 function fail(msg: string): never {
@@ -57,6 +63,7 @@ async function main(): Promise<void> {
     options: {
       subject: { type: 'string' },
       candidate: { type: 'string' },
+      skill: { type: 'string', default: COMPARABLE_SKILLS[0] },
       dataset: { type: 'string', default: 'prospeccion-v1' },
       budget: { type: 'string', default: '0.30' },
       'judge-budget': { type: 'string' },
@@ -81,9 +88,10 @@ async function main(): Promise<void> {
     return;
   }
   const m = /^(skill|harness):([a-z0-9]+(?:-[a-z0-9]+)*)$/.exec(values.subject ?? '');
-  if (!m) fail('--subject debe ser skill:<nombre> (p. ej. skill:prospector-event-exhibitors)');
-  if (m[1] === 'harness') fail('aún no hay runner de experimentos para harness: activar una harness nueva exige hoy un override humano (force + reason)');
+  if (!m) fail('--subject debe ser skill:<nombre> o harness:<nombre> (p. ej. skill:prospector-event-exhibitors, harness:default-commercial)');
+  const subjectType = m[1] as 'skill' | 'harness';
   const subjectName = m[2]!;
+  const skillName = subjectType === 'harness' ? values.skill! : subjectName;
   const candidate = numberArg(values.candidate, '--candidate', NaN);
   if (!Number.isInteger(candidate) || candidate < 1) fail('--candidate debe ser un número de versión');
   const budget = numberArg(values.budget, '--budget', 0.3);
@@ -105,10 +113,14 @@ async function main(): Promise<void> {
 
   try {
     if (values['dry-run']) {
-      const skill = await findSkill(handle.db, tenant, subjectName);
-      if (!skill) fail(`la skill ${subjectName} no existe en ${tenant}`);
-      const versions = await listVersions(handle.db, skill.id);
+      const skill = await findSkill(handle.db, tenant, skillName);
+      if (!skill) fail(`la skill ${skillName} no existe en ${tenant}`);
+      const skillVersions = await listVersions(handle.db, skill.id);
+      const harness = subjectType === 'harness' ? await findHarness(handle.db, tenant, subjectName) : null;
+      if (subjectType === 'harness' && !harness) fail(`la harness ${subjectName} no existe en ${tenant}`);
+      const versions = harness ? await listHarnessVersions(handle.db, harness.id) : skillVersions;
       const active = versions.find((v) => v.status === 'ACTIVE');
+      const fixedSkill = harness ? ` · skill fija ${skillName} v${skillVersions.find((v) => v.status === 'ACTIVE')?.version ?? '—'} (ACTIVE)` : '';
       const ds = (await listDatasets(handle.db, { tenantId: tenant, name: values.dataset! })).find((d) => d.status !== 'ARCHIVED');
       if (!ds) fail(`no hay dataset ${values.dataset} en ${tenant}`);
       const val = await listCases(handle.db, { tenantId: tenant, datasetId: ds.id, split: 'VALIDATION', role: 'validation' });
@@ -119,7 +131,7 @@ async function main(): Promise<void> {
       const auto = autoFormSampleSize(budget - judgeBudget, DEFAULT_EUR_PER_DECISION, repeat, val.items.length);
       console.log(
         [
-          `simulación (no escribe nada) · ${subjectName}: baseline v${active?.version ?? '—'} (ACTIVE) vs candidata v${candidate} (${versions.find((v) => v.version === candidate)?.status ?? 'no existe'})`,
+          `simulación (no escribe nada) · ${subjectType} ${subjectName}: baseline v${active?.version ?? '—'} (ACTIVE) vs candidata v${candidate} (${versions.find((v) => v.version === candidate)?.status ?? 'no existe'})${fixedSkill}`,
           `dataset ${ds.name} v${ds.version} (${ds.status}) · VALIDATION utilizable: ${val.items.length} (${labeled} etiquetados; ${val.vetoed} vetados por P5)`,
           `modo del gate: ${labeled > 0 ? 'con etiquetas' : 'forma (PASS_FORM como mucho)'} · TRAIN sin quemar: ${freeTrain} · muestra de forma ${formSample === 'auto' ? `auto = ${labeled > 0 ? 0 : Math.min(auto, freeTrain)}` : formSample}`,
           `presupuesto ${budget} € (juez ${judgeBudget.toFixed(4)} €) · ${repeat} repetición(es)`,
@@ -134,10 +146,11 @@ async function main(): Promise<void> {
     const agentVersion = desiredProspectorVersion();
     const policy = parseToolPolicy(agentVersion.configuration);
     const fakes: FakeTwenty[] = [];
-    const makeTools = (runLabel: string) => {
+    // Harness arms pass the tool policy capped by their harness; skill arms use the agent's.
+    const makeTools = (runLabel: string, toolPolicy?: ReturnType<typeof parseToolPolicy>) => {
       const fake = new FakeTwenty();
       fakes.push(fake);
-      return new ToolExecutor(createDefaultToolRegistry({ twenty: fake.client() }), policy, { tenantId: tenant, executionId: runLabel, agentId: 'experiment-run', stage: 'PROSPECTOR' }, new AbortController().signal);
+      return new ToolExecutor(createDefaultToolRegistry({ twenty: fake.client() }), toolPolicy ?? policy, { tenantId: tenant, executionId: runLabel, agentId: 'experiment-run', stage: 'PROSPECTOR' }, new AbortController().signal);
     };
     const now = values.today ? () => new Date(`${values.today}T08:00:00Z`) : () => new Date();
     const controller = new AbortController();
@@ -178,7 +191,9 @@ async function main(): Promise<void> {
       },
       {
         tenantId: tenant,
+        subjectType,
         subjectName,
+        ...(subjectType === 'harness' ? { skillName } : {}),
         candidateVersion: candidate,
         dataset: values.dataset!,
         budgetEur: budget,

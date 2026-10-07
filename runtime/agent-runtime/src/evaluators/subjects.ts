@@ -125,7 +125,9 @@ interface SavedReport {
   input_sha256: string;
   event: string;
   today?: string;
-  versions: Array<{ version: number; skillVersionId?: string; contentHash?: string }>;
+  versions: Array<{ version: number; skillVersionId?: string; contentHash?: string; skillVersion?: number; harness?: { name: string; version: number; harnessVersionId: string; contentHash: string } }>;
+  /** Harness comparison (experiment subject `harness`): the arms are versions of this harness, the skill is fixed. */
+  harness?: string;
   runs: SavedRun[];
 }
 interface SavedMulti {
@@ -204,9 +206,11 @@ export function subjectsFromComparison(json: unknown, ref: string, opts: Compari
         };
       });
       const version = report.versions.find((v) => v.version === run.version);
+      // Harness arms: the version number is the harness one, never confused with a skill version.
+      const arm = report.harness ? `${report.skill}~${report.harness}@h${run.version}` : `${report.skill}@v${run.version}`;
       subjects.push({
         subjectType: 'comparison_case',
-        subjectId: `${report.skill}@v${run.version}:${report.input_sha256.slice(0, 16)}:r${run.repetition}`,
+        subjectId: `${arm}:${report.input_sha256.slice(0, 16)}:r${run.repetition}`,
         label: `v${run.version} · ${fixture ? (fixture.split(/[\\/]/).pop() ?? fixture).replace(/\.json$/, '') : report.event} · r${run.repetition}`,
         group: `v${run.version}`,
         executorModel: report.model,
@@ -220,6 +224,7 @@ export function subjectsFromComparison(json: unknown, ref: string, opts: Compari
           version: run.version,
           skill_version_id: version?.skillVersionId ?? null,
           skill_content_hash: version?.contentHash ?? null,
+          ...(report.harness ? { skill_version: version?.skillVersion ?? null, harness: report.harness, harness_version: run.version, harness_version_id: version?.harness?.harnessVersionId ?? null, harness_content_hash: version?.harness?.contentHash ?? null } : {}),
           repetition: run.repetition,
           input_sha256: report.input_sha256,
           fixture: fixture ?? null,

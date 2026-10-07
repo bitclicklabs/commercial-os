@@ -281,7 +281,7 @@ export function readConfig(configuration: Record<string, unknown>): ProspectorCo
       maxRenders: int(s.max_renders, 4, 6),
       maxPdfsPerEvent: int(s.max_pdfs_per_event, 2, 2),
       maxCatalogPages: Math.max(1, int(s.max_catalog_pages, 10, SCOUT_CATALOG_PAGES_CAP)),
-      maxProfileLookups: int(s.max_profile_lookups, 60, SCOUT_PROFILE_LOOKUPS_CAP),
+      maxProfileLookups: int(s.max_profile_lookups, 100, SCOUT_PROFILE_LOOKUPS_CAP),
       profileConcurrency: Math.max(1, int(s.profile_concurrency, 2, 4)),
       timeBudgetMs: Math.max(10_000, int(s.time_budget_ms, SCOUT_TIME_BUDGET_DEFAULT_MS, SCOUT_TIME_BUDGET_CAP_MS)),
       captureJson: s.capture_json !== false,

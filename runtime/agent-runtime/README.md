@@ -357,7 +357,7 @@ Tabla `events` (migración `0002_events`): `id`, `tenant_id`, `type`, `schema_ve
 ```
 
 - `event_type` (alias `event`) debe coincidir con el `type` del evento.
-- `filter` es opcional. Cada clave es una ruta con puntos dentro de `data` (`funnel.out`, `results.0.status`; se acepta el prefijo `$.`) y el valor se compara por igualdad estricta (objetos y arrays, en profundidad). No hay operadores.
+- `filter` es opcional. Cada clave es una ruta con puntos dentro de `data` (`funnel.out`, `results.0.status`; se acepta el prefijo `$.`) y el valor se compara por igualdad estricta (objetos y arrays, en profundidad), o con el operador `{"in": [v1, v2, ...]}` (máx. 50 valores) para aceptar varios.
 - El registro sigue el mismo camino que `CRON`: la API sincroniza tras `POST /tasks`, `PATCH`, `pause`, `resume` y `archive`, y `syncAll` lo corrige periódicamente. Solo se registran tareas `ACTIVE`, `enabled` y con un `EVENT` válido, en el hash de Redis `pxos:{QUEUE_NAME}-events:triggers`. `GET /tasks/:id/schedule` devuelve `event_trigger` (deseado y registrado) y `GET /scheduler/status` lista los triggers con `kind = "event"`.
 - El consumidor (rol `scheduler` o `all`) recibe cada evento, busca los triggers del mismo tenant y tipo, vuelve a leer la tarea en PostgreSQL (un registro obsoleto se retira), aplica el filtro y la guardia anti-bucle y llama a `requestTaskRun` con la clave `taskrun:{task_id}:event:{event_id}`. El mismo evento entregado dos veces devuelve el `TaskRun` existente.
 - El `input` del run es `default_input` más el sobre completo bajo la clave `event` (`input.event.data` es el payload).
@@ -1211,4 +1211,4 @@ Una llamada a Gemini por borrador. En la prueba en vivo: 0,0021 USD (0,0018 €)
 - Borradores de email: disparar también con `EDITED` (necesita una segunda tarea o un operador OR en el filtro), plantillas por sector y registro de si el comercial envió el borrador. Entrada de eventos externos (Twenty, n8n) por HTTP y entrega a n8n por webhook.
 - Harness, skills, memoria y verificador reales; promote, rollback y evaluate.
 - Export de los contratos zod a JSON Schema versionado en `schemas/`.
-- Métricas: AC-17 y AC-18 piden hipótesis `HOT`, pero el resumen de ejecución solo cuenta hipótesis creadas; falta el desglose por prioridad (en Twenty o en `output.counters`). El dashboard no filtra los agentes de prueba (`[TEST] …`) del tenant.
+- Métricas: AC-17 y AC-18 piden hipótesis `HOT`, pero el resumen de ejecución solo cuenta hipótesis creadas; falta el desglose por prioridad (en Twenty o en `output.counters`). El dashboard oculta por defecto los agentes `ARCHIVED` (los de prueba se archivan con `pnpm cleanup:archive-test-agents`); `include_archived=true` los muestra.

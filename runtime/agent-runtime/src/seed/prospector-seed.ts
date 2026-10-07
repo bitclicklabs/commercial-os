@@ -85,7 +85,7 @@ export function desiredProspectorVersion() {
         max_renders: 4,
         max_pdfs_per_event: 2,
         max_catalog_pages: 10,
-        max_profile_lookups: 60,
+        max_profile_lookups: 100,
         profile_concurrency: 2,
         time_budget_ms: 1_200_000,
         capture_json: true,

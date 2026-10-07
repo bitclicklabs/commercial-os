@@ -18,6 +18,10 @@ export interface FakeRendered {
   nextPages?: Array<{ text: string; links?: Array<{ url: string; text: string }> }>;
   /** Simulates a renderer without pagination support (no pages_read / page_urls). */
   legacy?: boolean;
+  /** JSON answers the page received: served only when the request asks for capture_json (like pxos-renderer 0.2). */
+  json?: Array<{ url: string; method?: string; status?: number; body: unknown }>;
+  /** Why the client-side pagination stopped (served with max_pages > 1). */
+  paginationStop?: string;
 }
 
 type Entry = { kind: 'page'; page: FakeRendered } | { kind: 'raw'; status: number; body: unknown };
@@ -26,6 +30,10 @@ export class FakeRenderer {
   readonly entries = new Map<string, Entry[]>();
   /** Bodies POSTed to /render. */
   readonly requests: Array<Record<string, unknown>> = [];
+  /** Called with each request body before answering (tests: advance a fake clock...). */
+  onRequest: ((body: Record<string, unknown>) => void) | null = null;
+  /** Answers INVALID_INPUT to max_pages above this (a renderer older than pxos-renderer 0.2: 5). */
+  maxPagesAccepted = Infinity;
 
   page(url: string, page: FakeRendered): this {
     this.entries.set(url, [{ kind: 'page', page }]);
@@ -52,10 +60,12 @@ export class FakeRenderer {
     const fakeFetch = async (_input: unknown, init?: RequestInit): Promise<Response> => {
       const body = JSON.parse(String(init?.body ?? '{}')) as Record<string, unknown>;
       this.requests.push(body);
+      this.onRequest?.(body);
       const list = this.entries.get(String(body.url));
       const entry = list && list.length > 1 ? list.shift() : list?.[0];
       const json = (status: number, payload: unknown) =>
         new Response(typeof payload === 'string' ? payload : JSON.stringify(payload), { status, headers: { 'content-type': 'application/json' } });
+      if (typeof body.max_pages === 'number' && body.max_pages > this.maxPagesAccepted) return json(400, { error: { code: 'INVALID_INPUT', message: 'max_pages: Too big' } });
       if (!entry) return json(502, { error: { code: 'NAVIGATION_FAILED', message: `no fake page for ${String(body.url)}` } });
       if (entry.kind === 'raw') return json(entry.status, entry.body);
       const p = entry.page;
@@ -72,6 +82,10 @@ export class FakeRenderer {
         status: p.status ?? 200,
         render_ms: 1500,
         ...(p.legacy ? {} : { pages_read: 1 + extra.length, page_urls: Array(1 + extra.length).fill(finalUrl) }),
+        ...(!p.legacy && maxPages > 1 ? { pagination_stop: p.paginationStop ?? (extra.length + 1 >= maxPages ? 'max_pages' : 'no_next_control') } : {}),
+        ...(!p.legacy && body.capture_json === true
+          ? { json_responses: (p.json ?? []).map((j) => ({ url: j.url, method: j.method ?? 'POST', status: j.status ?? 200, bytes: JSON.stringify(j.body).length, list_length: 0, body: j.body })), json_skipped: { no_list: 0 } }
+          : {}),
       });
     };
     return {

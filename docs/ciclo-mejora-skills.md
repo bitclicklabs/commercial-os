@@ -11,6 +11,8 @@ SKILL ACTIVA → TRAZAS REALES → PATRONES → OPERACIONES ACOTADAS → CANDIDA
             → MEDIR ACEPTACIÓN POR VERSIÓN → (ROLLBACK si empeora)
 ```
 
+> **Nota:** desde el MVP-3, el [Skill Optimizer](../runtime/agent-runtime/README.md#skill-optimizer) hace solo los pasos 2 a 4 (`pnpm optimize:run --skill <skill>` o `POST /optimizer/skills/:name/run`): cosecha los fallos de la versión activa, los agrupa, escribe la candidata como operaciones acotadas, quema como `design` las entidades de esos fallos (P5) y ejecuta el experimento. Si los datos no bastan, termina en `BLOCKED_NO_DATA` sin gastar. Los pasos 5 a 8 (decidir, activar, medir y rollback) siguen siendo humanos; si el gate pasa, el optimizador deja una nota «Propuesta de promoción» en Twenty.
+
 > **Importante:** ningún agente activa una versión. La activación es siempre una decisión humana (LLD §19, regla de oro), y desde el MVP-2 la API la hace cumplir: `POST /skills/:id/versions/:v/activate` exige un experimento `COMPLETED` con decisión `PASS` o `PASS_FORM` frente a la versión activa, o un override humano con motivo. Un agente puede analizar, proponer, crear la versión `DRAFT` y ejecutar el experimento.
 
 ## Antes de empezar

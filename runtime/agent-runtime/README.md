@@ -584,7 +584,7 @@ Entrada (`ScoutInput`):
 { "event_url": "https://www.gastronoma.es", "event_name": "Mediterránea Gastrónoma 2026" }
 ```
 
-`max_events` (1-3), `max_exhibitors` (1-100), `max_catalog_pages` (1-5) y `max_profile_lookups` (0-30) bajan los límites de la configuración para una ejecución; nunca los suben. Se elige este modo si `mode = "scout"` o si la entrada tiene `sector` o `event_url` y no tiene `event` ni `exhibitors`.
+`max_events` (1-3), `max_exhibitors` (1-200), `max_catalog_pages` (1-20), `max_profile_lookups` (0-100) y `scout_time_budget_ms` (10 000-1 500 000) bajan los límites de la configuración para una ejecución; nunca los suben. Se elige este modo si `mode = "scout"` o si la entrada tiene `sector` o `event_url` y no tiene `event` ni `exhibitors`.
 
 Flujo:
 
@@ -599,41 +599,78 @@ Flujo:
    1. **PDF de catálogo enlazados**: hasta `max_pdfs_per_event` enlaces a `.pdf` de la página (estática o renderizada) cuyo texto o URL sugiere catálogo o listado (`expositores`, `exhibitors`, `catálogo`, `listado`, `participantes`, `marcas`, `directorio`, `plano`…) se descargan con `fetch_url` y se extraen también, aunque la página ya haya dado expositores.
 
    Máximo `max_pages_per_event` páginas por feria (sin contar renders ni PDF enlazados), `max_fetches` descargas y `max_renders` renders por ejecución.
-1. **Paginación del listado**, hasta `max_catalog_pages` páginas (3 por defecto, unos 60 expositores en Gastrónoma):
-   - **en el cliente**: si la URL renderizada parece un listado (`expositores`, `exhibitors`, `catalog`, `directorio`, `participantes`, `empresas`, `marcas`, `listado`…), el scout pide al renderer `maxPages`. El renderer pulsa el control "siguiente" del paginador y devuelve todas las páginas en un solo `render_url` (consulta [Paginación](../../services/renderer/README.md#paginación)). Es el caso de Gastrónoma: los botones no son enlaces y la URL no cambia;
-   - **por enlaces**: si no, el scout sigue los enlaces de la misma ruta que solo cambian un parámetro de página (`?page=2`, `offset`, `start`…), los segmentos `/page/2` o los enlaces "Siguiente"/"Next", y lee cada página igual que la primera (`fetch_url` o `render_url`).
+1. **Paginación del listado hasta el final**, hasta `max_catalog_pages` páginas (10 por defecto, tope 20; Gastrónoma tiene 5 de 20 expositores):
+   - **en el cliente**: si la URL renderizada parece un listado (`expositores`, `exhibitors`, `catalog`, `directorio`, `participantes`, `empresas`, `marcas`, `listado`…), el scout pide al renderer `maxPages`. El renderer pulsa el control "siguiente" del paginador y devuelve todas las páginas en un solo `render_url` (consulta [Paginación](../../services/renderer/README.md#paginación)). Es el caso de Gastrónoma: los botones no son enlaces y la URL no cambia. El renderer para antes si no encuentra el control, si la lista no cambia o si la página nueva no aporta ninguna línea nueva (`pagination_stop` en la página leída);
+   - **por enlaces**: si no, el scout sigue los enlaces de la misma ruta que solo cambian un parámetro de página (`?page=2`, `offset`, `start`…), los segmentos `/page/2` o los enlaces "Siguiente"/"Next", y lee cada página igual que la primera (`fetch_url` o `render_url`). **Parada temprana**: la primera página sin expositores nuevos termina la paginación (`pagination_stop = no_new_exhibitors`).
 
-   Un renderer anterior, sin `max_pages`, ignora el parámetro: el scout sigue con la primera página.
-1. **Extracción**: el LLM extrae `{name, domain?, description?, sector?}` solo del texto leído (HTML, página renderizada o PDF; el prompt indica el tipo). El código descarta los nombres que no aparecen en **esa** página y los dominios que no están en su texto o sus enlaces (ni el de la propia feria ni redes sociales). Los expositores de varias páginas de la misma feria se fusionan sin duplicados (por nombre), hasta `max_exhibitors_per_event`.
+   Un renderer sin `max_pages` ignora el parámetro y el scout sigue con la primera página. Un renderer anterior a pxos-renderer 0.2 (máximo 5 páginas) responde `INVALID_INPUT` a `max_pages` mayor: el scout repite el render con 5.
+1. **Atajo de la API JSON** (`scout.capture_json`, activo por defecto): los renders de catálogo piden `captureJson`. Si entre las respuestas JSON capturadas (mismo origen que la página, como máximo 5 de 200 KB) hay una lista de expositores, es la **fuente preferente**: da la lista completa, también más allá de las páginas renderizadas, sin llamada de extracción al LLM. Consulta [Atajo de la API JSON](#atajo-de-la-api-json).
+1. **Extracción**: el LLM extrae `{name, domain?, description?, sector?}` solo del texto leído (HTML, página renderizada o PDF; el prompt indica el tipo). Un listado renderizado de varias páginas se extrae en **trozos de hasta 5 páginas** (una llamada por trozo, unos 100 expositores; cada expositor se extrae una sola vez). Si un trozo después del primero no aporta expositores nuevos, no se extraen los siguientes (`pagination_stop = no_new_exhibitors`). El código descarta los nombres que no aparecen en **ese** texto y los dominios que no están en su texto o sus enlaces (ni el de la propia feria ni redes sociales). Los expositores de varias páginas de la misma feria se fusionan sin duplicados (por nombre), hasta `max_exhibitors_per_event` (100 por defecto, tope 200).
 1. **Evaluación con el LLM de todos los expositores**, antes de escribir nada (`decideExhibitor`): relevancia, confianza e hipótesis, igual que en el modo directo.
-1. **Fichas de los relevantes sin dominio**: solo los que se van a escribir (relevantes y con confianza ≥ `min_confidence`), de mayor a menor confianza, hasta `max_profile_lookups` por ejecución (10 por defecto). Para cada uno:
-   1. La ficha es el enlace de la lista cuyo texto es el nombre del expositor, en el mismo sitio que la lista (Gastrónoma: `/catalog/gastronoma/exhibitors/{id}`). Sin enlace: `profile.status = no_profile_link`.
+1. **Fichas de los relevantes sin dominio**: solo los que se van a escribir (relevantes y con confianza ≥ `min_confidence`), de mayor a menor confianza, hasta `max_profile_lookups` por ejecución (60 por defecto, tope 100; el límite real lo pone el presupuesto de tiempo), `profile_concurrency` a la vez (2, los renders simultáneos del renderer). Para cada uno:
+   1. La ficha es el enlace de la lista cuyo texto es el nombre del expositor, en el mismo sitio que la lista (Gastrónoma: `/catalog/gastronoma/exhibitors/{id}`). Con la lista de la API JSON, si el expositor no salió en las páginas renderizadas, la URL se construye con la plantilla aprendida de los enlaces (`profile.url_source = json_template`). Sin enlace: `profile.status = no_profile_link`.
    1. Se lee con `fetch_url`; si es una app JavaScript (o su host ya dio un esqueleto JS en esta ejecución), se renderiza directamente con `render_url`. Los renders de fichas no gastan `max_renders`.
    1. La ficha tiene que ser del expositor: su nombre aparece antes de secciones como "Empresas similares" (`profile_mismatch` si no).
    1. La web es, por orden: el valor junto a la etiqueta "Web", "Website", "Sitio web" o "Página web"; el único enlace externo de la ficha; o el único dominio `www.` del texto. Nunca vale el dominio de la propia feria (web del evento, host del catálogo y páginas leídas, por dominio registrable), las redes sociales ni las plataformas genéricas (`gmail.com`, `linktr.ee`…). Facebook, Instagram, LinkedIn, X, YouTube, TikTok y Pinterest se guardan en `profile.social` como metadato.
    1. El dominio tiene que resolver a IP públicas: `fetch_url` de `https://{dominio}/` con las mismas guardas SSRF. `DNS_ERROR`, `SSRF_BLOCKED` o `URL_NOT_ALLOWED` lo rechazan (`domain_rejected`). Un 403 de un WAF, un error TLS o un timeout ocurren después de la comprobación de DNS y no lo rechazan.
+1. **Presupuesto de tiempo** (`scout.time_budget_ms`, 20 min por defecto; consulta [Presupuesto de tiempo](#presupuesto-de-tiempo)): se comprueba antes de cada página, render, extracción, evaluación y ficha.
 1. **Pipeline por expositor** (`writeExhibitor`), el mismo del modo directo, con `source_url` = la página de la que sale cada expositor (página de expositores, página renderizada o PDF), siempre una URL visitada. Con el dominio de la ficha se crea o reutiliza la empresa por dominio, y la hipótesis añade la evidencia "Web … tomada de la ficha del expositor" con la URL de la ficha. Sin dominio después de intentar la ficha, sigue como antes: `skipped_no_domain`.
 1. **Sin lista de expositores** (catálogo ilegible, página vacía, renderer no disponible): la feria se registra como señal `FAIR` a nivel de evento (`create_signal` sin `companyId`, con la URL visitada) y el `outcome` es `PARTIAL` con el motivo en `partial_reasons` y en el `agentRunSummary` (incluye `render JavaScript no disponible (…)` cuando el render se necesitaba y no se pudo hacer).
 
 `outcome`: `FAILED` si falla la búsqueda o todos los expositores; `PARTIAL` si hay errores, ninguna feria verificable o alguna feria sin lista de expositores; `SUCCESS` en otro caso. La salida incluye `events[]` (páginas leídas con `via` = `fetch` | `render` | `pdf`, `content_kind`, `js_app_likely`, expositores extraídos y verificados por página; verificación; expositores descartados), `discarded_events[]` con el motivo, `sources` (URL visitadas y fuentes de grounding), `render` (`calls`, `ok`, `retries`, `max`, `disabled` con el motivo si se desactivó), los contadores `fetches`, `renders`, `renders_ok`, `render_retries`, `pdfs_read`, `catalog_pages` (páginas del listado de las que salen expositores), `profile_lookups` (fichas abiertas), `profile_renders`, `domain_checks` y `domains_resolved` (dominios obtenidos de la ficha), `profiles` (resumen y límites), `profile` en cada resultado (`url`, `status`, `via`, `domain`, `domain_source`, `social`, `error`) y el coste de búsqueda.
 
-El catálogo JavaScript de Gastrónoma lista nombres, sector y país, pero no la web de cada expositor: está en su ficha (`/exhibitors/{id}`, etiqueta "Website"). Hasta la tanda 4 el scout solo leía la primera página (20 de 91) y los relevantes acababan como `skipped_no_domain`. Ahora lee 3 páginas en un render y abre las fichas de los relevantes.
+El catálogo JavaScript de Gastrónoma lista nombres, sector y país, pero no la web de cada expositor: está en su ficha (`/exhibitors/{id}`, etiqueta "Website"). Hasta la tanda 4 el scout solo leía la primera página (20 de 91) y los relevantes acababan como `skipped_no_domain`. La tanda 5 leía 3 páginas (60) y 20 fichas. Ahora lee el catálogo entero (o su API JSON) y abre las fichas de los relevantes mientras quede tiempo.
+
+#### Atajo de la API JSON
+
+Muchos catálogos SPA descargan la lista completa como JSON y la paginan en el navegador. En Feria Valencia es `POST https://apps.feriavalencia.com/api/puisearch` (sesión anónima de la propia app): devuelve los 91 expositores de Gastrónoma en una respuesta de 52 KB con `name`, `exhibitor` (id), `country`, `province` y `sectorsname`, sin web.
+
+`src/agents/catalog-json.ts` busca, entre las respuestas capturadas con el render, el array que es la lista de expositores:
+
+- array de al menos 3 objetos con un campo de nombre (`name`, `nombre`, `companyName`, `*name`…; nunca `country`, `province`, `sector`…) presente en el 80 % y con valores distintos;
+- el que tiene más nombres en el texto de la página renderizada (la página muestra al menos su primera página de expositores), con un mínimo de 3. Las listas de provincias, sectores o países de las mismas respuestas no ganan;
+- de cada elemento toma `name` (sin HTML, entidades decodificadas) y, si existen, la web (`web`, `website`, `url`…) como dominio, la descripción, el sector y el id.
+
+Con la lista, el scout:
+
+- la valida igual que una página: los nombres se comprueban contra el contenido JSON, el dominio tiene que estar en él y nunca puede ser el de la feria ni una red social;
+- cita como fuente la página del listado renderizada (visitada, en el `SourceLedger`), nunca la URL de la API; la salida guarda la API usada en `events[].json_api` y `events[].catalog_source = json_api`;
+- no hace la extracción con el LLM del listado. Si aún no conoce el nombre o la fecha de la feria, hace una extracción sobre los primeros 6 000 caracteres de la página;
+- aprende la plantilla de URL de las fichas a partir de al menos 2 enlaces cuyo texto es un nombre de la lista y cuya URL contiene su id, y la aplica a los expositores que no salieron en las páginas renderizadas.
+
+El JSON es contenido web **no confiable** como cualquier página: no se ejecuta nada, sus textos solo llegan al LLM dentro de bloques `DATOS_NO_CONFIABLES` (evaluación) y las URL que se escriben en Twenty pasan por el `SourceLedger`. Sin captura (renderer anterior, `scout.capture_json = false` o ninguna lista reconocible), el flujo es el de antes: extracción del texto renderizado.
+
+#### Presupuesto de tiempo
+
+`scout.time_budget_ms` (20 min por defecto; tope 25 min, el timeout de 30 min de `weekly-event-scouting` menos 5 min para las escrituras y el resumen) gobierna toda la ejecución desde su inicio. La entrada `scout_time_budget_ms` puede bajarlo. El agente no recibe el timeout de la tarea: una tarea con un timeout menor necesita un `time_budget_ms` menor.
+
+Se comprueba antes de cada feria, página, render, extracción, evaluación y ficha. Al agotarse, la ejecución se corta limpia donde esté:
+
+- lo ya evaluado se escribe igualmente en Twenty: las escrituras no se cortan y no se pierde ninguna evaluación pagada;
+- los expositores leídos y no evaluados cuentan en `exhibitors_not_evaluated` (`events[].not_evaluated` guarda los 50 primeros nombres);
+- las fichas no abiertas quedan con `profile.status = time_budget_exhausted` y el expositor como `skipped_no_domain`; se cuentan en `profiles_skipped_time_budget`;
+- una feria de la que aún no se leyó ningún expositor queda en `status = time_budget_exhausted` y no se escribe nada para ella (ni la señal de feria sin lista, que sería engañosa);
+- el `outcome` es `PARTIAL` con el motivo `presupuesto de tiempo agotado (N min, en la fase de …)` y los contadores de lo conseguido. `output.time_budget` guarda `budget_ms`, `elapsed_ms`, `exhausted` y la fase.
+
+El corte llega en el siguiente punto de control: una ficha en curso (10-15 s) o un render de catálogo (hasta 60 s) terminan antes.
+
+El `agentRunSummary` pone primero los totales, el tiempo, el coste y los motivos, y después una línea por expositor: con un catálogo entero, las líneas por expositor superan los 4 000 caracteres del resumen y antes desplazaban los totales.
 
 Prueba en vivo del 2026-10-07 (`event_url = https://www.gastronoma.es`, Gemini y Twenty reales, renderer en Docker): 3 páginas de catálogo, 60 expositores evaluados, 56 relevantes, 10 fichas abiertas (las de mayor confianza), 6 dominios obtenidos y 6 empresas creadas en Twenty con señal `FAIR` e hipótesis `PROPOSED`. Las otras 4 fichas no publican web (`no_website`). Coste: 0,139 € (63 llamadas al LLM), unos 8 minutos.
 
 #### Coste esperado por feria
 
-Con la configuración por defecto (`max_catalog_pages` 3, `max_exhibitors_per_event` 60, `max_profile_lookups` 10, `gemini-flash-latest` con `thinking_level = low`):
+Con la configuración por defecto (`max_catalog_pages` 10, `max_exhibitors_per_event` 100, `max_profile_lookups` 60, presupuesto de 20 min, `gemini-flash-latest` con `thinking_level = low`), para un catálogo de unos 90 expositores como Gastrónoma:
 
 | Paso | Llamadas | Coste |
 |---|---|---|
-| Lectura de la feria (portada, catálogo y listado de 3 páginas en un solo render) | 3 `fetch_url`, 2 `render_url`, 2-3 extracciones con el LLM | ~0,01 € |
-| Evaluación con el LLM de cada expositor | 60 llamadas | ~0,002 € cada una, ~0,13 € |
-| Fichas de los relevantes | hasta 10 `render_url` (o `fetch_url`) + hasta 10 `fetch_url` de comprobación del dominio | 0 € de modelo; unos 10-12 s por ficha renderizada |
+| Lectura de la feria (portada, catálogo y listado entero en un solo render) | 3 `fetch_url`, 2 `render_url`, 1-2 extracciones con el LLM (con la API JSON, la del listado no se hace) | ~0,01 € |
+| Evaluación con el LLM de cada expositor | ~90 llamadas | ~0,002 € cada una, ~0,2 € |
+| Fichas de los relevantes | hasta 60 `render_url` (o `fetch_url`) + otras tantas `fetch_url` de comprobación del dominio, 2 a la vez | 0 € de modelo; unos 10-12 s por ficha renderizada |
 | Escritura en Twenty | 3 llamadas por expositor escrito | 0 € |
-| **Total por feria** | | **~0,14 €** (en modo `sector`, la búsqueda con grounding suma ~0,10 €) |
+| **Total por feria** | | **~0,2-0,25 €** (en modo `sector`, la búsqueda con grounding suma ~0,10 €) |
 
-La ejecución semanal (`max_events` 3) puede llegar a unos 0,45 € si las tres ferias tienen listados de 60 expositores. Para bajar el coste, reduce `max_exhibitors_per_event` o `max_catalog_pages`: cada página de 20 expositores cuesta unos 0,045 €. Las fichas no tienen coste de modelo, solo tiempo; súbelas con `max_profile_lookups` (máximo 30) si quieres más empresas por feria (en Gastrónoma, 6 de cada 10 fichas tenían web).
+El coste de modelo crece con los expositores evaluados, no con las páginas: cada expositor se extrae una vez (por trozos de 5 páginas, o ninguna con la API JSON) y se evalúa una vez. La ejecución semanal (`max_events` 3) con tres catálogos de 100 expositores puede llegar a unos 0,7 €; el presupuesto de tiempo la acota. Para bajar el coste, reduce `max_exhibitors_per_event` (cada expositor evaluado cuesta unos 0,002 €). Las fichas no tienen coste de modelo, solo tiempo: el presupuesto de tiempo decide cuántas se abren.
 
 ### Seguridad del contenido web
 
@@ -674,9 +711,9 @@ Códigos de error de `fetch_url`: `URL_NOT_ALLOWED`, `REDIRECT_NOT_ALLOWED`, `SS
 |---|---|
 | Destino | `RENDERER_URL` + `/render` (por defecto `http://pxos-renderer:3000`, dentro de `pxos-net`). Es configuración de confianza: no pasa por la guarda SSRF |
 | Antes de llamar | La URL a renderizar pasa `checkUrl` con la misma política de hosts que `fetch_url` (esquema, credenciales, puertos, allow/denylist, nombres internos, IP literales). El renderer repite la comprobación con DNS y la aplica a cada petición del navegador |
-| Entrada | `url`, y opcionales `waitMs`, `maxChars`, `minTextChars` (espera de hidratación), `waitUntil` (`domcontentloaded`, `load`, `networkidle`) y `maxPages` (1-5, paginación en el cliente) |
-| Respuesta | Validada con zod: texto recortado a 40 000 caracteres, título, hasta 200 enlaces `http(s)`, `finalUrl` comprobada otra vez con `checkUrl`, `content_kind = "rendered"`, `renderMs`, `hydrated`, `pagesRead` y `pageUrls` (también comprobadas con `checkUrl`). Los enlaces con la misma URL se fusionan conservando el primer texto no vacío |
-| Tiempo | 25 s de JavaScript en el renderer; 40 s de espera en el cliente (`RENDER_TIMEOUT`) |
+| Entrada | `url`, y opcionales `waitMs`, `maxChars`, `minTextChars` (espera de hidratación), `waitUntil` (`domcontentloaded`, `load`, `networkidle`), `maxPages` (1-20, paginación en el cliente) y `captureJson` (respuestas JSON de la página) |
+| Respuesta | Validada con zod: texto recortado a 40 000 caracteres, título, hasta 200 enlaces `http(s)`, `finalUrl` comprobada otra vez con `checkUrl`, `content_kind = "rendered"`, `renderMs`, `hydrated`, `pagesRead` y `pageUrls` (también comprobadas con `checkUrl`), `paginationStop` y, con `captureJson`, `jsonResponses` (otra vez filtradas aquí: mismo origen que `finalUrl`, `checkUrl`, 200 KB y 5 como máximo) y `jsonSkipped` (con `refused_here`). Hasta 600 enlaces; los que tienen la misma URL se fusionan conservando el primer texto no vacío |
+| Tiempo | 25 s de JavaScript en el renderer, más 3 s por página adicional de `maxPages` (máximo 60 s); 40 s de espera en el cliente, más lo mismo (`RENDER_TIMEOUT`) |
 | Sin renderer | `RENDERER_URL` vacío u `off`, o el servicio no responde (DNS, conexión rechazada): `RENDERER_NOT_CONFIGURED`. El scout lo trata como "sin render" y sigue |
 
 Códigos de error de `render_url`: `RENDERER_NOT_CONFIGURED`, `INVALID_URL`, `URL_NOT_ALLOWED`, `REDIRECT_NOT_ALLOWED`, `RENDER_TIMEOUT`, `RENDERER_BAD_RESPONSE` y los del renderer (`SSRF_BLOCKED`, `NAVIGATION_BLOCKED`, `DOWNLOAD_BLOCKED`, `HTTP_ERROR`, `RENDERER_BUSY`…).
@@ -690,7 +727,7 @@ Cada llamada al LLM es un paso `MODEL` con `model` (el modelo real que respondi�
 | Clave de `configuration` | Por defecto | Uso |
 |---|---|---|
 | `implementation` | — | `prospector` |
-| `tool_policy` | — | `find_company`, `upsert_company`, `create_signal`, `create_hypothesis`, `create_agent_run_summary`, `fetch_url` (máximo 42 llamadas: páginas, PDF, redirecciones, fichas y comprobación de dominios) y `render_url` (máximo 15: catálogo y fichas); techo `LOW_WRITE`; 640 llamadas por ejecución |
+| `tool_policy` | — | `find_company`, `upsert_company`, `create_signal`, `create_hypothesis`, `create_agent_run_summary`, `fetch_url` (máximo 230 llamadas: páginas, PDF, redirecciones, fichas y comprobación de dominios) y `render_url` (máximo 115: catálogo y fichas); techo `LOW_WRITE`; 1 500 llamadas por ejecución (el límite real de una ejecución scout es su presupuesto de tiempo) |
 | `min_confidence` | `0.5` | Umbral para escribir en Twenty |
 | `usd_to_eur` | `0.86` | Conversión del coste para Twenty |
 | `model_options` | `{}` | `thinking_level` (Gemini 3.x), `thinking_budget` (Gemini 2.5), `temperature` |
@@ -698,13 +735,16 @@ Cada llamada al LLM es un paso `MODEL` con `model` (el modelo real que respondi�
 | `task_name` | `daily-event-prospecting` | Campo `task` del `agentRunSummary` (modo directo) |
 | `scout.task_name` | `weekly-event-scouting` | Campo `task` del `agentRunSummary` (modo scout) |
 | `scout.max_events` | `3` | Ferias por ejecución (máximo 3) |
-| `scout.max_exhibitors_per_event` | `60` | Expositores evaluados por feria (máximo 100) |
+| `scout.max_exhibitors_per_event` | `100` | Expositores evaluados por feria (máximo 200) |
 | `scout.max_fetches` | `18` | Descargas por ejecución (páginas y PDF) |
 | `scout.max_pages_per_event` | `3` | Páginas leídas por feria (portada → catálogo → lista); los renders y los PDF enlazados no cuentan |
 | `scout.max_renders` | `4` | Renders JavaScript (`render_url`) por ejecución. `0` = nunca renderizar |
 | `scout.max_pdfs_per_event` | `2` | PDF de catálogo o listado enlazados que se leen por feria (máximo 2) |
-| `scout.max_catalog_pages` | `3` | Páginas del listado de expositores por feria, la primera incluida (máximo 5). `1` = solo la primera |
-| `scout.max_profile_lookups` | `10` | Fichas de expositor abiertas por ejecución para buscar la web de los relevantes sin dominio (máximo 30). `0` = no abrir fichas |
+| `scout.max_catalog_pages` | `10` | Páginas del listado de expositores por feria, la primera incluida (máximo 20). `1` = solo la primera |
+| `scout.max_profile_lookups` | `60` | Fichas de expositor abiertas por ejecución para buscar la web de los relevantes sin dominio (máximo 100). `0` = no abrir fichas |
+| `scout.profile_concurrency` | `2` | Fichas abiertas a la vez (1-4; el renderer hace 2 renders simultáneos) |
+| `scout.time_budget_ms` | `1200000` | Presupuesto de tiempo de la ejecución scout, en ms (20 min; mínimo 10 s, máximo 25 min) |
+| `scout.capture_json` | `true` | Pedir al renderer las respuestas JSON de las páginas de catálogo (atajo de la API JSON). `false` = solo el texto |
 | `scout.max_redirect_resolutions` | `3` | Redirecciones de grounding resueltas para conocer su dominio |
 | `scout.event_signal_confidence` | `0.5` | Confianza de la señal de evento sin expositores |
 | `scout.verify_unsourced_by_fetch` | `true` | Sin fuentes de grounding, aceptar la URL si la página corrobora la feria. `false` = estricto |
@@ -727,6 +767,8 @@ Las dos tareas usan la misma versión del agente. La versión del seed añade `f
 La versión actual del seed añade `render_url` a la tool policy, sube los límites del scout (`max_fetches` 18, `max_pages_per_event` 3, `max_renders` 4, `max_pdfs_per_event` 2) y la skill `event-source-discovery` a v2 (PDF y páginas renderizadas): ejecuta `pnpm seed` después de desplegar para crear la versión nueva. Hasta entonces, la versión activa no tiene `render_url` en su política: el scout lee PDF pero no renderiza (`render.disabled = TOOL_NOT_ALLOWED`).
 
 La versión de la tanda 5 sube `max_exhibitors_per_event` a 60, añade `max_catalog_pages` (3) y `max_profile_lookups` (10), amplía la tool policy (`fetch_url` 42, `render_url` 15, 640 llamadas) y sube la skill `event-source-discovery` a v3 (paginación y fichas). Necesita el renderer con `max_pages` (imagen `pxos-renderer` reconstruida desde esta rama). Con un renderer anterior, el scout lee solo la primera página y, como los enlaces del listado llegan sin texto, no encuentra las fichas.
+
+La versión de la tanda 6 (catálogo completo) sube `max_catalog_pages` a 10, `max_profile_lookups` a 60 y `max_exhibitors_per_event` a 100, añade `time_budget_ms` (20 min), `profile_concurrency` (2) y `capture_json` (`true`), amplía la tool policy (`fetch_url` 230, `render_url` 115, 1 500 llamadas) y sube la skill `event-source-discovery` a v4. Para el atajo JSON y más de 5 páginas necesita pxos-renderer 0.2 (imagen reconstruida desde esta rama); con uno anterior, el scout lee 5 páginas y extrae el texto.
 
 > **Importante:** ejecuta el seed después de desplegar este código. Un runtime anterior trataría la entrada de `weekly-event-scouting` como entrada directa no válida y cerraría la ejecución del lunes como `FAILED`.
 
@@ -1059,7 +1101,7 @@ Una llamada a Gemini por borrador. En la prueba en vivo: 0,0021 USD (0,0018 €)
 - Exponer `EntityLocks` a las tools (el helper está listo en `RunProcessor.locks`).
 - Política de catch-up si el scheduler estuvo parado: hoy, al volver, se procesa el slot pendiente (tarde, con su `scheduled_at` original) y los demás slots perdidos se omiten.
 - Tools pendientes del registro del MVP-0: `search_web` (hoy la búsqueda es el grounding de Gemini, un paso `MODEL`; el LLD prevé fuentes ligadas a pasos `TOOL`), `create_activity` y las del Catalog Service.
-- Modo scout: la ficha de cada expositor se abre en serie (unos 10-12 s por ficha renderizada). Con muchos relevantes, `max_profile_lookups` deja sin dominio a los de menor confianza. Leer la API JSON del catálogo, cuando la haya, sería más barato que renderizar listado y fichas.
+- Modo scout: cada ficha renderizada tarda unos 10-12 s (2 a la vez). Con muchos relevantes, el presupuesto de tiempo deja sin dominio a los de menor confianza. La API JSON de la ficha (Feria Valencia: `/api/exhibitor/get?exhiid=`) podría dar la web sin renderizar la ficha. El agente no recibe el timeout de su tarea: `time_budget_ms` se configura aparte.
 - Integrar `pxos-renderer` en `deployments/docker-compose.yml` (fragmento en `services/renderer/docker-compose.renderer.yml`) y, opcionalmente, el perfil seccomp de Playwright para el sandbox de Chromium.
 - `GeminiProvider.stream()` no es incremental: devuelve la respuesta completa en un solo fragmento.
 - Validación de URL en campos de texto libre contra las fuentes del trace (LLD v0.2 sección 10.4, punto 4) en el modo directo: el modo scout ya la aplica con su `SourceLedger`.

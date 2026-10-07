@@ -943,6 +943,63 @@ export const evaluationCases = pgTable(
   ],
 );
 
+export const EXPERIMENT_STATUSES = ['DRAFT', 'RUNNING', 'COMPLETED', 'FAILED', 'CANCELLED'] as const;
+export type ExperimentStatus = (typeof EXPERIMENT_STATUSES)[number];
+export const EXPERIMENT_SUBJECT_TYPES = ['skill', 'harness'] as const;
+export type ExperimentSubjectType = (typeof EXPERIMENT_SUBJECT_TYPES)[number];
+/** PASS_FORM: every evaluated criterion passed but there were no labelled cases (see src/experiments/gate.ts). */
+export const EXPERIMENT_DECISIONS = ['PASS', 'PASS_FORM', 'FAIL', 'INCONCLUSIVE'] as const;
+export type ExperimentDecision = (typeof EXPERIMENT_DECISIONS)[number];
+
+/**
+ * An Experiment (LLD v0.1 section 11.5): baseline vs candidate of one subject (a skill or a
+ * harness) on the same cases, with the Release Gate verdict (section 11.6). `name` is
+ * EXP-NNN, numbered per tenant (`number`). Trigger: no DELETE; identity and `config` are
+ * immutable from creation; the rest only changes while DRAFT/RUNNING, and a COMPLETED,
+ * FAILED or CANCELLED experiment is immutable.
+ */
+export const experiments = pgTable(
+  'experiments',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    tenantId: tenantId(),
+    name: text('name').notNull(),
+    number: integer('number').notNull(),
+    subjectType: text('subject_type').$type<ExperimentSubjectType>().notNull(),
+    subjectName: text('subject_name').notNull(),
+    baselineVersion: integer('baseline_version'),
+    candidateVersion: integer('candidate_version').notNull(),
+    datasetId: uuid('dataset_id').references(() => evaluationDatasets.id),
+    /** Cases used per split and role (`{ VALIDATION: { role, case_ids, labeled }, ... }`). */
+    splits: jsonb('splits').$type<Record<string, unknown>>().notNull().default({}),
+    /** Budget, repetitions, evaluators, gate criteria, versions compared (immutable). */
+    config: jsonb('config').$type<Record<string, unknown>>().notNull().default({}),
+    /** Per phase and version: composite, dimensions, evaluators, decisions, cost. */
+    metrics: jsonb('metrics').$type<Record<string, unknown>>().notNull().default({}),
+    /** Every gate criterion with its values and pass/fail. */
+    gateResult: jsonb('gate_result').$type<Record<string, unknown>>().notNull().default({}),
+    decision: text('decision').$type<ExperimentDecision>(),
+    status: text('status').$type<ExperimentStatus>().notNull().default('DRAFT'),
+    costEur: numeric('cost_eur', { precision: 14, scale: 6, mode: 'number' }).notNull().default(0),
+    error: text('error'),
+    startedAt: timestamp('started_at', { withTimezone: true }),
+    finishedAt: timestamp('finished_at', { withTimezone: true }),
+    createdAt: createdAt(),
+    createdBy: text('created_by'),
+  },
+  (t) => [
+    uniqueIndex('experiments_tenant_name_uq').on(t.tenantId, t.name),
+    uniqueIndex('experiments_tenant_number_uq').on(t.tenantId, t.number),
+    index('experiments_subject_idx').on(t.tenantId, t.subjectType, t.subjectName, t.candidateVersion, t.status),
+    check('experiments_status_ck', sql`${t.status} in ('DRAFT', 'RUNNING', 'COMPLETED', 'FAILED', 'CANCELLED')`),
+    check('experiments_subject_type_ck', sql`${t.subjectType} in ('skill', 'harness')`),
+    check('experiments_decision_ck', sql`${t.decision} is null or ${t.decision} in ('PASS', 'PASS_FORM', 'FAIL', 'INCONCLUSIVE')`),
+    check('experiments_completed_ck', sql`(${t.status} = 'COMPLETED') = (${t.decision} is not null)`),
+    check('experiments_versions_ck', sql`${t.candidateVersion} >= 1 and (${t.baselineVersion} is null or (${t.baselineVersion} >= 1 and ${t.baselineVersion} <> ${t.candidateVersion}))`),
+    check('experiments_name_ck', sql`${t.name} ~ '^EXP-[0-9]{3,}$'`),
+  ],
+);
+
 export type Agent = typeof agents.$inferSelect;
 export type AgentVersion = typeof agentVersions.$inferSelect;
 export type TaskDefinition = typeof taskDefinitions.$inferSelect;
@@ -964,3 +1021,4 @@ export type HarnessVersion = typeof harnessVersions.$inferSelect;
 export type KnowledgeEntry = typeof knowledgeEntries.$inferSelect;
 export type EvaluationDataset = typeof evaluationDatasets.$inferSelect;
 export type EvaluationCase = typeof evaluationCases.$inferSelect;
+export type Experiment = typeof experiments.$inferSelect;

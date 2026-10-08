@@ -1010,6 +1010,8 @@ Registro: tabla `experiment_revalidations` (migración `0016`). El experimento t
 
 **Consecuencia.** Si el veredicto es `REFUTED` y la versión del experimento está hoy `ACTIVE` o en un canario `ACTIVE`, deja en Twenty la nota «⚠️ Revalidación fallida — `<skill>` v`<N>`» con los números y las opciones (rollback, canario, iterar) y emite `experiment.revalidation_failed`. **No desactiva ni hace rollback**: decide el humano. La nota y el evento quedan en `consequence` (una sola vez). Sin `TWENTY_API_KEY`, `consequence.note` dice `skipped`.
 
+**Efecto en el Release Gate.** Desde la tanda 13, la revalidación **más reciente** del experimento que apoya una activación, un canario o un promote decide encima de su `PASS_FORM`: `REFUTED` bloquea (`409 release_gate_blocked`, `reason: "revalidation_refuted"`), `CONFIRMED` deja pasar con `revalidated: true` e `INSUFFICIENT` no cambia nada. Consulta [Candado en la activación](#candado-en-la-activación).
+
 | Método y ruta | Qué hace |
 |---|---|
 | `POST /experiments/:id/revalidate` `{ "min_labels"?, "by"?, "dry_run"?, "note"? }` | Revalida (`:id` uuid o `EXP-NNN`). `409 not_pass_form` si no es un `COMPLETED` `PASS_FORM`; `422 outputs_unavailable` si el experimento es anterior a `case_outputs` y su `informe.json` no está accesible (usa la CLI). `dry_run` calcula sin escribir |
@@ -1082,9 +1084,13 @@ pnpm experiment:run --subject harness:default-commercial --candidate 2 --dataset
 |---|---|---|
 | La versión ya es `ACTIVE` | `200`, `changed: false` | `noop` |
 | La versión estuvo `ACTIVE` antes (rollback) | `200` | `rollback` |
-| Último experimento `COMPLETED` de esa versión **contra la versión activa actual** con `PASS` o `PASS_FORM` | `200` (`revalidate: true` si es `PASS_FORM`) | `experiment` |
-| Sin experimento, con `FAIL`/`INCONCLUSIVE`, o hecho contra otra baseline | `409 release_gate_blocked` con los experimentos encontrados | — |
-| Lo anterior con `{ "force": true, "reason": "≥ 10 caracteres", "by": "…" }` | `200`, línea `WARN` en el log con motivo y autor | `override` |
+| Último experimento `COMPLETED` de esa versión **contra la versión activa actual** con `PASS` o `PASS_FORM`, sin revalidaciones o con `INSUFFICIENT` como la más reciente | `200` (`revalidate: true` si es `PASS_FORM`) | `experiment` |
+| Lo anterior con `CONFIRMED` como revalidación más reciente | `200`, `revalidated: true`, `revalidate: false` y la revalidación en `gate.revalidation` | `experiment` |
+| Lo anterior con `REFUTED` como revalidación más reciente | `409 release_gate_blocked`, `details.reason: "revalidation_refuted"`, con el experimento, la revalidación (`id`, `created_at`, `baseline_accuracy`, `candidate_accuracy`, `labels`) y `details.options` (`force`, `iterate`, `rollback`) | — |
+| Sin experimento, con `FAIL`/`INCONCLUSIVE`, o hecho contra otra baseline | `409 release_gate_blocked` con los experimentos encontrados (`details.reason`: `no_experiment`, `experiment_decision` o `baseline_mismatch`) | — |
+| Cualquier bloqueo anterior con `{ "force": true, "reason": "≥ 10 caracteres", "by": "…" }` | `200`, línea `WARN` en el log con motivo y autor, `gate.blocked_reason` con lo que se saltó y fila `*.force_activate` en `audit_log` | `override` |
+
+La revalidación que cuenta es la **más reciente** del experimento (`experiment_revalidations` por `created_at`): una `CONFIRMED` posterior a una `REFUTED` desbloquea y al revés. El veredicto guardado del experimento no cambia nunca (es inmutable); `revalidated: true` solo informa de que el `PASS_FORM` ya no es «modo forma» a efectos prácticos. El rollback a una versión que estuvo `ACTIVE` no mira revalidaciones. Hoy solo se revalidan los `PASS_FORM`; si un `PASS` estricto tuviera una fila `REFUTED` (solo insertándola a mano), el gate lo bloquearía igual. En `audit_log`, un `409` guarda `details.reason` y `details.revalidation`, y un paso con revalidación `CONFIRMED` guarda `details.gate_revalidated`.
 
 El humano puede forzar; el sistema no: ningún código del runtime llama a `activate`, y `experiment:run` nunca activa. La API no tiene autenticación, así que el override es auditable (log y respuesta), no imposible. Una skill o harness nueva (v1 sin versión activa) no tiene baseline y necesita `force`. Mientras una skill tiene un canario `ACTIVE`, `activate` devuelve `409`: primero se promueve o se hace rollback del canario.
 
@@ -1094,9 +1100,9 @@ Tras un `PASS` o `PASS_FORM`, en vez de activar la candidata para todas las ejec
 
 | Método y ruta | Qué hace |
 |---|---|
-| `POST /skills/:id/versions/:v/canary` `{ "percent": 1-99, "by"? }` | Arranca el canario de `v`. Exige el mismo gate que la activación (experimento `PASS`/`PASS_FORM` de `v` contra la versión `ACTIVE` actual) y **no admite `force`** (`400`). Bloqueado: `409 release_gate_blocked`. Un solo canario por skill (`409`). Repetir con la misma versión y porcentaje: `200`, `changed: false` |
+| `POST /skills/:id/versions/:v/canary` `{ "percent": 1-99, "by"? }` | Arranca el canario de `v`. Exige el mismo gate que la activación (experimento `PASS`/`PASS_FORM` de `v` contra la versión `ACTIVE` actual, cuya revalidación más reciente no sea `REFUTED`) y **no admite `force`** (`400`). Bloqueado: `409 release_gate_blocked` (con `reason: "revalidation_refuted"` si lo bloquea una revalidación; opciones: iterar o rollback del canario). Un solo canario por skill (`409`). Repetir con la misma versión y porcentaje: `200`, `changed: false` |
 | `GET /skills/:id/canary` | Canario `ACTIVE` (o el último), su historial y las métricas canaria contra estable |
-| `POST /skills/:id/canary/promote` `{ "by"? }` | Decisión humana: re-verifica el gate, `ACTIVE` la versión canaria (la estable pasa a `DEPRECATED`) y cierra el canario como `PROMOTED` |
+| `POST /skills/:id/canary/promote` `{ "by"? }` | Decisión humana: re-verifica el gate (también la revalidación más reciente: una `REFUTED` llegada durante el canario bloquea el promote y el canario sigue hasta que un humano haga rollback), `ACTIVE` la versión canaria (la estable pasa a `DEPRECATED`) y cierra el canario como `PROMOTED` |
 | `POST /skills/:id/canary/rollback` `{ "by"?, "reason"? }` | Cierra el canario como `ROLLED_BACK`: todas las ejecuciones vuelven a la estable. Siempre permitido e idempotente |
 
 - **Reparto determinista.** Una ref que sigue la versión `ACTIVE` (`{ "name": … }`) recibe la canaria si `sha256(canary_id ":" clave)[0..8] mod 10000 < percent × 100`. La clave es el id del `task_run` (todos los intentos de un run van a la misma rama) o el de la ejecución directa. Nada es aleatorio: el mismo id da siempre la misma versión. Una ref fijada (`{ "name", "version" }`) no participa.
@@ -1127,6 +1133,12 @@ La revalidación: `test/unit/experiments-revalidation.test.ts` fija las reglas p
 
 ```sh
 DATABASE_URL=postgres://agentos:agentos_dev@127.0.0.1:5440/agentos_wt12_reval pnpm vitest run test/integration/experiments-revalidation.test.ts
+```
+
+El gate con revalidaciones: `test/unit/release-gate-revalidation.test.ts` fija el efecto puro de cada veredicto, `checkActivationGate` sobre una conexión simulada (`409` con `reason`, `force`, la más reciente manda, `PASS` estricto, rollback) y los detalles de `audit_log`. `test/integration/gate-revalidation.test.ts` recorre los cuatro caminos (activar skill, activar harness, arrancar canario y promote) contra una BD propia:
+
+```sh
+DATABASE_URL=postgres://agentos:agentos_dev@127.0.0.1:5440/agentos_wt13_gate pnpm vitest run test/integration/gate-revalidation.test.ts
 ```
 
 ## Skill Optimizer
@@ -2382,5 +2394,5 @@ Cuando BullMQ re-entrega un job tras un stall (el worker no renovó el lock) y e
 - Borradores de email: disparar también con `EDITED` (necesita una segunda tarea o un operador OR en el filtro), plantillas por sector y registro de si el comercial envió el borrador. (Hecho: la entrada de eventos externos por HTTP y la entrega a n8n por webhook, consulta [Eventos externos](#eventos-externos).)
 - Harness, skills, memoria y verificador reales; promote, rollback y evaluate.
 - Export de los contratos zod a JSON Schema versionado en `schemas/`.
-- Experiments: criterio de latencia, y que el Release Gate tenga en cuenta una revalidación `REFUTED` (hoy solo avisa con nota y evento; la revalidación es manual, ver [Revalidación de los PASS_FORM](#revalidación-de-los-pass_form)). Los overrides quedan desde la tanda 12 en `audit_log` como `*.force_activate`, además del log del proceso y la respuesta. El runner para harness existe desde la tanda 11 ([Experimentos de harness](#experimentos-de-harness)).
+- Experiments: criterio de latencia. Desde la tanda 13 el Release Gate tiene en cuenta la revalidación más reciente (`REFUTED` bloquea, `CONFIRMED` pasa con `revalidated: true`); la revalidación en sí sigue siendo manual (ver [Revalidación de los PASS_FORM](#revalidación-de-los-pass_form)). Los overrides quedan desde la tanda 12 en `audit_log` como `*.force_activate`, además del log del proceso y la respuesta. El runner para harness existe desde la tanda 11 ([Experimentos de harness](#experimentos-de-harness)).
 - Métricas: AC-17 y AC-18 piden hipótesis `HOT`, pero el resumen de ejecución solo cuenta hipótesis creadas; falta el desglose por prioridad (en Twenty o en `output.counters`). El dashboard oculta por defecto los agentes `ARCHIVED` (los de prueba se archivan con `pnpm cleanup:archive-test-agents`); `include_archived=true` los muestra.

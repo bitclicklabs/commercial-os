@@ -33,6 +33,7 @@ import type { CompletionRequest, CompletionResult, CostBreakdown, ModelProvider,
 import { MemoryRunQueue } from '../../src/queue/run-queue.js';
 import { desiredProspectorVersion } from '../../src/seed/prospector-seed.js';
 import { seedSkills } from '../../src/seed/skills-seed.js';
+import { startCanary } from '../../src/skills/canary.js';
 import { createVersion, findSkill } from '../../src/skills/service.js';
 import { createDefaultToolRegistry, parseToolPolicy, ToolExecutor } from '../../src/tools/index.js';
 import { FakeTwenty } from '../helpers/fake-twenty.js';
@@ -321,9 +322,21 @@ describe.skipIf(!dbAvailable)('re-validation of PASS_FORM experiments (PostgreSQ
     expect(b1.revalidation!.consequence).toEqual({});
     expect(crm.tables.notes).toHaveLength(0);
 
-    // A human sends 10 % to v3 (the PASS_FORM gate allows it); then one more label arrives.
+    // Since tanda 13 the Release Gate reads the most recent re-validation: the REFUTED blocks a canary of v3.
     const canary = await app.inject({ method: 'POST', url: `/skills/${PROSPECTOR_SKILL_ID}/versions/3/canary`, headers, payload: { percent: 10, by: 'PM' } });
-    expect(canary.statusCode).toBe(201);
+    expect(canary.statusCode).toBe(409);
+    expect(canary.json()).toMatchObject({ error: 'release_gate_blocked', details: { reason: 'revalidation_refuted', revalidation: { id: b1.revalidation!.id } } });
+    // A canary started before that re-validation existed (same service, the gate of the time
+    // let the PASS_FORM through); then one more label arrives.
+    const started = await startCanary(handle.db, {
+      tenantId: tenant,
+      skillKey: PROSPECTOR_SKILL_ID,
+      version: 3,
+      percent: 10,
+      by: 'PM',
+      guard: async () => ({ experimentId: experiment.id, record: { mode: 'experiment', note: 'it: canario anterior a la revalidación' } }),
+    });
+    expect(started.changed).toBe(true);
     await makeDataset('it-reval-b', 3, B.map((n) => humanLabel(n)));
     const r2 = await revalidate('EXP-004', { by: 'PM' });
     expect(r2.statusCode).toBe(201);

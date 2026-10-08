@@ -130,3 +130,15 @@ Nota: las 2 sesiones paralelas del usuario (métricas por versión; fix del reco
 | Recuperación del trabajo huérfano: métricas solo con veredictos HUMAN + desglose por versión de skill en /metrics/agents + fix del reconciliador que marcaba FAILED scouts terminados | `feat/metrics-recovery` | Opus | ✅ fusionado (causa raíz: nada refrescaba updated_at en intentos largos → latido cada 30 s + guardas por attempts/staleBefore; 692 tests; evidencia: 3 scouts reales sentenciados con traza SUCCESS) |
 | Docs: skill-optimizer.md, ciclo-mejora-skills.md (modo automático), ROADMAP al día (MVP-2 ✅, MVP-3 🔄) | `docs/tanda11` | Sonnet | ✅ fusionado y reconciliado con la implementación (estados reales, cierre humano, canario); además el PM puso al día README y LLD v0.3 (supresión tanda 8, plataforma 9-11) |
 | Integración, e2e y PR | `feat/tanda11` (worktree wt11-integracion) | PM | ✅ 729 tests; migraciones reordenadas 0012 canaries/0013 optimizer (evitado salto silencioso del migrador); desplegado con salida verificada: migraciones aplicadas, worker del optimizer arriba, /optimizer/runs vacío, canary 404 limpio, desglose por versión en /metrics/agents (4 filas), dashboard 200, v3 ACTIVE/v4 DRAFT intactas |
+
+## Tanda 12 — Operación y deudas del MVP-3 🔄 (en curso, 2026-10-08)
+
+Lecciones de la tanda 11 aplicadas: cada agente usa BD de test propia (`agentos_wt12_*`) y las migraciones llevan `when` preasignado por el PM (0014 inbound, 0015 retención/audit, 0016 revalidación) para que el orden de aplicación no dependa de quién corre tests primero.
+
+| Pieza | Rama | Agente | Estado |
+|---|---|---|---|
+| Revalidación de PASS_FORM: accuracy sobre outputs guardados al llegar etiquetas frescas (coste 0), registro append-only, CONFIRMED/REFUTED/INSUFFICIENT; nota ⚠️ si REFUTED con versión activa/canaria — decide el humano | `feat/passform-revalidation` | Opus | 🔄 |
+| Triaje general del inbound: determinista (auto-reply/rebotes/bajas) + LLM (INTERESADO/PREGUNTA/NO_INTERESADO/OTRO); notas 📬 en Twenty, NO_INTERESADO → supresión, evento email.reply_received; IMAP sigue solo-lectura; nunca responde | `feat/inbound-triage` | Opus | 🔄 |
+| audit_log append-only de acciones mutantes (+force auditado), retención de trazas SIN pérdida (archivar→verificar→aligerar, LLD §22) y stall-guard de BullMQ (deuda tanda 11) | `feat/retention-audit` | Opus | 🔄 |
+| Docs: inbound-triaje.md, revalidación en skill-optimizer.md, runbook de archivado/audit, guía comercial, ROADMAP | `docs/tanda12` | Sonnet | 🔄 |
+| Integración, e2e y PR | `feat/tanda12` (worktree wt12-integracion) | PM | 🔄 worktree creado con .env copiado |

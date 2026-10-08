@@ -149,7 +149,7 @@ Procedimiento consolidado: BD de test propia por agente (`agentos_wt13_*`) y mig
 
 | Pieza | Rama | Agente | Estado |
 |---|---|---|---|
-| El gate considera revalidaciones: REFUTED bloquea activar/canarizar/promote (409 revalidation_refuted; force humano auditado sigue) + archivado de trazas programado (job diario, apagado por defecto, auditado) | `feat/gate-refuted` | Opus | 🔄 |
+| El gate considera revalidaciones: REFUTED bloquea activar/canarizar/promote (409 revalidation_refuted; force humano auditado sigue) + archivado de trazas programado (job diario, apagado por defecto, auditado) | `feat/gate-refuted` | Opus | ✅ fusionado (la más reciente manda; hasta un PASS con REFUTED insertado a mano se bloquea; job con anti-solapamiento y auditoría solo con trabajo; sin migración; +flaky de harness.test arreglado; 872 tests) |
 | Model routing por rol (§18): executor_cheap/reasoner/judge/triage, overrides por env, juez≠ejecutor forzado, pnpm models:costs con la proyección de la subida del 2027-01-01 | `feat/model-routing` | Opus | 🔄 |
 | Environments sintéticos (MVP-4, §13): generador determinista por plantillas con semilla, ground truth por construcción, dominios *.invalid, origin SYNTHETIC, dificultad 1-3; la accuracy del gate sigue siendo solo humana | `feat/synthetic-envs` | Opus | 🔄 |
 | Docs: environments-sinteticos.md, model-routing.md, runbook, ROADMAP + **borrador del contrato del Catalog Service (§9) para revisar con el usuario** | `docs/tanda13` | Sonnet | ✅ entregado (contrato REST+MCP con preguntas abiertas agrupadas; avisó de la colisión del campo difficulty y del precio anómalo de 3.6-flash — reenviado a los agentes afectados; pendiente de fusión) |

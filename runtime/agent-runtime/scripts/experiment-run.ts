@@ -21,6 +21,10 @@
  *   and only the harness policies vary (timeout, retry, tool caps, max_output_tokens). Activation:
  *   `POST /harnesses/:id/versions/:v/activate`, same gate.
  * - `--dry-run`: shows the versions, the dataset and the cases it would reserve; writes nothing.
+ * - Models by role (src/providers/model-router.ts): the executor is the Prospector's role
+ *   (`MODEL_ROUTE_EXECUTOR_REASONER`, default its seed model) and the judge the `judge` role
+ *   (`MODEL_ROUTE_JUDGE`; `--judge-model` wins, `provider:model` or a bare model). A judge equal
+ *   to the executor stops the run before anything is created (exit 2).
  *
  * Dev-only tool (it imports the FakeTwenty test helper); not part of the runtime build.
  */
@@ -32,7 +36,7 @@ import { readConfig } from '../src/agents/prospector-core.js';
 import { createDb } from '../src/db/client.js';
 import { listCases, listDatasets } from '../src/datasets/service.js';
 import { autoFormSampleSize, DEFAULT_EUR_PER_DECISION, ExperimentAbortedError, gateConfig, renderExperimentMarkdown, reportToJson, runExperiment, type ExperimentReport } from '../src/experiments/index.js';
-import { GeminiProvider } from '../src/providers/index.js';
+import { createProviderRegistry, defaultModelRouter, missingProviderKeys, ModelRouteError, parseModelSpec, routeAgentVersion, type ModelRoute } from '../src/providers/index.js';
 import { findHarness, listHarnessVersions } from '../src/harness/service.js';
 import { desiredProspectorVersion } from '../src/seed/prospector-seed.js';
 import { COMPARABLE_SKILLS } from '../src/skills/compare.js';
@@ -140,10 +144,33 @@ async function main(): Promise<void> {
       return;
     }
 
-    if (!process.env.GEMINI_API_KEY) fail('GEMINI_API_KEY no está definida (cópiala de deployments/.env a runtime/agent-runtime/.env)');
-    const executor = new GeminiProvider({ apiKey: process.env.GEMINI_API_KEY });
-    const judge = values['no-judge'] ? null : new GeminiProvider({ apiKey: process.env.GEMINI_API_KEY });
     const agentVersion = desiredProspectorVersion();
+    // Roles -> (provider, model); the judge must not be the executor (LLD §18).
+    let executorRoute: ModelRoute;
+    let judgeRoute: ModelRoute | null = null;
+    try {
+      const router = defaultModelRouter();
+      for (const w of router.warnings()) console.error(`aviso: ${w}`);
+      executorRoute = routeAgentVersion(router, agentVersion);
+      if (!values['no-judge']) {
+        const flag = values['judge-model'];
+        judgeRoute = flag ? { role: 'judge', ...parseModelSpec(flag, '--judge-model'), source: 'env', env: '--judge-model' } : router.resolve('judge');
+        router.assertJudgeIndependent(judgeRoute, executorRoute);
+      }
+    } catch (err) {
+      if (err instanceof ModelRouteError) {
+        console.error(err.message);
+        process.exitCode = 2;
+        return;
+      }
+      throw err;
+    }
+    const missing = missingProviderKeys(judgeRoute ? [executorRoute, judgeRoute] : [executorRoute]);
+    if (missing.length) fail(`${missing.join(', ')} no está definida (cópiala de deployments/.env a runtime/agent-runtime/.env)`);
+    console.error(`· ejecutor ${executorRoute.provider}:${executorRoute.model} (rol ${executorRoute.role}, ${executorRoute.source})${judgeRoute ? ` · juez ${judgeRoute.provider}:${judgeRoute.model} (${judgeRoute.source})` : ' · sin juez'}`);
+    const providers = createProviderRegistry({ geminiApiKey: process.env.GEMINI_API_KEY, anthropicApiKey: process.env.ANTHROPIC_API_KEY });
+    const executor = providers(executorRoute.provider);
+    const judge = judgeRoute ? providers(judgeRoute.provider) : null;
     const policy = parseToolPolicy(agentVersion.configuration);
     const fakes: FakeTwenty[] = [];
     // Harness arms pass the tool policy capped by their harness; skill arms use the agent's.
@@ -181,9 +208,10 @@ async function main(): Promise<void> {
         db: handle.db,
         executorProvider: executor,
         judgeProvider: judge,
-        ...(values['judge-model'] ? { judgeModel: values['judge-model'] } : {}),
+        ...(judgeRoute ? { judgeModel: judgeRoute.model } : {}),
+        routes: { executor: executorRoute, ...(judgeRoute ? { judge: judgeRoute } : {}) },
         makeTools,
-        agentVersion: { model: agentVersion.model, configuration: agentVersion.configuration },
+        agentVersion: { model: executorRoute.model, configuration: agentVersion.configuration },
         now,
         onProgress: (msg) => console.error(`· ${msg}`),
         writeArtifacts,

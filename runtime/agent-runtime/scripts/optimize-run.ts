@@ -13,6 +13,10 @@
  *
  * - `--dry-run`: harvest + data check only (failures found, fresh labelled VALIDATION cases).
  *   Writes nothing and calls no model.
+ * - Models by role (src/providers/model-router.ts): `optimizer` for clustering + proposal
+ *   (MODEL_ROUTE_OPTIMIZER; legacy GEMINI_MODEL when that is unset), the Prospector's executor
+ *   role for the experiment and `judge` (MODEL_ROUTE_JUDGE). A judge equal to the executor stops
+ *   the run before it is created (exit 2).
  * - Exit code: 0 GATE_PASS, 3 GATE_FAIL, 4 BLOCKED_NO_DATA, 1 ERROR, 2 invalid arguments.
  */
 import { parseArgs } from 'node:util';
@@ -20,7 +24,8 @@ import { createDb } from '../src/db/client.js';
 import { buildDataset } from '../src/datasets/service.js';
 import { twentyClientFromEnv } from '../src/integrations/twenty/index.js';
 import { createRun, dataCheck, harvestFailures, optimizerConfig, OPTIMIZABLE_SKILLS, runLabel, runOptimization, selectFailures, type OptimizerConfig } from '../src/optimizer/index.js';
-import { GeminiProvider } from '../src/providers/index.js';
+import { createProviderRegistry, defaultModelRouter, experimentRoutes, missingProviderKeys, ModelRouteError, routeAgentVersion, type ModelRoute } from '../src/providers/index.js';
+import { desiredProspectorVersion } from '../src/seed/prospector-seed.js';
 import { findSkill, listVersions } from '../src/skills/service.js';
 
 const USAGE =
@@ -76,7 +81,6 @@ async function main(): Promise<void> {
     if (values['min-labeled'] !== undefined) o.minLabeledValidation = n('min-labeled', '--min-labeled')!;
     if (values['min-failures'] !== undefined) o.minFailures = n('min-failures', '--min-failures')!;
     if (values.today !== undefined) o.today = values.today;
-    if (process.env.GEMINI_MODEL) o.model = process.env.GEMINI_MODEL;
     cfg = optimizerConfig(skillName, o);
   } catch (err) {
     fail(err instanceof Error ? err.message : String(err));
@@ -107,8 +111,26 @@ async function main(): Promise<void> {
       return;
     }
 
-    if (!process.env.GEMINI_API_KEY) fail('GEMINI_API_KEY no está definida (cópiala de deployments/.env a runtime/agent-runtime/.env)');
-    const gemini = new GeminiProvider({ apiKey: process.env.GEMINI_API_KEY });
+    let optimizerRoute: ModelRoute;
+    let routes: { executor: ModelRoute; judge: ModelRoute };
+    const prospector = desiredProspectorVersion();
+    try {
+      const router = defaultModelRouter();
+      for (const w of router.warnings()) console.error(`aviso: ${w}`);
+      optimizerRoute = { ...router.resolve('optimizer'), model: cfg.model };
+      // Without a judge there is nothing to keep independent.
+      routes = values['no-judge'] ? { executor: routeAgentVersion(router, prospector), judge: router.resolve('judge') } : experimentRoutes(router, prospector);
+    } catch (err) {
+      if (err instanceof ModelRouteError) {
+        console.error(err.message);
+        process.exitCode = 2;
+        return;
+      }
+      throw err;
+    }
+    const missing = missingProviderKeys(values['no-judge'] ? [optimizerRoute, routes.executor] : [optimizerRoute, routes.executor, routes.judge]);
+    if (missing.length) fail(`${missing.join(', ')} no está definida (cópiala de deployments/.env a runtime/agent-runtime/.env)`);
+    const providers = createProviderRegistry({ geminiApiKey: process.env.GEMINI_API_KEY, anthropicApiKey: process.env.ANTHROPIC_API_KEY });
     const twenty = values['no-note'] ? null : twentyClientFromEnv();
     const run = await createRun(handle.db, { tenantId: tenant, skillName, baseVersion: active.version, config: cfg as unknown as Record<string, unknown>, createdBy: values['created-by']! });
     console.error(`run ${run.id} (${runLabel(run.id)}) creado: ${skillName} v${active.version}`);
@@ -120,9 +142,12 @@ async function main(): Promise<void> {
     const done = await runOptimization(
       {
         db: handle.db,
-        llmProvider: gemini,
-        executorProvider: gemini,
-        judgeProvider: values['no-judge'] ? null : gemini,
+        llmProvider: providers(optimizerRoute.provider),
+        executorProvider: providers(routes.executor.provider),
+        judgeProvider: values['no-judge'] ? null : providers(routes.judge.provider),
+        ...(values['no-judge'] ? {} : { judgeModel: routes.judge.model }),
+        agentVersion: { model: routes.executor.model, configuration: prospector.configuration },
+        routes: values['no-judge'] ? { executor: routes.executor } : routes,
         twenty: twenty && twenty.isConfigured() ? twenty : null,
         onProgress: (msg) => console.error(`· ${msg}`),
         signal: controller.signal,

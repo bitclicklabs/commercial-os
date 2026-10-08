@@ -164,6 +164,12 @@ export interface HarnessUsed {
   /** Effective values of the run (after precedence) and which of them came from the harness. */
   effective: Record<string, unknown>;
   overrides: string[];
+  /**
+   * Model route of the execution (LLD §18, D1 MODEL): role, provider and model resolved by the
+   * model router, and where they came from (`pinned` = the version's model, `env` = an
+   * override). jsonb, no migration; absent in traces written before the router.
+   */
+  model_route?: { role: string; provider: string; model: string; source: string; env?: string; capped?: Record<string, unknown> };
 }
 
 export interface ScheduleSpec {

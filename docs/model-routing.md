@@ -2,7 +2,7 @@
 
 El runtime no decide "usa gemini-flash" en cada punto del código. Decide un **rol** (barato, razonador, juez, triaje) y una tabla de enrutado resuelve qué modelo lo cumple. Es la parte de *model routing* del [LLD v0.1, sección 18](LLD-0.1-publiexpe-commercial-os.md#18-optimización-automática) (simple a un modelo barato, investigación a uno razonador, evaluador a uno independiente) y llega a tiempo para el cambio de precio del 2027-01-01.
 
-Este documento es para quien opera el runtime y para quien decide el gasto. Los nombres exactos de variables y opciones son los del [README del runtime](../runtime/agent-runtime/README.md); si alguno difiere, manda el README.
+Este documento es para quien opera el runtime y para quien decide el gasto. El detalle técnico completo está en el [README del runtime](../runtime/agent-runtime/README.md#routing-de-modelos-por-rol).
 
 > **Importante:** por defecto **no cambia nada**. Sin ninguna variable `MODEL_ROUTE_*`, el ejecutor sigue siendo Gemini Flash y el juez, Gemini Pro, como hasta ahora. El routing es la palanca para cambiar de modelo cuando haga falta, no un cambio de comportamiento hoy.
 
@@ -10,10 +10,13 @@ Este documento es para quien opera el runtime y para quien decide el gasto. Los 
 
 | Rol | Para qué se usa | Modelo por defecto |
 |---|---|---|
-| `executor_cheap` | Ejecutar agentes y skills de volumen: el Prospector, el EmailDrafter, la agrupación de fallos del optimizador | `gemini:gemini-flash-latest` |
-| `executor_reasoner` | Tareas que piden razonar más (investigación, casos de riesgo alto). Hoy ninguna tarea lo pide | `gemini:gemini-flash-latest` |
-| `judge` | El evaluador LLM_JUDGE de los experimentos | `gemini:gemini-pro-latest` |
-| `triage` | Clasificación ligera de entradas: el triaje de respuestas del inbound | `gemini:gemini-flash-latest` |
+| `executor_cheap` | EmailDrafter, BajasAgent y agentes auxiliares | `gemini:gemini-flash-latest` |
+| `executor_reasoner` | El Prospector (con EventScout) y el ejecutor de experimentos y comparaciones | `gemini:gemini-flash-latest` |
+| `judge` | El evaluador LLM_JUDGE (evaluate, experimentos, optimizador) | `gemini:gemini-pro-latest` |
+| `triage` | El clasificador de respuestas del InboxAgent | `gemini:gemini-flash-latest` |
+| `optimizer` | Clustering y propuesta del Skill Optimizer | `gemini:gemini-flash-latest` |
+
+El rol de cada agente sale de su implementación; una versión de agente puede fijar otro rol ejecutor con `configuration.model_role` (nunca `judge`).
 
 > **Nota:** `gemini-flash-latest` es un alias. El 2026-10-06 lo servía `gemini-3.8-flash` y el coste se calcula por el modelo que responde de verdad, no por el alias. Con el routing eliges el alias o el modelo concreto: un alias se mueve cuando Google cambia el modelo, un modelo concreto no.
 
@@ -27,6 +30,7 @@ Un override se escribe como `proveedor:modelo` en una variable de entorno cuyo n
 | `MODEL_ROUTE_EXECUTOR_REASONER` | `executor_reasoner` |
 | `MODEL_ROUTE_JUDGE` | `judge` |
 | `MODEL_ROUTE_TRIAGE` | `triage` |
+| `MODEL_ROUTE_OPTIMIZER` | `optimizer` |
 
 ```sh
 # Ejemplo: el triaje con un modelo más barato, el resto igual
@@ -39,6 +43,8 @@ Reglas:
 - Una variable vacía o ausente significa "el valor por defecto de la tabla".
 - Un valor mal formado (sin `:` o con un proveedor desconocido) se rechaza al arrancar con un mensaje claro, en lugar de caer a otro modelo sin avisar.
 - Dónde se fijan las variables: en el bloque `environment` de `pxos-runtime` ([Variables del runtime](runbook-local.md#variables-del-runtime)), o en `runtime/agent-runtime/.env` fuera de Docker.
+- Precedencia completa: `MODEL_ROUTE_<ROL>` > el modelo fijado por la propia versión del agente (estado versionado; las versiones `stub` no se re-enrutan nunca) > las variables antiguas `JUDGE_MODEL`/`GEMINI_MODEL` (siguen funcionando como fallback) > la tabla por defecto. Si `MODEL_ROUTE_*` y la variable antigua discrepan, gana `MODEL_ROUTE_*` y el arranque deja un aviso en el log.
+- El grounding con Google Search (EventScout, Prospector) solo existe en Gemini: si mueves `executor_reasoner` a Anthropic, esas llamadas pierden la búsqueda.
 
 > **Precaución:** cambiar el modelo ejecutor cambia el comportamiento de todas las skills, aunque ninguna versión de skill cambie. Antes de aplicar un override al ejecutor en producción, mide el efecto con un [experimento](ciclo-mejora-skills.md) (la misma skill contra el modelo nuevo) y no te fíes solo del precio.
 

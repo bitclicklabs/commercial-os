@@ -16,6 +16,8 @@ import { knowledgeRoutes } from './routes/knowledge.js';
 import { datasetRoutes } from './routes/datasets.js';
 import { experimentRoutes } from './routes/experiments.js';
 import { optimizerRoutes } from './routes/optimizer.js';
+import { auditRoutes } from './routes/audit.js';
+import { installAuditHook } from '../audit/hook.js';
 
 export async function buildServer(
   ctx: ApiContext,
@@ -23,6 +25,8 @@ export async function buildServer(
 ): Promise<FastifyInstance> {
   const app = Fastify(options);
   installErrorHandler(app);
+  // audit_log of the administrative routes (src/audit/catalog.ts); before any route is registered.
+  installAuditHook(app, ctx);
 
   app.get('/health', async (_req, reply) => {
     try {
@@ -47,5 +51,6 @@ export async function buildServer(
   await datasetRoutes(app, ctx);
   await experimentRoutes(app, ctx);
   await optimizerRoutes(app, ctx);
+  await auditRoutes(app, ctx);
   return app;
 }

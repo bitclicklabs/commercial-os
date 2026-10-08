@@ -67,7 +67,7 @@ function iso(v: unknown): string | null {
 }
 
 /** EUR cost of one agent_executions row aliased `e`. */
-function execCostEur(alias: string): SQL {
+export function execCostEur(alias: string): SQL {
   const e = sql.raw(alias);
   return sql`(case
     when jsonb_typeof(${e}.output->'cost'->'eur') = 'number' then (${e}.output->'cost'->>'eur')::float8
@@ -86,7 +86,7 @@ function execCostEur(alias: string): SQL {
 const HUMAN_ONLY = sql` and ev.kind = 'HUMAN'`;
 
 /** `tenant_id = ... and column >= since and column < until` for the given alias/column. */
-function windowWhere(alias: string, column: string, w: Window): SQL {
+export function windowWhere(alias: string, column: string, w: Window): SQL {
   const col = sql.raw(`${alias}.${column}`);
   const parts: SQL[] = [sql`${sql.raw(alias)}.tenant_id = ${w.tenantId}`];
   if (w.since) parts.push(sql`${col} >= ${w.since.toISOString()}::timestamptz`);

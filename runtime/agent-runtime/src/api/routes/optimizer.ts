@@ -84,7 +84,7 @@ export async function optimizerRoutes(app: FastifyInstance, ctx: ApiContext): Pr
         ...(body.min_labeled_validation !== undefined ? { minLabeledValidation: body.min_labeled_validation } : {}),
         ...(body.min_failures !== undefined ? { minFailures: body.min_failures } : {}),
         ...(body.today !== undefined ? { today: body.today } : {}),
-        ...(ctx.config.geminiModel ? { model: ctx.config.geminiModel } : {}),
+        // model: role `optimizer` of the model router (MODEL_ROUTE_OPTIMIZER > GEMINI_MODEL > code table).
       });
     } catch (err) {
       throw new HttpError(400, 'invalid', err instanceof Error ? err.message : String(err));

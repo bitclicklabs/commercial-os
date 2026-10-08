@@ -28,6 +28,7 @@ import {
 } from '../events/runtime-events.js';
 import type { RunStatus } from '../domain/statuses.js';
 import type { ProviderFactory } from '../providers/index.js';
+import { defaultModelRouter, routeAgentVersion, type ModelRoute, type ModelRouter } from '../providers/model-router.js';
 import type { RunJob } from '../queue/run-queue.js';
 import { resolveSkillRefs, type SkillSet } from '../skills/resolver.js';
 import { applyHarness, harnessRecord, resolveHarnessRef, type EffectivePolicies, type ResolvedHarness } from '../harness/index.js';
@@ -143,6 +144,8 @@ interface Outcome {
   result?: AgentResult;
   error?: Record<string, unknown>;
   latencyMs: number;
+  /** Model route of the execution (role, provider, model, source); recorded in the trace. */
+  route?: ModelRoute;
 }
 
 /** Harness of one attempt: what was resolved and the effective policies after precedence. */
@@ -173,6 +176,12 @@ export class RunProcessor {
    * in main.ts): the run is recovered only if its heartbeat is older than this.
    */
   stallGraceMs: number = DEFAULT_STALL_GRACE_MS;
+  /**
+   * Model router (LLD §18): resolves the (provider, model) of each execution from the role of
+   * its version; without env overrides it is exactly the version's model. main.ts sets the one
+   * it validated at boot; by default it is built from process.env on first use.
+   */
+  router: ModelRouter | null = null;
 
   constructor(
     private readonly db: Db,
@@ -528,9 +537,17 @@ export class RunProcessor {
     const startedAt = Date.now();
     const controller = new AbortController();
     let timer: NodeJS.Timeout | undefined;
+    let route: ModelRoute | undefined;
     try {
       const impl = resolveAgentImplementation(version.configuration, { db: this.db, events: this.events });
-      const provider = this.providers(version.modelProvider);
+      // Role -> (provider, model). Ceiling hook: harness v1 has no D1 MODEL field, so no ceiling
+      // is passed; when a harness version gets one, pass it here as `{ ceiling }`.
+      this.router ??= defaultModelRouter();
+      route = routeAgentVersion(this.router, { model: version.model, modelProvider: version.modelProvider, configuration: version.configuration });
+      if (route.source !== 'pinned') {
+        this.logger.info({ executionId: execution.id, agentVersionId: version.id, route, versionModel: `${version.modelProvider}:${version.model}` }, 'model route overrides the version model');
+      }
+      const provider = this.providers(route.provider);
       // Knowledge layer (LLD 6.4): ACTIVE entries of the version's knowledge_domains. Never throws.
       const knowledge = await resolveKnowledge(this.db, execution.tenantId, version.configuration, {
         warn: (obj, msg) => this.logger.warn({ executionId: execution.id, ...obj }, msg),
@@ -566,8 +583,8 @@ export class RunProcessor {
           version: {
             id: version.id,
             version: version.version,
-            model: version.model,
-            modelProvider: version.modelProvider,
+            model: route.model,
+            modelProvider: route.provider,
             systemPrompt: version.systemPrompt,
             configuration: policies.configuration,
           },
@@ -583,11 +600,11 @@ export class RunProcessor {
       // The knowledge read goes first in the trace (memory_reads, LLD 17.1): entry ids injected.
       const memoryRead = knowledge.traceStep(new Date(startedAt));
       if (memoryRead) result.steps.unshift(memoryRead);
-      return { status: 'COMPLETED', result, latencyMs: Date.now() - startedAt };
+      return { status: 'COMPLETED', result, latencyMs: Date.now() - startedAt, ...(route ? { route } : {}) };
     } catch (err) {
       const status = err instanceof TimeoutError ? 'TIMED_OUT' : 'FAILED';
       this.logger.error({ executionId: execution.id, err: errorPayload(err) }, 'agent execution failed');
-      return { status, error: errorPayload(err), latencyMs: Date.now() - startedAt };
+      return { status, error: errorPayload(err), latencyMs: Date.now() - startedAt, ...(route ? { route } : {}) };
     } finally {
       if (timer) clearTimeout(timer);
     }
@@ -617,7 +634,7 @@ export class RunProcessor {
           agentId: agent.id,
           agentVersionId: version.id,
           harnessVersion: harness.resolved.label ?? version.harnessVersionId,
-          harness: harnessRecord(harness.resolved, harness.policies),
+          harness: { ...harnessRecord(harness.resolved, harness.policies), ...(outcome.route ? { model_route: outcome.route } : {}) },
           skillVersions: skills.traceRecords(),
           toolCalls: toolSteps.map((s) => ({ tool: s.tool, input: s.toolInput, output: s.toolOutput })),
           errors: outcome.error ? [outcome.error] : [],

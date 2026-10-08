@@ -34,8 +34,9 @@ import { type EvaluationCase, type Experiment, type ExperimentDecision, type Exp
 import { toCompareInputs } from '../datasets/fixtures.js';
 import { DatasetServiceError, listCases, listDatasets, markUsed, requireDataset } from '../datasets/service.js';
 import { evaluationDatasets } from '../db/schema.js';
-import { DEFAULT_EXPERIMENTS_TENANT, defaultEvaluators, JudgeBudgetProvider, persistEvaluations, runEvaluationPipeline, subjectsFromComparison, type PipelineReport } from '../evaluators/index.js';
+import { assertDistinctJudge, DEFAULT_EXPERIMENTS_TENANT, defaultEvaluators, JudgeBudgetProvider, persistEvaluations, runEvaluationPipeline, subjectsFromComparison, type PipelineReport } from '../evaluators/index.js';
 import type { ModelProvider } from '../providers/model-provider.js';
+import { defaultModelRouter, type ModelRoute } from '../providers/model-router.js';
 import { DEFAULT_USD_TO_EUR } from '../providers/gemini-pricing.js';
 import { applyHarness, effectiveRecord, parseStoredHarnessConfig } from '../harness/config.js';
 import { findHarness, listHarnessVersions } from '../harness/service.js';
@@ -75,6 +76,8 @@ export interface RunnerDeps {
   /** Judge provider; without it there is no LLM_JUDGE (the composite redistributes its weight). */
   judgeProvider?: ModelProvider | null;
   judgeModel?: string;
+  /** Model routes the caller resolved (`experimentRoutes`): their roles are recorded in the config. */
+  routes?: { executor?: ModelRoute; judge?: ModelRoute };
   /** A fresh toolbox per run (FakeTwenty in the CLI); harness arms pass the policy capped by their harness. */
   makeTools: (runLabel: string, toolPolicy?: AgentToolPolicy) => AgentToolbox;
   agentVersion: CompareAgentVersion;
@@ -265,6 +268,15 @@ export async function runExperiment(deps: RunnerDeps, opts: RunOptions): Promise
   const judgeBudgetEur = useJudge ? round(opts.judgeBudgetEur ?? opts.budgetEur / 3, 4) : 0;
   const executorBudgetEur = round(opts.budgetEur - judgeBudgetEur, 4);
   if (!(executorBudgetEur > 0)) throw new ExperimentAbortedError('invalid', 'el presupuesto del juez no deja nada al ejecutor', null);
+  // LLD §18: the judge is never the executor's model. Checked first, before any read, write or
+  // spend (the evaluation pipeline checks it again per phase).
+  if (useJudge) {
+    try {
+      assertDistinctJudge(deps.judgeModel ?? defaultModelRouter().resolve('judge').model, [deps.agentVersion.model]);
+    } catch (err) {
+      throw new ExperimentAbortedError('invalid', err instanceof Error ? err.message : String(err), null);
+    }
+  }
   const evaluationsTenant = deps.evaluationsTenant ?? DEFAULT_EXPERIMENTS_TENANT;
   const cfg = readConfig(deps.agentVersion.configuration);
   const now = deps.now ?? (() => new Date());
@@ -298,8 +310,8 @@ export async function runExperiment(deps: RunnerDeps, opts: RunOptions): Promise
     test_on_form: opts.testOnForm ?? false,
     eur_per_decision_estimate: opts.eurPerDecision ?? DEFAULT_EUR_PER_DECISION,
     today: now().toISOString().slice(0, 10),
-    executor: { model: deps.agentVersion.model, provider: deps.executorProvider.name, min_confidence: cfg.minConfidence },
-    judge: useJudge ? { model: ev.judges[0]?.model ?? null, provider: deps.judgeProvider!.name } : null,
+    executor: { model: deps.agentVersion.model, provider: deps.executorProvider.name, min_confidence: cfg.minConfidence, ...(deps.routes?.executor ? { role: deps.routes.executor.role, route_source: deps.routes.executor.source } : {}) },
+    judge: useJudge ? { model: ev.judges[0]?.model ?? null, provider: deps.judgeProvider!.name, ...(deps.routes?.judge ? { role: deps.routes.judge.role, route_source: deps.routes.judge.source } : {}) } : null,
     evaluators: ev.registry.catalog().map((e) => ({ key: e.key, type: e.type, dimension: e.dimension, hard: e.hard, content_hash: e.content_hash })),
     gate: opts.gate,
     evaluations_tenant: evaluationsTenant,

@@ -60,13 +60,15 @@ export const OPTIMIZER_VERSION = 1;
 
 export interface OptimizerDeps {
   db: Db;
-  /** Model of the optimizer's own calls (clustering and proposal): the executor model (Gemini Flash). */
+  /** Provider of the optimizer's own calls (clustering and proposal): role `optimizer` of the model router. */
   llmProvider: ModelProvider;
   /** Experiment executor (Gemini in production, scripted in the tests). */
   executorProvider: ModelProvider;
   /** Experiment judge; without it the composite redistributes the judge weight. */
   judgeProvider?: ModelProvider | null;
   judgeModel?: string;
+  /** Model routes of the experiment (recorded in its config). */
+  routes?: RunnerDeps['routes'];
   /** A fresh toolbox per experiment run. Default: an in-memory CRM (MemoryTwenty): nothing reaches Twenty. */
   makeTools?: (runLabel: string) => AgentToolbox;
   /** Agent configuration of the experiment. Default: the seed's Prospector (desiredProspectorVersion()). */
@@ -282,6 +284,7 @@ export async function runOptimization(deps: OptimizerDeps, tenantId: string, run
       executorProvider: deps.executorProvider,
       judgeProvider: deps.judgeProvider ?? null,
       ...(deps.judgeModel ? { judgeModel: deps.judgeModel } : {}),
+      ...(deps.routes ? { routes: deps.routes } : {}),
       makeTools: deps.makeTools ?? defaultMakeTools(agentVersion, tenantId, deps.signal),
       agentVersion,
       now,

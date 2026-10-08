@@ -3,8 +3,9 @@
  *
  * - ONE dimension per call, with a CLOSED rubric (levels 0-4, each described; score =
  *   level / 4). The judge never sees other dimensions nor which version produced a case.
- * - A model DIFFERENT from the executor (default `gemini-pro-latest`, `JUDGE_MODEL`); the
- *   pipeline refuses a judge that is the executor's model.
+ * - A model DIFFERENT from the executor: role `judge` of the model router (default
+ *   `gemini-pro-latest`; `MODEL_ROUTE_JUDGE=provider:model`, legacy `JUDGE_MODEL`). Experiments
+ *   refuse it at start and the pipeline refuses a judge that is the executor's model.
  * - Strict output: JSON validated with zod (one entry per case id, level 0-4, justification
  *   of at most 50 words, and a QUOTE that must appear literally in the evaluated output, so
  *   every verdict is anchored to the text). One repair retry; after that the case has no
@@ -19,11 +20,13 @@
  */
 import { z } from 'zod';
 import { UNTRUSTED_SYSTEM_RULE, wrapUntrusted } from '../agents/untrusted.js';
-import { DEFAULT_USD_TO_EUR, GEMINI_MODEL_ALIASES } from '../providers/gemini-pricing.js';
+import { DEFAULT_USD_TO_EUR } from '../providers/gemini-pricing.js';
+import { canonicalModelId, DEFAULT_MODEL_ROUTES } from '../providers/model-router.js';
 import type { CompletionRequest, CompletionResult, ModelProvider, StreamChunk, TokenUsage } from '../providers/model-provider.js';
 import type { CaseEvaluator, CaseInput, CaseOutput, Dimension, EvaluationContext, EvaluatorOutcome } from './types.js';
 
-export const DEFAULT_JUDGE_MODEL = 'gemini-pro-latest';
+/** Code default of the `judge` role (src/providers/model-router.ts). */
+export const DEFAULT_JUDGE_MODEL = DEFAULT_MODEL_ROUTES.judge.model;
 
 export interface Rubric {
   dimension: Dimension;
@@ -382,15 +385,14 @@ export class LlmJudgeEvaluator implements CaseEvaluator {
 
 /** Resolves `*-latest` aliases so `gemini-flash-latest` and `gemini-3.8-flash` count as the same model. */
 export function canonicalModel(model: string): string {
-  const id = model.replace(/^models\//, '').trim();
-  return GEMINI_MODEL_ALIASES[id] ?? id;
+  return canonicalModelId(model);
 }
 
 /** The judge must not be the model that produced the output. */
 export function assertDistinctJudge(judgeModel: string, executorModels: string[]): void {
   const j = canonicalModel(judgeModel);
   const same = executorModels.find((m) => canonicalModel(m) === j);
-  if (same) throw new Error(`el juez (${judgeModel}) es el mismo modelo que el ejecutor (${same}): configura JUDGE_MODEL con otro modelo`);
+  if (same) throw new Error(`el juez (${judgeModel}) es el mismo modelo que el ejecutor (${same}): configura MODEL_ROUTE_JUDGE (proveedor:modelo) con otro modelo`);
 }
 
 export class JudgeBudgetExceededError extends Error {

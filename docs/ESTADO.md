@@ -142,3 +142,15 @@ Lecciones de la tanda 11 aplicadas: cada agente usa BD de test propia (`agentos_
 | audit_log append-only de acciones mutantes (+force auditado), retención de trazas SIN pérdida (archivar→verificar→aligerar, LLD §22) y stall-guard de BullMQ (deuda tanda 11) | `feat/retention-audit` | Opus | ✅ fusionado (aligerado VIABLE: trigger con vía estrecha payload→puntero verificando sha256; catálogo de rutas auditadas con test que obliga a clasificar rutas nuevas; GET /traces/:id nuevo con rehidratación; 771 tests) |
 | Docs: inbound-triaje.md, revalidación en skill-optimizer.md, runbook de archivado/audit, guía comercial, ROADMAP | `docs/tanda12` | Sonnet | ✅ entregado (pendiente de fusión; detectó runbook con migraciones hasta 0008, Research "vacía" en la guía y volumen de TRACE_ARCHIVE_DIR sin montar — reconcilia el PM) |
 | Integración, e2e y PR | `feat/tanda12` (worktree wt12-integracion) | PM | ✅ 835 tests; journal 0014→0015→0016 limpio a la primera (when preasignados); suppression.add auditado desde el InboxAgent y experiment.revalidate clasificado (el candado del catálogo lo exigió); volumen persistente pxos_trace_archive; desplegado y sembrado; e2e real: inbox SUCCESS (5 mensajes, 1 INTERESADO real de gmail sin match → sin nota por diseño, 0,0014 €) |
+
+## Tanda 13 — Gate completo, routing de modelos y MVP-4 🔄 (en curso, 2026-10-08)
+
+Procedimiento consolidado: BD de test propia por agente (`agentos_wt13_*`) y migraciones con `when` preasignado (0017 sintéticos, 0018 routing si hiciera falta, 0019 gate si hiciera falta). Al cerrar, el PM avisa al usuario para revisar juntos el contrato del Catalog Service (borrador en esta tanda).
+
+| Pieza | Rama | Agente | Estado |
+|---|---|---|---|
+| El gate considera revalidaciones: REFUTED bloquea activar/canarizar/promote (409 revalidation_refuted; force humano auditado sigue) + archivado de trazas programado (job diario, apagado por defecto, auditado) | `feat/gate-refuted` | Opus | 🔄 |
+| Model routing por rol (§18): executor_cheap/reasoner/judge/triage, overrides por env, juez≠ejecutor forzado, pnpm models:costs con la proyección de la subida del 2027-01-01 | `feat/model-routing` | Opus | 🔄 |
+| Environments sintéticos (MVP-4, §13): generador determinista por plantillas con semilla, ground truth por construcción, dominios *.invalid, origin SYNTHETIC, dificultad 1-3; la accuracy del gate sigue siendo solo humana | `feat/synthetic-envs` | Opus | 🔄 |
+| Docs: environments-sinteticos.md, model-routing.md, runbook, ROADMAP + **borrador del contrato del Catalog Service (§9) para revisar con el usuario** | `docs/tanda13` | Sonnet | 🔄 |
+| Integración, e2e y PR | `feat/tanda13` (worktree wt13-integracion) | PM | 🔄 worktree creado con .env copiado |

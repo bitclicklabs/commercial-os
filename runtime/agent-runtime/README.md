@@ -128,6 +128,8 @@ Requisitos: Node.js 22, pnpm, y los contenedores `pxos-postgres` (127.0.0.1:5440
 | `WEBHOOK_DELIVERY_BACKOFF_MS` | `5000` | Base del backoff exponencial entre los 3 intentos de entrega |
 | `WEBHOOK_DELIVERY_CONCURRENCY` | `4` | Entregas simultáneas del worker de webhooks (rol `scheduler`) |
 | `RENDERER_URL` | `http://pxos-renderer:3000` | Servicio de render JavaScript de `render_url`. En desarrollo, `http://127.0.0.1:4030` si el renderer está publicado ahí. Vacío u `off` = desactivado (`render_url` devuelve `RENDERER_NOT_CONFIGURED`) |
+| `TRACE_RETENTION_DAYS` | `90` | Antigüedad (días) por defecto de `pnpm traces:archive`. Consulta [Retención de trazas](#retención-de-trazas-sin-pérdida-pnpm-tracesarchive) |
+| `TRACE_ARCHIVE_DIR` | `./data/trace-archive` | Directorio del archivo de trazas (`<tenant>/<YYYY-MM>.jsonl.gz`); en Docker, un volumen persistente |
 
 ## Migraciones
 
@@ -161,7 +163,8 @@ El esquema vive en `src/db/schema.ts`. Todas las tablas llevan `tenant_id` (C6).
 | `0011_experiments` | Tabla `experiments` (LLD §11.5-11.6): triggers anti-`DELETE`, un experimento nace `DRAFT` o `RUNNING`, identidad y `config` inmutables, transiciones válidas y un experimento terminado (`COMPLETED`, `FAILED`, `CANCELLED`) inmutable entero. SQL idempotente. `when` 1791376000000 e idx 11. Consulta [Experiments y Release Gate](#experiments-y-release-gate) |
 | `0012_skill_canaries` | Tabla `skill_canaries` del canario post-gate: un solo canario `ACTIVE` por skill (índice único parcial); triggers sin `DELETE`, identidad/versiones/porcentaje/experimento inmutables, solo `ACTIVE → PROMOTED | ROLLED_BACK` y un canario terminado es inmutable. SQL idempotente. `when` 1791376200000 e idx 12. Consulta [Canario](#canario-de-skills) |
 | `0013_optimization_runs` | Tabla `optimization_runs` del Skill Optimizer (LLD §18): trigger anti-`DELETE`, CHECK de estados y veredicto, e índice único parcial que permite un solo run abierto por skill. Las transiciones son `UPDATE` guardados por estado en el código (sin trigger de inmutabilidad). SQL idempotente. `when` 1791376300000 e idx 13, detrás de `0012_skill_canaries` (ADR-31: la 0012 del canario se aplicó antes a la BD compartida y el migrador solo avanza por `when`). Consulta [Skill Optimizer](#skill-optimizer) |
-| `0016_experiment_revalidations` | Tabla `experiment_revalidations` (revalidación de experimentos `PASS_FORM`): sin `DELETE` (trigger), fila inmutable salvo `consequence` (nota y evento), que se escribe una sola vez desde `{}`; única por `(tenant_id, experiment_id, labels_hash)`; `CHECK` de veredicto (`CONFIRMED`, `REFUTED`, `INSUFFICIENT`), de `outputs_source` y de `cost_eur = 0`. SQL idempotente. `when` 1791450200000; la 0014 y la 0015 son de otras ramas y el idx lo re-encadena la fusión (ADR-31). Consulta [Revalidación de los PASS_FORM](#revalidación-de-los-pass_form) |
+| `0015_audit_retention` | Tabla `audit_log` (append-only: triggers anti-`UPDATE`, anti-`DELETE` y anti-`TRUNCATE`); triggers anti-`DELETE` en `traces` y `trace_steps`, y `trace_steps` inmutable salvo la transición exacta payload → puntero del archivado. SQL idempotente. `when` 1791450100000; la `0014` la reserva otra rama de la tanda 12 (ADR-31). Consulta [Auditoría y retención de trazas](#auditoría-y-retención-de-trazas) |
+| `0016_experiment_revalidations` | Tabla `experiment_revalidations` (revalidación de experimentos `PASS_FORM`): sin `DELETE` (trigger), fila inmutable salvo `consequence` (nota y evento), que se escribe una sola vez desde `{}`; única por `(tenant_id, experiment_id, labels_hash)`; `CHECK` de veredicto (`CONFIRMED`, `REFUTED`, `INSUFFICIENT`), de `outputs_source` y de `cost_eur = 0`. SQL idempotente. `when` 1791450200000, detrás de la 0015 (ADR-31). Consulta [Revalidación de los PASS_FORM](#revalidación-de-los-pass_form) |
 
 Importante: el migrador de Drizzle aplica solo las migraciones con fecha posterior a la última aplicada. Si dos ramas generan migraciones en paralelo contra la misma BD de desarrollo, aplica primero la más antigua o regenera la nueva tras el merge.
 
@@ -336,7 +339,7 @@ El reconciliador solo ve su propia cola: un run procesado en proceso por un test
 
 Antes de este latido, los scouts largos (más de dos minutos) lanzados por los tests en vivo acababan `FAILED` con `orphaned RUNNING run (job missing)` aunque su traza terminaba en `SUCCESS`.
 
-Los jobs `active` de un worker caído los gestiona el chequeo de stalled de BullMQ (`STALLED_INTERVAL_MS`, `MAX_STALLED_COUNT`): los devuelve a `wait`. Cuando el processor recibe un job cuyo run sigue `RUNNING`, sabe que el intento anterior murió y aplica la misma recuperación antes de continuar. Si BullMQ lo marca `failed` por superar `MAX_STALLED_COUNT`, lo recoge el reconciliador.
+Los jobs `active` de un worker caído los gestiona el chequeo de stalled de BullMQ (`STALLED_INTERVAL_MS`, `MAX_STALLED_COUNT`): los devuelve a `wait`. Cuando el processor recibe un job cuyo run sigue `RUNNING`, solo lo recupera si su latido es más antiguo que `RECONCILE_GRACE_MS` (con la misma guarda `staleBefore` y de intento); con un latido reciente aplaza la entrega, porque el primer worker sigue vivo. Consulta [Stall-guard de BullMQ](#stall-guard-de-bullmq). Si BullMQ lo marca `failed` por superar `MAX_STALLED_COUNT`, lo recoge el reconciliador.
 
 ### Espera a Twenty al arrancar
 
@@ -2168,6 +2171,87 @@ Solo cuenta los envíos desde Twenty: los del webmail van aparte. El dashboard m
 - `test/integration/email-ops.test.ts` (PostgreSQL + `FakeTwenty` + payload real de Twenty): bloqueo y vuelta a `DRAFT`, dedupe de `SENT`, una sola emisión diaria del exceso, bloque `email` del resumen y del dashboard, trigger anti-`DELETE`.
 - `test/integration/email-ops-live.test.ts` (opcional, `EMAIL_OPS_LIVE=1`, Twenty real): añade a la nota real de supresión la línea de prueba `suprimido-test@ejemplo-supresion.example` (TLD `.example`, no recibe correo; no se borra), simula el webhook de `READY` sobre la hipótesis `[TEST] pxos-emailops READY a dirección suprimida` (estado `PROPOSED`, que el workflow nunca enviaría) y comprueba que vuelve a `DRAFT` con su nota ⛔; después simula un `SENT` sobre `[TEST] pxos-emailops SENT simulado` (la transición solo existe en el payload). Tenant `it-emailops`, colas en memoria. No envía nada.
 
+## Auditoría y retención de trazas
+
+Tanda 12, migración `0015_audit_retention` (LLD v0.1 §22 y §24).
+
+### `audit_log`: acciones administrativas
+
+Cada petición a una ruta administrativa de la API deja una fila en `audit_log`, también si se rechaza (un `409` del Release Gate, un `400` de validación). Escribe el hook `onSend` de `src/audit/hook.ts`, antes de que salga la respuesta. No es un logger global: los `GET` y las rutas operativas no se auditan.
+
+| Columna | Contenido |
+|---------|-----------|
+| `tenant_id`, `occurred_at` | Tenant de la petición e instante |
+| `actor`, `actor_ip`, `actor_label` | `api` (la API no tiene autenticación), IP del cliente y una etiqueta libre: cabecera `x-actor` o, si falta, el `by` / `created_by` del cuerpo. La etiqueta **no** está autenticada |
+| `action` | `skill.activate`, `skill.force_activate`, `canary.start`, `canary.promote`, `canary.rollback`, `harness.activate`, `harness.force_activate`, `optimizer.run`, `optimizer.close`, `dataset.*`, `knowledge.*`, `agent.*`, `task.*`, `execution.cancel`, `event_subscription.*` |
+| `subject_type`, `subject_id`, `subject_version` | Sujeto tal como lo pidió la ruta (nombre o id) y versión cuando aplica |
+| `method`, `route`, `request_id` | Patrón de la ruta (`/skills/:id/versions/:v/activate`) |
+| `payload` | Resumen del cuerpo: flags, números, textos cortos, listas cortas de ids y el `reason` completo de una decisión humana. Los textos largos y los objetos anidados van como `{ sha256, length, excerpt }`, nunca enteros |
+| `result`, `status_code`, `error_code` | `ok` (2xx), `rejected` (4xx) o `error` (5xx), con el `error` de la respuesta (`release_gate_blocked`, `conflict`, `validation_error`...) |
+| `details` | Hechos breves de la respuesta: `changed`, `gate_mode` (`override`, `experiment`, `rollback`), experimento del gate, mensaje del error |
+
+- **Append-only**: los triggers rechazan `UPDATE`, `DELETE` y `TRUNCATE`.
+- **`force` siempre auditado**: una activación con `force: true` se registra como `*.force_activate` con el motivo completo y el modo del gate, se acepte o no.
+- **Catálogo** (`src/audit/catalog.ts`): cada ruta mutante está en `AUDITED_ROUTES` o en `NOT_AUDITED` con su motivo (`POST /executions`, `POST /tasks/:id/run`, `POST /evaluations/human`, webhooks y rutas `501`: tienen su propio registro). `test/unit/audit.test.ts` falla si una ruta nueva no está clasificada.
+- Si el insert de auditoría falla, se registra en el log del proceso como error y la respuesta no cambia (la acción ya está decidida).
+- Código fuera de la API puede auditar con `recordAudit(db, row)` (`src/audit/service.ts`).
+
+`GET /audit` devuelve las filas del tenant, de la más reciente a la más antigua. Filtros: `action` (una o varias separadas por comas), `subject_type`, `subject_id`, `result`, `from` / `to` (ISO 8601) y `limit` (1-500, por defecto 100).
+
+```sh
+# Todos los force de skills y harness del tenant
+curl -s 'http://127.0.0.1:4020/audit?action=skill.force_activate,harness.force_activate' -H 'x-tenant-id: publiexpe'
+# Quién te identifica en la auditoría
+curl -s -X POST http://127.0.0.1:4020/skills/<skill>/versions/3/activate -H 'content-type: application/json' \
+  -H 'x-actor: jesus' -d '{"force": true, "reason": "motivo de al menos 10 caracteres", "by": "jesus"}'
+```
+
+### Retención de trazas sin pérdida: `pnpm traces:archive`
+
+Las trazas crecen por los payloads `jsonb` de los pasos. La retención archiva antes de aligerar y nunca borra: ni filas ni ficheros. Es una tarea manual (no hay tarea programada).
+
+```sh
+# Simulación: qué se archivaría (por tenant y mes), sin escribir nada
+pnpm traces:archive --older-than 90 --dry-run
+# Archiva y aligera los pasos de trazas de más de 90 días (por defecto TRACE_RETENTION_DAYS)
+pnpm traces:archive --older-than 90 [--tenant publiexpe] [--min-bytes 4096] [--batch 200] [--dir ./data/trace-archive]
+```
+
+1. **Selección**: pasos de trazas más antiguas que N días, de ejecuciones terminadas, con algún campo pesado: `input`, `output`, `tool_input` o `tool_output` con un JSON de `--min-bytes` (4096) o más. Los payloads pequeños se quedan en la BD (los usan `link-resolver` y la cosecha de datasets: ids de Twenty, `created`, `input.exhibitor`...).
+2. **Exportación**: JSONL con gzip en `TRACE_ARCHIVE_DIR/<tenant>/<YYYY-MM>.jsonl.gz` (mes de la traza, UTC), una línea por paso. Los ficheros se crean con `O_EXCL`: nunca se sobrescribe ni se amplía uno existente; otra pasada del mismo mes escribe `<YYYY-MM>.2.jsonl.gz`. Antes de escribir, PostgreSQL comprueba que la copia que lleva JavaScript tiene el mismo texto `jsonb` canónico; un campo que no se puede representar exacto (p. ej. un entero de 25 cifras) no se archiva ni se aligera y se informa en `fields_unrepresentable`.
+3. **Verificación**: relee el fichero, lo descomprime y compara el número de líneas, el sha256 del contenido y cada línea (paso y valor de cada campo). Si falla, el proceso para con error, el fichero se queda donde está (nada apunta a él) y la BD no cambia.
+4. **Aligerado**: solo tras verificar, campo a campo y en una transacción por fichero, el campo pasa a `{ "archived": true, "file", "line", "field", "sha256", "bytes" }`. El `UPDATE` va guardado por el sha256 del contenido que sustituye. Tipo, timestamps, tokens, modelo, tool, latencia, `error`, `reward` y las versiones de la traza (P4) no cambian.
+
+**Triggers (0015)**. `traces` y `trace_steps` no tenían ningún trigger. Ahora:
+
+- Sin `DELETE` físico en `traces` ni en `trace_steps`.
+- `trace_steps` es inmutable salvo una vía estrecha: un campo pesado solo puede pasar de su contenido a su puntero exacto, con las claves exactas y el sha256 del contenido sustituido calculado por el trigger sobre `OLD`. Un puntero no vuelve a cambiar. Cualquier otro `UPDATE` falla.
+
+**Lectura**. `GET /traces/:id` sirve la traza con sus pasos; cada paso lista sus `archived_fields` y la traza su `archived_steps`. Con `?rehydrate=true`, cada puntero se lee del fichero y se sustituye por el contenido original; `rehydrated[campo]` indica `status` (`ok`, `missing_file`, `missing_line`, `mismatch`, `invalid`) y `verified` (el contenido tiene el sha256 del puntero). Un fichero ausente nunca falla la petición: el puntero se queda. `GET /executions/:id` y `GET /task-runs/:id` sirven el puntero tal cual.
+
+> **Importante:** tras archivar, las consultas que leen payloads pesados de pasos antiguos (la cosecha de datasets de `render_url` y del `scout_extract`) ven el puntero, no el contenido. Archiva solo trazas que ya no vayas a cosechar, o rehidrata antes. En Docker, monta `TRACE_ARCHIVE_DIR` como volumen persistente: el directorio es la única copia de lo aligerado.
+
+| Variable | Por defecto | Descripción |
+|----------|-------------|-------------|
+| `TRACE_RETENTION_DAYS` | `90` | Antigüedad (días) por defecto de `pnpm traces:archive` |
+| `TRACE_ARCHIVE_DIR` | `./data/trace-archive` | Directorio de los ficheros del archivo (relativo al proceso). `GET /traces/:id?rehydrate=true` lee de aquí |
+
+### Stall-guard de BullMQ
+
+Cuando BullMQ re-entrega un job tras un stall (el worker no renovó el lock) y el run sigue `RUNNING`, el processor ya no lo da por muerto: aplica la misma regla de vida que el reconciliador (`decideStalledDelivery` en `src/worker/processor.ts`).
+
+- Latido (`task_runs.updated_at`) más antiguo que `RECONCILE_GRACE_MS`: el intento murió. `recoverOrphanRun` con la guarda `staleBefore` y el mismo número de intento (`RUNNING → QUEUED` y vuelve a ejecutarse, o `→ FAILED` sin intentos).
+- Latido reciente: el primer worker sigue vivo y solo perdió el lock. El processor lanza `StalledRunAliveError` y el worker de BullMQ aparca el job en `delayed` hasta que el latido podría caducar (sin consumir intento). En la siguiente entrega, el run está terminado (se omite), en `QUEUED` por un reintento (se ejecuta) o es un huérfano real (se recupera).
+- Si un latido gana la carrera entre la lectura y el `UPDATE` guardado, también se aplaza.
+
+### Tests
+
+- `test/unit/audit.test.ts`: resumen del payload, fila de auditoría (`force_activate`, `409`, tenant inválido) y clasificación de todas las rutas mutantes.
+- `test/unit/trace-archive.test.ts` y `test/unit/stall-guard.test.ts`: punteros, rutas fuera del directorio, verificación de un fichero alterado y la decisión del stall-guard.
+- `test/integration/audit.test.ts` (PostgreSQL): auditoría de create, activate bloqueado (`409`), force sin motivo (`400`) y con motivo, canario, cierre del optimizador, knowledge, `GET /audit` y los triggers append-only (en transacciones que siempre se deshacen).
+- `test/integration/trace-archive.test.ts` (PostgreSQL): simulación, archivado → verificación → aligerado → lectura con puntero → rehidratación verificada, campo no representable que se queda en la BD, idempotencia, fichero ausente y la vía estrecha del trigger.
+- `test/integration/recovery-race.test.ts`: re-entrega con latido fresco (el intento sobrevive) y con huérfano real (se recupera o falla sin intentos).
+
 ## Pendiente
 
 - Triggers `DEPENDENCY` y `CONDITION` (hoy no registran nada).
@@ -2185,5 +2269,5 @@ Solo cuenta los envíos desde Twenty: los del webmail van aparte. El dashboard m
 - Borradores de email: disparar también con `EDITED` (necesita una segunda tarea o un operador OR en el filtro), plantillas por sector y registro de si el comercial envió el borrador. (Hecho: la entrada de eventos externos por HTTP y la entrega a n8n por webhook, consulta [Eventos externos](#eventos-externos).)
 - Harness, skills, memoria y verificador reales; promote, rollback y evaluate.
 - Export de los contratos zod a JSON Schema versionado en `schemas/`.
-- Experiments: criterio de latencia, que el Release Gate tenga en cuenta una revalidación `REFUTED` (hoy solo avisa con nota y evento; la revalidación es manual, ver [Revalidación de los PASS_FORM](#revalidación-de-los-pass_form)), y registrar los overrides también en el log de eventos (hoy van al log del proceso y a la respuesta). El runner para harness existe desde la tanda 11 ([Experimentos de harness](#experimentos-de-harness)).
+- Experiments: criterio de latencia, y que el Release Gate tenga en cuenta una revalidación `REFUTED` (hoy solo avisa con nota y evento; la revalidación es manual, ver [Revalidación de los PASS_FORM](#revalidación-de-los-pass_form)). Los overrides quedan desde la tanda 12 en `audit_log` como `*.force_activate`, además del log del proceso y la respuesta. El runner para harness existe desde la tanda 11 ([Experimentos de harness](#experimentos-de-harness)).
 - Métricas: AC-17 y AC-18 piden hipótesis `HOT`, pero el resumen de ejecución solo cuenta hipótesis creadas; falta el desglose por prioridad (en Twenty o en `output.counters`). El dashboard oculta por defecto los agentes `ARCHIVED` (los de prueba se archivan con `pnpm cleanup:archive-test-agents`); `include_archived=true` los muestra.

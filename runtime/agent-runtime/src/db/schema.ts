@@ -1241,3 +1241,58 @@ export const experimentRevalidations = pgTable(
 );
 
 export type ExperimentRevalidation = typeof experimentRevalidations.$inferSelect;
+
+// ---------------------------------------------------------------------------
+// Audit log of administrative API actions (LLD v0.1 sections 22 and 24). Migration 0015.
+// ---------------------------------------------------------------------------
+
+export const AUDIT_RESULTS = ['ok', 'rejected', 'error'] as const;
+export type AuditResult = (typeof AUDIT_RESULTS)[number];
+
+/**
+ * One row per administrative API request (activations, force overrides, canary steps, optimizer
+ * close, datasets, knowledge, harnesses...), written by the hook of src/audit/ with the outcome:
+ * `ok` (2xx), `rejected` (4xx, e.g. a 409 of the Release Gate) or `error` (5xx). GETs are never
+ * audited. Append-only: triggers reject UPDATE, DELETE and TRUNCATE. `payload` is a summary of
+ * the request body (long texts and objects go as sha256 + length + excerpt, never in full).
+ */
+export const auditLog = pgTable(
+  'audit_log',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    tenantId: tenantId(),
+    occurredAt: timestamp('occurred_at', { withTimezone: true }).notNull().defaultNow(),
+    /** Who acted: `api` today (the API has no authentication yet). */
+    actor: text('actor').notNull().default('api'),
+    actorIp: text('actor_ip'),
+    /** Free label: `x-actor` header, else the `by` / `created_by` of the body. Not authenticated. */
+    actorLabel: text('actor_label'),
+    /** e.g. `skill.activate`, `skill.force_activate`, `canary.promote`, `optimizer.close`. */
+    action: text('action').notNull(),
+    subjectType: text('subject_type').notNull(),
+    /** Id or name of the subject as the request addressed it (or as the response resolved it). */
+    subjectId: text('subject_id'),
+    subjectVersion: integer('subject_version'),
+    method: text('method').notNull(),
+    /** Route pattern (e.g. `/skills/:id/versions/:v/activate`). */
+    route: text('route').notNull(),
+    requestId: text('request_id'),
+    /** Summary of the request body (src/audit/summary.ts). */
+    payload: jsonb('payload').$type<Record<string, unknown>>().notNull().default({}),
+    result: text('result').$type<AuditResult>().notNull(),
+    statusCode: integer('status_code').notNull(),
+    /** `error` of the response body when rejected (e.g. `release_gate_blocked`). */
+    errorCode: text('error_code'),
+    /** Short facts of the response: `changed`, gate mode, message of the error. */
+    details: jsonb('details').$type<Record<string, unknown>>().notNull().default({}),
+  },
+  (t) => [
+    index('audit_log_tenant_occurred_idx').on(t.tenantId, t.occurredAt),
+    index('audit_log_tenant_action_idx').on(t.tenantId, t.action, t.occurredAt),
+    index('audit_log_subject_idx').on(t.tenantId, t.subjectType, t.subjectId),
+    check('audit_log_result_ck', sql`${t.result} in ('ok', 'rejected', 'error')`),
+    check('audit_log_status_ck', sql`${t.statusCode} between 100 and 599`),
+  ],
+);
+
+export type AuditLogRow = typeof auditLog.$inferSelect;

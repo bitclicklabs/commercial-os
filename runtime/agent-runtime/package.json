@@ -30,6 +30,7 @@
     "experiment:run": "tsx --env-file-if-exists=.env scripts/experiment-run.ts",
     "experiment:revalidate": "tsx --env-file-if-exists=.env scripts/experiment-revalidate.ts",
     "optimize:run": "tsx --env-file-if-exists=.env scripts/optimize-run.ts",
+    "traces:archive": "tsx --env-file-if-exists=.env src/maintenance/trace-archive.ts",
     "test": "vitest run",
     "test:unit": "vitest run test/unit",
     "test:integration": "vitest run test/integration"

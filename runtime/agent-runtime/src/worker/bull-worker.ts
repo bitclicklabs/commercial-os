@@ -1,6 +1,6 @@
 import { DelayedError, UnrecoverableError, Worker, type ConnectionOptions, type Job } from 'bullmq';
 import { redisConnectionFromUrl, type RunJob } from '../queue/run-queue.js';
-import { ConcurrencyLimitError, RetryableRunError, TwentyUnavailableError, type ProcessorLogger, type RunProcessor } from './processor.js';
+import { ConcurrencyLimitError, RetryableRunError, StalledRunAliveError, TwentyUnavailableError, type ProcessorLogger, type RunProcessor } from './processor.js';
 import type { TwentyWaitState } from './twenty-gate.js';
 
 /** Job data plus the Twenty wait window, persisted across TwentyUnavailableError deferrals. */
@@ -46,6 +46,12 @@ export function startBullWorker(processor: RunProcessor, opts: BullWorkerOptions
           // Twenty still booting: keep the run QUEUED, remember the wait window in the job
           // data and park the job without consuming an attempt (same as max_concurrency).
           await job.updateData({ ...job.data, twentyWait: err.state } as GatedRunJob);
+          await job.moveToDelayed(Date.now() + err.delayMs, token);
+          throw new DelayedError();
+        }
+        if (err instanceof StalledRunAliveError) {
+          // Re-delivered after a stall but the first worker is still heartbeating: leave the run
+          // to it and look again later, without consuming an attempt (src/worker/processor.ts).
           await job.moveToDelayed(Date.now() + err.delayMs, token);
           throw new DelayedError();
         }

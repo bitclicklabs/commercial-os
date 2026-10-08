@@ -12,7 +12,8 @@ export interface ApiContext {
   config: Pick<Config, 'defaultTenantId' | 'defaultModelProvider'> &
     Partial<Pick<Config, 'geminiModel'>> &
     Partial<Pick<Config, 'twentyWebhookSecret' | 'evaluationDedupeWindowMs'>> &
-    Partial<Pick<Config, 'externalEventsToken' | 'externalEventTypePrefixes' | 'externalWebhookAllowPrivate'>>;
+    Partial<Pick<Config, 'externalEventsToken' | 'externalEventTypePrefixes' | 'externalWebhookAllowPrivate'>> &
+    Partial<Pick<Config, 'traceArchiveDir'>>;
   /** Optional: when absent, schedule changes are only picked up by the scheduler's periodic sync. */
   scheduler?: SchedulerControl;
   /** Optional: when present, runs created through the API emit task.scheduled. */

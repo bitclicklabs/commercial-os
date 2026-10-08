@@ -1296,3 +1296,69 @@ export const auditLog = pgTable(
 );
 
 export type AuditLogRow = typeof auditLog.$inferSelect;
+
+// ---------------------------------------------------------------------------
+// 10.2 Inbound Manager (LLD v0.1): general triage of the mailbox. Migration 0014.
+// ---------------------------------------------------------------------------
+
+/** Classes of the inbound triage (src/inbound/triage-rules.ts and reply-classifier.ts). */
+export const INBOUND_TRIAGE_CLASSES = ['BAJA', 'NO_INTERESADO', 'INTERESADO', 'PREGUNTA', 'AUTO_REPLY', 'REBOTE', 'OTRO'] as const;
+export type InboundTriageClass = (typeof INBOUND_TRIAGE_CLASSES)[number];
+export const INBOUND_TRIAGE_METHODS = ['RULES', 'LLM'] as const;
+export type InboundTriageMethod = (typeof INBOUND_TRIAGE_METHODS)[number];
+
+/**
+ * One row per incoming message the InboxAgent triaged (append-only: a trigger forbids UPDATE
+ * and DELETE). `message_key` is the Message-ID (or `sha256:` of the source when there is none);
+ * the unique index makes the triage idempotent: a message is classified and acted on once,
+ * even if the IMAP cursor is reset or the same message lands twice in the mailbox.
+ * The row is written AFTER the actions (suppression entry, note, event), so it records what
+ * was really done. No body content is stored: only the sanitised subject and the signals.
+ */
+export const inboundTriage = pgTable(
+  'inbound_triage',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    tenantId: tenantId(),
+    messageKey: text('message_key').notNull(),
+    messageId: text('message_id'),
+    /** `user@host/MAILBOX` (no password), as in `inbound_state`. */
+    mailbox: text('mailbox').notNull(),
+    uidValidity: bigint('uid_validity', { mode: 'number' }).notNull(),
+    uid: bigint('uid', { mode: 'number' }).notNull(),
+    receivedAt: timestamp('received_at', { withTimezone: true }),
+    fromEmail: text('from_email'),
+    fromDomain: text('from_domain'),
+    /** Sanitised, bounded subject (plain text). */
+    subject: text('subject'),
+    class: text('class').$type<InboundTriageClass>().notNull(),
+    /** 0..1; null for deterministic decisions. */
+    confidence: numeric('confidence', { precision: 4, scale: 3, mode: 'number' }),
+    method: text('method').$type<InboundTriageMethod>().notNull(),
+    signals: text('signals').array().notNull().default(sql`'{}'::text[]`),
+    /** Twenty records the message was linked to (company / hypothesis) and how. */
+    companyId: text('company_id'),
+    hypothesisId: text('hypothesis_id'),
+    /** `email_sends.id` of the send it answers, when found. */
+    sendId: uuid('send_id'),
+    matchBy: text('match_by'),
+    /** Twenty note created for the commercial (replies, hard bounces). */
+    noteId: text('note_id'),
+    /** True when this message added a line to the suppression list. */
+    suppressionAdded: boolean('suppression_added').notNull().default(false),
+    eventId: uuid('event_id'),
+    executionId: text('execution_id'),
+    costEur: money('cost_eur'),
+    createdAt: createdAt(),
+  },
+  (t) => [
+    uniqueIndex('inbound_triage_message_uq').on(t.tenantId, t.messageKey),
+    index('inbound_triage_tenant_created_idx').on(t.tenantId, t.createdAt),
+    index('inbound_triage_tenant_class_idx').on(t.tenantId, t.class, t.createdAt),
+    check('inbound_triage_class_ck', sql`${t.class} in ('BAJA', 'NO_INTERESADO', 'INTERESADO', 'PREGUNTA', 'AUTO_REPLY', 'REBOTE', 'OTRO')`),
+    check('inbound_triage_method_ck', sql`${t.method} in ('RULES', 'LLM')`),
+    check('inbound_triage_confidence_ck', sql`${t.confidence} is null or (${t.confidence} >= 0 and ${t.confidence} <= 1)`),
+  ],
+);
+
+export type InboundTriage = typeof inboundTriage.$inferSelect;

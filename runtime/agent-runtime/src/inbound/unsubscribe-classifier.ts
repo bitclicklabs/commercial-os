@@ -74,7 +74,7 @@ export function emailDomain(email: string): string {
   return email.slice(email.lastIndexOf('@') + 1);
 }
 
-function isDomainOrSubdomain(domain: string, of: string): boolean {
+export function isDomainOrSubdomain(domain: string, of: string): boolean {
   return domain === of || domain.endsWith(`.${of}`);
 }
 
@@ -108,7 +108,7 @@ const DELIVERY_HEADERS = new Set(['delivered-to', 'x-forwarded-to', 'x-original-
 
 const AUTOMATED_LOCALPART_RE = /^(?:mailer-daemon|postmaster|no-?reply|do-?not-?reply|noreply-.*|bounces?(?:[+-].*)?|notifications?|notify|newsletter|news|marketing|mailer|daemon)$/;
 
-function headerText(parsed: ParsedMail, key: string): string | null {
+export function headerText(parsed: ParsedMail, key: string): string | null {
   const v = parsed.headers.get(key);
   if (v === undefined || v === null) return null;
   if (typeof v === 'string') return v.slice(0, HEADER_VALUE_MAX);
@@ -120,11 +120,19 @@ function headerText(parsed: ParsedMail, key: string): string | null {
   return String(v).slice(0, HEADER_VALUE_MAX);
 }
 
+/**
+ * True if the header is present. mailparser folds every `List-*` header into one `list`
+ * entry of `headers`, so the raw header lines are checked too.
+ */
+export function hasHeader(parsed: ParsedMail, key: string): boolean {
+  return parsed.headers.has(key) || (parsed.headerLines ?? []).some((l) => l.key.toLowerCase() === key);
+}
+
 function automatedReason(parsed: ParsedMail, fromEmail: string | null): string | null {
   const auto = headerText(parsed, 'auto-submitted');
   if (auto && auto.trim().toLowerCase() !== 'no') return 'auto_submitted';
   for (const h of ['list-unsubscribe', 'list-id', 'list-post', 'x-autoreply', 'x-autorespond', 'feedback-id']) {
-    if (parsed.headers.has(h)) return h;
+    if (hasHeader(parsed, h)) return h;
   }
   const precedence = headerText(parsed, 'precedence')?.trim().toLowerCase();
   if (precedence && ['bulk', 'list', 'junk', 'auto_reply'].includes(precedence)) return 'precedence';
@@ -259,12 +267,30 @@ export function bodySignals(text: string): BajaSignal[] {
 // ---------------------------------------------------------------------------
 
 export async function parseMessage(raw: RawMessage): Promise<ParsedInboundMessage> {
+  return (await parseRawMessage(raw)).message;
+}
+
+/**
+ * One MIME parse of the source, returning both the bounded view the classifiers use and the
+ * full `ParsedMail` (headers, DSN parts) for the general inbound triage. Same limits as
+ * `parseMessage`.
+ */
+export async function parseRawMessage(raw: RawMessage): Promise<{ message: ParsedInboundMessage; parsed: ParsedMail }> {
   const parsed = await simpleParser(raw.source, {
     skipImageLinks: true,
     skipTextToHtml: true,
     skipTextLinks: true,
     maxHtmlLengthToParse: 200_000,
   });
+  return { message: toInboundMessage(raw, parsed), parsed };
+}
+
+/** Bounded text of the whole message (the `text` part, or the HTML without tags). */
+export function messageText(parsed: ParsedMail): string {
+  return parsed.text ?? (typeof parsed.html === 'string' ? parsed.html.replace(/<[^>]*>/g, ' ') : '');
+}
+
+function toInboundMessage(raw: RawMessage, parsed: ParsedMail): ParsedInboundMessage {
   const fromEmail = firstFromAddress(parsed.from);
   const recipients = new Set<string>();
   for (const a of [...addressesOf(parsed.to), ...addressesOf(parsed.cc)]) {
@@ -278,7 +304,7 @@ export async function parseMessage(raw: RawMessage): Promise<ParsedInboundMessag
       if (n) recipients.add(n);
     }
   }
-  const text = parsed.text ?? (typeof parsed.html === 'string' ? parsed.html.replace(/<[^>]*>/g, ' ') : '');
+  const text = messageText(parsed);
   return {
     uid: raw.uid,
     messageId: parsed.messageId ? parsed.messageId.slice(0, 300) : null,

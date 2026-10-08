@@ -529,7 +529,7 @@ export class RunProcessor {
     const controller = new AbortController();
     let timer: NodeJS.Timeout | undefined;
     try {
-      const impl = resolveAgentImplementation(version.configuration, { db: this.db });
+      const impl = resolveAgentImplementation(version.configuration, { db: this.db, events: this.events });
       const provider = this.providers(version.modelProvider);
       // Knowledge layer (LLD 6.4): ACTIVE entries of the version's knowledge_domains. Never throws.
       const knowledge = await resolveKnowledge(this.db, execution.tenantId, version.configuration, {

@@ -66,7 +66,40 @@ export function accuracyOf(version: number, outcome: Pick<PhaseOutcome, 'fixture
   return acc;
 }
 
-function pickExpected(e: Record<string, unknown>): Record<string, unknown> {
+/**
+ * What one version decided on one dataset case in one repetition: the part of a decision the
+ * accuracy reads. The runner stores them in `metrics.phases.<PHASE>.case_outputs` so a
+ * PASS_FORM experiment can be re-validated later against fresh labels without running any
+ * model again (src/experiments/revalidation.ts).
+ */
+export interface CaseOutput {
+  case_id: string;
+  version: number;
+  repetition: number;
+  relevant: boolean | null;
+  writable: boolean;
+  confidence: number | null;
+  status: string;
+}
+
+/** Per-case outputs of a phase: fixture `case_ids[i]` is the case behind decision `i` of every run. */
+export function caseOutputsOf(outcome: { fixtures: ReadonlyArray<Pick<PhaseFixture, 'case_ids'>>; reports: ReadonlyArray<Pick<ComparisonReport, 'runs'>> }): CaseOutput[] {
+  const out: CaseOutput[] = [];
+  outcome.reports.forEach((report, fi) => {
+    const fixture = outcome.fixtures[fi];
+    if (!fixture) return;
+    for (const run of report.runs) {
+      run.decisions.forEach((d, i) => {
+        const caseId = fixture.case_ids[i];
+        if (!caseId) return;
+        out.push({ case_id: caseId, version: run.version, repetition: run.repetition, relevant: d.relevant, writable: d.writable, confidence: d.confidence, status: String(d.status) });
+      });
+    }
+  });
+  return out;
+}
+
+export function pickExpected(e: Record<string, unknown>): Record<string, unknown> {
   const out: Record<string, unknown> = { kind: e.kind };
   for (const k of ['relevant', 'writable', 'confidence_max', 'feedback']) if (e[k] !== undefined) out[k] = e[k];
   return out;

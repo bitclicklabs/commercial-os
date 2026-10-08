@@ -142,7 +142,7 @@ export function renderExperimentMarkdown(r: ExperimentReport): string {
   L.push(`**${r.summary}**`, '');
   if (r.decision === 'PASS_FORM') {
     L.push(
-      `> **Importante — PASS_FORM:** el split no tenía casos etiquetados, así que el gate solo ha podido comprobar la forma de las decisiones (reglas, juez, coste, ausencia de regresiones), no si aciertan. PASS_FORM basta para que \`POST /${route}/:id/versions/:v/activate\` acepte la versión sin \`force\`, pero el experimento queda registrado como pendiente de re-validar: cuando el dataset tenga veredictos del comercial en VALIDATION/TEST, repite el experimento contra la versión activa.`,
+      `> **Importante — PASS_FORM:** el split no tenía casos etiquetados, así que el gate solo ha podido comprobar la forma de las decisiones (reglas, juez, coste, ausencia de regresiones), no si aciertan. PASS_FORM basta para que \`POST /${route}/:id/versions/:v/activate\` acepte la versión sin \`force\`, pero el experimento queda registrado como pendiente de re-validar. Cuando el comercial etiquete en Twenty las entidades que este experimento ejecutó (y se re-coseche el dataset), revalídalo sin volver a llamar a ningún modelo: \`POST /experiments/${e.name}/revalidate\` o \`pnpm experiment:revalidate --id ${e.name}\` (mide la accuracy de cada versión sobre las decisiones guardadas).`,
       '',
     );
   }

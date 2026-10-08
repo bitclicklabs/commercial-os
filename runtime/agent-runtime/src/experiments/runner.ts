@@ -46,7 +46,7 @@ import type { AgentToolbox } from '../tools/executor.js';
 import { parseToolPolicy } from '../tools/policy.js';
 import type { AgentToolPolicy } from '../tools/types.js';
 import { combineDecisions, evaluateGate, type GateConfig, type GateResult } from './gate.js';
-import { isLabeled, phaseIncomplete, versionPhaseMetrics, type PhaseFixture, type PhaseOutcome, type VersionPhaseMetrics } from './metrics.js';
+import { caseOutputsOf, isLabeled, phaseIncomplete, versionPhaseMetrics, type PhaseFixture, type PhaseOutcome, type VersionPhaseMetrics } from './metrics.js';
 import { closeExperiment, completeExperiment, createExperiment, recordProgress, startExperiment } from './service.js';
 
 export const RUNNER_VERSION = 1;
@@ -432,6 +432,8 @@ export async function runExperiment(deps: RunnerDeps, opts: RunOptions): Promise
     versions: Object.fromEntries(p.versions.map((v) => [`v${v.version}`, v])),
     warnings: p.pipeline.warnings,
     evaluations: p.evaluations,
+    // Per-case decisions of each version: what a later re-validation measures against fresh labels.
+    case_outputs: caseOutputsOf(p),
   });
   const splitsOf = (p: PhaseReport) => ({
     role: p.phase === 'VALIDATION' ? 'validation' : 'test',

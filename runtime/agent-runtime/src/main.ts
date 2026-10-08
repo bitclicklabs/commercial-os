@@ -73,6 +73,8 @@ async function main(): Promise<void> {
     const processor = new RunProcessor(dbHandle.db, providers, logger);
     processor.events = eventBus;
     processor.heartbeatMs = config.runHeartbeatMs;
+    // A re-delivered stalled job only recovers its run with a heartbeat older than the reconciler's grace.
+    processor.stallGraceMs = config.reconcileGraceMs;
     if (config.runHeartbeatMs === 0 || config.runHeartbeatMs * 2 > config.reconcileGraceMs) {
       logger.warn(
         { runHeartbeatMs: config.runHeartbeatMs, reconcileGraceMs: config.reconcileGraceMs },

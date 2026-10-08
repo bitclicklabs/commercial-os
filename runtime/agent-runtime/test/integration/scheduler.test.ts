@@ -361,6 +361,9 @@ describe.skipIf(!available)('scheduler + concurrency + recovery (PostgreSQL + Re
     const task = await createTask({ name: 'stalled', retry_policy: { max_attempts: 2, backoff_ms: 0 } });
     const taskRow = (await handle.db.query.taskDefinitions.findFirst({ where: (t, { eq: e }) => e(t.id, task.id) }))!;
     const key = taskRunIdempotencyKey(task.id, '2026-10-06T11:00:00Z');
+    // The dead attempt stopped heartbeating long ago (tanda 12: a fresh heartbeat means the
+    // attempt is alive and the re-delivery is deferred instead; see test/integration/recovery-race.test.ts).
+    const dead = new Date(Date.now() - 10 * 60_000);
     const [run] = await handle.db
       .insert(taskRuns)
       .values({
@@ -371,6 +374,8 @@ describe.skipIf(!available)('scheduler + concurrency + recovery (PostgreSQL + Re
         status: 'RUNNING',
         attempts: 1,
         scheduledAt: new Date('2026-10-06T11:00:00Z'),
+        startedAt: dead,
+        updatedAt: dead,
       })
       .returning();
     const processor = new RunProcessor(handle.db, createProviderRegistry());

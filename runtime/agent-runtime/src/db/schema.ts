@@ -86,6 +86,24 @@ export interface SkillVersionUsed {
   fallback_reason?: 'legacy_ref' | 'skill_not_found' | 'version_not_found' | 'no_active_version' | 'db_error' | 'not_referenced';
   /** Exact text, stored in the trace only for source 'code' (constants are not versioned in the db). */
   text?: string;
+  /**
+   * The skill had a canary (0012_skill_canaries) when the run started and the ref follows the
+   * ACTIVE version: which arm this run got and why (deterministic hash of `routing_key`).
+   */
+  canary?: SkillCanaryRouting;
+}
+
+/** Canary routing of one run (src/skills/canary.ts): reproducible from `canary_id` + `routing_key`. */
+export interface SkillCanaryRouting {
+  canary_id: string;
+  arm: 'canary' | 'stable';
+  percent: number;
+  /** 0..9999: `arm = canary` when `bucket < percent * 100`; null without routing key (always stable). */
+  bucket: number | null;
+  /** task_run id (task runs: every attempt gets the same arm) or execution id (direct executions). */
+  routing_key: string | null;
+  stable_version: number;
+  canary_version: number;
 }
 
 /**
@@ -1000,6 +1018,63 @@ export const experiments = pgTable(
   ],
 );
 
+// ---------------------------------------------------------------------------
+// Skill canary (post Release Gate; migration 0012_skill_canaries)
+// ---------------------------------------------------------------------------
+export const SKILL_CANARY_STATUSES = ['ACTIVE', 'PROMOTED', 'ROLLED_BACK'] as const;
+export type SkillCanaryStatus = (typeof SKILL_CANARY_STATUSES)[number];
+
+/**
+ * A canary deployment of a skill version (src/skills/canary.ts): after a Release Gate PASS /
+ * PASS_FORM a human sends `percent` % of the runs that follow the ACTIVE version to the
+ * candidate (deterministic hash of the run id), compares and decides: PROMOTED (the candidate
+ * becomes ACTIVE, gate re-checked) or ROLLED_BACK (everything back to the stable version).
+ * At most one ACTIVE canary per skill (partial unique index). Trigger: no DELETE; identity,
+ * versions, percent and experiment immutable; ACTIVE -> PROMOTED | ROLLED_BACK only, and a
+ * finished canary is immutable.
+ */
+export const skillCanaries = pgTable(
+  'skill_canaries',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    tenantId: tenantId(),
+    skillId: uuid('skill_id')
+      .notNull()
+      .references(() => skills.id),
+    canaryVersionId: uuid('canary_version_id')
+      .notNull()
+      .references(() => skillVersions.id),
+    canaryVersion: integer('canary_version').notNull(),
+    /** The ACTIVE version when the canary started (the rest of the runs). */
+    stableVersionId: uuid('stable_version_id')
+      .notNull()
+      .references(() => skillVersions.id),
+    stableVersion: integer('stable_version').notNull(),
+    percent: integer('percent').notNull(),
+    status: text('status').$type<SkillCanaryStatus>().notNull().default('ACTIVE'),
+    /** The experiment whose gate let the canary start. */
+    experimentId: uuid('experiment_id')
+      .notNull()
+      .references(() => experiments.id),
+    /** Release Gate result when it started (and, on promote, the re-check in `finishGate`). */
+    gate: jsonb('gate').$type<Record<string, unknown>>().notNull().default({}),
+    startedAt: timestamp('started_at', { withTimezone: true }).notNull().defaultNow(),
+    startedBy: text('started_by'),
+    finishedAt: timestamp('finished_at', { withTimezone: true }),
+    finishedBy: text('finished_by'),
+    finishReason: text('finish_reason'),
+    finishGate: jsonb('finish_gate').$type<Record<string, unknown>>(),
+  },
+  (t) => [
+    uniqueIndex('skill_canaries_one_active_uq').on(t.skillId).where(sql`${t.status} = 'ACTIVE'`),
+    index('skill_canaries_tenant_skill_idx').on(t.tenantId, t.skillId, t.startedAt),
+    check('skill_canaries_status_ck', sql`${t.status} in ('ACTIVE', 'PROMOTED', 'ROLLED_BACK')`),
+    check('skill_canaries_percent_ck', sql`${t.percent} between 1 and 99`),
+    check('skill_canaries_versions_ck', sql`${t.canaryVersionId} <> ${t.stableVersionId}`),
+    check('skill_canaries_finished_ck', sql`(${t.status} = 'ACTIVE') = (${t.finishedAt} is null)`),
+  ],
+);
+
 export type Agent = typeof agents.$inferSelect;
 export type AgentVersion = typeof agentVersions.$inferSelect;
 export type TaskDefinition = typeof taskDefinitions.$inferSelect;
@@ -1022,3 +1097,79 @@ export type KnowledgeEntry = typeof knowledgeEntries.$inferSelect;
 export type EvaluationDataset = typeof evaluationDatasets.$inferSelect;
 export type EvaluationCase = typeof evaluationCases.$inferSelect;
 export type Experiment = typeof experiments.$inferSelect;
+export type SkillCanary = typeof skillCanaries.$inferSelect;
+
+// ---------------------------------------------------------------------------
+// Skill Optimizer (MVP-3, LLD v0.1 section 18). Migration 0013.
+// ---------------------------------------------------------------------------
+
+/**
+ * Lifecycle of an optimization run (src/optimizer/): the pipeline moves it forward, a human
+ * closes it. Terminal: BLOCKED_NO_DATA, ERROR, PROMOTED, DISCARDED. GATE_PASS and GATE_FAIL wait
+ * for the human (PROMOTED after activating the candidate, DISCARDED otherwise).
+ */
+export const OPTIMIZATION_RUN_STATUSES = [
+  'PENDING',
+  'HARVESTING',
+  'CLUSTERED',
+  'CANDIDATE_CREATED',
+  'EXPERIMENT_RUNNING',
+  'GATE_PASS',
+  'GATE_FAIL',
+  'BLOCKED_NO_DATA',
+  'ERROR',
+  'PROMOTED',
+  'DISCARDED',
+] as const;
+export type OptimizationRunStatus = (typeof OPTIMIZATION_RUN_STATUSES)[number];
+
+/**
+ * An automatic Skill Optimizer run (LLD v0.1 section 18): harvest of production failures,
+ * clustering, a bounded candidate (edit-ops, DRAFT), an experiment against the ACTIVE version
+ * and the Release Gate verdict. The run never activates anything. Trigger: no DELETE; status
+ * changes are guarded UPDATEs (`WHERE status IN (...)`) in src/optimizer/service.ts. At most one
+ * open run per (tenant, skill) (partial unique index).
+ */
+export const optimizationRuns = pgTable(
+  'optimization_runs',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    tenantId: tenantId(),
+    skillName: text('skill_name').notNull(),
+    /** ACTIVE version when the run was requested (the base of the candidate and the experiment baseline). */
+    baseVersion: integer('base_version').notNull(),
+    status: text('status').$type<OptimizationRunStatus>().notNull().default('PENDING'),
+    /** Options of the run (dataset, budgets, minimums). */
+    config: jsonb('config').$type<Record<string, unknown>>().notNull().default({}),
+    /** Failure clusters (with the failures they group) from the clustering step. */
+    failureClusters: jsonb('failure_clusters').$type<Record<string, unknown>[]>().notNull().default([]),
+    /** Edit operations of the candidate (as applied, with their size), and the attempts. */
+    proposedOps: jsonb('proposed_ops').$type<Record<string, unknown>[]>().notNull().default([]),
+    candidateVersion: integer('candidate_version'),
+    experimentId: uuid('experiment_id').references(() => experiments.id),
+    /** Release Gate decision of the experiment (PASS, PASS_FORM, FAIL, INCONCLUSIVE). */
+    verdict: text('verdict').$type<ExperimentDecision>(),
+    /** LLM cost of the optimizer itself plus the experiment, EUR. */
+    costEur: money('cost_eur'),
+    /** Harvest stats, data check, dataset, P5 marks, attempts, note, human close. */
+    details: jsonb('details').$type<Record<string, unknown>>().notNull().default({}),
+    error: text('error'),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+    createdBy: text('created_by'),
+  },
+  (t) => [
+    index('optimization_runs_skill_idx').on(t.tenantId, t.skillName, t.createdAt),
+    uniqueIndex('optimization_runs_open_uq')
+      .on(t.tenantId, t.skillName)
+      .where(sql`${t.status} in ('PENDING', 'HARVESTING', 'CLUSTERED', 'CANDIDATE_CREATED', 'EXPERIMENT_RUNNING')`),
+    check(
+      'optimization_runs_status_ck',
+      sql`${t.status} in ('PENDING', 'HARVESTING', 'CLUSTERED', 'CANDIDATE_CREATED', 'EXPERIMENT_RUNNING', 'GATE_PASS', 'GATE_FAIL', 'BLOCKED_NO_DATA', 'ERROR', 'PROMOTED', 'DISCARDED')`,
+    ),
+    check('optimization_runs_verdict_ck', sql`${t.verdict} is null or ${t.verdict} in ('PASS', 'PASS_FORM', 'FAIL', 'INCONCLUSIVE')`),
+    check('optimization_runs_versions_ck', sql`${t.baseVersion} >= 1 and (${t.candidateVersion} is null or (${t.candidateVersion} >= 1 and ${t.candidateVersion} <> ${t.baseVersion}))`),
+  ],
+);
+
+export type OptimizationRun = typeof optimizationRuns.$inferSelect;

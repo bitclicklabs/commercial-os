@@ -10,12 +10,20 @@
  *
  * Supported skills: `prospector-event-exhibitors` (Prospector, direct mode). Another skill
  * needs its own harness here (which agent runs it and how its decisions are read).
+ *
+ * Harness experiments (src/experiments/runner.ts, subject `harness`): both arms inject the SAME
+ * skill text (the ACTIVE version, fixed) and each arm carries the effective policies of its
+ * harness version (`CompareVersion.harness`): the run gets the capped configuration
+ * (max_output_tokens), a toolbox built with the capped tool policy, the timeout and the retry
+ * attempts of that harness. Without `harness` a run behaves exactly as before (skill arms).
  */
 import { ProspectorAgent, ProspectorInput, type ExhibitorResult } from '../agents/prospector-agent.js';
 import { readConfig } from '../agents/prospector-core.js';
-import type { AgentContext, AgentStep } from '../agents/agent.js';
+import type { AgentContext, AgentResult, AgentStep } from '../agents/agent.js';
+import { effectiveRecord, type EffectivePolicies } from '../harness/config.js';
 import type { CompletionRequest, CompletionResult, CostBreakdown, ModelProvider, StreamChunk, TokenUsage } from '../providers/model-provider.js';
 import type { AgentToolbox } from '../tools/executor.js';
+import type { AgentToolPolicy } from '../tools/types.js';
 import { sha256 } from './render.js';
 import { SkillSet } from './resolver.js';
 
@@ -23,12 +31,26 @@ export const COMPARABLE_SKILLS = ['prospector-event-exhibitors'] as const;
 
 /** One version under comparison: the exact rendered text the agent injects. */
 export interface CompareVersion {
+  /** Arm id: the skill version (skill arms) or the harness version (harness arms). */
   version: number;
   status: string;
   skillVersionId: string;
   /** `renderSkill(version)`: the text injected in the system prompt. */
   text: string;
   contentHash: string;
+  /** Harness arms: the skill version actually injected (the ACTIVE one, same in both arms). Default `version`. */
+  skillVersion?: number;
+  /** Harness arms: the harness version and the effective policies the run executes under. */
+  harness?: CompareHarness;
+}
+
+/** A harness version under comparison and what it makes effective for the run (after precedence). */
+export interface CompareHarness {
+  name: string;
+  version: number;
+  harnessVersionId: string;
+  contentHash: string;
+  policies: EffectivePolicies;
 }
 
 export interface CompareAgentVersion {
@@ -42,8 +64,11 @@ export interface CompareOptions {
   /** Direct-mode Prospector input: `{ event, exhibitors[] }`. */
   input: Record<string, unknown>;
   provider: ModelProvider;
-  /** A fresh toolbox per run (FakeTwenty in the CLI, so every run starts from an empty CRM). */
-  makeTools: (runLabel: string) => AgentToolbox;
+  /**
+   * A fresh toolbox per run (FakeTwenty in the CLI, so every run starts from an empty CRM). For a
+   * harness arm `toolPolicy` is the policy capped by that harness: the toolbox must enforce it.
+   */
+  makeTools: (runLabel: string, toolPolicy?: AgentToolPolicy) => AgentToolbox;
   agentVersion: CompareAgentVersion;
   /** Runs per version (>= 1). Order alternates (a,b / b,a) between repetitions. */
   repeat?: number;
@@ -85,6 +110,8 @@ export interface VersionRun {
   outcome: string;
   /** Records the run's SkillSet produced (proves which version was injected). */
   skillRecords: ReturnType<SkillSet['runRecords']>;
+  /** Harness arms: `name@version`, attempts made and the effective values the run used. */
+  harness?: { label: string; harness_version_id: string; attempts: number; timed_out: boolean; error: string | null; effective: Record<string, unknown>; overrides: string[] };
 }
 
 export interface VersionMetrics {
@@ -150,7 +177,11 @@ export interface ComparisonReport {
   event: string;
   exhibitors: number;
   repeat: number;
-  versions: Array<Pick<CompareVersion, 'version' | 'status' | 'skillVersionId' | 'contentHash'>>;
+  versions: Array<
+    Pick<CompareVersion, 'version' | 'status' | 'skillVersionId' | 'contentHash'> & { skillVersion?: number; harness?: { name: string; version: number; harnessVersionId: string; contentHash: string } }
+  >;
+  /** Harness comparison: the harness whose versions are the arms (the skill is fixed). */
+  harness?: string;
   runs: VersionRun[];
   metrics: [VersionMetrics, VersionMetrics];
   cases: CaseComparison[];
@@ -261,26 +292,80 @@ export function skillSetFor(skillName: string, v: CompareVersion): SkillSet {
   ]);
 }
 
+class CompareTimeoutError extends Error {
+  constructor(ms: number) {
+    super(`Execution timed out after ${ms} ms`);
+    this.name = 'TimeoutError';
+  }
+}
+
+/**
+ * One agent run under a harness arm, as the worker runs an attempt: the harness timeout aborts
+ * it (TIMED_OUT, never retried) and a thrown error is retried up to `retry.max_attempts`
+ * (without the backoff wait: offline). Returns null when no attempt produced a result.
+ */
+async function runUnderHarness(agent: ProspectorAgent, h: CompareHarness, build: (signal: AbortSignal, attempt: number) => AgentContext) {
+  const maxAttempts = Math.max(1, h.policies.retry.max_attempts);
+  let lastError: string | null = null;
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    const controller = new AbortController();
+    let timer: NodeJS.Timeout | undefined;
+    const timeout = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => {
+        controller.abort();
+        reject(new CompareTimeoutError(h.policies.timeoutMs));
+      }, h.policies.timeoutMs);
+    });
+    try {
+      const result: AgentResult = await Promise.race([agent.run(build(controller.signal, attempt)), timeout]);
+      return { result, attempts: attempt, timedOut: false, error: null };
+    } catch (err) {
+      lastError = err instanceof Error ? err.message : String(err);
+      if (err instanceof CompareTimeoutError) return { result: null, attempts: attempt, timedOut: true, error: lastError };
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  }
+  return { result: null, attempts: maxAttempts, timedOut: false, error: lastError };
+}
+
 async function runOnce(opts: CompareOptions, v: CompareVersion, repetition: number, provider: ModelProvider): Promise<VersionRun> {
   const input = ProspectorInput.parse(opts.input);
-  const runLabel = `skill-compare:${opts.skillName}:v${v.version}:r${repetition}`;
-  const skills = skillSetFor(opts.skillName, v);
-  const ctx: AgentContext = {
+  const runLabel = v.harness ? `harness-compare:${v.harness.name}:v${v.version}:${opts.skillName}:r${repetition}` : `skill-compare:${opts.skillName}:v${v.version}:r${repetition}`;
+  const skills = skillSetFor(opts.skillName, { ...v, version: v.skillVersion ?? v.version });
+  const configuration = v.harness ? v.harness.policies.configuration : opts.agentVersion.configuration;
+  const build = (signal: AbortSignal, attempt: number): AgentContext => ({
     tenantId: opts.tenantId ?? 'publiexpe',
-    executionId: `${runLabel}:${Date.now().toString(36)}`,
+    executionId: `${runLabel}${attempt > 1 ? `:a${attempt}` : ''}:${Date.now().toString(36)}`,
     agent: { id: 'skill-compare', name: 'Prospector (skill:compare)', role: 'prospector' },
-    version: { id: 'skill-compare', version: 0, model: opts.agentVersion.model, modelProvider: provider.name, systemPrompt: '', configuration: opts.agentVersion.configuration },
+    version: { id: 'skill-compare', version: 0, model: opts.agentVersion.model, modelProvider: provider.name, systemPrompt: '', configuration },
     input: opts.input,
     provider,
-    signal: new AbortController().signal,
-    tools: opts.makeTools(runLabel),
+    signal,
+    tools: v.harness ? opts.makeTools(runLabel, v.harness.policies.toolPolicy) : opts.makeTools(runLabel),
     skills,
-  };
+  });
   const agent = new ProspectorAgent(opts.now ?? (() => new Date()));
-  const result = await agent.run(ctx);
-  const results = (result.output.results ?? []) as ExhibitorResult[];
-  const perExhibitor = modelStepsByExhibitor(result.steps);
-  const minConfidence = readConfig(opts.agentVersion.configuration).minConfidence;
+  let result: AgentResult | null;
+  let harnessRun: VersionRun['harness'];
+  if (v.harness) {
+    const r = await runUnderHarness(agent, v.harness, build);
+    result = r.result;
+    harnessRun = {
+      label: `${v.harness.name}@${v.harness.version}`,
+      harness_version_id: v.harness.harnessVersionId,
+      attempts: r.attempts,
+      timed_out: r.timedOut,
+      error: r.error,
+      effective: effectiveRecord(v.harness.policies),
+      overrides: [...v.harness.policies.overrides],
+    };
+  } else {
+    result = await agent.run(build(new AbortController().signal, 1));
+  }
+  const results = (result?.output.results ?? []) as ExhibitorResult[];
+  const perExhibitor = modelStepsByExhibitor(result?.steps ?? []);
+  const minConfidence = readConfig(configuration).minConfidence;
   const decisions: CaseDecision[] = input.exhibitors.map((ex, i) => {
     const r = results[i];
     const m = perExhibitor.get(ex.name) ?? { usage: { ...ZERO }, cost: 0, attempts: 0 };
@@ -298,16 +383,17 @@ async function runOnce(opts: CompareOptions, v: CompareVersion, repetition: numb
       attempts: m.attempts,
     };
   });
-  const cost = result.output.cost as { eur?: number } | undefined;
+  const cost = result?.output.cost as { eur?: number } | undefined;
   return {
     version: v.version,
     repetition,
     decisions,
-    usage: result.usage,
+    usage: result?.usage ?? { ...ZERO },
     costEur: round(cost?.eur ?? 0, 6),
     llmCalls: decisions.reduce((n, d) => n + d.attempts, 0),
-    outcome: String(result.output.outcome ?? 'UNKNOWN'),
+    outcome: result ? String(result.output.outcome ?? 'UNKNOWN') : harnessRun?.timed_out ? 'TIMED_OUT' : 'FAILED',
     skillRecords: skills.runRecords(),
+    ...(harnessRun ? { harness: harnessRun } : {}),
   };
 }
 
@@ -427,6 +513,8 @@ export async function runSkillComparison(opts: CompareOptions): Promise<Comparis
   if (!(COMPARABLE_SKILLS as readonly string[]).includes(opts.skillName)) {
     throw new Error(`skill:compare no tiene harness para "${opts.skillName}" (soportadas: ${COMPARABLE_SKILLS.join(', ')})`);
   }
+  const harnessName = opts.versions[0].harness?.name;
+  if (opts.versions.some((v) => v.harness?.name !== harnessName)) throw new Error('una comparación de harness necesita dos versiones de la MISMA harness (o ninguna)');
   for (const v of opts.versions) {
     if (sha256(v.text) !== v.contentHash) throw new Error(`v${v.version}: el texto renderizado no coincide con content_hash (${v.contentHash.slice(0, 12)}…)`);
   }
@@ -456,7 +544,15 @@ export async function runSkillComparison(opts: CompareOptions): Promise<Comparis
     event: input.event.name,
     exhibitors: input.exhibitors.length,
     repeat,
-    versions: opts.versions.map(({ version, status, skillVersionId, contentHash }) => ({ version, status, skillVersionId, contentHash })),
+    versions: opts.versions.map(({ version, status, skillVersionId, contentHash, skillVersion, harness }) => ({
+      version,
+      status,
+      skillVersionId,
+      contentHash,
+      ...(skillVersion !== undefined ? { skillVersion } : {}),
+      ...(harness ? { harness: { name: harness.name, version: harness.version, harnessVersionId: harness.harnessVersionId, contentHash: harness.contentHash } } : {}),
+    })),
+    ...(harnessName ? { harness: harnessName } : {}),
     runs,
     metrics: [versionMetrics(versions[0]!, runs), versionMetrics(versions[1]!, runs)],
     cases: compareCases(versions, runs),
@@ -481,7 +577,13 @@ export function renderComparisonMarkdown(r: ComparisonReport): string {
   const vb = `v${b.version}`;
   const row = (label: string, x: string, y: string) => `| ${label} | ${x} | ${y} |`;
   const lines: string[] = [];
-  lines.push(`### Comparación ${va} vs ${vb} — \`${r.skill}\``, '');
+  lines.push(r.harness ? `### Comparación harness \`${r.harness}\` ${va} vs ${vb} — skill \`${r.skill}\` fija` : `### Comparación ${va} vs ${vb} — \`${r.skill}\``, '');
+  if (r.harness) {
+    for (const run of r.runs.filter((x, i, all) => x.harness && all.findIndex((y) => y.version === x.version) === i)) {
+      lines.push(`- v${run.version}: ${run.harness!.label}, efectivos ${JSON.stringify(run.harness!.effective)}${run.harness!.overrides.length ? ` (la harness cambia ${run.harness!.overrides.join(', ')})` : ' (sin cambios frente a la política actual)'}.`);
+    }
+    lines.push('');
+  }
   lines.push(`- Entrada: ${r.event}, ${r.exhibitors} expositores, ${r.repeat} repetición(es) por versión. Hash de la entrada: \`${r.input_sha256.slice(0, 16)}\`.`);
   lines.push(`- Modelo: \`${r.model}\`. Fecha que ve el agente: ${r.today}. CRM: FakeTwenty (en memoria).`);
   lines.push(`- Coste total: ${eur(r.total_cost_eur)}${r.budget_eur !== null ? ` de un presupuesto de ${eur(r.budget_eur)}` : ''}${r.budget_exceeded ? ' (**presupuesto agotado: resultados incompletos**)' : ''}.`, '');

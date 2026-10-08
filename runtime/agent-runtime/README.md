@@ -23,7 +23,7 @@ runtime/agent-runtime/
 │   ├── api/                  Servidor Fastify, contratos zod y rutas
 │   ├── agents/               Interfaz de agente, StubAgent, SmokeAgent, ProspectorAgent (modos directo y scout, prompts, SourceLedger) EmailDrafterAgent (borradores, nunca envía) y BajasAgent (inbound de bajas, sin LLM)
 │   ├── inbound/              Inbound de bajas: lector IMAP de solo lectura, clasificador determinista, lista de supresión y cursor (inbound_state)
-│   ├── integrations/twenty/  TwentyClient REST tipado y mapeo de objetos de la App
+│   ├── integrations/twenty/  TwentyClient REST tipado, mapeo de objetos de la App y MemoryTwenty (CRM en memoria para los experimentos del optimizador)
 │   ├── tools/                Interfaz Tool, registry, tool_policy, executor, tools de Twenty y web/ (fetch_url con texto de PDF, render_url y guarda SSRF)
 │   ├── db/                   Esquema Drizzle, cliente y migrador
 │   ├── events/               Event bus: sobre event.envelope.v1, EventBus, payloads, triggers EVENT y GET /events; puente externo (POST /events/external, event_subscriptions y webhooks firmados con guarda SSRF)
@@ -40,6 +40,7 @@ runtime/agent-runtime/
 │   ├── harness/              Harness versionado (MVP-1): config v1 por dimensiones, precedencia, resolución desde la BD con fallback y ciclo de estados
 │   ├── datasets/             Datasets de evaluación (MVP-2): cosecha de trazas y veredictos, split determinista, registro de exclusiones de EXP-001/EXP-002 y control de contaminación (markUsed)
 │   ├── experiments/          Experiments y Release Gate (MVP-2): runner de pnpm experiment:run, criterios del gate (seesaw, PASS_FORM), tabla experiments y candado de la activación
+│   ├── optimizer/            Skill Optimizer (MVP-3): cosecha de fallos, clustering, candidata con edit-ops, P5, experimento, nota de promoción, tabla optimization_runs y cola {QUEUE_NAME}-optimizer
 │   ├── services/             Lanzamiento idempotente de TaskRuns
 │   └── worker/               RunProcessor, worker BullMQ, locks por entidad y reconciliador
 └── test/
@@ -94,6 +95,7 @@ Requisitos: Node.js 22, pnpm, y los contenedores `pxos-postgres` (127.0.0.1:5440
 | `SCHEDULER_SYNC_INTERVAL_MS` | `60000` | Cada cuánto el scheduler reconcilia todas las tareas con BullMQ |
 | `RECONCILE_INTERVAL_MS` | `60000` | Cada cuánto el worker busca `TaskRun` huérfanos |
 | `RECONCILE_GRACE_MS` | `120000` | Antigüedad mínima de un `TaskRun` para considerarlo huérfano |
+| `RUN_HEARTBEAT_MS` | `30000` | Latido de un `TaskRun` `RUNNING`: el worker refresca `updated_at` mientras dura el intento. Debe quedar muy por debajo de `RECONCILE_GRACE_MS`; `0` lo desactiva |
 | `CONCURRENCY_DEFER_MS` | `2000` | Espera antes de reintentar un job aplazado por `max_concurrency` |
 | `STALLED_INTERVAL_MS` | `30000` | Frecuencia del chequeo de jobs stalled de BullMQ |
 | `MAX_STALLED_COUNT` | `1` | Veces que un job puede quedar stalled antes de que BullMQ lo marque `failed` |
@@ -157,6 +159,8 @@ El esquema vive en `src/db/schema.ts`. Todas las tablas llevan `tenant_id` (C6).
 | `0009_knowledge` | Tabla `knowledge_entries` (memoria semántica, LLD §6.4): triggers anti-`DELETE`, de transiciones válidas y de contenido inmutable fuera de `PROPOSED`/`VALIDATED`; CHECK que impide `ACTIVE` sin evidencia. SQL idempotente. La `0008` es de `feat/harness-v1` (`when` 1791375700000); la `0009` lleva `when` 1791375800000 e idx 9 (ADR-31) |
 | `0010_eval_datasets` | Tablas `evaluation_datasets` y `evaluation_cases` (LLD §11.4 y P5): triggers anti-`DELETE`, versión de dataset inmutable salvo el estado, caso inmutable salvo `used_by` (solo crece) y casos solo en datasets `DRAFT`. SQL idempotente. `when` 1791375900000 e idx 10; la `0011` la reserva la rama de experiments (ADR-31). Consulta [Datasets de evaluación](#datasets-de-evaluación) |
 | `0011_experiments` | Tabla `experiments` (LLD §11.5-11.6): triggers anti-`DELETE`, un experimento nace `DRAFT` o `RUNNING`, identidad y `config` inmutables, transiciones válidas y un experimento terminado (`COMPLETED`, `FAILED`, `CANCELLED`) inmutable entero. SQL idempotente. `when` 1791376000000 e idx 11. Consulta [Experiments y Release Gate](#experiments-y-release-gate) |
+| `0012_skill_canaries` | Tabla `skill_canaries` del canario post-gate: un solo canario `ACTIVE` por skill (índice único parcial); triggers sin `DELETE`, identidad/versiones/porcentaje/experimento inmutables, solo `ACTIVE → PROMOTED | ROLLED_BACK` y un canario terminado es inmutable. SQL idempotente. `when` 1791376200000 e idx 12. Consulta [Canario](#canario-de-skills) |
+| `0013_optimization_runs` | Tabla `optimization_runs` del Skill Optimizer (LLD §18): trigger anti-`DELETE`, CHECK de estados y veredicto, e índice único parcial que permite un solo run abierto por skill. Las transiciones son `UPDATE` guardados por estado en el código (sin trigger de inmutabilidad). SQL idempotente. `when` 1791376300000 e idx 13, detrás de `0012_skill_canaries` (ADR-31: la 0012 del canario se aplicó antes a la BD compartida y el migrador solo avanza por `when`). Consulta [Skill Optimizer](#skill-optimizer) |
 
 Importante: el migrador de Drizzle aplica solo las migraciones con fecha posterior a la última aplicada. Si dos ramas generan migraciones en paralelo contra la misma BD de desarrollo, aplica primero la más antigua o regenera la nueva tras el merge.
 
@@ -246,6 +250,9 @@ Cabecera opcional `x-tenant-id` en todas las rutas. Las respuestas usan `snake_c
 | `POST /datasets/:id/mark-used` | Registra qué experimento usó qué casos y en qué papel (`design`, `validation`, `test`) |
 | `POST /datasets/:id/activate`, `/archive` | Ciclo de vida de una versión. No hay `DELETE` |
 | `GET /experiments`, `GET /experiments/:id` | Experimentos (solo lectura; `:id` admite el uuid o `EXP-003`). Filtros `subject_type`, `subject_name`, `candidate_version`, `status`. Consulta [Experiments y Release Gate](#experiments-y-release-gate) |
+| `POST /optimizer/skills/:name/run` | Lanza un run del [Skill Optimizer](#skill-optimizer) sobre la versión `ACTIVE` (`202`, lo procesa el worker). `409` si la skill ya tiene un run abierto, `422` si no hay runner para la skill |
+| `GET /optimizer/runs`, `GET /optimizer/runs/:id` | Runs del optimizador (filtros `skill`, `status`, `limit`); el detalle incluye los fallos cosechados |
+| `POST /optimizer/runs/:id/close` | Cierre humano: `PROMOTED` (solo si la candidata ya es la `ACTIVE`) o `DISCARDED`. No hay `DELETE` |
 
 ### Idempotencia
 
@@ -318,6 +325,13 @@ El rol `worker` (o `all`) ejecuta `OrphanReconciler` al arrancar y cada `RECONCI
 | `RUNNING` | No existe, `completed` o `failed` | `RUNNING -> QUEUED` y re-encola, o `RUNNING -> FAILED` si `attempts >= max_attempts` |
 
 La ejecución (`AgentExecution`) del intento muerto pasa a `FAILED` con `error.name = "OrphanedRun"`. Todas las transiciones son `UPDATE` guardados por estado en SQL, así que el reconciliador nunca pisa a un worker que haya terminado entre medias.
+
+El reconciliador solo ve su propia cola: un run procesado en proceso por un test o un script sobre la misma base de datos, o un job que BullMQ marcó `failed` tras un *stall* mientras su worker seguía trabajando, le parece "sin job". Para que no sentencie un intento vivo:
+
+- Mientras dura un intento, el worker refresca `task_runs.updated_at` cada `RUN_HEARTBEAT_MS` (latido guardado por `status = 'RUNNING'` y por el número de intento). Un run vivo nunca supera `RECONCILE_GRACE_MS` sin cambios.
+- El `UPDATE` del reconciliador vuelve a comprobar lo que decidió: mismo intento (`attempts`) y `updated_at` todavía anterior al corte. Si entre su lectura y su escritura llega un latido, un reintento o el final del run, la escritura no hace nada.
+
+Antes de este latido, los scouts largos (más de dos minutos) lanzados por los tests en vivo acababan `FAILED` con `orphaned RUNNING run (job missing)` aunque su traza terminaba en `SUCCESS`.
 
 Los jobs `active` de un worker caído los gestiona el chequeo de stalled de BullMQ (`STALLED_INTERVAL_MS`, `MAX_STALLED_COUNT`): los devuelve a `wait`. Cuando el processor recibe un job cuyo run sigue `RUNNING`, sabe que el intento anterior murió y aplica la misma recuperación antes de continuar. Si BullMQ lo marca `failed` por superar `MAX_STALLED_COUNT`, lo recoge el reconciliador.
 
@@ -722,7 +736,7 @@ La v1 contiene **los valores vigentes**, así que el comportamiento no cambia. S
 | `GET /harnesses/:id` | Harness y todas sus versiones |
 | `POST /harnesses` | Crea el harness y su v1 en `DRAFT`. Cuerpo: `name`, `config` y, opcionalmente, `description`, `metadata` y `created_by` |
 | `POST /harnesses/:id/versions` | Versión `DRAFT` nueva. Cuerpo: `config` o `copy_from` (`"active"` o un número; las dimensiones enviadas se fusionan sobre la copia) y `change_reason` |
-| `POST /harnesses/:id/versions/:v/activate` | `ACTIVE` esa versión y `DEPRECATED` la anterior, en una transacción |
+| `POST /harnesses/:id/versions/:v/activate` | `ACTIVE` esa versión y `DEPRECATED` la anterior, en una transacción. Pasa por el Release Gate como las skills: una versión que nunca estuvo activa necesita un experimento de harness `PASS`/`PASS_FORM` (ver [Experimentos de harness](#experimentos-de-harness)) o `force` con motivo |
 | `POST /harnesses/:id/versions/:v/deprecate` | Descarta un `DRAFT` o hace rollback de la `ACTIVE`: se reactiva la versión anterior activada más recientemente. Sin versión que restaurar: `409` |
 
 Por ejemplo, para probar un timeout común de 10 minutos en los agentes del seed y volver atrás:
@@ -731,8 +745,11 @@ Por ejemplo, para probar un timeout común de 10 minutos en los agentes del seed
 curl -s -X POST localhost:4020/harnesses/default-commercial/versions \
   -H 'content-type: application/json' \
   -d '{"copy_from": "active", "config": {"execution": {"timeout_seconds": 600}}, "change_reason": "Timeout común de 10 min", "created_by": "jesus"}'
+# Experimento: v1 ACTIVE contra la v2, con la skill ACTIVE fija
+pnpm experiment:run --subject harness:default-commercial --candidate 2 --dataset prospeccion-v1 --budget 0.30
+# Con PASS o PASS_FORM, la activación pasa sin force
 curl -s -X POST localhost:4020/harnesses/default-commercial/versions/2/activate
-# Rollback: vuelve la v1
+# Rollback: vuelve la v1 (siempre permitido)
 curl -s -X POST localhost:4020/harnesses/default-commercial/versions/2/deprecate
 ```
 
@@ -902,7 +919,7 @@ DATABASE_URL=postgres://agentos:agentos_dev@127.0.0.1:5440/agentos_wt10_datasets
 
 ## Experiments y Release Gate
 
-Un experimento (LLD v0.1 §11.5) compara la versión `ACTIVE` de una skill (baseline) con una candidata sobre los mismos casos y deja la decisión del Release Gate (§11.6). La activación de una versión pasa por ese gate: ningún agente se promueve a producción a sí mismo (§19). `pnpm experiment:run` hace de forma automática lo que EXP-001 y EXP-002 hicieron a mano.
+Un experimento (LLD v0.1 §11.5) compara la versión `ACTIVE` de una skill o de una harness (baseline) con una candidata sobre los mismos casos y deja la decisión del Release Gate (§11.6). La activación de una versión pasa por ese gate: ningún agente se promueve a producción a sí mismo (§19). `pnpm experiment:run` hace de forma automática lo que EXP-001 y EXP-002 hicieron a mano.
 
 ### Tabla `experiments`
 
@@ -921,7 +938,8 @@ pnpm experiment:run --subject skill:prospector-event-exhibitors --candidate 4 --
 
 | Opción | Por defecto | Descripción |
 |---|---|---|
-| `--subject skill:<nombre>` | — | Sujeto. Hoy solo hay runner para `prospector-event-exhibitors` (la maquinaria de `skill:compare`) |
+| `--subject skill:<nombre>` o `harness:<nombre>` | — | Sujeto. Las skills con runner: `prospector-event-exhibitors` (la maquinaria de `skill:compare`). Cualquier harness |
+| `--skill <nombre>` | `prospector-event-exhibitors` | Solo con `harness:`: la skill cuya versión `ACTIVE` se inyecta, fija, en las dos ramas |
 | `--candidate <v>` | — | Versión candidata (no puede ser la `ACTIVE`, que es la baseline) |
 | `--dataset` | `prospeccion-v1` | Nombre (versión `ACTIVE`, o la última no archivada) o uuid |
 | `--budget` | `0.30` | Presupuesto total en euros: ejecutor + juez |
@@ -961,6 +979,30 @@ Orden de la decisión: un fallo duro es siempre `FAIL`; si no, una medición inc
 
 La latencia (§11.6, `latency <= max_latency`) aún no es criterio: `skill:compare` no la mide por decisión.
 
+### Experimentos de harness
+
+`pnpm experiment:run --subject harness:<nombre> --candidate <v>` compara la versión `ACTIVE` de la harness (baseline) con otra versión (normalmente un `DRAFT`). Lo que cambia respecto a una skill:
+
+- **Las dos ramas inyectan la misma skill:** la versión `ACTIVE` de `--skill`, fija y registrada en `config.fixed_skill`. Solo varían las políticas efectivas de cada harness, calculadas con `applyHarness` sobre la configuración del agente, igual que el worker (`src/experiments/runner.ts`, `resolveHarnessArms`).
+- **Cómo se aplica cada dimensión fuera del worker:**
+
+  | Campo | En el experimento |
+  |---|---|
+  | `context.max_output_tokens` | Techo sobre la configuración del agente: llega al proveedor como `maxTokens` |
+  | `tools.max_calls_per_execution`, `tools.max_risk_level` | Techo sobre la `tool_policy`: el FakeTwenty de cada ejecución se crea con la política recortada |
+  | `execution.timeout_seconds` | Aborta la ejecución como el worker (`TIMED_OUT`, sin decisiones). Base: 300 s |
+  | `execution.retry` | Reintenta una ejecución que lanza un error (no un `TIMED_OUT`), sin la espera de backoff |
+  | `safety.twenty_wait_max_ms` | No aplica: no hay Twenty real ni gate de salud |
+  | Placeholders | Sin efecto, como en producción |
+
+- **Mismo gate y mismos evaluadores.** `config.baseline` y `config.candidate` guardan el `harness_version_id`, el `content_hash`, los valores `effective` y los `overrides`. Las evaluaciones usan un `subject_id` propio (`<skill>~<harness>@h<v>:…`), que nunca se confunde con una versión de skill.
+- **Activación:** `POST /harnesses/:id/versions/:v/activate` aplica el mismo candado que las skills (abajo). El informe propone el `curl` de la harness.
+
+```sh
+pnpm experiment:run --subject harness:default-commercial --candidate 2 --dry-run
+pnpm experiment:run --subject harness:default-commercial --candidate 2 --dataset prospeccion-v1 --budget 0.30 --today 2026-10-07
+```
+
 ### Candado en la activación
 
 `POST /skills/:id/versions/:v/activate` (y `POST /harnesses/:id/versions/:v/activate`) comprueba el gate dentro de la transacción de activación, después de bloquear la fila:
@@ -973,14 +1015,107 @@ La latencia (§11.6, `latency <= max_latency`) aún no es criterio: `skill:compa
 | Sin experimento, con `FAIL`/`INCONCLUSIVE`, o hecho contra otra baseline | `409 release_gate_blocked` con los experimentos encontrados | — |
 | Lo anterior con `{ "force": true, "reason": "≥ 10 caracteres", "by": "…" }` | `200`, línea `WARN` en el log con motivo y autor | `override` |
 
-El humano puede forzar; el sistema no: ningún código del runtime llama a `activate`, y `experiment:run` nunca activa. La API no tiene autenticación, así que el override es auditable (log y respuesta), no imposible. Una skill nueva (v1 sin versión activa) no tiene baseline y necesita `force`. Las harness todavía no tienen runner de experimentos: una versión de harness que nunca estuvo activa se activa hoy solo con `force`.
+El humano puede forzar; el sistema no: ningún código del runtime llama a `activate`, y `experiment:run` nunca activa. La API no tiene autenticación, así que el override es auditable (log y respuesta), no imposible. Una skill o harness nueva (v1 sin versión activa) no tiene baseline y necesita `force`. Mientras una skill tiene un canario `ACTIVE`, `activate` devuelve `409`: primero se promueve o se hace rollback del canario.
+
+### Canario de skills
+
+Tras un `PASS` o `PASS_FORM`, en vez de activar la candidata para todas las ejecuciones, un humano puede enviarle un porcentaje (`src/skills/canary.ts`, migración `0012_skill_canaries`). Solo hay canario para skills: el de harness quedaría mezclado con los reintentos que BullMQ fija al encolar.
+
+| Método y ruta | Qué hace |
+|---|---|
+| `POST /skills/:id/versions/:v/canary` `{ "percent": 1-99, "by"? }` | Arranca el canario de `v`. Exige el mismo gate que la activación (experimento `PASS`/`PASS_FORM` de `v` contra la versión `ACTIVE` actual) y **no admite `force`** (`400`). Bloqueado: `409 release_gate_blocked`. Un solo canario por skill (`409`). Repetir con la misma versión y porcentaje: `200`, `changed: false` |
+| `GET /skills/:id/canary` | Canario `ACTIVE` (o el último), su historial y las métricas canaria contra estable |
+| `POST /skills/:id/canary/promote` `{ "by"? }` | Decisión humana: re-verifica el gate, `ACTIVE` la versión canaria (la estable pasa a `DEPRECATED`) y cierra el canario como `PROMOTED` |
+| `POST /skills/:id/canary/rollback` `{ "by"?, "reason"? }` | Cierra el canario como `ROLLED_BACK`: todas las ejecuciones vuelven a la estable. Siempre permitido e idempotente |
+
+- **Reparto determinista.** Una ref que sigue la versión `ACTIVE` (`{ "name": … }`) recibe la canaria si `sha256(canary_id ":" clave)[0..8] mod 10000 < percent × 100`. La clave es el id del `task_run` (todos los intentos de un run van a la misma rama) o el de la ejecución directa. Nada es aleatorio: el mismo id da siempre la misma versión. Una ref fijada (`{ "name", "version" }`) no participa.
+- **Atribución exacta (P4).** `traces.skill_versions[]` y `task_runs.skill_versions[]` guardan la versión resuelta y `canary`: `canary_id`, `arm` (`canary` o `stable`), `percent`, `bucket`, `routing_key`, `stable_version` y `canary_version`.
+- **Comparación.** `GET /skills/:id/canary` mide, por rama, solo las ejecuciones que enrutó ese canario: ejecuciones por estado y `outcome`, coste en euros, tokens y latencia medios (las mismas medidas que `/metrics/agents`), el último veredicto humano por sujeto y la media de las evaluaciones automáticas por evaluador, más `delta_canary_minus_stable`.
+- **Nada se promueve solo.** No hay tarea programada que promueva ni cierre un canario. Hacer `deprecate` de la versión canaria o de la estable cierra el canario (`ROLLED_BACK`) en la misma transacción.
+- **Tabla `skill_canaries`:** `skill_id`, `canary_version_id`/`canary_version`, `stable_version_id`/`stable_version`, `percent`, `status` (`ACTIVE` → `PROMOTED` | `ROLLED_BACK`), `experiment_id`, `gate`, `started_at`/`started_by`, `finished_at`/`finished_by`, `finish_reason`, `finish_gate`. La BD aplica: sin `DELETE`, como mucho un canario `ACTIVE` por skill (índice único parcial), identidad, versiones, porcentaje y experimento inmutables, y un canario terminado es inmutable entero. Para cambiar el porcentaje: rollback y canario nuevo.
+
+```sh
+curl -s -X POST localhost:4020/skills/prospector-event-exhibitors/versions/4/canary -H 'content-type: application/json' -d '{"percent": 10, "by": "jesus"}'
+curl -s localhost:4020/skills/prospector-event-exhibitors/canary
+curl -s -X POST localhost:4020/skills/prospector-event-exhibitors/canary/promote -H 'content-type: application/json' -d '{"by": "jesus"}'
+# o
+curl -s -X POST localhost:4020/skills/prospector-event-exhibitors/canary/rollback -H 'content-type: application/json' -d '{"by": "jesus", "reason": "más descartes que la estable"}'
+```
+
+> **Importante:** el código necesita la migración `0012_skill_canaries` (el resolver lee `skill_canaries`). Con `RUN_MIGRATIONS=true` se aplica al arrancar; a mano, aplícala antes de desplegar.
 
 ### Tests
 
-`test/unit/experiments-gate.test.ts` fija cada criterio, el seesaw, el modo forma, el orden de la decisión, la accuracy contra etiquetas, la muestra de forma y el cuerpo del override. `test/integration/experiments.test.ts` ejecuta el runner con proveedores guionizados (sin red) contra una BD propia: `PASS_FORM` con muestra de forma, contaminación (`409` → `FAILED`), `PASS` con `TEST`, `FAIL` por accuracy sin tocar `TEST`, inmutabilidad, y el candado (bloqueo, `PASS_FORM`, baseline obsoleta, override, rollback):
+`test/unit/experiments-gate.test.ts` fija cada criterio, el seesaw, el modo forma, el orden de la decisión, la accuracy contra etiquetas, la muestra de forma y el cuerpo del override. `test/unit/skill-canary.test.ts` fija el reparto del canario (mismo id, misma versión; reparto cercano al porcentaje con 10.000 ids; monótono al subir el porcentaje) y las ramas de harness de `skill:compare` (techos, timeout). `test/integration/harness-experiments.test.ts` recorre el experimento de harness y su candado; `test/integration/skill-canary.test.ts`, el ciclo completo del canario con runs reales del worker. `test/integration/experiments.test.ts` ejecuta el runner con proveedores guionizados (sin red) contra una BD propia: `PASS_FORM` con muestra de forma, contaminación (`409` → `FAILED`), `PASS` con `TEST`, `FAIL` por accuracy sin tocar `TEST`, inmutabilidad, y el candado (bloqueo, `PASS_FORM`, baseline obsoleta, override, rollback):
 
 ```sh
 DATABASE_URL=postgres://agentos:agentos_dev@127.0.0.1:5440/agentos_wt10_experiments pnpm vitest run test/integration/experiments.test.ts
+```
+
+## Skill Optimizer
+
+El Skill Optimizer (LLD v0.1 §18, MVP-3) recorre solo el ciclo de mejora de una skill: cosecha sus fallos en producción, los agrupa por patrón, propone una candidata acotada, la pasa por un experimento contra la versión `ACTIVE` y deja la decisión del Release Gate. **Nunca activa nada:** si el gate da `PASS` o `PASS_FORM`, deja en Twenty una nota «Propuesta de promoción — `<skill>` v`<N>`», y la activación sigue siendo una decisión humana por `POST /skills/:id/versions/:v/activate`, que vuelve a comprobar el gate. El código está en `src/optimizer/`.
+
+Hoy solo hay optimizador para `prospector-event-exhibitors` (la única skill con runner de experimentos), con el dominio de datasets `prospeccion`.
+
+### Tabla `optimization_runs`
+
+`id`, `tenant_id`, `skill_name`, `base_version` (la `ACTIVE` al pedir el run), `status`, `config` (dataset, presupuestos, mínimos), `failure_clusters` (clusters con sus fallos), `proposed_ops` (operaciones aplicadas con su tamaño), `candidate_version`, `experiment_id`, `verdict` (decisión del gate), `cost_eur` (optimizador + experimento), `details` (cosecha, fallos, comprobación de datos, dataset, marcas P5, intentos del modelo, experimento, nota y cierre humano), `error`, `created_at`, `updated_at` y `created_by`. Sin `DELETE` (trigger) y con un solo run abierto por skill (índice único parcial).
+
+```
+PENDING → HARVESTING → CLUSTERED → CANDIDATE_CREATED → EXPERIMENT_RUNNING → GATE_PASS | GATE_FAIL
+              │                           │                    │
+              └──── BLOCKED_NO_DATA ──────┴────────────────────┘     (cualquier estado abierto → ERROR)
+GATE_PASS → PROMOTED | DISCARDED (humano)        GATE_FAIL → DISCARDED (humano)
+```
+
+Cada transición es un `UPDATE … WHERE status IN (<orígenes válidos>)`: dos procesos nunca mueven el mismo run y una transición no válida no escribe nada.
+
+### Qué hace un run
+
+1. **Cosecha de fallos** (solo lectura) de las ejecuciones reales que inyectaron exactamente la versión `ACTIVE` (`traces.skill_versions` con `source: db`; sin modelo `stub` ni agentes `[TEST]`):
+   - Veredictos humanos negativos (`kind = 'HUMAN'`, `details.actor.human = true`). Por hipótesis cuenta el último; `DISCARDED` y `EDITED` son fallos, y el `EDITED` lleva la corrección del comercial (`edited_fields`).
+   - Fallos de los evaluadores RULE duros (`rule.discard_confidence_low`, `rule.source_urls_known`) sobre las últimas trazas, como `pnpm evaluate` (sin LLM).
+
+   Con menos de `min_failures` fallos (3 por defecto) termina en `BLOCKED_NO_DATA` sin llamar a ningún modelo.
+1. **Comprobación de datos (P5)**, en simulación: cosecha el dataset (`prospeccion-v1` por defecto) sin escribir y cuenta los casos etiquetados de `VALIDATION` sin quemar, quitando las entidades de los fallos (son material de diseño de este run). Con menos de `min_labeled_validation` (5 por defecto) termina en `BLOCKED_NO_DATA` y el mensaje dice cuántos faltan y cuántos están quemados.
+1. **Clustering** con el modelo ejecutor (`GEMINI_MODEL`, `gemini-flash-latest`). Los fallos van en un bloque `DATOS_NO_CONFIABLES`; la respuesta se valida con zod (ids conocidos, un fallo en un cluster como mucho) y se reintenta una vez con el error.
+1. **Candidata:** el modelo propone como mucho 5 operaciones (`ADD`, `REMOVE`, `REPLACE`, `MOVE`, `REORDER`) sobre el texto `ACTIVE`, cada una con su `why` y los clusters que ataca. `src/skills/edit-ops.ts` las aplica con los topes de 35 % borrado y 50 % añadido, y la regla de contenido web no confiable debe quedar intacta. Si los topes la rechazan, reintenta una vez pidiendo ser más conservador; si vuelve a fallar, `ERROR` con los dos intentos en `details.proposal_attempts`. La versión se crea `DRAFT` con el servicio de skills, con un `change_reason` que cita el run y los clusters, y `metadata` con las operaciones, su tamaño y los datos de diseño.
+1. **Dataset y P5:** construye la versión siguiente del dataset (los casos quemados siguen quemados y van a `TRAIN`) y marca con `markUsed` como `design` (experimento `OPT-xxxxxxxx`) los casos de las entidades de los fallos **antes** del experimento. Vuelve a contar `VALIDATION` y, si no llega al mínimo, `BLOCKED_NO_DATA`.
+1. **Experimento:** el runner de `pnpm experiment:run`, con la `ACTIVE` como baseline y la candidata, sobre ese dataset (por uuid) y con un CRM en memoria (`MemoryTwenty`: nada llega a Twenty). Registra `experiment_id` y el veredicto.
+1. **Gate:** `PASS` o `PASS_FORM` → `GATE_PASS` y nota en Twenty (idempotente por título) con los clusters que ataca, el Δ del composite, el coste y los comandos de activación, de cierre del run y de rollback. `FAIL` o `INCONCLUSIVE` → `GATE_FAIL`. Un fallo al escribir la nota no deshace el `GATE_PASS`: queda en `details.note.error`.
+
+### API y CLI
+
+```sh
+# Lanza un run (lo procesa el worker: cola {QUEUE_NAME}-optimizer, un intento, concurrencia 1)
+curl -s -X POST localhost:4020/optimizer/skills/prospector-event-exhibitors/run -H 'x-tenant-id: publiexpe' \
+  -H 'content-type: application/json' -d '{"datasetName": "prospeccion-v1"}'
+curl -s "localhost:4020/optimizer/runs?skill=prospector-event-exhibitors" -H 'x-tenant-id: publiexpe'
+# Tras activar la candidata (POST /skills/:id/versions/:v/activate), cierra el run
+curl -s -X POST localhost:4020/optimizer/runs/<id>/close -H 'x-tenant-id: publiexpe' \
+  -H 'content-type: application/json' -d '{"outcome": "PROMOTED", "by": "<quién>"}'
+
+# Lo mismo en este proceso (Gemini; escribe en DATABASE_URL y la nota en Twenty)
+pnpm optimize:run --skill prospector-event-exhibitors --dry-run   # cosecha y comprobación de datos: no escribe ni llama a modelos
+pnpm optimize:run --skill prospector-event-exhibitors --dataset prospeccion-v1 --budget 0.30 --today 2026-10-07
+```
+
+El cuerpo de `POST /optimizer/skills/:name/run` es opcional: `datasetName` (o `dataset_name`), `budget_eur` (experimento, 0,30), `llm_budget_eur` (clustering y propuesta, 0,05), `repeat` (2), `min_labeled_validation` (5), `min_failures` (3), `today` y `created_by`. La CLI admite las mismas opciones (`--dataset`, `--budget`, `--llm-budget`, `--repeat`, `--min-labeled`, `--min-failures`, `--today`), además de `--tenant`, `--created-by`, `--no-judge` y `--no-note`. Código de salida de la CLI: `0` `GATE_PASS`, `3` `GATE_FAIL`, `4` `BLOCKED_NO_DATA`, `1` `ERROR` y `2` argumentos no válidos.
+
+- Sin cola (rol `api` sin Redis), la API responde `503`. Si Redis falla al encolar, el run pasa a `ERROR` y la API responde `503`: repite la petición.
+- Al arrancar, el worker cierra como `ERROR` los runs abiertos sin progreso desde hace 6 horas (un worker que murió), para que la skill se pueda optimizar de nuevo.
+- Solo manual en este MVP: ninguna tarea programada lanza el optimizador. El scheduler programa `TaskDefinition` de agentes y el optimizador no es un agente, así que no se registra como tipo de tarea.
+- Coste: el clustering y la propuesta son de dos a cuatro llamadas a Gemini Flash (céntimos, con techo `llm_budget_eur`); el experimento gasta como mucho su presupuesto (`budget_eur`). Un run bloqueado no gasta nada.
+
+> **Importante:** con los datos del 2026-10-07 (`publiexpe`), un run de `prospector-event-exhibitors` termina en `BLOCKED_NO_DATA` sin coste: la v3 activa no tiene fallos registrados y `prospeccion-v1` no tiene casos etiquetados de `VALIDATION` sin quemar (los 10 casos etiquetados ya están quemados por experimentos anteriores). Hacen falta veredictos humanos nuevos en Twenty. Compruébalo con `pnpm optimize:run --skill prospector-event-exhibitors --dry-run`.
+
+### Tests
+
+`test/unit/optimizer.test.ts` (sin red ni BD) fija las transiciones, la configuración, la validación del clustering y de la propuesta, los topes rechazados → reintento conservador → error, la comprobación de datos P5, el `change_reason` y la nota (idempotente, sin activar). `test/integration/optimizer.test.ts` (PostgreSQL, proveedores guionizados y CRM en memoria) recorre un run completo hasta `GATE_PASS` con nota, marcas P5 de diseño y activación humana por el Release Gate (`PROMOTED`); `GATE_FAIL`; `BLOCKED_NO_DATA` por `VALIDATION` quemada y por falta de fallos; `ERROR` por los topes; la API y la recuperación de runs huérfanos:
+
+```sh
+DATABASE_URL=postgres://agentos:agentos_dev@127.0.0.1:5440/agentos_wt11_optimizer pnpm vitest run test/integration/optimizer.test.ts
 ```
 
 ## Research
@@ -1764,25 +1899,7 @@ Sin migración: la tabla de la sección anterior, tal cual.
 
 ### Integración con métricas
 
-`src/metrics/queries.ts` no filtra `evaluations` por `kind`. Si se guardaran evaluaciones automáticas en el tenant de producción, contaminarían `verdicts`, `avg_score` y la lista de sujetos de `/metrics` y del dashboard de Twenty (los recuentos `ACCEPTED`/`EDITED`/`DISCARDED` no, porque las automáticas usan `PASS`/`FAIL`/`SCORED`). Por eso `pnpm evaluate` escribe en `experiments` por defecto. Parche propuesto para quien sea dueño de `queries.ts` (pendiente; no se ha aplicado):
-
-```ts
-// metricsSummary (CTE latest y recuento verdicts, líneas 197 y 200): las dos apariciones de
-//   from evaluations ev where ${windowWhere('ev', 'occurred_at', w)}
-// pasan a
-//   from evaluations ev where ${windowWhere('ev', 'occurred_at', w)} and ev.kind = 'HUMAN'
-
-// metricsAgents (CTE linked, líneas 390-391):
-//   from evaluations ev join ex on ex.id = ev.agent_execution_id
-//   where ev.tenant_id = ${w.tenantId}
-// pasa a
-//   where ev.tenant_id = ${w.tenantId} and ev.kind = 'HUMAN'
-
-// metricsEvaluations (línea 460), que alimenta days, bySubjectType, subjects y totals:
-//   const where = windowWhere('ev', 'occurred_at', o);
-// pasa a
-//   const where = sql`${windowWhere('ev', 'occurred_at', o)} and ev.kind = 'HUMAN'`;
-```
+`src/metrics/queries.ts` filtra `evaluations` por `kind = 'HUMAN'` en `metricsSummary` (CTE `latest` y recuento `verdicts`), `metricsAgents` (CTE `linked` y el desglose `by_skill_version`) y `metricsEvaluations` (`days`, `bySubjectType`, `subjects` y `totals`). Así, aunque se guardaran evaluaciones automáticas en el tenant de producción, no contaminarían `verdicts`, `avg_score`, las tasas ni la lista de sujetos de `/metrics` y del dashboard de Twenty. `pnpm evaluate` sigue escribiendo en `experiments` por defecto: son dos blindajes independientes.
 
 ### Tests
 
@@ -1805,7 +1922,8 @@ Primeras métricas del sistema (LLD v0.1 secciones 17.2 y 17.3, criterios AC-15 
   - `acceptance`: AC-15 (coste por run, umbral 3,00 EUR), AC-16 (duración, umbral 30 min) y AC-17 (coste por hipótesis nueva).
   - `direct_executions` (ejecuciones sin `TaskRun`) y `last_run`.
 - **`GET /metrics/agents`** filtra por `agent_executions.created_at` y agrupa por agente y versión (`version_label` `v1`, `v2`...): runs, estados, `completion_rate`, outcome y `success_rate`, coste medio, tokens, latencia y `human_feedback` de los sujetos que produjeron esas ejecuciones (cruce por `evaluations.agent_execution_id`). Es la métrica para comparar versiones: «¿el agente mejora?».
-- **`GET /metrics/evaluations`** filtra por `evaluations.occurred_at`: `totals`, `by_day` (serie diaria en la zona `tz`, `Europe/Madrid` por defecto), `by_subject_type` y `subjects` (último veredicto, historial y ejecución vinculada de cada sujeto, hasta `subject_limit`).
+  - `by_skill_version`: desglose por agente y **versión exacta de skill**, leída de `traces.skill_versions` (lo que cada ejecución inyectó de verdad, LLD P4). Por fila: `skill`, `skill_version` / `skill_version_label`, `skill_version_id`, `source` (`db`, `code` o `none`), `agent_versions` (versiones del agente que la usaron), `executions`, `completed`, `hypotheses_created` (suma de `output.counters.hypotheses_created` de esas ejecuciones), `last_run_at` y `human_feedback` (último veredicto humano de los sujetos vinculados a esas ejecuciones). Una ejecución que usó N skills cuenta en sus N filas. Las ejecuciones sin traza (intentos muertos) no aparecen.
+- **`GET /metrics/evaluations`** filtra por `evaluations.occurred_at` y solo cuenta veredictos humanos (`evaluation_kind: "HUMAN"`): `totals`, `by_day` (serie diaria en la zona `tz`, `Europe/Madrid` por defecto), `by_subject_type` y `subjects` (último veredicto, historial y ejecución vinculada de cada sujeto, hasta `subject_limit`).
 - **`GET /metrics/runs`** devuelve los últimos `TaskRun` con tarea, agente, versión, estado, outcome, coste, duración y `trace_url` (`/task-runs/:id`).
 
 Ejemplo:
@@ -1825,7 +1943,7 @@ curl -s "http://127.0.0.1:4020/metrics/agents?since=2026-10-01T00:00:00%2B02:00"
 | `useful_rate` | `(ACCEPTED + EDITED) / revisadas` (AC-20) |
 | `avg_score` | Media del `score` (1.0, 0.5, 0.0) |
 
-Las tasas usan el **último veredicto de cada sujeto** (`subject_type`, `subject_id`): una hipótesis editada y después descartada cuenta una vez, como `DISCARDED`. `verdicts` cuenta todas las filas. En `/metrics/agents` solo cuentan los veredictos vinculados a una ejecución; en `/metrics/summary` cuentan todos.
+Las tasas usan el **último veredicto de cada sujeto** (`subject_type`, `subject_id`): una hipótesis editada y después descartada cuenta una vez, como `DISCARDED`. `verdicts` cuenta todas las filas. En `/metrics/agents` solo cuentan los veredictos vinculados a una ejecución; en `/metrics/summary` cuentan todos. En los tres endpoints solo cuentan las filas `evaluations.kind = 'HUMAN'`: las evaluaciones automáticas (`RULE`, `LLM_JUDGE`, `COMPOSITE`) no entran en ninguna tasa, aunque alguien las guarde en el tenant de producción.
 
 ### Dashboard
 
@@ -1833,6 +1951,7 @@ Abre `http://127.0.0.1:4020/dashboard`. Para otro tenant, añade `?tenant=<id>`.
 
 - Tarjetas: runs de hoy y de los últimos 7 días (desde la medianoche local del navegador), coste acumulado en EUR, tasa de aceptación y última ejecución.
 - Tabla por agente y versión: runs, éxito, coste medio, latencia, veredictos, aceptación, utilidad (AC-20) y score medio.
+- Tabla por versión de skill (`by_skill_version` de `/metrics/agents`): agente, skill, versión exacta (`código` si vino del fallback en código), versiones del agente, ejecuciones, hipótesis creadas, veredictos, aceptación y utilidad.
 - Últimos 10 runs, con enlace a su trace JSON (`GET /task-runs/:id`).
 
 La página es HTML, CSS y JavaScript inline, sin frameworks ni CDN. Todas sus llamadas usan rutas relativas (`metrics/...`, `task-runs/...`). Sigue el tema claro u oscuro del sistema (`prefers-color-scheme`).
@@ -1992,5 +2111,5 @@ Solo cuenta los envíos desde Twenty: los del webmail van aparte. El dashboard m
 - Borradores de email: disparar también con `EDITED` (necesita una segunda tarea o un operador OR en el filtro), plantillas por sector y registro de si el comercial envió el borrador. (Hecho: la entrada de eventos externos por HTTP y la entrega a n8n por webhook, consulta [Eventos externos](#eventos-externos).)
 - Harness, skills, memoria y verificador reales; promote, rollback y evaluate.
 - Export de los contratos zod a JSON Schema versionado en `schemas/`.
-- Experiments: runner para harness (hoy activar una harness nueva exige `force`), criterio de latencia, re-validación automática de los `PASS_FORM` cuando el dataset tenga etiquetas en VALIDATION/TEST, y registrar los overrides también en el log de eventos (hoy van al log del proceso y a la respuesta).
+- Experiments: criterio de latencia, re-validación automática de los `PASS_FORM` cuando el dataset tenga etiquetas en VALIDATION/TEST, y registrar los overrides también en el log de eventos (hoy van al log del proceso y a la respuesta). El runner para harness existe desde la tanda 11 ([Experimentos de harness](#experimentos-de-harness)).
 - Métricas: AC-17 y AC-18 piden hipótesis `HOT`, pero el resumen de ejecución solo cuenta hipótesis creadas; falta el desglose por prioridad (en Twenty o en `output.counters`). El dashboard oculta por defecto los agentes `ARCHIVED` (los de prueba se archivan con `pnpm cleanup:archive-test-agents`); `include_archived=true` los muestra.

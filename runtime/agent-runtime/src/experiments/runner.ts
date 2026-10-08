@@ -20,22 +20,31 @@
  *
  * It never activates anything and never writes to Twenty: the tools are whatever `makeTools`
  * returns (the CLI injects FakeTwenty).
+ *
+ * Subjects: `skill` (baseline = ACTIVE skill version, candidate = another version) and
+ * `harness` (baseline = ACTIVE harness version, candidate = another version; every run injects
+ * the ACTIVE version of `skillName`, fixed, and only the harness policies vary: see
+ * `resolveHarnessArms`). Same cases, evaluators and Release Gate for both.
  */
 import { createHash } from 'node:crypto';
 import { asc, eq } from 'drizzle-orm';
 import { readConfig } from '../agents/prospector-core.js';
 import type { Db } from '../db/client.js';
-import { type EvaluationCase, type Experiment, type ExperimentDecision } from '../db/schema.js';
+import { type EvaluationCase, type Experiment, type ExperimentDecision, type ExperimentSubjectType } from '../db/schema.js';
 import { toCompareInputs } from '../datasets/fixtures.js';
 import { DatasetServiceError, listCases, listDatasets, markUsed, requireDataset } from '../datasets/service.js';
 import { evaluationDatasets } from '../db/schema.js';
 import { DEFAULT_EXPERIMENTS_TENANT, defaultEvaluators, JudgeBudgetProvider, persistEvaluations, runEvaluationPipeline, subjectsFromComparison, type PipelineReport } from '../evaluators/index.js';
 import type { ModelProvider } from '../providers/model-provider.js';
 import { DEFAULT_USD_TO_EUR } from '../providers/gemini-pricing.js';
+import { applyHarness, effectiveRecord, parseStoredHarnessConfig } from '../harness/config.js';
+import { findHarness, listHarnessVersions } from '../harness/service.js';
 import { BudgetGuardProvider, COMPARABLE_SKILLS, runSkillComparison, type CompareAgentVersion, type CompareVersion, type ComparisonReport } from '../skills/compare.js';
 import { renderSkill } from '../skills/render.js';
 import { findSkill, listVersions } from '../skills/service.js';
 import type { AgentToolbox } from '../tools/executor.js';
+import { parseToolPolicy } from '../tools/policy.js';
+import type { AgentToolPolicy } from '../tools/types.js';
 import { combineDecisions, evaluateGate, type GateConfig, type GateResult } from './gate.js';
 import { isLabeled, phaseIncomplete, versionPhaseMetrics, type PhaseFixture, type PhaseOutcome, type VersionPhaseMetrics } from './metrics.js';
 import { closeExperiment, completeExperiment, createExperiment, recordProgress, startExperiment } from './service.js';
@@ -66,8 +75,8 @@ export interface RunnerDeps {
   /** Judge provider; without it there is no LLM_JUDGE (the composite redistributes its weight). */
   judgeProvider?: ModelProvider | null;
   judgeModel?: string;
-  /** A fresh toolbox per run (FakeTwenty in the CLI). */
-  makeTools: (runLabel: string) => AgentToolbox;
+  /** A fresh toolbox per run (FakeTwenty in the CLI); harness arms pass the policy capped by their harness. */
+  makeTools: (runLabel: string, toolPolicy?: AgentToolPolicy) => AgentToolbox;
   agentVersion: CompareAgentVersion;
   /** "Today" the agent sees. */
   now?: () => Date;
@@ -85,7 +94,12 @@ export interface RunnerDeps {
 
 export interface RunOptions {
   tenantId: string;
+  /** Default `skill`. */
+  subjectType?: ExperimentSubjectType;
+  /** Skill or harness name. */
   subjectName: string;
+  /** Harness subject: the skill whose ACTIVE version every run injects (default the only comparable skill). */
+  skillName?: string;
   candidateVersion: number;
   /** Dataset name (latest ACTIVE version, else the latest) or uuid. */
   dataset: string;
@@ -157,16 +171,17 @@ async function resolveDataset(db: Db, tenantId: string, key: string) {
   return pick;
 }
 
-async function resolveVersions(db: Db, tenantId: string, skillName: string, candidate: number): Promise<{ baseline: CompareVersion; candidate: CompareVersion }> {
+/** Skill subject: baseline = ACTIVE, candidate = `candidate` (null: only the ACTIVE one is wanted, both slots hold it). */
+async function resolveVersions(db: Db, tenantId: string, skillName: string, candidate: number | null): Promise<{ baseline: CompareVersion; candidate: CompareVersion }> {
   if (!(COMPARABLE_SKILLS as readonly string[]).includes(skillName)) throw new ExperimentAbortedError('invalid', `no hay runner para la skill "${skillName}" (soportadas: ${COMPARABLE_SKILLS.join(', ')})`, null);
   const skill = await findSkill(db, tenantId, skillName);
   if (!skill) throw new ExperimentAbortedError('invalid', `la skill ${skillName} no existe en el tenant ${tenantId}`, null);
   const versions = await listVersions(db, skill.id);
   const active = versions.find((v) => v.status === 'ACTIVE');
   if (!active) throw new ExperimentAbortedError('invalid', `la skill ${skillName} no tiene versión ACTIVE (la baseline del experimento)`, null);
-  const cand = versions.find((v) => v.version === candidate);
+  const cand = candidate === null ? active : versions.find((v) => v.version === candidate);
   if (!cand) throw new ExperimentAbortedError('invalid', `la skill ${skillName} no tiene versión ${candidate} (hay: ${versions.map((v) => v.version).join(', ')})`, null);
-  if (cand.id === active.id) throw new ExperimentAbortedError('invalid', `v${candidate} ya es la versión ACTIVE: no hay nada que decidir`, null);
+  if (candidate !== null && cand.id === active.id) throw new ExperimentAbortedError('invalid', `v${candidate} ya es la versión ACTIVE: no hay nada que decidir`, null);
   const toCompare = (v: typeof cand): CompareVersion => ({
     version: v.version,
     status: v.status,
@@ -175,6 +190,48 @@ async function resolveVersions(db: Db, tenantId: string, skillName: string, cand
     contentHash: v.contentHash,
   });
   return { baseline: toCompare(active), candidate: toCompare(cand) };
+}
+
+/** Policies a harness arm starts from before its harness applies: those of a direct execution (300 s, one attempt), no Twenty gate offline. */
+export const HARNESS_EXPERIMENT_BASE = { timeoutMs: 300_000, retry: { max_attempts: 1, backoff_ms: 0 } } as const;
+
+/**
+ * Harness subject: baseline = the ACTIVE harness version, candidate = `candidate`. Both arms
+ * inject the ACTIVE version of `skillName` (fixed) and differ only in the effective policies
+ * (`applyHarness` over the agent version, as the worker does).
+ */
+export async function resolveHarnessArms(
+  db: Db,
+  tenantId: string,
+  harnessName: string,
+  candidate: number,
+  skillName: string,
+  agentVersion: CompareAgentVersion,
+): Promise<{ baseline: CompareVersion; candidate: CompareVersion; skill: CompareVersion }> {
+  const harness = await findHarness(db, tenantId, harnessName);
+  if (!harness) throw new ExperimentAbortedError('invalid', `la harness ${harnessName} no existe en el tenant ${tenantId}`, null);
+  if (harness.status === 'DEPRECATED') throw new ExperimentAbortedError('invalid', `la harness ${harnessName} está DEPRECATED`, null);
+  const versions = await listHarnessVersions(db, harness.id);
+  const active = versions.find((v) => v.status === 'ACTIVE');
+  if (!active) throw new ExperimentAbortedError('invalid', `la harness ${harnessName} no tiene versión ACTIVE (la baseline del experimento)`, null);
+  const cand = versions.find((v) => v.version === candidate);
+  if (!cand) throw new ExperimentAbortedError('invalid', `la harness ${harnessName} no tiene versión ${candidate} (hay: ${versions.map((v) => v.version).join(', ')})`, null);
+  if (cand.id === active.id) throw new ExperimentAbortedError('invalid', `v${candidate} ya es la versión ACTIVE: no hay nada que decidir`, null);
+  const { baseline: skill } = await resolveVersions(db, tenantId, skillName, null);
+  const toolPolicy = parseToolPolicy(agentVersion.configuration);
+  const arm = (v: typeof cand): CompareVersion => {
+    const config = parseStoredHarnessConfig(v.config);
+    if (!config) throw new ExperimentAbortedError('invalid', `la versión ${v.version} de la harness ${harnessName} tiene una config inválida`, null);
+    const policies = applyHarness(config, { ...HARNESS_EXPERIMENT_BASE, retry: { ...HARNESS_EXPERIMENT_BASE.retry }, twentyWaitMaxMs: null, toolPolicy, configuration: agentVersion.configuration });
+    return {
+      ...skill,
+      version: v.version,
+      status: v.status,
+      skillVersion: skill.version,
+      harness: { name: harness.name, version: v.version, harnessVersionId: v.id, contentHash: v.contentHash, policies },
+    };
+  };
+  return { baseline: arm(active), candidate: arm(cand), skill };
 }
 
 function phaseCase(c: EvaluationCase, use: PhaseCase['use']): PhaseCase {
@@ -212,7 +269,15 @@ export async function runExperiment(deps: RunnerDeps, opts: RunOptions): Promise
   const cfg = readConfig(deps.agentVersion.configuration);
   const now = deps.now ?? (() => new Date());
 
-  const versions = await resolveVersions(db, opts.tenantId, opts.subjectName, opts.candidateVersion);
+  const subjectType: ExperimentSubjectType = opts.subjectType ?? 'skill';
+  // The skill the runs inject: the subject itself, or (harness subject) the fixed one.
+  const skillName = subjectType === 'harness' ? (opts.skillName ?? COMPARABLE_SKILLS[0]) : opts.subjectName;
+  const harnessArms = subjectType === 'harness' ? await resolveHarnessArms(db, opts.tenantId, opts.subjectName, opts.candidateVersion, skillName, deps.agentVersion) : null;
+  const versions = harnessArms ?? (await resolveVersions(db, opts.tenantId, opts.subjectName, opts.candidateVersion));
+  const armOf = (v: CompareVersion) =>
+    v.harness
+      ? { version: v.version, version_id: v.harness.harnessVersionId, content_hash: v.harness.contentHash, status: v.status, effective: effectiveRecord(v.harness.policies), overrides: v.harness.policies.overrides }
+      : { version: v.version, version_id: v.skillVersionId, content_hash: v.contentHash, status: v.status };
   const dataset = await resolveDataset(db, opts.tenantId, opts.dataset);
   const guard = new BudgetGuardProvider(deps.executorProvider, executorBudgetEur, cfg.usdToEur);
   const judgeBudget = useJudge ? new JudgeBudgetProvider(deps.judgeProvider!, judgeBudgetEur, DEFAULT_USD_TO_EUR) : null;
@@ -220,9 +285,10 @@ export async function runExperiment(deps: RunnerDeps, opts: RunOptions): Promise
 
   const config: Record<string, unknown> = {
     runner_version: RUNNER_VERSION,
-    subject: { type: 'skill', name: opts.subjectName },
-    baseline: { version: versions.baseline.version, version_id: versions.baseline.skillVersionId, content_hash: versions.baseline.contentHash, status: versions.baseline.status },
-    candidate: { version: versions.candidate.version, version_id: versions.candidate.skillVersionId, content_hash: versions.candidate.contentHash, status: versions.candidate.status },
+    subject: { type: subjectType, name: opts.subjectName },
+    baseline: armOf(versions.baseline),
+    candidate: armOf(versions.candidate),
+    ...(harnessArms ? { fixed_skill: { name: skillName, version: harnessArms.skill.version, version_id: harnessArms.skill.skillVersionId, content_hash: harnessArms.skill.contentHash }, harness_base: HARNESS_EXPERIMENT_BASE } : {}),
     dataset: { id: dataset.id, name: dataset.name, version: dataset.version, status: dataset.status },
     budget_eur: opts.budgetEur,
     executor_budget_eur: executorBudgetEur,
@@ -241,7 +307,7 @@ export async function runExperiment(deps: RunnerDeps, opts: RunOptions): Promise
 
   let exp = await createExperiment(db, {
     tenantId: opts.tenantId,
-    subjectType: 'skill',
+    subjectType,
     subjectName: opts.subjectName,
     baselineVersion: versions.baseline.version,
     candidateVersion: versions.candidate.version,
@@ -249,7 +315,7 @@ export async function runExperiment(deps: RunnerDeps, opts: RunOptions): Promise
     config,
     createdBy: opts.createdBy ?? 'experiment:run',
   });
-  log(`${exp.name}: ${opts.subjectName} v${versions.baseline.version} (ACTIVE) vs v${versions.candidate.version} · dataset ${dataset.name} v${dataset.version} · presupuesto ${opts.budgetEur} € (ejecutor ${executorBudgetEur} €, juez ${judgeBudgetEur} €)`);
+  log(`${exp.name}: ${subjectType === 'harness' ? `harness ${opts.subjectName}` : opts.subjectName} v${versions.baseline.version} (ACTIVE) vs v${versions.candidate.version}${harnessArms ? ` (skill fija ${skillName} v${harnessArms.skill.version})` : ''} · dataset ${dataset.name} v${dataset.version} · presupuesto ${opts.budgetEur} € (ejecutor ${executorBudgetEur} €, juez ${judgeBudgetEur} €)`);
   exp = await startExperiment(db, exp.id);
   const startedAt = new Date();
   const splits: Record<string, unknown> = {};
@@ -304,7 +370,7 @@ export async function runExperiment(deps: RunnerDeps, opts: RunOptions): Promise
       if (guard.exceeded) break;
       reports.push(
         await runSkillComparison({
-          skillName: opts.subjectName,
+          skillName,
           versions: [versions.baseline, versions.candidate],
           input: f.input,
           provider: deps.executorProvider,
@@ -319,7 +385,7 @@ export async function runExperiment(deps: RunnerDeps, opts: RunOptions): Promise
       );
     }
     checkCancel();
-    const saved = { skill: opts.subjectName, reports: reports.map((report, i) => ({ fixture: fixtures[i]!.name, report })) };
+    const saved = { skill: skillName, reports: reports.map((report, i) => ({ fixture: fixtures[i]!.name, report })) };
     const loaded = subjectsFromComparison(saved, `${exp.name}:${phase}`, { minConfidence: cfg.minConfidence, fixtureInputs: Object.fromEntries(fixtures.map((f) => [f.name, f.input])) });
     const pipeline = await runEvaluationPipeline(loaded.subjects, { rules: ev.rules, judges: ev.judges, composite: ev.composite, ...(judgeBudget ? { budget: judgeBudget } : {}), onProgress: (m) => log(`${phase} evaluación: ${m}`) });
     pipeline.warnings.unshift(...loaded.warnings);

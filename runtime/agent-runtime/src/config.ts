@@ -23,6 +23,8 @@ const ConfigSchema = z.object({
   schedulerSyncIntervalMs: z.coerce.number().int().positive().default(60_000),
   reconcileIntervalMs: z.coerce.number().int().positive().default(60_000),
   reconcileGraceMs: z.coerce.number().int().nonnegative().default(120_000),
+  /** TaskRun heartbeat (`updated_at`) while an attempt runs; keep it well below reconcileGraceMs. 0 = off. */
+  runHeartbeatMs: z.coerce.number().int().nonnegative().default(30_000),
   concurrencyDeferMs: z.coerce.number().int().positive().default(2_000),
   stalledIntervalMs: z.coerce.number().int().positive().default(30_000),
   maxStalledCount: z.coerce.number().int().nonnegative().default(1),
@@ -86,6 +88,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env, argv: string[] 
     schedulerSyncIntervalMs: emptyToUndefined(env.SCHEDULER_SYNC_INTERVAL_MS),
     reconcileIntervalMs: emptyToUndefined(env.RECONCILE_INTERVAL_MS),
     reconcileGraceMs: emptyToUndefined(env.RECONCILE_GRACE_MS),
+    runHeartbeatMs: emptyToUndefined(env.RUN_HEARTBEAT_MS),
     concurrencyDeferMs: emptyToUndefined(env.CONCURRENCY_DEFER_MS),
     stalledIntervalMs: emptyToUndefined(env.STALLED_INTERVAL_MS),
     maxStalledCount: emptyToUndefined(env.MAX_STALLED_COUNT),

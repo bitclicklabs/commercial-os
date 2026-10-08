@@ -100,9 +100,11 @@ export async function harnessRoutes(app: FastifyInstance, ctx: ApiContext): Prom
 
   /**
    * ACTIVE the version and DEPRECATED the previous ACTIVE one, in one transaction. Idempotent.
-   * Same Release Gate as skills (src/experiments/release-gate.ts). There is no experiment
-   * runner for harnesses yet, so a harness version that was never ACTIVE needs, for now, a
-   * human override `{ force: true, reason }`; a rollback to a former ACTIVE version does not.
+   * Same Release Gate as skills (src/experiments/release-gate.ts): a version that was never
+   * ACTIVE needs a COMPLETED harness experiment (`pnpm experiment:run --subject harness:<name>`)
+   * with decision PASS or PASS_FORM against the current ACTIVE version, or a human override
+   * `{ force: true, reason }`. Blocked: 409 `release_gate_blocked` citing the experiments. A
+   * rollback to a former ACTIVE version needs neither.
    */
   app.post('/harnesses/:id/versions/:v/activate', async (req) => {
     const tenantId = tenantOf(req, ctx.config.defaultTenantId);

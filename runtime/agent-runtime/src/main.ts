@@ -7,6 +7,7 @@ import { BullEventQueue, EventBus, eventsQueueName } from './events/event-bus.js
 import { BullWebhookDeliveryQueue, WebhookDeliveryWorker, WebhookDispatcher, webhooksQueueName } from './events/webhook-delivery.js';
 import { twentyClientFromEnv } from './integrations/twenty/index.js';
 import { metricsSyncSettingsFromEnv, TwentyMetricsSync } from './metrics/twenty-sync.js';
+import { BullOptimizerQueue, OptimizerWorker, optimizerQueueName } from './optimizer/queue.js';
 import { createProviderRegistry } from './providers/index.js';
 import { BullRunQueue } from './queue/run-queue.js';
 import { EventTriggerConsumer } from './scheduler/event-triggers.js';
@@ -48,10 +49,13 @@ async function main(): Promise<void> {
   let metricsSync: TwentyMetricsSync | undefined;
   let webhookQueue: BullWebhookDeliveryQueue | undefined;
   let webhookWorker: WebhookDeliveryWorker | undefined;
+  // Skill Optimizer (MVP-3): the API enqueues runs, the worker role processes them. Manual only.
+  const optimizerQueue = has('api') ? new BullOptimizerQueue(optimizerQueueName(config.queueName), config.redisUrl) : undefined;
+  let optimizerWorker: OptimizerWorker | undefined;
 
   if (has('api')) {
     app = await buildServer(
-      { db: dbHandle.db, queue, config, events: eventBus, twenty: twentyClientFromEnv(), ...(scheduler ? { scheduler } : {}) },
+      { db: dbHandle.db, queue, config, events: eventBus, twenty: twentyClientFromEnv(), ...(scheduler ? { scheduler } : {}), ...(optimizerQueue ? { optimizerQueue } : {}) },
       { logger: { level: config.logLevel } },
     );
     await app.listen({ host: config.host, port: config.port });
@@ -61,16 +65,20 @@ async function main(): Promise<void> {
   consoleLogger = logger;
 
   if (has('worker')) {
-    const processor = new RunProcessor(
-      dbHandle.db,
-      createProviderRegistry({
-        anthropicApiKey: config.anthropicApiKey,
-        geminiApiKey: config.geminiApiKey,
-        geminiModel: config.geminiModel,
-      }),
-      logger,
-    );
+    const providers = createProviderRegistry({
+      anthropicApiKey: config.anthropicApiKey,
+      geminiApiKey: config.geminiApiKey,
+      geminiModel: config.geminiModel,
+    });
+    const processor = new RunProcessor(dbHandle.db, providers, logger);
     processor.events = eventBus;
+    processor.heartbeatMs = config.runHeartbeatMs;
+    if (config.runHeartbeatMs === 0 || config.runHeartbeatMs * 2 > config.reconcileGraceMs) {
+      logger.warn(
+        { runHeartbeatMs: config.runHeartbeatMs, reconcileGraceMs: config.reconcileGraceMs },
+        'RUN_HEARTBEAT_MS is off or too close to RECONCILE_GRACE_MS: long runs may be taken for orphans',
+      );
+    }
     worker = startBullWorker(processor, {
       queueName: config.queueName,
       redisUrl: config.redisUrl,
@@ -84,6 +92,24 @@ async function main(): Promise<void> {
     reconciler = new OrphanReconciler(dbHandle.db, queue, { graceMs: config.reconcileGraceMs, logger });
     reconciler.start(config.reconcileIntervalMs);
     logger.info({ queue: config.queueName, concurrency: config.workerConcurrency }, 'worker started');
+    // Skill Optimizer: Gemini for its own calls and the experiment (executor + judge), an
+    // in-memory CRM for the experiment and the real Twenty only for the promotion note.
+    const optimizerTwenty = twentyClientFromEnv();
+    optimizerWorker = new OptimizerWorker(dbHandle.db, {
+      queueName: optimizerQueueName(config.queueName),
+      redisUrl: config.redisUrl,
+      logger,
+      deps: () => ({
+        db: dbHandle.db,
+        llmProvider: providers('gemini'),
+        executorProvider: providers('gemini'),
+        judgeProvider: providers('gemini'),
+        twenty: optimizerTwenty.isConfigured() ? optimizerTwenty : null,
+        apiUrl: `http://127.0.0.1:${config.port}`,
+      }),
+    });
+    await optimizerWorker.start();
+    logger.info({ queue: optimizerQueueName(config.queueName) }, 'optimizer worker started');
   }
 
   if (has('scheduler') && scheduler) {
@@ -128,8 +154,8 @@ async function main(): Promise<void> {
   const shutdown = async (signal: string) => {
     console.log(`received ${signal}, shutting down`);
     reconciler?.stop();
-    await Promise.allSettled([app?.close(), worker?.close(), eventConsumer?.close(), webhookWorker?.close(), metricsSync?.stop()]);
-    await Promise.allSettled([scheduler?.close(), eventBus.close(), queue.close(), webhookQueue?.close()]);
+    await Promise.allSettled([app?.close(), worker?.close(), eventConsumer?.close(), webhookWorker?.close(), metricsSync?.stop(), optimizerWorker?.close()]);
+    await Promise.allSettled([scheduler?.close(), eventBus.close(), queue.close(), webhookQueue?.close(), optimizerQueue?.close()]);
     await dbHandle.close();
     process.exit(0);
   };

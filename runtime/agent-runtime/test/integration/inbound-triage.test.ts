@@ -12,7 +12,7 @@ import { and, eq, sql } from 'drizzle-orm';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createDb, type DbHandle } from '../../src/db/client.js';
 import { runMigrations } from '../../src/db/migrate.js';
-import { events, inboundState, inboundTriage, taskDefinitions, taskRuns, traces, traceSteps } from '../../src/db/schema.js';
+import { auditLog, events, inboundState, inboundTriage, taskDefinitions, taskRuns, traces, traceSteps } from '../../src/db/schema.js';
 import { recordEmailSend } from '../../src/email-ops/sends.js';
 import { EventBus, MemoryEventQueue } from '../../src/events/event-bus.js';
 import { DrizzleSendLookup } from '../../src/inbound/reply-links.js';
@@ -211,6 +211,14 @@ describe.skipIf(!dbAvailable)('inbound triage: process-inbox -> InboxAgent -> no
     expect(evs.map((e) => e.payload.class).sort()).toEqual(['AUTO_REPLY', 'BAJA', 'INTERESADO', 'NO_INTERESADO', 'REBOTE']);
     expect(JSON.stringify(evs.map((e) => e.payload))).not.toMatch(/carmen@|marta@|luis@|noexiste@/);
     expect(evs.find((e) => e.payload.class === 'INTERESADO')).toMatchObject({ correlationId: hypothesisId, payload: { fromDomain: 'cliente.example', matchBy: 'email', noteId: r[1]!.noteId } });
+
+    // PM (tanda 12): every new suppression entry is audited as `suppression.add`.
+    const audited = await handle.db
+      .select({ subjectId: auditLog.subjectId, payload: auditLog.payload })
+      .from(auditLog)
+      .where(and(eq(auditLog.tenantId, tenant), eq(auditLog.action, 'suppression.add')));
+    expect(audited.map((a) => a.subjectId).sort()).toEqual(['luis@baja.example', 'marta@cliente2.example']);
+    expect(audited.map((a) => (a.payload as { class: string }).class).sort()).toEqual(['BAJA', 'NO_INTERESADO']);
 
     // Cursor of the new consumer, and read-only on the wire.
     const state = await handle.db.query.inboundState.findFirst({ where: and(eq(inboundState.tenantId, tenant), eq(inboundState.consumer, 'inbox')) });

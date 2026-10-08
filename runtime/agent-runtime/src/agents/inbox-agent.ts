@@ -46,6 +46,7 @@ import { DrizzleInboundTriageStore, messageKeyOf, type InboundTriageStore } from
 import { emailDomain, isDomainOrSubdomain, parseRawMessage, type ParsedInboundMessage } from '../inbound/unsubscribe-classifier.js';
 import type { AgentContext, AgentImplementation, AgentResult, AgentStep } from './agent.js';
 import { imapErrorPayload, readBajasConfig, type BajasAgentDeps, type BajasConfig } from './bajas-agent.js';
+import { recordAudit } from '../audit/service.js';
 import { ProspectorRun, readConfig, round6 } from './prospector-core.js';
 
 export const INBOX_IMPLEMENTATION = 'inbound_inbox';
@@ -128,6 +129,7 @@ function zeroCounters() {
     events_emitted: 0,
     parse_errors: 0,
     marked_seen: 0,
+    audit_errors: 0,
   };
 }
 
@@ -360,6 +362,30 @@ export class InboxAgent implements AgentImplementation {
       }
       counters.new_entries = written.newEntries.length;
       counters.duplicates = written.duplicates.length;
+      // The suppression list is written by the agent, not through the API, so the audit hook
+      // never sees it: record `suppression.add` here. An audit failure never fails the run.
+      if (db) {
+        for (const email of written.newEntries) {
+          const d = suppress.find((s) => s.email === email);
+          try {
+            await recordAudit(db, {
+              tenantId: ctx.tenantId,
+              actor: 'agent',
+              actorLabel: ctx.agent.name,
+              action: 'suppression.add',
+              subjectType: 'suppression',
+              subjectId: email,
+              method: 'AGENT',
+              route: 'agent:inbox',
+              result: 'ok',
+              statusCode: 200,
+              payload: { class: d?.class ?? null, note_id: cfg.noteId },
+            });
+          } catch {
+            counters.audit_errors += 1;
+          }
+        }
+      }
       const unattributed = new Set(written.newEntries);
 
       // ---- Phase 3: per message, in UID order: link, note, event, inbound_triage row ----

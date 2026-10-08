@@ -130,6 +130,8 @@ Requisitos: Node.js 22, pnpm, y los contenedores `pxos-postgres` (127.0.0.1:5440
 | `RENDERER_URL` | `http://pxos-renderer:3000` | Servicio de render JavaScript de `render_url`. En desarrollo, `http://127.0.0.1:4030` si el renderer está publicado ahí. Vacío u `off` = desactivado (`render_url` devuelve `RENDERER_NOT_CONFIGURED`) |
 | `TRACE_RETENTION_DAYS` | `90` | Antigüedad (días) por defecto de `pnpm traces:archive`. Consulta [Retención de trazas](#retención-de-trazas-sin-pérdida-pnpm-tracesarchive) |
 | `TRACE_ARCHIVE_DIR` | `./data/trace-archive` | Directorio del archivo de trazas (`<tenant>/<YYYY-MM>.jsonl.gz`); en Docker, un volumen persistente |
+| `TRACE_ARCHIVE_ENABLED` | `false` | `true` activa el archivado programado de trazas en el rol `scheduler`. Consulta [Archivado programado](#archivado-programado) |
+| `TRACE_ARCHIVE_INTERVAL_MS` | `86400000` (24 h) | Frecuencia del archivado programado (mínimo 60 000) |
 
 ## Migraciones
 
@@ -2333,7 +2335,7 @@ curl -s -X POST http://127.0.0.1:4020/skills/<skill>/versions/3/activate -H 'con
 
 ### Retención de trazas sin pérdida: `pnpm traces:archive`
 
-Las trazas crecen por los payloads `jsonb` de los pasos. La retención archiva antes de aligerar y nunca borra: ni filas ni ficheros. Es una tarea manual (no hay tarea programada).
+Las trazas crecen por los payloads `jsonb` de los pasos. La retención archiva antes de aligerar y nunca borra: ni filas ni ficheros. Se lanza a mano con `pnpm traces:archive` o, si lo activas, la ejecuta el rol `scheduler` de forma periódica (consulta [Archivado programado](#archivado-programado)).
 
 ```sh
 # Simulación: qué se archivaría (por tenant y mes), sin escribir nada
@@ -2358,8 +2360,24 @@ pnpm traces:archive --older-than 90 [--tenant publiexpe] [--min-bytes 4096] [--b
 
 | Variable | Por defecto | Descripción |
 |----------|-------------|-------------|
-| `TRACE_RETENTION_DAYS` | `90` | Antigüedad (días) por defecto de `pnpm traces:archive` |
+| `TRACE_RETENTION_DAYS` | `90` | Antigüedad (días) por defecto de `pnpm traces:archive` y del archivado programado |
 | `TRACE_ARCHIVE_DIR` | `./data/trace-archive` | Directorio de los ficheros del archivo (relativo al proceso). `GET /traces/:id?rehydrate=true` lee de aquí |
+| `TRACE_ARCHIVE_ENABLED` | `false` | `true` activa el archivado programado en el rol `scheduler` |
+| `TRACE_ARCHIVE_INTERVAL_MS` | `86400000` (24 h) | Frecuencia del archivado programado; mínimo 60 000 |
+
+#### Archivado programado
+
+Con `TRACE_ARCHIVE_ENABLED=true`, el rol `scheduler` (también `RUNTIME_ROLE=all`) ejecuta la misma función que la CLI (`archiveTraces`: exporta, verifica y aligera; nunca borra) sobre todos los tenants, con `TRACE_RETENTION_DAYS` y `TRACE_ARCHIVE_DIR`. Sigue el patrón del sync de métricas a Twenty: un temporizador dentro del proceso (`src/maintenance/trace-archive-job.ts`), sin tarea de agente ni planificador en la BD. Está desactivado por defecto: actívalo en el compose cuando el volumen de `TRACE_ARCHIVE_DIR` esté montado y en tus copias de seguridad.
+
+- **Cuándo**: la primera pasada, un minuto después de arrancar (un reinicio frecuente no la retrasa indefinidamente); después, una cada `TRACE_ARCHIVE_INTERVAL_MS`.
+- **Solapamiento**: si una pasada sigue en curso cuando toca la siguiente, esa se salta con una línea `WARN` («the previous pass is still running, this tick is skipped»). No se encola.
+- **Auditoría**: una pasada que aligera pasos (`steps_lightened > 0`) deja una fila en `audit_log` con `action: traces.archive`, `actor: system`, `method: JOB`, `route: job:trace-archive`, `request_id` = id de la pasada y en `payload` el corte, los recuentos (`steps_lightened`, `fields_lightened`, `bytes_lightened`, `steps_skipped`, `fields_unrepresentable`), los tenants y cada fichero (ruta, líneas, bytes, sha256). Una pasada sin nada que archivar solo escribe en el log. Si una pasada falla después de aligerar algo (p. ej. la verificación de un fichero posterior), se audita con `result: error` y lo que llegó a hacer; si falla sin haber aligerado nada, solo queda el log.
+- **Errores**: nunca tumban el proceso; la siguiente pasada lo vuelve a intentar. Al apagar, el proceso espera a que termine la pasada en curso.
+
+```sh
+# Consulta las pasadas con trabajo
+curl -s 'localhost:4020/audit?action=traces.archive' -H 'x-tenant-id: publiexpe'
+```
 
 ### Stall-guard de BullMQ
 

@@ -7,6 +7,7 @@ import { BullEventQueue, EventBus, eventsQueueName } from './events/event-bus.js
 import { BullWebhookDeliveryQueue, WebhookDeliveryWorker, WebhookDispatcher, webhooksQueueName } from './events/webhook-delivery.js';
 import { countReadyRevalidations } from './experiments/revalidation-service.js';
 import { twentyClientFromEnv } from './integrations/twenty/index.js';
+import { TraceArchiveJob, traceArchiveSettingsFromEnv } from './maintenance/trace-archive-job.js';
 import { metricsSyncSettingsFromEnv, TwentyMetricsSync } from './metrics/twenty-sync.js';
 import { BullOptimizerQueue, OptimizerWorker, optimizerQueueName } from './optimizer/queue.js';
 import { createProviderRegistry } from './providers/index.js';
@@ -48,6 +49,7 @@ async function main(): Promise<void> {
     : undefined;
   let eventConsumer: EventTriggerConsumer | undefined;
   let metricsSync: TwentyMetricsSync | undefined;
+  let traceArchiveJob: TraceArchiveJob | undefined;
   let webhookQueue: BullWebhookDeliveryQueue | undefined;
   let webhookWorker: WebhookDeliveryWorker | undefined;
   // Skill Optimizer (MVP-3): the API enqueues runs, the worker role processes them. Manual only.
@@ -158,12 +160,19 @@ async function main(): Promise<void> {
       metricsSync.start(syncSettings.intervalMs);
       logger.info({ intervalMs: syncSettings.intervalMs, days: syncSettings.days }, 'metrics sync to Twenty started');
     }
+    // Trace retention without loss (archiveTraces: export -> verify -> lighten), off by default.
+    const archiveSettings = traceArchiveSettingsFromEnv();
+    if (archiveSettings.enabled) {
+      traceArchiveJob = new TraceArchiveJob(dbHandle.db, { olderThanDays: config.traceRetentionDays, archiveDir: config.traceArchiveDir, auditTenantId: config.defaultTenantId, logger });
+      traceArchiveJob.start(archiveSettings.intervalMs);
+      logger.info({ intervalMs: archiveSettings.intervalMs, olderThanDays: config.traceRetentionDays, archiveDir: config.traceArchiveDir }, 'scheduled trace archive started');
+    }
   }
 
   const shutdown = async (signal: string) => {
     console.log(`received ${signal}, shutting down`);
     reconciler?.stop();
-    await Promise.allSettled([app?.close(), worker?.close(), eventConsumer?.close(), webhookWorker?.close(), metricsSync?.stop(), optimizerWorker?.close()]);
+    await Promise.allSettled([app?.close(), worker?.close(), eventConsumer?.close(), webhookWorker?.close(), metricsSync?.stop(), optimizerWorker?.close(), traceArchiveJob?.stop()]);
     await Promise.allSettled([scheduler?.close(), eventBus.close(), queue.close(), webhookQueue?.close(), optimizerQueue?.close()]);
     await dbHandle.close();
     process.exit(0);

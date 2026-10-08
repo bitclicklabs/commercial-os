@@ -17,6 +17,7 @@ import { datasetRoutes } from './routes/datasets.js';
 import { experimentRoutes } from './routes/experiments.js';
 import { optimizerRoutes } from './routes/optimizer.js';
 import { auditRoutes } from './routes/audit.js';
+import { traceRoutes } from './routes/traces.js';
 import { installAuditHook } from '../audit/hook.js';
 
 export async function buildServer(
@@ -52,5 +53,6 @@ export async function buildServer(
   await experimentRoutes(app, ctx);
   await optimizerRoutes(app, ctx);
   await auditRoutes(app, ctx);
+  await traceRoutes(app, ctx);
   return app;
 }

@@ -78,6 +78,19 @@ export interface EvaluationContext {
   knownSources: KnownSources;
   /** Agent threshold to write to the CRM (configuration.min_confidence). */
   minConfidence: number;
+  /**
+   * Ground truth of the synthetic cases of this subject, by exhibitor name (src/synthetic/).
+   * Lives in the context, never in the case input, so neither the agent nor the judge sees it;
+   * only the `synth.*` evaluators read it.
+   */
+  synthetic?: Readonly<Record<string, SyntheticTruthRef>>;
+}
+
+/** What the `synth.*` evaluators need of a synthetic ground truth (src/synthetic/truth.ts). */
+export interface SyntheticTruthRef {
+  template: string;
+  curriculum_level: number;
+  checks: ReadonlyArray<{ id: string } & Record<string, unknown>>;
 }
 
 /** One evaluator's verdict on one case. `null` from `evaluate` = not applicable. */

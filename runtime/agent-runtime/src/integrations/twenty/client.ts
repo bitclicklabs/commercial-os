@@ -35,7 +35,8 @@ export type TwentyErrorCode =
   | 'TWENTY_SERVER_ERROR'
   | 'TWENTY_TIMEOUT'
   | 'TWENTY_NETWORK_ERROR'
-  | 'TWENTY_INVALID_RESPONSE';
+  | 'TWENTY_INVALID_RESPONSE'
+  | 'TWENTY_SYNTHETIC_REFUSED';
 
 export class TwentyApiError extends Error {
   constructor(
@@ -97,6 +98,27 @@ function parseRetryAfter(header: string | null): number | null {
   if (Number.isFinite(seconds)) return Math.max(0, seconds * 1000);
   const date = Date.parse(header);
   return Number.isNaN(date) ? null : Math.max(0, date - Date.now());
+}
+
+/**
+ * Synthetic evaluation data (src/synthetic/) uses only `.invalid` domains (RFC 6761). A write
+ * that carries one is refused unless the client points at an in-memory or test CRM (host under
+ * `.invalid` or `.test`, as MemoryTwenty and the test FakeTwenty do): synthetic exhibitors can
+ * never land in the real Twenty, whatever path they take.
+ */
+const SYNTHETIC_HOST_IN_TEXT = /(?:^|[^a-z0-9.-])(?:[a-z0-9-]+\.)+invalid(?![a-z0-9-])/i;
+
+export function isSandboxTwentyUrl(baseUrl: string): boolean {
+  try {
+    const host = new URL(baseUrl).hostname.toLowerCase();
+    return host.endsWith('.invalid') || host.endsWith('.test');
+  } catch {
+    return false;
+  }
+}
+
+export function carriesSyntheticDomain(body: unknown): boolean {
+  return body !== undefined && SYNTHETIC_HOST_IN_TEXT.test(JSON.stringify(body));
 }
 
 /** Twenty wraps every payload as `{ data: { <operationName>: value } }`; return that single value. */
@@ -216,6 +238,9 @@ export class TwentyClient {
   ): Promise<unknown> {
     if (!this.apiKey) {
       throw new TwentyApiError('TWENTY_NOT_CONFIGURED', 'TWENTY_API_KEY is not set', null, false);
+    }
+    if (method !== 'GET' && carriesSyntheticDomain(opts.body) && !isSandboxTwentyUrl(this.baseUrl)) {
+      throw new TwentyApiError('TWENTY_SYNTHETIC_REFUSED', `Twenty ${method} ${path} refused: the payload carries a synthetic .invalid domain (evaluation data never goes to a real CRM)`, null, false);
     }
     const qs = opts.query && Object.keys(opts.query).length > 0 ? `?${new URLSearchParams(opts.query).toString()}` : '';
     const url = `${this.baseUrl}${path}${qs}`;

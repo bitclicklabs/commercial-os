@@ -107,7 +107,9 @@ Requisitos: Node.js 22, pnpm, y los contenedores `pxos-postgres` (127.0.0.1:5440
 | `DEFAULT_MODEL_PROVIDER` | `stub` | Proveedor para agentes creados sin `model_provider`: `stub`, `anthropic` o `gemini` |
 | `ANTHROPIC_API_KEY` | vacío | Solo para agentes con `model_provider=anthropic` |
 | `GEMINI_API_KEY` | vacío | API key de Google AI Studio para agentes con `model_provider=gemini` |
-| `GEMINI_MODEL` | `gemini-flash-latest` | Modelo de Gemini si la versión del agente no fija uno |
+| `GEMINI_MODEL` | `gemini-flash-latest` | Modelo de Gemini si la versión del agente no fija uno. Fallback antiguo del routing: debajo de `MODEL_ROUTE_*` y de la versión. Consulta [Routing de modelos por rol](#routing-de-modelos-por-rol) |
+| `MODEL_ROUTE_<ROL>` | vacío | `proveedor:modelo` para un rol (`EXECUTOR_CHEAP`, `EXECUTOR_REASONER`, `TRIAGE`, `JUDGE`, `OPTIMIZER`). Gana a la versión del agente y a `GEMINI_MODEL` / `JUDGE_MODEL`. Se valida al arrancar |
+| `JUDGE_MODEL` | `gemini-pro-latest` | Fallback antiguo del rol `judge` (solo el modelo). `MODEL_ROUTE_JUDGE` gana |
 | `TWENTY_BASE_URL` | `http://localhost:3020` | API REST de Twenty. En el contenedor: `http://pxos-twenty:3000` |
 | `TWENTY_API_KEY` | vacío | API key de Twenty. Sin ella, las tools de Twenty responden `TWENTY_NOT_CONFIGURED` |
 | `TWENTY_TIMEOUT_MS` | `10000` | Timeout por petición a Twenty |
@@ -130,6 +132,8 @@ Requisitos: Node.js 22, pnpm, y los contenedores `pxos-postgres` (127.0.0.1:5440
 | `RENDERER_URL` | `http://pxos-renderer:3000` | Servicio de render JavaScript de `render_url`. En desarrollo, `http://127.0.0.1:4030` si el renderer está publicado ahí. Vacío u `off` = desactivado (`render_url` devuelve `RENDERER_NOT_CONFIGURED`) |
 | `TRACE_RETENTION_DAYS` | `90` | Antigüedad (días) por defecto de `pnpm traces:archive`. Consulta [Retención de trazas](#retención-de-trazas-sin-pérdida-pnpm-tracesarchive) |
 | `TRACE_ARCHIVE_DIR` | `./data/trace-archive` | Directorio del archivo de trazas (`<tenant>/<YYYY-MM>.jsonl.gz`); en Docker, un volumen persistente |
+| `TRACE_ARCHIVE_ENABLED` | `false` | `true` activa el archivado programado de trazas en el rol `scheduler`. Consulta [Archivado programado](#archivado-programado) |
+| `TRACE_ARCHIVE_INTERVAL_MS` | `86400000` (24 h) | Frecuencia del archivado programado (mínimo 60 000) |
 
 ## Migraciones
 
@@ -1010,6 +1014,8 @@ Registro: tabla `experiment_revalidations` (migración `0016`). El experimento t
 
 **Consecuencia.** Si el veredicto es `REFUTED` y la versión del experimento está hoy `ACTIVE` o en un canario `ACTIVE`, deja en Twenty la nota «⚠️ Revalidación fallida — `<skill>` v`<N>`» con los números y las opciones (rollback, canario, iterar) y emite `experiment.revalidation_failed`. **No desactiva ni hace rollback**: decide el humano. La nota y el evento quedan en `consequence` (una sola vez). Sin `TWENTY_API_KEY`, `consequence.note` dice `skipped`.
 
+**Efecto en el Release Gate.** Desde la tanda 13, la revalidación **más reciente** del experimento que apoya una activación, un canario o un promote decide encima de su `PASS_FORM`: `REFUTED` bloquea (`409 release_gate_blocked`, `reason: "revalidation_refuted"`), `CONFIRMED` deja pasar con `revalidated: true` e `INSUFFICIENT` no cambia nada. Consulta [Candado en la activación](#candado-en-la-activación).
+
 | Método y ruta | Qué hace |
 |---|---|
 | `POST /experiments/:id/revalidate` `{ "min_labels"?, "by"?, "dry_run"?, "note"? }` | Revalida (`:id` uuid o `EXP-NNN`). `409 not_pass_form` si no es un `COMPLETED` `PASS_FORM`; `422 outputs_unavailable` si el experimento es anterior a `case_outputs` y su `informe.json` no está accesible (usa la CLI). `dry_run` calcula sin escribir |
@@ -1082,9 +1088,13 @@ pnpm experiment:run --subject harness:default-commercial --candidate 2 --dataset
 |---|---|---|
 | La versión ya es `ACTIVE` | `200`, `changed: false` | `noop` |
 | La versión estuvo `ACTIVE` antes (rollback) | `200` | `rollback` |
-| Último experimento `COMPLETED` de esa versión **contra la versión activa actual** con `PASS` o `PASS_FORM` | `200` (`revalidate: true` si es `PASS_FORM`) | `experiment` |
-| Sin experimento, con `FAIL`/`INCONCLUSIVE`, o hecho contra otra baseline | `409 release_gate_blocked` con los experimentos encontrados | — |
-| Lo anterior con `{ "force": true, "reason": "≥ 10 caracteres", "by": "…" }` | `200`, línea `WARN` en el log con motivo y autor | `override` |
+| Último experimento `COMPLETED` de esa versión **contra la versión activa actual** con `PASS` o `PASS_FORM`, sin revalidaciones o con `INSUFFICIENT` como la más reciente | `200` (`revalidate: true` si es `PASS_FORM`) | `experiment` |
+| Lo anterior con `CONFIRMED` como revalidación más reciente | `200`, `revalidated: true`, `revalidate: false` y la revalidación en `gate.revalidation` | `experiment` |
+| Lo anterior con `REFUTED` como revalidación más reciente | `409 release_gate_blocked`, `details.reason: "revalidation_refuted"`, con el experimento, la revalidación (`id`, `created_at`, `baseline_accuracy`, `candidate_accuracy`, `labels`) y `details.options` (`force`, `iterate`, `rollback`) | — |
+| Sin experimento, con `FAIL`/`INCONCLUSIVE`, o hecho contra otra baseline | `409 release_gate_blocked` con los experimentos encontrados (`details.reason`: `no_experiment`, `experiment_decision` o `baseline_mismatch`) | — |
+| Cualquier bloqueo anterior con `{ "force": true, "reason": "≥ 10 caracteres", "by": "…" }` | `200`, línea `WARN` en el log con motivo y autor, `gate.blocked_reason` con lo que se saltó y fila `*.force_activate` en `audit_log` | `override` |
+
+La revalidación que cuenta es la **más reciente** del experimento (`experiment_revalidations` por `created_at`): una `CONFIRMED` posterior a una `REFUTED` desbloquea y al revés. El veredicto guardado del experimento no cambia nunca (es inmutable); `revalidated: true` solo informa de que el `PASS_FORM` ya no es «modo forma» a efectos prácticos. El rollback a una versión que estuvo `ACTIVE` no mira revalidaciones. Hoy solo se revalidan los `PASS_FORM`; si un `PASS` estricto tuviera una fila `REFUTED` (solo insertándola a mano), el gate lo bloquearía igual. En `audit_log`, un `409` guarda `details.reason` y `details.revalidation`, y un paso con revalidación `CONFIRMED` guarda `details.gate_revalidated`.
 
 El humano puede forzar; el sistema no: ningún código del runtime llama a `activate`, y `experiment:run` nunca activa. La API no tiene autenticación, así que el override es auditable (log y respuesta), no imposible. Una skill o harness nueva (v1 sin versión activa) no tiene baseline y necesita `force`. Mientras una skill tiene un canario `ACTIVE`, `activate` devuelve `409`: primero se promueve o se hace rollback del canario.
 
@@ -1094,9 +1104,9 @@ Tras un `PASS` o `PASS_FORM`, en vez de activar la candidata para todas las ejec
 
 | Método y ruta | Qué hace |
 |---|---|
-| `POST /skills/:id/versions/:v/canary` `{ "percent": 1-99, "by"? }` | Arranca el canario de `v`. Exige el mismo gate que la activación (experimento `PASS`/`PASS_FORM` de `v` contra la versión `ACTIVE` actual) y **no admite `force`** (`400`). Bloqueado: `409 release_gate_blocked`. Un solo canario por skill (`409`). Repetir con la misma versión y porcentaje: `200`, `changed: false` |
+| `POST /skills/:id/versions/:v/canary` `{ "percent": 1-99, "by"? }` | Arranca el canario de `v`. Exige el mismo gate que la activación (experimento `PASS`/`PASS_FORM` de `v` contra la versión `ACTIVE` actual, cuya revalidación más reciente no sea `REFUTED`) y **no admite `force`** (`400`). Bloqueado: `409 release_gate_blocked` (con `reason: "revalidation_refuted"` si lo bloquea una revalidación; opciones: iterar o rollback del canario). Un solo canario por skill (`409`). Repetir con la misma versión y porcentaje: `200`, `changed: false` |
 | `GET /skills/:id/canary` | Canario `ACTIVE` (o el último), su historial y las métricas canaria contra estable |
-| `POST /skills/:id/canary/promote` `{ "by"? }` | Decisión humana: re-verifica el gate, `ACTIVE` la versión canaria (la estable pasa a `DEPRECATED`) y cierra el canario como `PROMOTED` |
+| `POST /skills/:id/canary/promote` `{ "by"? }` | Decisión humana: re-verifica el gate (también la revalidación más reciente: una `REFUTED` llegada durante el canario bloquea el promote y el canario sigue hasta que un humano haga rollback), `ACTIVE` la versión canaria (la estable pasa a `DEPRECATED`) y cierra el canario como `PROMOTED` |
 | `POST /skills/:id/canary/rollback` `{ "by"?, "reason"? }` | Cierra el canario como `ROLLED_BACK`: todas las ejecuciones vuelven a la estable. Siempre permitido e idempotente |
 
 - **Reparto determinista.** Una ref que sigue la versión `ACTIVE` (`{ "name": … }`) recibe la canaria si `sha256(canary_id ":" clave)[0..8] mod 10000 < percent × 100`. La clave es el id del `task_run` (todos los intentos de un run van a la misma rama) o el de la ejecución directa. Nada es aleatorio: el mismo id da siempre la misma versión. Una ref fijada (`{ "name", "version" }`) no participa.
@@ -1129,6 +1139,81 @@ La revalidación: `test/unit/experiments-revalidation.test.ts` fija las reglas p
 DATABASE_URL=postgres://agentos:agentos_dev@127.0.0.1:5440/agentos_wt12_reval pnpm vitest run test/integration/experiments-revalidation.test.ts
 ```
 
+El gate con revalidaciones: `test/unit/release-gate-revalidation.test.ts` fija el efecto puro de cada veredicto, `checkActivationGate` sobre una conexión simulada (`409` con `reason`, `force`, la más reciente manda, `PASS` estricto, rollback) y los detalles de `audit_log`. `test/integration/gate-revalidation.test.ts` recorre los cuatro caminos (activar skill, activar harness, arrancar canario y promote) contra una BD propia:
+
+```sh
+DATABASE_URL=postgres://agentos:agentos_dev@127.0.0.1:5440/agentos_wt13_gate pnpm vitest run test/integration/gate-revalidation.test.ts
+```
+
+## Routing de modelos por rol
+
+El código pide un **rol**, nunca un modelo (LLD v0.1 §18). `src/providers/model-router.ts` resuelve cada rol a `(proveedor, modelo)`. Sin tocar el entorno, el routing reproduce exactamente los modelos de antes del router.
+
+| Rol | Quién lo pide | Modelo por defecto |
+|---|---|---|
+| `executor_cheap` | EmailDrafter, BajasAgent, agentes stub y smoke | `gemini:gemini-flash-latest` |
+| `executor_reasoner` | Prospector (con EventScout) y el ejecutor de `experiment:run`, `skill:compare` y el Skill Optimizer | `gemini:gemini-flash-latest` |
+| `triage` | Clasificador de respuestas del InboxAgent | `gemini:gemini-flash-latest` |
+| `judge` | Evaluadores `LLM_JUDGE` (`pnpm evaluate`, experimentos, optimizador) | `gemini:gemini-pro-latest` |
+| `optimizer` | Clustering y propuesta del Skill Optimizer | `gemini:gemini-flash-latest` |
+
+El rol de un agente sale de su implementación (`configuration.implementation`). Una versión puede fijar otro rol ejecutor con `configuration.model_role` (`executor_cheap`, `executor_reasoner` o `triage`; nunca `judge`).
+
+### Precedencia
+
+En cada resolución gana lo primero que aplique:
+
+1. `MODEL_ROUTE_<ROL>=proveedor:modelo`, por ejemplo `MODEL_ROUTE_EXECUTOR_REASONER=gemini:gemini-3.5-flash-lite`. Proveedores: `stub`, `anthropic` y `gemini`.
+1. El modelo **fijado por la versión del agente** (`agent_versions.model` y `model_provider`). Es estado versionado y gana a cualquier valor por defecto. Las versiones `stub` son fixtures de test y no se re-enrutan nunca, ni siquiera con el paso 1.
+1. Las variables **antiguas**, que siguen funcionando como fallback para no romper despliegues:
+   - `JUDGE_MODEL` para el rol `judge` (solo el modelo; el proveedor se infiere: `claude-*` es Anthropic y el resto, Gemini).
+   - `GEMINI_MODEL` para el resto de roles. **Nunca** re-enruta una versión que fija su modelo: como antes, solo rellena lo que no lo fija (versiones nuevas de Gemini creadas por API, el modelo del optimizador y las peticiones a Gemini con un modelo que no es de Gemini).
+1. La tabla del código `DEFAULT_MODEL_ROUTES`.
+
+Si `MODEL_ROUTE_<ROL>` y su variable antigua están las dos puestas y nombran modelos distintos, gana `MODEL_ROUTE_<ROL>` y el arranque deja un aviso en el log (`[model-router] ... discrepan ...`). Las CLI lo imprimen como `aviso:`.
+
+Los valores de `MODEL_ROUTE_*` se validan al arrancar, tanto el proceso como las CLI. Un formato inválido, un proveedor desconocido o un modelo **sin precio** en las tablas (`gemini-pricing.ts`, `ANTHROPIC_PRICING`) detienen el arranque con un mensaje que nombra la variable: un modelo sin precio costaría 0 y dejaría ciegos los presupuestos. Las variables antiguas se validan como antes, sin exigir precio; un modelo sin precio solo deja un aviso.
+
+> **Importante:** el grounding con Google Search (EventScout, Prospector) solo existe en Gemini. Si mueves `executor_reasoner` a Anthropic, esas llamadas pierden la búsqueda.
+
+### Independencia del juez
+
+El juez nunca puede ser el modelo del ejecutor del mismo experimento, y los alias cuentan (`gemini-flash-latest` es `gemini-3.8-flash`). `experiment:run`, `optimize:run` y el worker del optimizador resuelven las dos rutas con `experimentRoutes` y, si coinciden, se paran antes de crear nada con un error claro: exit 2 en las CLI y el run del optimizador en `ERROR`. El runner también lo comprueba al empezar (`ExperimentAbortedError` `invalid`), antes de leer o gastar nada.
+
+### Ejemplo: mover el juez a Anthropic sin tocar código
+
+```sh
+# runtime/agent-runtime/.env (o deployments/.env)
+ANTHROPIC_API_KEY=sk-ant-...
+MODEL_ROUTE_JUDGE=anthropic:claude-sonnet-5-5
+```
+
+Reinicia el runtime. El arranque valida la ruta, y `pnpm evaluate`, `pnpm experiment:run` y el optimizador ya usan `claude-sonnet-5-5` como juez. El experimento lo guarda en `config.judge` (`model`, `role` y `route_source`).
+
+### Techo de coste del harness
+
+El router acepta un techo (`ceiling`): nunca resuelve a un modelo más caro (entrada + salida por 1M tokens) que el techo. Si lo haría, usa el techo y la ruta lo indica en `capped`. Hoy **ninguna** harness lleva política de modelo (D1 MODEL vive en la versión del agente), así que el processor no pasa techo. Es el gancho para cuando una versión de harness tenga ese campo: se pasa como `{ ceiling }` a `routeAgentVersion` en `RunProcessor.runAgent`, sin más cambios.
+
+### Traza
+
+Cada llamada ya guarda el modelo exacto que la sirvió (`trace_steps.model`). Además, la traza guarda la ruta resuelta en `traces.harness.model_route` (`role`, `provider`, `model`, `source` y, si aplica, `env`). No hace falta migración: es un campo del jsonb existente.
+
+### Costes y la subida de 2027: `pnpm models:costs`
+
+El 2027-01-01, `gemini-3.6-flash`, `gemini-3.7-flash` y `gemini-3.8-flash` (la que sirve `gemini-flash-latest`) duplican precio: la entrada pasa de 0,75 a 1,50, la salida de 3,75 a 7,50 y la caché de 0,075 a 0,15 USD por 1M tokens. `pnpm models:costs` es de solo lectura y muestra:
+
+- Cada rol con su modelo actual, el precio de hoy, el precio desde la fecha (`--at`, por defecto `2027-01-01`) y el cambio en %.
+- El volumen de los últimos `--days` días (30 por defecto) con el routing actual: ejecuciones de agentes (tokens reales, re-tarificados), experimentos (ejecutor y juez) y llamadas propias del optimizador. Los experimentos y el optimizador solo guardan EUR, así que se escalan por el cociente de precios. Cada fila trae el coste real, el proyectado hoy y el proyectado en la fecha, con totales por rol.
+
+```sh
+pnpm models:costs                                   # routing actual, último mes, precios 2027
+pnpm models:costs -- --tenant publiexpe --days 30 --json
+# ¿Y si movemos el Prospector a flash-lite antes de la subida?
+MODEL_ROUTE_EXECUTOR_REASONER=gemini:gemini-3.5-flash-lite pnpm models:costs
+```
+
+Los mismos datos están por HTTP en `GET /metrics/model-costs?since=&until=&at=2027-01-01` (sin ventana, los últimos 30 días). La proyección es solo de tokens: el grounding (que se cobra por consulta) y las tools no cambian con el precio por token y no se modelan.
+
 ## Skill Optimizer
 
 El Skill Optimizer (LLD v0.1 §18, MVP-3) recorre solo el ciclo de mejora de una skill: cosecha sus fallos en producción, los agrupa por patrón, propone una candidata acotada, la pasa por un experimento contra la versión `ACTIVE` y deja la decisión del Release Gate. **Nunca activa nada:** si el gate da `PASS` o `PASS_FORM`, deja en Twenty una nota «Propuesta de promoción — `<skill>` v`<N>`», y la activación sigue siendo una decisión humana por `POST /skills/:id/versions/:v/activate`, que vuelve a comprobar el gate. El código está en `src/optimizer/`.
@@ -1156,7 +1241,7 @@ Cada transición es un `UPDATE … WHERE status IN (<orígenes válidos>)`: dos 
 
    Con menos de `min_failures` fallos (3 por defecto) termina en `BLOCKED_NO_DATA` sin llamar a ningún modelo.
 1. **Comprobación de datos (P5)**, en simulación: cosecha el dataset (`prospeccion-v1` por defecto) sin escribir y cuenta los casos etiquetados de `VALIDATION` sin quemar, quitando las entidades de los fallos (son material de diseño de este run). Con menos de `min_labeled_validation` (5 por defecto) termina en `BLOCKED_NO_DATA` y el mensaje dice cuántos faltan y cuántos están quemados.
-1. **Clustering** con el modelo ejecutor (`GEMINI_MODEL`, `gemini-flash-latest`). Los fallos van en un bloque `DATOS_NO_CONFIABLES`; la respuesta se valida con zod (ids conocidos, un fallo en un cluster como mucho) y se reintenta una vez con el error.
+1. **Clustering** con el rol `optimizer` del [routing](#routing-de-modelos-por-rol) (`MODEL_ROUTE_OPTIMIZER`, si no `GEMINI_MODEL`, si no `gemini-flash-latest`). Los fallos van en un bloque `DATOS_NO_CONFIABLES`; la respuesta se valida con zod (ids conocidos, un fallo en un cluster como mucho) y se reintenta una vez con el error.
 1. **Candidata:** el modelo propone como mucho 5 operaciones (`ADD`, `REMOVE`, `REPLACE`, `MOVE`, `REORDER`) sobre el texto `ACTIVE`, cada una con su `why` y los clusters que ataca. `src/skills/edit-ops.ts` las aplica con los topes de 35 % borrado y 50 % añadido, y la regla de contenido web no confiable debe quedar intacta. Si los topes la rechazan, reintenta una vez pidiendo ser más conservador; si vuelve a fallar, `ERROR` con los dos intentos en `details.proposal_attempts`. La versión se crea `DRAFT` con el servicio de skills, con un `change_reason` que cita el run y los clusters, y `metadata` con las operaciones, su tamaño y los datos de diseño.
 1. **Dataset y P5:** construye la versión siguiente del dataset (los casos quemados siguen quemados y van a `TRAIN`) y marca con `markUsed` como `design` (experimento `OPT-xxxxxxxx`) los casos de las entidades de los fallos **antes** del experimento. Vuelve a contar `VALIDATION` y, si no llega al mínimo, `BLOCKED_NO_DATA`.
 1. **Experimento:** el runner de `pnpm experiment:run`, con la `ACTIVE` como baseline y la candidata, sobre ese dataset (por uuid) y con un CRM en memoria (`MemoryTwenty`: nada llega a Twenty). Registra `experiment_id` y el veredicto.
@@ -2321,7 +2406,7 @@ curl -s -X POST http://127.0.0.1:4020/skills/<skill>/versions/3/activate -H 'con
 
 ### Retención de trazas sin pérdida: `pnpm traces:archive`
 
-Las trazas crecen por los payloads `jsonb` de los pasos. La retención archiva antes de aligerar y nunca borra: ni filas ni ficheros. Es una tarea manual (no hay tarea programada).
+Las trazas crecen por los payloads `jsonb` de los pasos. La retención archiva antes de aligerar y nunca borra: ni filas ni ficheros. Se lanza a mano con `pnpm traces:archive` o, si lo activas, la ejecuta el rol `scheduler` de forma periódica (consulta [Archivado programado](#archivado-programado)).
 
 ```sh
 # Simulación: qué se archivaría (por tenant y mes), sin escribir nada
@@ -2346,8 +2431,24 @@ pnpm traces:archive --older-than 90 [--tenant publiexpe] [--min-bytes 4096] [--b
 
 | Variable | Por defecto | Descripción |
 |----------|-------------|-------------|
-| `TRACE_RETENTION_DAYS` | `90` | Antigüedad (días) por defecto de `pnpm traces:archive` |
+| `TRACE_RETENTION_DAYS` | `90` | Antigüedad (días) por defecto de `pnpm traces:archive` y del archivado programado |
 | `TRACE_ARCHIVE_DIR` | `./data/trace-archive` | Directorio de los ficheros del archivo (relativo al proceso). `GET /traces/:id?rehydrate=true` lee de aquí |
+| `TRACE_ARCHIVE_ENABLED` | `false` | `true` activa el archivado programado en el rol `scheduler` |
+| `TRACE_ARCHIVE_INTERVAL_MS` | `86400000` (24 h) | Frecuencia del archivado programado; mínimo 60 000 |
+
+#### Archivado programado
+
+Con `TRACE_ARCHIVE_ENABLED=true`, el rol `scheduler` (también `RUNTIME_ROLE=all`) ejecuta la misma función que la CLI (`archiveTraces`: exporta, verifica y aligera; nunca borra) sobre todos los tenants, con `TRACE_RETENTION_DAYS` y `TRACE_ARCHIVE_DIR`. Sigue el patrón del sync de métricas a Twenty: un temporizador dentro del proceso (`src/maintenance/trace-archive-job.ts`), sin tarea de agente ni planificador en la BD. Está desactivado por defecto: actívalo en el compose cuando el volumen de `TRACE_ARCHIVE_DIR` esté montado y en tus copias de seguridad.
+
+- **Cuándo**: la primera pasada, un minuto después de arrancar (un reinicio frecuente no la retrasa indefinidamente); después, una cada `TRACE_ARCHIVE_INTERVAL_MS`.
+- **Solapamiento**: si una pasada sigue en curso cuando toca la siguiente, esa se salta con una línea `WARN` («the previous pass is still running, this tick is skipped»). No se encola.
+- **Auditoría**: una pasada que aligera pasos (`steps_lightened > 0`) deja una fila en `audit_log` con `action: traces.archive`, `actor: system`, `method: JOB`, `route: job:trace-archive`, `request_id` = id de la pasada y en `payload` el corte, los recuentos (`steps_lightened`, `fields_lightened`, `bytes_lightened`, `steps_skipped`, `fields_unrepresentable`), los tenants y cada fichero (ruta, líneas, bytes, sha256). Una pasada sin nada que archivar solo escribe en el log. Si una pasada falla después de aligerar algo (p. ej. la verificación de un fichero posterior), se audita con `result: error` y lo que llegó a hacer; si falla sin haber aligerado nada, solo queda el log.
+- **Errores**: nunca tumban el proceso; la siguiente pasada lo vuelve a intentar. Al apagar, el proceso espera a que termine la pasada en curso.
+
+```sh
+# Consulta las pasadas con trabajo
+curl -s 'localhost:4020/audit?action=traces.archive' -H 'x-tenant-id: publiexpe'
+```
 
 ### Stall-guard de BullMQ
 
@@ -2382,5 +2483,5 @@ Cuando BullMQ re-entrega un job tras un stall (el worker no renovó el lock) y e
 - Borradores de email: disparar también con `EDITED` (necesita una segunda tarea o un operador OR en el filtro), plantillas por sector y registro de si el comercial envió el borrador. (Hecho: la entrada de eventos externos por HTTP y la entrega a n8n por webhook, consulta [Eventos externos](#eventos-externos).)
 - Harness, skills, memoria y verificador reales; promote, rollback y evaluate.
 - Export de los contratos zod a JSON Schema versionado en `schemas/`.
-- Experiments: criterio de latencia, y que el Release Gate tenga en cuenta una revalidación `REFUTED` (hoy solo avisa con nota y evento; la revalidación es manual, ver [Revalidación de los PASS_FORM](#revalidación-de-los-pass_form)). Los overrides quedan desde la tanda 12 en `audit_log` como `*.force_activate`, además del log del proceso y la respuesta. El runner para harness existe desde la tanda 11 ([Experimentos de harness](#experimentos-de-harness)).
+- Experiments: criterio de latencia. Desde la tanda 13 el Release Gate tiene en cuenta la revalidación más reciente (`REFUTED` bloquea, `CONFIRMED` pasa con `revalidated: true`); la revalidación en sí sigue siendo manual (ver [Revalidación de los PASS_FORM](#revalidación-de-los-pass_form)). Los overrides quedan desde la tanda 12 en `audit_log` como `*.force_activate`, además del log del proceso y la respuesta. El runner para harness existe desde la tanda 11 ([Experimentos de harness](#experimentos-de-harness)).
 - Métricas: AC-17 y AC-18 piden hipótesis `HOT`, pero el resumen de ejecución solo cuenta hipótesis creadas; falta el desglose por prioridad (en Twenty o en `output.counters`). El dashboard oculta por defecto los agentes `ARCHIVED` (los de prueba se archivan con `pnpm cleanup:archive-test-agents`); `include_archived=true` los muestra.

@@ -8,6 +8,7 @@ import { renderComparisonMarkdown } from '../skills/compare.js';
 import type { GateCriterion, GateResult } from './gate.js';
 import type { VersionPhaseMetrics } from './metrics.js';
 import type { ExperimentReport, PhaseReport } from './runner.js';
+import type { BreakdownRow, SyntheticBreakdown } from '../synthetic/report.js';
 
 const num = (n: number | null | undefined, d = 3) => (n === null || n === undefined ? '—' : n.toLocaleString('es-ES', { minimumFractionDigits: d, maximumFractionDigits: d }));
 const eur = (n: number | null | undefined) => (n === null || n === undefined ? '—' : `${n.toLocaleString('es-ES', { minimumFractionDigits: 4, maximumFractionDigits: 4 })} €`);
@@ -72,12 +73,49 @@ function versionTable(vs: VersionPhaseMetrics[]): string[] {
   return L;
 }
 
+const LEVEL_LABEL: Record<number, string> = { 1: '1 (fácil)', 2: '2 (media)', 3: '3 (difícil)' };
+
+function breakdownTable(rows: BreakdownRow[], first: string, versions: number[]): string[] {
+  const L = [`| ${first} | Casos | ${versions.map((v) => `v${v}: cumple la ground truth`).join(' | ')} |`, `|---|---|${versions.map(() => '---').join('|')}|`];
+  for (const r of rows) {
+    const cells = versions.map((v) => {
+      const t = r.versions.find((x) => x.version === v);
+      if (!t || t.decisions === 0) return '—';
+      return `${num(t.rate)} (${t.held}/${t.held + t.failed})${t.errors ? ` · ${t.errors} sin medir` : ''}`;
+    });
+    L.push(`| ${first === 'Nivel' ? (LEVEL_LABEL[r.curriculum_level] ?? r.key) : `\`${r.key}\` (nivel ${r.curriculum_level})`} | ${r.cases} | ${cells.join(' | ')} |`);
+  }
+  return L;
+}
+
+/** Curriculum breakdown of the synthetic cases of a phase (only when there are any). */
+export function syntheticSection(b: SyntheticBreakdown, versions: number[]): string[] {
+  const L: string[] = [];
+  L.push('### Casos sintéticos (ground truth por construcción)', '');
+  L.push(
+    `${b.cases} caso(s) del split SYNTH generados por plantilla (\`pnpm synth:build\`). Alimentan las reglas \`synth.*\`, el seesaw y la comparación de forma; **no** cuentan para la accuracy del gate (solo etiquetas humanas o reglas declaradas) y **no** se queman con P5 (son regenerables). Una decisión «cumple» cuando pasan todas las comprobaciones aplicables de su plantilla.`,
+    '',
+  );
+  L.push('Por nivel de curriculum:', '', ...breakdownTable(b.by_level, 'Nivel', versions), '');
+  L.push('Por plantilla:', '', ...breakdownTable(b.by_template, 'Plantilla', versions), '');
+  if (b.failures.length) {
+    L.push('Decisiones que no cumplen la ground truth:', '');
+    for (const f of b.failures) L.push(`- v${f.version} · r${f.repetition} · \`${f.template}\` · ${cell(f.exhibitor)}: ${f.checks.map((c) => `${c.id}${c.detail ? ` (${cell(c.detail)})` : ''}`).join('; ')}`);
+    L.push('');
+  }
+  return L;
+}
+
 function phaseSection(p: PhaseReport): string[] {
   const L: string[] = [];
-  const own = p.cases.filter((c) => c.use !== 'form_sample');
+  const own = p.cases.filter((c) => c.use === 'validation' || c.use === 'test');
   const form = p.cases.filter((c) => c.use === 'form_sample');
+  const synth = p.cases.filter((c) => c.use === 'synthetic');
   L.push(`## Fase ${p.phase}`, '');
-  L.push(`Casos: ${own.length} del split ${p.phase} (${own.filter((c) => c.labeled).length} etiquetados)${form.length ? ` + ${form.length} de muestra de forma (TRAIN sin quemar, sin efecto en la accuracy)` : ''}. Coste: ejecutor ${eur(p.executor_cost_eur)}, juez ${eur(p.judge_cost_eur)}.`, '');
+  L.push(
+    `Casos: ${own.length} del split ${p.phase} (${own.filter((c) => c.labeled).length} etiquetados)${form.length ? ` + ${form.length} de muestra de forma (TRAIN sin quemar, sin efecto en la accuracy)` : ''}${synth.length ? ` + ${synth.length} sintéticos (SYNTH, sin quemar, sin efecto en la accuracy)` : ''}. Coste: ejecutor ${eur(p.executor_cost_eur)}, juez ${eur(p.judge_cost_eur)}.`,
+    '',
+  );
   L.push(`### Release Gate (${p.gate.mode === 'form' ? 'modo forma' : 'con etiquetas'}): **${p.gate.decision}**`, '');
   L.push(p.gate.summary, '');
   L.push(...gateTable(p.gate), '');
@@ -95,9 +133,10 @@ function phaseSection(p: PhaseReport): string[] {
     for (const { v, m } of acc) L.push(`- v${v} · ${cell(m.exhibitor)} (r${m.repetition}): esperado ${JSON.stringify(m.expected)}, obtenido ${JSON.stringify(m.got)}`);
     L.push('');
   }
+  if (p.synthetic) L.push(...syntheticSection(p.synthetic, p.versions.map((v) => v.version)));
   L.push('### Casos usados (P5)', '');
-  L.push('| Expositor | Split | Uso | Etiqueta | Datos | Caso |', '|---|---|---|---|---|---|');
-  for (const c of p.cases) L.push(`| ${cell(c.exhibitor)} | ${c.split} | ${c.use} | ${c.kind} | ${c.difficulty ?? '—'} | \`${c.id.slice(0, 8)}\` |`);
+  L.push('| Expositor | Split | Uso | Etiqueta | Datos | Curriculum | Caso |', '|---|---|---|---|---|---|---|');
+  for (const c of p.cases) L.push(`| ${cell(c.exhibitor)} | ${c.split} | ${c.use} | ${c.kind}${c.template ? ` (\`${c.template}\`)` : ''} | ${c.difficulty ?? '—'} | ${c.curriculum_level ?? '—'} | \`${c.id.slice(0, 8)}\` |`);
   L.push('');
   for (const m of p.mark_used) L.push(`- \`markUsed\` ${m.role}: ${m.marked} marcados, ${m.already} ya estaban, ${m.newly_burned} quemados ahora (${cell(m.note)}).`);
   if (p.skipped_cases.length) L.push(`- ${p.skipped_cases.length} caso(s) sin entrada utilizable (sin evento o expositor): no se ejecutaron.`);
@@ -143,6 +182,13 @@ export function renderExperimentMarkdown(r: ExperimentReport): string {
   if (r.decision === 'PASS_FORM') {
     L.push(
       `> **Importante — PASS_FORM:** el split no tenía casos etiquetados, así que el gate solo ha podido comprobar la forma de las decisiones (reglas, juez, coste, ausencia de regresiones), no si aciertan. PASS_FORM basta para que \`POST /${route}/:id/versions/:v/activate\` acepte la versión sin \`force\`, pero el experimento queda registrado como pendiente de re-validar. Cuando el comercial etiquete en Twenty las entidades que este experimento ejecutó (y se re-coseche el dataset), revalídalo sin volver a llamar a ningún modelo: \`POST /experiments/${e.name}/revalidate\` o \`pnpm experiment:revalidate --id ${e.name}\` (mide la accuracy de cada versión sobre las decisiones guardadas).`,
+      '',
+    );
+  }
+  const val = r.phases.find((p) => p.phase === 'VALIDATION');
+  if (val && val.cases.length > 0 && val.cases.every((c) => c.use === 'synthetic')) {
+    L.push(
+      '> **Solo casos sintéticos:** la decisión se apoya únicamente en escenarios generados (reglas, seesaw y forma). No hay entidades reales que el comercial pueda etiquetar después, así que este experimento no se podrá re-validar con accuracy: para una decisión con etiquetas hace falta un dataset cosechado o mixto.',
       '',
     );
   }

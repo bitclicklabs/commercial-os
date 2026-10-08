@@ -23,7 +23,7 @@
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { parseArgs } from 'node:util';
-import { GeminiProvider, StubProvider, type ModelProvider } from '../src/providers/index.js';
+import { createProviderRegistry, defaultModelRouter, missingProviderKeys, ModelRouteError, routeAgentVersion, StubProvider, type ModelProvider } from '../src/providers/index.js';
 import { desiredProspectorVersion } from '../src/seed/prospector-seed.js';
 import { BudgetGuardProvider, rebuildReport, renderComparisonMarkdown, runSkillComparison, type CompareVersion, type ComparisonReport } from '../src/skills/compare.js';
 import { renderSkill } from '../src/skills/render.js';
@@ -98,15 +98,25 @@ async function main(): Promise<void> {
   const today = values.today;
   if (today !== undefined && !/^\d{4}-\d{2}-\d{2}$/.test(today)) fail('--today debe ser AAAA-MM-DD');
 
+  const agentVersion = desiredProspectorVersion();
   let provider: ModelProvider;
+  let model = agentVersion.model;
   if (values.provider === 'gemini') {
-    if (!process.env.GEMINI_API_KEY) fail('GEMINI_API_KEY no está definida (cópiala a runtime/agent-runtime/.env)');
-    provider = new GeminiProvider({ apiKey: process.env.GEMINI_API_KEY });
+    // Real runs: the Prospector's role in the model router (MODEL_ROUTE_EXECUTOR_REASONER, default its seed model).
+    let route;
+    try {
+      route = routeAgentVersion(defaultModelRouter(), agentVersion);
+    } catch (err) {
+      fail(err instanceof ModelRouteError ? err.message : String(err));
+    }
+    const missing = missingProviderKeys([route]);
+    if (missing.length) fail(`${missing.join(', ')} no está definida (cópiala a runtime/agent-runtime/.env)`);
+    provider = createProviderRegistry({ geminiApiKey: process.env.GEMINI_API_KEY, anthropicApiKey: process.env.ANTHROPIC_API_KEY })(route.provider);
+    model = route.model;
   } else if (values.provider === 'stub') {
     provider = new StubProvider({ responseText: JSON.stringify({ relevant: false, confidence: 0.1, reason: 'stub', hypothesis: null }) });
   } else fail(`proveedor desconocido: ${values.provider}`);
 
-  const agentVersion = desiredProspectorVersion();
   const cfg = readConfig(agentVersion.configuration);
   const policy = parseToolPolicy(agentVersion.configuration);
   const budget = new BudgetGuardProvider(provider, maxCostEur, cfg.usdToEur);
@@ -120,7 +130,7 @@ async function main(): Promise<void> {
 
   const compareVersions = await fetchVersions(values.api!, values.tenant!, skill, versions);
   const tuple: [CompareVersion, CompareVersion] = [compareVersions[0]!, compareVersions[1]!];
-  console.error(`skill ${skill}: v${tuple[0].version} (${tuple[0].status}) vs v${tuple[1].version} (${tuple[1].status}) · modelo ${agentVersion.model} · presupuesto ${maxCostEur} €`);
+  console.error(`skill ${skill}: v${tuple[0].version} (${tuple[0].status}) vs v${tuple[1].version} (${tuple[1].status}) · modelo ${provider.name}:${model} · presupuesto ${maxCostEur} €`);
 
   const reports: Array<{ fixture: string; report: ComparisonReport }> = [];
   for (const f of fixtures) {
@@ -136,7 +146,7 @@ async function main(): Promise<void> {
       provider,
       budget,
       makeTools,
-      agentVersion: { model: agentVersion.model, configuration: agentVersion.configuration },
+      agentVersion: { model, configuration: agentVersion.configuration },
       repeat,
       now,
       tenantId: values.tenant!,

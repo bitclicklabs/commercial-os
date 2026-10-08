@@ -13,6 +13,7 @@ import { z } from 'zod';
 import { parseWith } from '../agents/prospector-core.js';
 import { UNTRUSTED_SYSTEM_RULE, wrapUntrusted } from '../agents/untrusted.js';
 import type { OptimizationRunStatus } from '../db/schema.js';
+import { defaultModelRouter, DEFAULT_MODEL_ROUTES } from '../providers/model-router.js';
 import { applyEditOperations, EditOperationError, parseEditOperations, type EditOperation, type EditResult } from '../skills/edit-ops.js';
 
 // ---------------------------------------------------------------------------
@@ -90,7 +91,8 @@ export const DEFAULT_OPTIMIZER_CONFIG = {
   minFailures: 3,
   maxFailures: 40,
   maxTraces: 100,
-  model: 'gemini-flash-latest',
+  /** Code default of the `optimizer` role; the effective default is the router's (MODEL_ROUTE_OPTIMIZER). */
+  model: DEFAULT_MODEL_ROUTES.optimizer.model,
   today: null,
 } as const;
 
@@ -107,7 +109,7 @@ export function optimizerConfig(skillName: string, o: Partial<OptimizerConfig> =
     minFailures: o.minFailures ?? DEFAULT_OPTIMIZER_CONFIG.minFailures,
     maxFailures: o.maxFailures ?? DEFAULT_OPTIMIZER_CONFIG.maxFailures,
     maxTraces: o.maxTraces ?? DEFAULT_OPTIMIZER_CONFIG.maxTraces,
-    model: o.model ?? DEFAULT_OPTIMIZER_CONFIG.model,
+    model: o.model ?? defaultModelRouter().resolve('optimizer').model,
     today: o.today ?? DEFAULT_OPTIMIZER_CONFIG.today,
   };
   if (!(c.experimentBudgetEur > 0 && c.experimentBudgetEur <= 5)) throw new Error('el presupuesto del experimento debe estar entre 0 y 5 €');

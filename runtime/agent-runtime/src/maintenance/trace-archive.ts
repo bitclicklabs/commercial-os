@@ -27,7 +27,8 @@
  *    trace's versions (P4) are never touched.
  *
  * Nothing is deleted: not rows, not files. A file whose verification fails stays where it is
- * (nothing points to it) and the run stops with an error. Manual only (no scheduled task).
+ * (nothing points to it) and the run stops with an error. Manual by default; the scheduler
+ * role can run it periodically when TRACE_ARCHIVE_ENABLED=true (src/maintenance/trace-archive-job.ts).
  * `GET /traces/:id?rehydrate=true` reads an archived field back on demand (`rehydrateField`).
  */
 import { mkdir, open, readFile } from 'node:fs/promises';
@@ -262,50 +263,63 @@ export async function archiveTraces(db: Db, opts: ArchiveOptions): Promise<Archi
     ),
     sql`, `,
   );
-  for (;;) {
-    const batch = (
-      await db.execute<CandidateRow>(sql`
-        select s.id, s.tenant_id, s.trace_id, s.sequence, s.type::text as type, s."timestamp", ${monthExpr} as month, ${fieldSelect}
-        ${candidateFilter(cutoff, { tenantId: opts.tenantId, minBytes }, excluded)}
-        order by s.tenant_id, month, t.created_at, s.trace_id, s.sequence
-        limit ${batchSize}`)
-    ).rows;
-    if (batch.length === 0) break;
+  try {
+    for (;;) {
+      const batch = (
+        await db.execute<CandidateRow>(sql`
+          select s.id, s.tenant_id, s.trace_id, s.sequence, s.type::text as type, s."timestamp", ${monthExpr} as month, ${fieldSelect}
+          ${candidateFilter(cutoff, { tenantId: opts.tenantId, minBytes }, excluded)}
+          order by s.tenant_id, month, t.created_at, s.trace_id, s.sequence
+          limit ${batchSize}`)
+      ).rows;
+      if (batch.length === 0) break;
 
-    // Only what JavaScript carries EXACTLY goes to a file (e.g. a 25-digit integer would not):
-    // the rest stays in the database untouched and is reported.
-    const exact = await exactFields(db, batch);
-    const work: WorkItem[] = [];
-    for (const row of batch) {
-      const heavyFields = ARCHIVABLE_FIELDS.filter((f) => row[`${f}_sha`]);
-      const ok = heavyFields.filter((f) => exact.has(`${row.id}:${f}`));
-      if (ok.length < heavyFields.length) {
-        report.fields_unrepresentable += heavyFields.length - ok.length;
-        excluded.push(row.id);
+      // Only what JavaScript carries EXACTLY goes to a file (e.g. a 25-digit integer would not):
+      // the rest stays in the database untouched and is reported.
+      const exact = await exactFields(db, batch);
+      const work: WorkItem[] = [];
+      for (const row of batch) {
+        const heavyFields = ARCHIVABLE_FIELDS.filter((f) => row[`${f}_sha`]);
+        const ok = heavyFields.filter((f) => exact.has(`${row.id}:${f}`));
+        if (ok.length < heavyFields.length) {
+          report.fields_unrepresentable += heavyFields.length - ok.length;
+          excluded.push(row.id);
+        }
+        if (ok.length > 0) work.push({ row, fields: ok });
       }
-      if (ok.length > 0) work.push({ row, fields: ok });
-    }
 
-    // One file per (tenant, month) of the batch.
-    const groups = new Map<string, WorkItem[]>();
-    for (const w of work) {
-      const key = `${w.row.tenant_id}\u0000${w.row.month}`;
-      const list = groups.get(key) ?? [];
-      list.push(w);
-      groups.set(key, list);
+      // One file per (tenant, month) of the batch.
+      const groups = new Map<string, WorkItem[]>();
+      for (const w of work) {
+        const key = `${w.row.tenant_id}\u0000${w.row.month}`;
+        const list = groups.get(key) ?? [];
+        list.push(w);
+        groups.set(key, list);
+      }
+      for (const items of groups.values()) {
+        const first = items[0]!.row;
+        const done = await archiveGroup(db, archiveDir, first.tenant_id, first.month, items, now);
+        report.files.push(done.file);
+        report.steps_lightened += done.file.steps_lightened;
+        report.steps_skipped += done.file.steps_skipped;
+        report.fields_lightened += done.fields;
+        report.bytes_lightened += done.bytes;
+        excluded.push(...done.skippedIds);
+      }
     }
-    for (const items of groups.values()) {
-      const first = items[0]!.row;
-      const done = await archiveGroup(db, archiveDir, first.tenant_id, first.month, items, now);
-      report.files.push(done.file);
-      report.steps_lightened += done.file.steps_lightened;
-      report.steps_skipped += done.file.steps_skipped;
-      report.fields_lightened += done.fields;
-      report.bytes_lightened += done.bytes;
-      excluded.push(...done.skippedIds);
-    }
+  } catch (err) {
+    // Files verified and steps lightened before the failure stay so: the caller (the
+    // scheduled job) reads what was done with partialArchiveReport(err).
+    if (err instanceof Error) Object.defineProperty(err, 'archiveReport', { value: report, enumerable: false });
+    throw err;
   }
   return report;
+}
+
+/** What a failed `archiveTraces` had already done (verified files, lightened steps) before it threw; null if unknown. */
+export function partialArchiveReport(err: unknown): ArchiveReport | null {
+  const r = err instanceof Error ? (err as Error & { archiveReport?: ArchiveReport }).archiveReport : undefined;
+  return r ?? null;
 }
 
 interface WorkItem {

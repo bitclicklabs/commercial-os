@@ -1,7 +1,7 @@
 /**
  * pnpm experiment:run --subject skill:<nombre>|harness:<nombre> --candidate <v> [--skill <nombre>] [--dataset prospeccion-v1]
  *                     [--budget 0.30] [--judge-budget <eur>] [--repeat 2] [--form-sample auto|N|0]
- *                     [--test-on-form] [--min-delta 0.02] [--max-cost-ratio 1.25]
+ *                     [--synth-sample auto|N|0] [--test-on-form] [--min-delta 0.02] [--max-cost-ratio 1.25]
  *                     [--seesaw-tolerance 0] [--no-judge] [--judge-model gemini-pro-latest]
  *                     [--today AAAA-MM-DD] [--tenant publiexpe] [--created-by "<quién>"]
  *                     [--out-dir ../../docs/experimentos] [--dry-run]
@@ -21,6 +21,13 @@
  *   and only the harness policies vary (timeout, retry, tool caps, max_output_tokens). Activation:
  *   `POST /harnesses/:id/versions/:v/activate`, same gate.
  * - `--dry-run`: shows the versions, the dataset and the cases it would reserve; writes nothing.
+ * - Models by role (src/providers/model-router.ts): the executor is the Prospector's role
+ *   (`MODEL_ROUTE_EXECUTOR_REASONER`, default its seed model) and the judge the `judge` role
+ *   (`MODEL_ROUTE_JUDGE`; `--judge-model` wins, `provider:model` or a bare model). A judge equal
+ *   to the executor stops the run before anything is created (exit 2).
+ * - Synthetic or mixed datasets (`pnpm synth:build`) need nothing else: their SYNTH cases join
+ *   VALIDATION as the synthetic sample (`--synth-sample`, default auto = what the budget allows),
+ *   are never marked used and never count for the accuracy (PASS_FORM at most on their own).
  *
  * Dev-only tool (it imports the FakeTwenty test helper); not part of the runtime build.
  */
@@ -31,8 +38,9 @@ import { parseArgs } from 'node:util';
 import { readConfig } from '../src/agents/prospector-core.js';
 import { createDb } from '../src/db/client.js';
 import { listCases, listDatasets } from '../src/datasets/service.js';
+import { isLabeled } from '../src/experiments/metrics.js';
 import { autoFormSampleSize, DEFAULT_EUR_PER_DECISION, ExperimentAbortedError, gateConfig, renderExperimentMarkdown, reportToJson, runExperiment, type ExperimentReport } from '../src/experiments/index.js';
-import { GeminiProvider } from '../src/providers/index.js';
+import { createProviderRegistry, defaultModelRouter, missingProviderKeys, ModelRouteError, parseModelSpec, routeAgentVersion, type ModelRoute } from '../src/providers/index.js';
 import { findHarness, listHarnessVersions } from '../src/harness/service.js';
 import { desiredProspectorVersion } from '../src/seed/prospector-seed.js';
 import { COMPARABLE_SKILLS } from '../src/skills/compare.js';
@@ -41,7 +49,7 @@ import { createDefaultToolRegistry, parseToolPolicy, ToolExecutor } from '../src
 import { FakeTwenty } from '../test/helpers/fake-twenty.js';
 
 const USAGE =
-  'uso: pnpm experiment:run --subject skill:<nombre>|harness:<nombre> --candidate <v> [--skill <nombre> (harness)] [--dataset prospeccion-v1] [--budget 0.30] [--judge-budget E] [--repeat 2] [--form-sample auto|N|0] [--test-on-form] [--min-delta 0.02] [--max-cost-ratio 1.25] [--seesaw-tolerance 0] [--no-judge] [--today AAAA-MM-DD] [--tenant publiexpe] [--created-by Q] [--out-dir DIR] [--dry-run]';
+  'uso: pnpm experiment:run --subject skill:<nombre>|harness:<nombre> --candidate <v> [--skill <nombre> (harness)] [--dataset prospeccion-v1] [--budget 0.30] [--judge-budget E] [--repeat 2] [--form-sample auto|N|0] [--synth-sample auto|N|0] [--test-on-form] [--min-delta 0.02] [--max-cost-ratio 1.25] [--seesaw-tolerance 0] [--no-judge] [--today AAAA-MM-DD] [--tenant publiexpe] [--created-by Q] [--out-dir DIR] [--dry-run]';
 const RUNTIME_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
 function fail(msg: string): never {
@@ -69,6 +77,7 @@ async function main(): Promise<void> {
       'judge-budget': { type: 'string' },
       repeat: { type: 'string', default: '2' },
       'form-sample': { type: 'string', default: 'auto' },
+      'synth-sample': { type: 'string', default: 'auto' },
       'test-on-form': { type: 'boolean', default: false },
       'min-delta': { type: 'string' },
       'max-cost-ratio': { type: 'string' },
@@ -100,6 +109,8 @@ async function main(): Promise<void> {
   if (!Number.isInteger(repeat) || repeat < 1 || repeat > 5) fail('--repeat debe estar entre 1 y 5');
   const formSample = values['form-sample'] === 'auto' ? 'auto' : numberArg(values['form-sample'], '--form-sample', 0);
   if (formSample !== 'auto' && (!Number.isInteger(formSample) || formSample < 0)) fail('--form-sample debe ser auto o un entero ≥ 0');
+  const synthSample = values['synth-sample'] === 'auto' ? 'auto' : numberArg(values['synth-sample'], '--synth-sample', 0);
+  if (synthSample !== 'auto' && (!Number.isInteger(synthSample) || synthSample < 0)) fail('--synth-sample debe ser auto o un entero ≥ 0');
   if (values.today !== undefined && !/^\d{4}-\d{2}-\d{2}$/.test(values.today)) fail('--today debe ser AAAA-MM-DD');
   const gate = gateConfig({
     ...(values['min-delta'] !== undefined ? { min_delta: numberArg(values['min-delta'], '--min-delta', 0.02) } : {}),
@@ -125,14 +136,15 @@ async function main(): Promise<void> {
       if (!ds) fail(`no hay dataset ${values.dataset} en ${tenant}`);
       const val = await listCases(handle.db, { tenantId: tenant, datasetId: ds.id, split: 'VALIDATION', role: 'validation' });
       const train = await listCases(handle.db, { tenantId: tenant, datasetId: ds.id, split: 'TRAIN', includeVetoed: true });
-      const labeled = val.items.filter((c) => c.expected.kind !== 'unlabeled').length;
+      const labeled = val.items.filter((c) => isLabeled(c.expected)).length;
+      const synth = await listCases(handle.db, { tenantId: tenant, datasetId: ds.id, split: 'SYNTH', includeVetoed: true, limit: 100_000 });
       const freeTrain = train.items.filter((c) => c.usedBy.length === 0).length;
       const judgeBudget = values['no-judge'] ? 0 : numberArg(values['judge-budget'], '--judge-budget', budget / 3);
       const auto = autoFormSampleSize(budget - judgeBudget, DEFAULT_EUR_PER_DECISION, repeat, val.items.length);
       console.log(
         [
           `simulación (no escribe nada) · ${subjectType} ${subjectName}: baseline v${active?.version ?? '—'} (ACTIVE) vs candidata v${candidate} (${versions.find((v) => v.version === candidate)?.status ?? 'no existe'})${fixedSkill}`,
-          `dataset ${ds.name} v${ds.version} (${ds.status}) · VALIDATION utilizable: ${val.items.length} (${labeled} etiquetados; ${val.vetoed} vetados por P5)`,
+          `dataset ${ds.name} v${ds.version} (${ds.status}, ${ds.origin}) · VALIDATION utilizable: ${val.items.length} (${labeled} etiquetados; ${val.vetoed} vetados por P5) · sintéticos (SYNTH, no se queman): ${synth.items.length}${synthSample !== 'auto' ? `, muestra ${synthSample}` : ''}`,
           `modo del gate: ${labeled > 0 ? 'con etiquetas' : 'forma (PASS_FORM como mucho)'} · TRAIN sin quemar: ${freeTrain} · muestra de forma ${formSample === 'auto' ? `auto = ${labeled > 0 ? 0 : Math.min(auto, freeTrain)}` : formSample}`,
           `presupuesto ${budget} € (juez ${judgeBudget.toFixed(4)} €) · ${repeat} repetición(es)`,
         ].join('\n'),
@@ -140,10 +152,33 @@ async function main(): Promise<void> {
       return;
     }
 
-    if (!process.env.GEMINI_API_KEY) fail('GEMINI_API_KEY no está definida (cópiala de deployments/.env a runtime/agent-runtime/.env)');
-    const executor = new GeminiProvider({ apiKey: process.env.GEMINI_API_KEY });
-    const judge = values['no-judge'] ? null : new GeminiProvider({ apiKey: process.env.GEMINI_API_KEY });
     const agentVersion = desiredProspectorVersion();
+    // Roles -> (provider, model); the judge must not be the executor (LLD §18).
+    let executorRoute: ModelRoute;
+    let judgeRoute: ModelRoute | null = null;
+    try {
+      const router = defaultModelRouter();
+      for (const w of router.warnings()) console.error(`aviso: ${w}`);
+      executorRoute = routeAgentVersion(router, agentVersion);
+      if (!values['no-judge']) {
+        const flag = values['judge-model'];
+        judgeRoute = flag ? { role: 'judge', ...parseModelSpec(flag, '--judge-model'), source: 'env', env: '--judge-model' } : router.resolve('judge');
+        router.assertJudgeIndependent(judgeRoute, executorRoute);
+      }
+    } catch (err) {
+      if (err instanceof ModelRouteError) {
+        console.error(err.message);
+        process.exitCode = 2;
+        return;
+      }
+      throw err;
+    }
+    const missing = missingProviderKeys(judgeRoute ? [executorRoute, judgeRoute] : [executorRoute]);
+    if (missing.length) fail(`${missing.join(', ')} no está definida (cópiala de deployments/.env a runtime/agent-runtime/.env)`);
+    console.error(`· ejecutor ${executorRoute.provider}:${executorRoute.model} (rol ${executorRoute.role}, ${executorRoute.source})${judgeRoute ? ` · juez ${judgeRoute.provider}:${judgeRoute.model} (${judgeRoute.source})` : ' · sin juez'}`);
+    const providers = createProviderRegistry({ geminiApiKey: process.env.GEMINI_API_KEY, anthropicApiKey: process.env.ANTHROPIC_API_KEY });
+    const executor = providers(executorRoute.provider);
+    const judge = judgeRoute ? providers(judgeRoute.provider) : null;
     const policy = parseToolPolicy(agentVersion.configuration);
     const fakes: FakeTwenty[] = [];
     // Harness arms pass the tool policy capped by their harness; skill arms use the agent's.
@@ -181,9 +216,10 @@ async function main(): Promise<void> {
         db: handle.db,
         executorProvider: executor,
         judgeProvider: judge,
-        ...(values['judge-model'] ? { judgeModel: values['judge-model'] } : {}),
+        ...(judgeRoute ? { judgeModel: judgeRoute.model } : {}),
+        routes: { executor: executorRoute, ...(judgeRoute ? { judge: judgeRoute } : {}) },
         makeTools,
-        agentVersion: { model: agentVersion.model, configuration: agentVersion.configuration },
+        agentVersion: { model: executorRoute.model, configuration: agentVersion.configuration },
         now,
         onProgress: (msg) => console.error(`· ${msg}`),
         writeArtifacts,
@@ -200,6 +236,7 @@ async function main(): Promise<void> {
         ...(values['judge-budget'] !== undefined ? { judgeBudgetEur: numberArg(values['judge-budget'], '--judge-budget', budget / 3) } : {}),
         repeat,
         formSample,
+        synthSample,
         testOnForm: values['test-on-form']!,
         gate,
         judge: !values['no-judge'],

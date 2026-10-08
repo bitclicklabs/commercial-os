@@ -22,7 +22,7 @@ import {
   listVersions,
   SkillServiceError,
 } from '../../skills/service.js';
-import { checkActivationGate, logGate, ReleaseGateBlockedError, type ActivationGate } from '../../experiments/release-gate.js';
+import { checkActivationGate, logGate, refutedOptions, ReleaseGateBlockedError, type ActivationGate } from '../../experiments/release-gate.js';
 import type { ApiContext } from '../context.js';
 import { HttpError, notFound, parse, serialize, tenantOf } from '../http.js';
 import { ActivateVersionBody, CreateSkillBody, CreateSkillVersionBody, FinishCanaryBody, ListSkillsQuery, SkillParams, SkillVersionParams, StartCanaryBody } from '../schemas.js';
@@ -55,20 +55,33 @@ type CanaryGate = { experimentId: string; record: Record<string, unknown>; gate:
  */
 function canaryGuard(tenantId: string, step: 'start' | 'promote'): CanaryGuard<CanaryGate> {
   return async (tx, g) => {
-    const blocked = (why: string, details: Record<string, unknown> = {}) =>
-      new ReleaseGateBlockedError(`Release Gate (${step === 'start' ? 'canario' : 'promote'}): ${why}. Un canario no admite force: ejecuta un experimento (pnpm experiment:run) de v${g.target.version} frente a la v${g.active.version} activa.`, {
-        subject_type: 'skill',
-        subject_name: g.skill.name,
-        candidate_version: g.target.version,
-        active_version: g.active.version,
-        required: 'experimento COMPLETED con decision PASS o PASS_FORM y baseline = versión activa (sin override)',
-        ...details,
-      });
+    const blocked = (why: string, details: Record<string, unknown> = {}) => {
+      const refuted = details.reason === 'revalidation_refuted';
+      const advice = refuted
+        ? `Un canario no admite force: itera (versión nueva + experimento frente a la v${g.active.version} activa) o haz rollback del canario (POST /skills/${g.skill.name}/canary/rollback).`
+        : `Un canario no admite force: ejecuta un experimento (pnpm experiment:run) de v${g.target.version} frente a la v${g.active.version} activa.`;
+      return new ReleaseGateBlockedError(
+        `Release Gate (${step === 'start' ? 'canario' : 'promote'}): ${why}. ${advice}`,
+        {
+          subject_type: 'skill',
+          subject_name: g.skill.name,
+          candidate_version: g.target.version,
+          active_version: g.active.version,
+          required: `experimento COMPLETED con decision PASS o PASS_FORM y baseline = versión activa${refuted ? ', cuya revalidación más reciente no sea REFUTED' : ''} (sin override)`,
+          ...details,
+          ...(refuted ? { options: refutedOptions('skill', g.skill.name, g.target.version, true) } : {}),
+        },
+        why,
+      );
+    };
     let gate: ActivationGate;
     try {
       gate = await checkActivationGate(tx, { tenantId, subjectType: 'skill', subjectName: g.skill.name, target: g.target, activeVersion: g.active.version });
     } catch (err) {
-      if (err instanceof ReleaseGateBlockedError) throw blocked(err.message.replace(/^Release Gate: /, '').replace(/\. Ejecuta un experimento.*$/s, ''), { experiments: err.details.experiments });
+      if (err instanceof ReleaseGateBlockedError) {
+        const { reason, experiment, revalidation, experiments } = err.details;
+        throw blocked(err.why, { reason, ...(experiment ? { experiment } : {}), ...(revalidation ? { revalidation } : {}), experiments });
+      }
       throw err;
     }
     if (gate.mode !== 'experiment') throw blocked(gate.detail, { gate_mode: gate.mode });
@@ -193,7 +206,7 @@ export async function skillRoutes(app: FastifyInstance, ctx: ApiContext): Promis
     const { id, v } = parse(SkillVersionParams, req.params);
     const body = parse(StartCanaryBody, req.body ?? {});
     const r = await mapped(() => startCanary(db, { tenantId, skillKey: id, version: v, percent: body.percent, by: body.by, guard: canaryGuard(tenantId, 'start') }));
-    if (r.changed) req.log.info({ canary: r.canary.id, skill: id, version: v, percent: body.percent, experiment: r.gate?.gate.experiment.name, by: body.by ?? null }, 'skill canary started (human)');
+    if (r.changed) req.log.info({ canary: r.canary.id, skill: id, version: v, percent: body.percent, experiment: r.gate?.gate.experiment.name, revalidated: r.gate?.gate.revalidated ?? false, by: body.by ?? null }, 'skill canary started (human)');
     return reply.status(r.changed ? 201 : 200).send({ skill: serialize(r.skill), canary: canaryOut(r.canary), changed: r.changed, gate: r.gate?.gate ?? null });
   });
 
@@ -216,7 +229,7 @@ export async function skillRoutes(app: FastifyInstance, ctx: ApiContext): Promis
     const { id } = parse(SkillParams, req.params);
     const body = parse(FinishCanaryBody, req.body ?? {});
     const r = await mapped(() => promoteCanary(db, { tenantId, skillKey: id, by: body.by, guard: canaryGuard(tenantId, 'promote') }));
-    req.log.info({ canary: r.canary.id, skill: id, version: r.canary.canaryVersion, by: body.by ?? null }, 'skill canary promoted (human)');
+    req.log.info({ canary: r.canary.id, skill: id, version: r.canary.canaryVersion, revalidated: r.gate?.gate.revalidated ?? false, by: body.by ?? null }, 'skill canary promoted (human)');
     return { skill: serialize(r.skill), canary: canaryOut(r.canary), changed: r.changed, version: versionOut(r.version), previous_version: versionOut(r.previous), gate: r.gate?.gate ?? null };
   });
 

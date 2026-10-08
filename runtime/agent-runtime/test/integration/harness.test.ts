@@ -12,7 +12,7 @@
  */
 import { randomUUID } from 'node:crypto';
 import pg from 'pg';
-import { eq } from 'drizzle-orm';
+import { and, eq } from 'drizzle-orm';
 import type { FastifyInstance } from 'fastify';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { buildServer } from '../../src/api/server.js';
@@ -161,7 +161,12 @@ describe.skipIf(!dbAvailable)('versioned harness (PostgreSQL)', () => {
     expect(r.taskRun.status).toBe('COMPLETED');
     expect(r.taskRun.harnessVersion).toBe('default-commercial@1');
     expect(r.trace.harnessVersion).toBe('default-commercial@1');
-    const [v1] = await handle.db.select().from(harnessVersions).innerJoin(harnesses, eq(harnesses.id, harnessVersions.harnessId)).where(eq(harnesses.tenantId, tenant));
+    // The tenant has other harnesses (con-placeholder): pick default-commercial v1 explicitly (row order is not guaranteed).
+    const [v1] = await handle.db
+      .select()
+      .from(harnessVersions)
+      .innerJoin(harnesses, eq(harnesses.id, harnessVersions.harnessId))
+      .where(and(eq(harnesses.tenantId, tenant), eq(harnesses.name, DEFAULT_COMMERCIAL_HARNESS_NAME), eq(harnessVersions.version, 1)));
     expect(r.harness).toMatchObject({
       name: DEFAULT_COMMERCIAL_HARNESS_NAME,
       version: 1,

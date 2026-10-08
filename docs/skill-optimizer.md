@@ -6,7 +6,7 @@ Este documento es para quien decide (comercial y responsable técnico) y para qu
 
 > **Importante:** el optimizador **nunca activa nada**. Un agente puede proponer, experimentar y evaluarse; la promoción a producción es siempre una decisión humana y la activación vuelve a comprobar el gate ([LLD §19](LLD-0.1-publiexpe-commercial-os.md#19-regla-de-oro-del-sistema-evolutivo)). Lo más lejos que llega una optimización es una versión `DRAFT` con un experimento `PASS` y una nota en Twenty.
 
-> **Nota:** este documento describe la especificación de las tandas 11 y 12 (la revalidación de `PASS_FORM` es de la tanda 12). Los nombres exactos de fases, estados y campos son los del README del runtime; si alguno difiere, manda el README.
+> **Nota:** este documento describe la especificación de las tandas 11, 12 y 13 (la revalidación de `PASS_FORM` es de la tanda 12; el bloqueo del gate por una revalidación `REFUTED`, de la tanda 13). Los nombres exactos de fases, estados y campos son los del README del runtime; si alguno difiere, manda el README.
 
 ## Qué dispara una optimización
 
@@ -105,7 +105,7 @@ Qué debes encontrar en la nota (y qué hacer con cada parte):
 
 1. **Skill y versiones**: skill, versión activa (baseline) y versión candidata. Confirma que la baseline sigue siendo la activa; si alguien activó otra versión mientras tanto, el gate bloqueará la activación y habrá que repetir el experimento.
 1. **Qué cambia y por qué**: el *changelog* de la candidata cita los clusters de fallos. Comprueba que cada cluster es un problema real que reconoces del trabajo diario.
-1. **Resultado del gate**: decisión (`PASS` o `PASS_FORM`), cada criterio con su valor y el coste del experimento. `PASS_FORM` significa que no había etiquetas para medir si las decisiones aciertan: es válido para activar, pero queda pendiente de [revalidar](#revalidación-de-un-pass_form) cuando haya etiquetas.
+1. **Resultado del gate**: decisión (`PASS` o `PASS_FORM`), cada criterio con su valor y el coste del experimento. `PASS_FORM` significa que no había etiquetas para medir si las decisiones aciertan: es válido para activar, pero queda pendiente de [revalidar](#revalidación-de-un-pass_form) cuando haya etiquetas. Y si esa revalidación da `REFUTED`, el gate [bloquea](#qué-hace-el-gate-con-una-revalidación) la activación, el canario y la promoción.
 1. **Enlaces**: el informe `EXP-NNN` (tabla lado a lado por expositor) y la versión `DRAFT` con su diff.
 
 Lista de revisión:
@@ -114,6 +114,7 @@ Lista de revisión:
 - [ ] Leí las razones por expositor del informe, no solo las métricas. Las métricas no lo ven todo (EXP-003 lo demostró).
 - [ ] La candidata no inventa datos ni eleva la confianza sin respaldo.
 - [ ] Si el gate fue `PASS_FORM`, acepto que falta [revalidar](#revalidación-de-un-pass_form) con etiquetas o, mejor, uso el [canario](#canario-despliegue-gradual-tras-el-gate).
+- [ ] Compruebo que el experimento no tiene una revalidación `REFUTED` como última: si la tiene, el gate bloquea la activación y no la fuerzo sin leer antes los casos que fallaron.
 - [ ] Sé cómo deshacerlo (rollback, más abajo).
 
 ### Decidir
@@ -133,7 +134,7 @@ Solo una persona, después de leer la propuesta:
 curl -s -X POST "http://127.0.0.1:4020/skills/<skill>/versions/<v>/activate" -H 'x-tenant-id: publiexpe'
 ```
 
-La activación **repite la comprobación del gate**: el último experimento `COMPLETED` de esa versión contra la versión activa actual debe haber dado `PASS` o `PASS_FORM`. Si no, responde `409 release_gate_blocked`. Forzar la activación es posible solo con `force` y un motivo (mínimo 10 caracteres) que queda en el log y en la respuesta; úsalo con criterio, porque salta la protección que el optimizador respeta.
+La activación **repite la comprobación del gate**: el último experimento `COMPLETED` de esa versión contra la versión activa actual debe haber dado `PASS` o `PASS_FORM`, y su revalidación más reciente, si existe, no puede ser `REFUTED`. Si no, responde `409 release_gate_blocked` (con `reason: revalidation_refuted` en el segundo caso). Forzar la activación es posible solo con `force` y un motivo (mínimo 10 caracteres) que queda en el log y en la respuesta; úsalo con criterio, porque salta la protección que el optimizador respeta.
 
 Después, mide la aceptación por versión como se explica en el [paso 7 del ciclo](ciclo-mejora-skills.md#7-mide-la-aceptación-por-versión).
 
@@ -147,11 +148,11 @@ Cómo funciona:
 - El reparto es **determinista**: se decide por un hash del id del task run (o de la ejecución directa). Una misma ejecución cae siempre en el mismo grupo, aunque se reintente, y la comparación no depende del azar de cada llamada. La traza registra rama y clave (P4).
 - Solo puede haber **una canaria por skill** a la vez; mientras exista, la activación normal de esa skill responde `409`, y deprecar la canaria o la estable cierra el canario.
 - `GET /skills/:name/canary` devuelve la comparativa entre la versión activa y la canaria (volumen, resultado, coste, latencia, último veredicto humano y el delta canaria − estable).
-- Al terminar, `POST /skills/:name/canary/promote` convierte la canaria en la versión activa (re-verifica el gate) y `POST /skills/:name/canary/rollback` la retira (siempre permitido e idempotente); la versión activa nunca dejó de estar disponible. En ambos casos decide una persona: el sistema no promueve ni retira solo.
+- Al terminar, `POST /skills/:name/canary/promote` convierte la canaria en la versión activa (re-verifica el gate, incluida la última revalidación del experimento) y `POST /skills/:name/canary/rollback` la retira (siempre permitido e idempotente); la versión activa nunca dejó de estar disponible. En ambos casos decide una persona: el sistema no promueve ni retira solo.
 
 Cuándo usarlo:
 
-- El gate fue `PASS_FORM` y no hay etiquetas con las que confirmar la accuracy (cuando las haya, puedes [revalidar](#revalidación-de-un-pass_form) sin gastar nada). Si durante el canario la revalidación da `REFUTED`, verás la nota «⚠️ Revalidación fallida» en Twenty: el rollback es `POST /skills/:name/canary/rollback`.
+- El gate fue `PASS_FORM` y no hay etiquetas con las que confirmar la accuracy (cuando las haya, puedes [revalidar](#revalidación-de-un-pass_form) sin gastar nada). Si durante el canario la revalidación da `REFUTED`, verás la nota «⚠️ Revalidación fallida» en Twenty y el gate bloqueará `promote` (`409 release_gate_blocked`). El canario sigue repartiendo tráfico hasta que decidas, y el rollback es `POST /skills/:name/canary/rollback`, que nunca se bloquea.
 - El cambio toca la forma de los mensajes (tono, confianza, presentación) y quieres verlo con hipótesis reales antes de generalizarlo.
 - La skill tiene mucho volumen o un fallo costaría caro.
 
@@ -201,15 +202,41 @@ El experimento original **no se modifica** (es inmutable). El resultado se guard
 
 ### Los tres veredictos
 
-| Veredicto | Significa | Qué haces |
-|---|---|---|
-| `CONFIRMED` | Con las etiquetas disponibles, la accuracy de la candidata cumple el criterio del gate (no es peor que la baseline). El `PASS_FORM` queda respaldado | Nada. Puedes dar por cerrado el pendiente; si la versión estaba en canario, es un argumento más para promoverla |
-| `REFUTED` | La accuracy medida es peor que la de la baseline: el gate habría dicho `FAIL` | Consulta el apartado siguiente |
-| `INSUFFICIENT` | No hay etiquetas suficientes (o ninguna válida bajo P5) para concluir | No es un fallo. Espera a que el equipo comercial etiquete más casos y repite |
+| Veredicto | Significa | Efecto en el gate | Qué haces |
+|---|---|---|---|
+| `CONFIRMED` | Con las etiquetas disponibles, la accuracy de la candidata cumple el criterio del gate (no es peor que la baseline). El `PASS_FORM` queda respaldado | Marca el experimento como revalidado (`revalidated: true`) | Nada. Puedes dar por cerrado el pendiente; si la versión estaba en canario, es un argumento más para promoverla |
+| `REFUTED` | La accuracy medida es peor que la de la baseline: el gate habría dicho `FAIL` | **Bloquea** la activación, el canario y la promoción de esa versión (`409 release_gate_blocked`, `reason: revalidation_refuted`) | Consulta [Qué hacer con un REFUTED](#qué-hacer-con-un-refuted) |
+| `INSUFFICIENT` | No hay etiquetas suficientes (o ninguna válida bajo P5) para concluir | Ninguno: el gate se comporta como si no se hubiera revalidado | No es un fallo. Espera a que el equipo comercial etiquete más casos y repite |
+
+### Qué hace el gate con una revalidación
+
+Hasta la tanda 12, un `REFUTED` solo avisaba. Desde la tanda 13 **el Release Gate lo tiene en cuenta**: cuenta la revalidación **más reciente** del experimento.
+
+| Última revalidación del experimento | Activar, poner en canario y promover |
+|---|---|
+| Ninguna, o `INSUFFICIENT` | Como siempre: según la decisión del experimento (`PASS` o `PASS_FORM`) |
+| `CONFIRMED` | Permitido; el experimento consta como `revalidated: true` |
+| `REFUTED` | `409 release_gate_blocked` con `reason: revalidation_refuted` |
+
+Cosas que debes saber:
+
+- **Cuenta la más reciente.** Como el registro es de solo añadir, una revalidación posterior con más etiquetas puede cambiar el veredicto: un `REFUTED` con 5 etiquetas puede pasar a `CONFIRMED` con 12, y entonces el bloqueo desaparece. Nada se edita ni se borra; el historial queda completo.
+- **El `force` humano sigue existiendo y queda auditado.** Una persona puede forzar la activación con un motivo de al menos 10 caracteres (consulta [Activar](#activar)); el override se registra en el `audit_log` como `*.force_activate`. El canario no admite `force`: para ponerlo en canario o promoverlo con un `REFUTED` hay que resolver antes el `REFUTED` (revalidar con más etiquetas, o un experimento nuevo) o activar con `force`.
+- **El rollback no se bloquea nunca.** Retirar una versión dañina (`deprecate` o rollback del canario) sigue sin pasar por el gate.
+- **El gate bloquea lo siguiente, no lo ya hecho.** Si la versión ya estaba `ACTIVE` cuando llegó el `REFUTED`, el sistema no la desactiva: sigue sirviendo hasta que una persona decida. Lo que se bloquea es activar, poner en canario o promover.
+
+Ejemplo de respuesta bloqueada (los campos exactos están en el [README del runtime](../runtime/agent-runtime/README.md#revalidación-de-los-pass_form)):
+
+```json
+{
+  "error": "release_gate_blocked",
+  "reason": "revalidation_refuted"
+}
+```
 
 ### Qué hacer con un REFUTED
 
-Un `REFUTED` es una alerta, no una orden. **El sistema no desactiva nada por su cuenta** y no hace rollback: la versión sigue funcionando hasta que una persona decide.
+Un `REFUTED` ya no es solo una alerta: **frena** la versión. Aun así, **el sistema no desactiva nada por su cuenta** y no hace rollback: la versión que ya servía sigue sirviendo hasta que una persona decide.
 
 Si la versión sigue `ACTIVE` o en canario, el runtime deja en Twenty una nota **⚠️ Revalidación fallida** con la skill, la versión, el experimento original y los números de la accuracy medida. Si la versión ya no está activa ni en canario (por ejemplo, ya se sustituyó o se hizo rollback), solo queda el registro de la revalidación y no hay nota.
 
@@ -218,11 +245,14 @@ Opciones, de menos a más drástica:
 | Opción | Cuándo | Cómo |
 |---|---|---|
 | **Rollback** | La accuracy medida es claramente peor y el daño es real | [Rollback](#rollback) (`deprecate`, o rollback del canario) |
-| **Pasar a canario o reducir el alcance** | Es peor, pero con pocos casos y quieres ver más tráfico antes de decidir | [Canario](#canario-despliegue-gradual-tras-el-gate): la comparativa con hipótesis reales aporta más datos |
+| **Mantener el canario sin promover** | Es peor, pero con pocos casos y quieres ver más tráfico antes de decidir | Si la versión ya estaba en [canario](#canario-despliegue-gradual-tras-el-gate), sigue repartiendo y la comparativa con hipótesis reales aporta más datos. `promote` queda bloqueado mientras el `REFUTED` sea la última revalidación |
+| **Esperar más etiquetas y revalidar** | Hay pocas etiquetas y sospechas que sea azar | Repite la [revalidación](#lanzarla) cuando haya más; si el veredicto nuevo es `CONFIRMED` o `INSUFFICIENT`, el bloqueo se levanta |
 | **Iterar** | La candidata corrige un problema pero introduce otro | Crea una candidata nueva con `pnpm skill:candidate` y valídala con datos frescos ([ciclo manual](ciclo-mejora-skills.md)) |
-| **Mantener** | Revisas los casos y las etiquetas no representan el uso real | Deja constancia en la nota de Twenty y, si procede, repite cuando haya más etiquetas |
+| **Forzar** | Revisas los casos y las etiquetas no representan el uso real | `force` con motivo escrito, solo en la activación. Queda en el `audit_log`; deja además constancia en la nota de Twenty |
 
-> **Nota:** con pocas etiquetas, un `REFUTED` puede deberse al azar. Lee los casos concretos que fallaron, igual que harías con las razones por expositor de un informe, antes de decidir un rollback.
+> **Precaución:** `force` salta justo la protección que activa el `REFUTED`. Úsalo solo si has leído los casos concretos que fallaron y puedes explicar por qué las etiquetas no valen: el motivo queda en el `audit_log` con tu nombre.
+
+> **Nota:** con pocas etiquetas, un `REFUTED` puede deberse al azar. Lee los casos concretos que fallaron, igual que harías con las razones por expositor de un informe, antes de decidir un rollback o un `force`.
 
 ## Rollback
 
@@ -245,7 +275,7 @@ Con Gemini, los experimentos previos costaron entre 0,10 y 0,15 € (EXP-001 0,0
 | `GATE_FAIL` / `GATE_PASS` | Experimento (0,10-0,15 €) más agrupación y propuesta |
 | Abortada por presupuesto | Lo gastado hasta el corte, marcado `INCONCLUSIVE` |
 
-> **Nota:** son cifras de referencia con `gemini-flash-latest` como ejecutor y `gemini-pro-latest` como juez. El coste real de cada vuelta está en `GET /optimizer/runs/:id` y en el informe del experimento. El 2027-01-01 sube el precio de gemini-3.8-flash: revisa estas cifras entonces (consulta el [roadmap](ROADMAP.md#hitos-de-calendario-no-perder)).
+> **Nota:** son cifras de referencia con `gemini-flash-latest` como ejecutor y `gemini-pro-latest` como juez. El coste real de cada vuelta está en `GET /optimizer/runs/:id` y en el informe del experimento. El 2027-01-01 sube el precio de gemini-3.8-flash: revisa estas cifras entonces con `pnpm models:costs` ([Model routing](model-routing.md#costes-pnpm-modelscosts)) y el [roadmap](ROADMAP.md#hitos-de-calendario-no-perder).
 
 ## Qué no hace (todavía)
 
@@ -261,4 +291,6 @@ Con Gemini, los experimentos previos costaron entre 0,10 y 0,15 € (EXP-001 0,0
 - [README de la Twenty App](../apps/twenty-app/README.md): dónde se ven las notas y las hipótesis.
 - [EXP-003](experimentos/EXP-003-prospector-v4.md): el primer experimento automático y un rechazo del gate explicado.
 - [LLD v0.1](LLD-0.1-publiexpe-commercial-os.md): §6.3 (skills), §11.5-11.7 (experimentos, gate, canario), §18 (optimización) y §19 (regla de oro).
+- [Environments sintéticos](environments-sinteticos.md): casos generados con ground truth por construcción para reglas, seesaw y forma (no miden la accuracy del gate).
+- [Model routing](model-routing.md): roles de modelo y costes antes del cambio de precio del 2027-01-01.
 - [Roadmap](ROADMAP.md): lugar del MVP-3 en el plan.

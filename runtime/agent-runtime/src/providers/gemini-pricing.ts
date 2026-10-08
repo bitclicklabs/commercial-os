@@ -26,9 +26,13 @@ export const GEMINI_PRICING: Readonly<Record<string, readonly PricingPeriod[]>> 
     { inputPerMTok: 0.75, outputPerMTok: 3.75, cachedPerMTok: 0.075 },
     { from: '2027-01-01', inputPerMTok: 1.5, outputPerMTok: 7.5, cachedPerMTok: 0.15 },
   ],
+  // 2027 input corrected 0.75 -> 1.50 (it was a transcription error): the pricing page
+  // ("Last updated 2026-10-07 UTC", checked on 2026-10-08) lists 3.6 / 3.7 / 3.8 Flash with the
+  // same prices: $1.50 input, $7.50 output, $0.15 caching starting January 1, 2027. A future
+  // period, so no past run was priced with the wrong value.
   'gemini-3.6-flash': [
     { inputPerMTok: 0.75, outputPerMTok: 3.75, cachedPerMTok: 0.075 },
-    { from: '2027-01-01', inputPerMTok: 0.75, outputPerMTok: 7.5, cachedPerMTok: 0.15 },
+    { from: '2027-01-01', inputPerMTok: 1.5, outputPerMTok: 7.5, cachedPerMTok: 0.15 },
   ],
   'gemini-3.5-flash': [{ inputPerMTok: 1.5, outputPerMTok: 9, cachedPerMTok: 0.15 }],
   'gemini-3.5-flash-lite': [{ inputPerMTok: 0.3, outputPerMTok: 2.5, cachedPerMTok: 0.03 }],

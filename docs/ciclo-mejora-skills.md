@@ -124,6 +124,8 @@ pnpm experiment:run --subject skill:<skill> --candidate <v> --dataset prospeccio
 
 Los detalles y las opciones están en el [README del runtime](../runtime/agent-runtime/README.md#experiments-y-release-gate).
 
+> **Nota:** antes de gastar una vuelta real puedes comprobar la candidata contra un [environment sintético](environments-sinteticos.md) (`pnpm synth:build`): sirve para reglas, *seesaw* y forma, no para la accuracy del gate, que solo miden las etiquetas humanas. El modelo ejecutor y el juez salen de los [roles de model routing](model-routing.md).
+
 ### Comparación suelta (exploración)
 
 `pnpm skill:compare` sigue disponible para explorar sin dejar rastro en `experiments` (no reserva casos ni decide nada; su resultado no desbloquea la activación). `pnpm skill:compare` ejecuta la misma entrada con las dos versiones, con el proveedor real y un CRM en memoria (FakeTwenty), y saca la comparación:
@@ -151,7 +153,7 @@ El informe automático ya trae la decisión del gate, cada criterio con sus valo
 
 | Decisión | Cuándo |
 |---|---|
-| **Activar** | El gate da `PASS` (o `PASS_FORM`, sabiendo que falta [re-validar con etiquetas](#revalida-un-pass_form-cuando-lleguen-etiquetas)), cumple la hipótesis y la lectura cualitativa no muestra problemas |
+| **Activar** | El gate da `PASS` (o `PASS_FORM`, sabiendo que falta [re-validar con etiquetas](#revalida-un-pass_form-cuando-lleguen-etiquetas) y que un `REFUTED` lo bloquearía), cumple la hipótesis y la lectura cualitativa no muestra problemas |
 | **Iterar** | Mejora lo propuesto pero rompe algo, o el efecto no se distingue del ruido. Crea otra versión desde la base con la operación que falte y valídala con datos nuevos |
 | **Descartar** | No mejora o empeora. Depreca la versión: `POST /skills/<skill>/versions/<v>/deprecate` |
 
@@ -165,7 +167,7 @@ Solo con la decisión humana escrita en el experimento:
 curl -s -X POST "http://127.0.0.1:4020/skills/<skill>/versions/<v>/activate" -H 'x-tenant-id: publiexpe'
 ```
 
-El Release Gate la deja pasar si el último experimento `COMPLETED` de esa versión contra la versión activa actual decidió `PASS` o `PASS_FORM` (la respuesta trae `gate`). Si no, responde `409 release_gate_blocked`. Si la persona responsable decide activar igualmente, lo fuerza con motivo, que queda en el log y en la respuesta:
+El Release Gate la deja pasar si el último experimento `COMPLETED` de esa versión contra la versión activa actual decidió `PASS` o `PASS_FORM` (la respuesta trae `gate`) y su revalidación más reciente, si existe, no es `REFUTED`. Si no, responde `409 release_gate_blocked` (con `reason: revalidation_refuted` cuando lo bloquea una revalidación). Si la persona responsable decide activar igualmente, lo fuerza con motivo, que queda en el log y en la respuesta:
 
 ```sh
 curl -s -X POST "http://127.0.0.1:4020/skills/<skill>/versions/<v>/activate" -H 'x-tenant-id: publiexpe'   -H 'content-type: application/json' -d '{"force": true, "reason": "<por qué, mínimo 10 caracteres>", "by": "<quién>"}'
@@ -183,7 +185,15 @@ Un `PASS_FORM` queda pendiente de revalidar. No hace falta repetir el experiment
 1. Mira qué experimentos se pueden revalidar: `GET /experiments/pending-revalidation` (o `pnpm experiment:revalidate --pending`). Solo salen los `PASS_FORM` cuya versión sigue `ACTIVE` o en canario, con cuántas etiquetas hay y cuántas son frescas.
 1. Revalida: `POST /experiments/EXP-NNN/revalidate` (o `pnpm experiment:revalidate --id EXP-NNN`).
 
-El resultado es `CONFIRMED` (la candidata iguala o supera a la baseline en accuracy), `REFUTED` o `INSUFFICIENT` (faltan etiquetas; por defecto se piden 5). Nunca cuentan los casos de diseño de la candidata (P5). Si sale `REFUTED` y la versión sigue activa o en canario, aparece en Twenty la nota «⚠️ Revalidación fallida» con los números y las opciones (rollback, canario o iterar): nada se desactiva solo, decides tú. Detalles en el [README del runtime](../runtime/agent-runtime/README.md#revalidación-de-los-pass_form).
+El resultado es `CONFIRMED` (la candidata iguala o supera a la baseline en accuracy), `REFUTED` o `INSUFFICIENT` (faltan etiquetas; por defecto se piden 5). Nunca cuentan los casos de diseño de la candidata (P5). El veredicto **más reciente** pasa a formar parte del Release Gate (tanda 13):
+
+| Veredicto | Efecto |
+|---|---|
+| `CONFIRMED` | El experimento consta como revalidado (`revalidated: true`) |
+| `INSUFFICIENT` | Ninguno |
+| `REFUTED` | **Bloquea** activar, poner en canario y promover esa versión: `409 release_gate_blocked` con `reason: revalidation_refuted`. Solo se salta con `force` y motivo (queda en el `audit_log`) en la activación |
+
+Si sale `REFUTED` y la versión sigue activa o en canario, aparece además en Twenty la nota «⚠️ Revalidación fallida» con los números y las opciones (rollback, esperar más etiquetas, iterar o forzar). El gate frena lo que viene, pero nada de lo que ya está en marcha se desactiva solo: decides tú. El rollback no pasa nunca por el gate. Detalles en el [README del runtime](../runtime/agent-runtime/README.md#revalidación-de-los-pass_form).
 
 ## 7. Mide la aceptación por versión
 
@@ -241,4 +251,5 @@ El optimizador no sustituye al criterio humano: la lectura cualitativa del paso 
 - [ ] `pnpm experiment:run` ejecutado (P5 reservado por el runner, repetición y presupuesto).
 - [ ] Informe automático leído y, si hace falta, completado con la recomendación razonada.
 - [ ] Decisión humana registrada antes de activar.
+- [ ] Si el gate fue `PASS_FORM`: revalidación con etiquetas pedida cuando las haya, y sin un `REFUTED` como última revalidación (si lo hay, el gate bloquea; forzar solo con motivo escrito y tras leer los casos que fallaron).
 - [ ] Medición por versión de skill y plan de rollback.

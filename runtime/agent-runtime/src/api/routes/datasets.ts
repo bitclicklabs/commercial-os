@@ -23,6 +23,8 @@ import {
   requireDataset,
   type DatasetCounts,
 } from '../../datasets/service.js';
+import { SYNTHETIC_DOMAINS } from '../../synthetic/generate.js';
+import { templateCatalog } from '../../synthetic/templates.js';
 import type { ApiContext } from '../context.js';
 import { HttpError, IdParams, parse, serialize, tenantOf } from '../http.js';
 
@@ -163,6 +165,13 @@ export async function datasetRoutes(app: FastifyInstance, ctx: ApiContext): Prom
     const r = await mapped(() => activateDataset(db, tenantId, id));
     return { dataset: out(r.dataset), changed: r.changed, archived: r.archived };
   });
+
+  /**
+   * GET /synthetic/templates - read-only catalog of the synthetic case templates (src/synthetic/):
+   * curriculum level, failure pattern, expected decision and the skill rule behind it. Building a
+   * synthetic dataset is `pnpm synth:build` (no mutating route: generation is an operator step).
+   */
+  app.get('/synthetic/templates', async () => ({ domains: SYNTHETIC_DOMAINS, items: templateCatalog() }));
 
   app.post('/datasets/:id/archive', async (req) => {
     const tenantId = tenantOf(req, ctx.config.defaultTenantId);

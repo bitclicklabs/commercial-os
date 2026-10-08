@@ -12,8 +12,10 @@
  * - Tenant: `experiments` by default (PM decision): automatic evaluations of offline runs
  *   never mix with the human verdicts of `publiexpe`. A trace is READ from `--trace-tenant` (default
  *   DEFAULT_TENANT_ID or publiexpe) and its evaluations are WRITTEN to `--tenant`.
- * - The judge is a model DIFFERENT from the executor (JUDGE_MODEL, default
- *   gemini-pro-latest) and never spends more than `--judge-max-cost-eur`.
+ * - The judge is a model DIFFERENT from the executor: role `judge` of the model router
+ *   (MODEL_ROUTE_JUDGE=provider:model, legacy JUDGE_MODEL, default gemini:gemini-pro-latest;
+ *   `--judge-model` wins, `provider:model` or a bare model) and never spends more than
+ *   `--judge-max-cost-eur`. `--provider stub` forces the offline stub provider.
  * - Judge notes already stored for the same output and judge version are reused (a re-run
  *   costs nothing and stores nothing new).
  */
@@ -35,7 +37,7 @@ import {
   type LoadedSubjects,
   type PipelineReport,
 } from '../src/evaluators/index.js';
-import { DEFAULT_USD_TO_EUR, GeminiProvider, StubProvider, type ModelProvider } from '../src/providers/index.js';
+import { createProviderRegistry, DEFAULT_USD_TO_EUR, defaultModelRouter, ModelRouteError, parseModelSpec, StubProvider, type ModelProvider, type ModelTarget } from '../src/providers/index.js';
 
 const USAGE =
   'uso: pnpm evaluate -- --input <informe.json | trace_id> [--tenant experiments] [--trace-tenant publiexpe] [--no-judge] [--judge-model M] [--judge-max-cost-eur 0.10] [--judge-batch 20] [--no-persist] [--min-confidence 0.5] [--out <prefijo>]';
@@ -72,7 +74,7 @@ async function main(): Promise<void> {
       'no-persist': { type: 'boolean', default: false },
       'min-confidence': { type: 'string', default: '0.5' },
       out: { type: 'string' },
-      provider: { type: 'string', default: 'gemini' },
+      provider: { type: 'string' },
     },
   });
   if (!values.input) fail('falta --input');
@@ -97,14 +99,21 @@ async function main(): Promise<void> {
 
     let budget: JudgeBudgetProvider | undefined;
     let judgeProvider: ModelProvider | undefined;
+    let judgeRoute: ModelTarget | undefined;
     if (!values['no-judge']) {
-      const inner = values.provider === 'stub' ? new StubProvider() : new GeminiProvider();
+      try {
+        judgeRoute = values['judge-model'] ? parseModelSpec(values['judge-model'], '--judge-model') : defaultModelRouter().resolve('judge');
+      } catch (err) {
+        if (err instanceof ModelRouteError) fail(err.message);
+        throw err;
+      }
+      const inner = values.provider === 'stub' ? new StubProvider() : createProviderRegistry({ geminiApiKey: process.env.GEMINI_API_KEY, anthropicApiKey: process.env.ANTHROPIC_API_KEY })(judgeRoute.provider);
       budget = new JudgeBudgetProvider(inner, maxEur, DEFAULT_USD_TO_EUR);
       judgeProvider = budget;
     }
     const ev = defaultEvaluators({
       ...(judgeProvider ? { judgeProvider } : {}),
-      ...(values['judge-model'] ? { judgeModel: values['judge-model'] } : {}),
+      ...(judgeRoute ? { judgeModel: judgeRoute.model } : {}),
       judgeMaxItemsPerCall: Number(values['judge-batch']),
     });
     const judgeCache = handle && ev.judges.length

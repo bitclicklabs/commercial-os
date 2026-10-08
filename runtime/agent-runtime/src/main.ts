@@ -7,10 +7,12 @@ import { BullEventQueue, EventBus, eventsQueueName } from './events/event-bus.js
 import { BullWebhookDeliveryQueue, WebhookDeliveryWorker, WebhookDispatcher, webhooksQueueName } from './events/webhook-delivery.js';
 import { countReadyRevalidations } from './experiments/revalidation-service.js';
 import { twentyClientFromEnv } from './integrations/twenty/index.js';
+import { TraceArchiveJob, traceArchiveSettingsFromEnv } from './maintenance/trace-archive-job.js';
 import { metricsSyncSettingsFromEnv, TwentyMetricsSync } from './metrics/twenty-sync.js';
 import { BullOptimizerQueue, OptimizerWorker, optimizerQueueName } from './optimizer/queue.js';
-import { createProviderRegistry } from './providers/index.js';
+import { createProviderRegistry, defaultModelRouter, experimentRoutes } from './providers/index.js';
 import { BullRunQueue } from './queue/run-queue.js';
+import { desiredProspectorVersion } from './seed/prospector-seed.js';
 import { EventTriggerConsumer } from './scheduler/event-triggers.js';
 import { BullTaskScheduler, scheduleQueueName } from './scheduler/task-scheduler.js';
 import { startBullWorker } from './worker/bull-worker.js';
@@ -19,6 +21,10 @@ import { OrphanReconciler } from './worker/recovery.js';
 
 async function main(): Promise<void> {
   const config = loadConfig();
+  // Model routing (LLD §18): MODEL_ROUTE_<ROL> overrides are validated here, at boot; an
+  // invalid one stops the process with a clear message instead of failing at the first call.
+  const modelRouter = defaultModelRouter();
+  for (const w of modelRouter.warnings()) console.warn(`[model-router] ${w}`);
   const dbHandle = createDb(config.databaseUrl);
   const queue = new BullRunQueue(config.queueName, config.redisUrl);
   const has = (...roles: string[]) => config.role === 'all' || roles.includes(config.role);
@@ -48,6 +54,7 @@ async function main(): Promise<void> {
     : undefined;
   let eventConsumer: EventTriggerConsumer | undefined;
   let metricsSync: TwentyMetricsSync | undefined;
+  let traceArchiveJob: TraceArchiveJob | undefined;
   let webhookQueue: BullWebhookDeliveryQueue | undefined;
   let webhookWorker: WebhookDeliveryWorker | undefined;
   // Skill Optimizer (MVP-3): the API enqueues runs, the worker role processes them. Manual only.
@@ -72,6 +79,7 @@ async function main(): Promise<void> {
       geminiModel: config.geminiModel,
     });
     const processor = new RunProcessor(dbHandle.db, providers, logger);
+    processor.router = modelRouter;
     processor.events = eventBus;
     processor.heartbeatMs = config.runHeartbeatMs;
     // A re-delivered stalled job only recovers its run with a heartbeat older than the reconciler's grace.
@@ -102,14 +110,24 @@ async function main(): Promise<void> {
       queueName: optimizerQueueName(config.queueName),
       redisUrl: config.redisUrl,
       logger,
-      deps: () => ({
+      deps: () => {
+        // Roles: optimizer (clustering + proposal), the Prospector's executor role and judge.
+        // experimentRoutes refuses a judge equal to the executor (LLD §18) before the run starts.
+        const optimizerRoute = modelRouter.resolve('optimizer');
+        const prospector = desiredProspectorVersion();
+        const routes = experimentRoutes(modelRouter, { model: prospector.model, modelProvider: prospector.modelProvider, configuration: prospector.configuration });
+        return {
         db: dbHandle.db,
-        llmProvider: providers('gemini'),
-        executorProvider: providers('gemini'),
-        judgeProvider: providers('gemini'),
+        llmProvider: providers(optimizerRoute.provider),
+        executorProvider: providers(routes.executor.provider),
+        judgeProvider: providers(routes.judge.provider),
+        judgeModel: routes.judge.model,
+        agentVersion: { model: routes.executor.model, configuration: prospector.configuration },
+        routes,
         twenty: optimizerTwenty.isConfigured() ? optimizerTwenty : null,
         apiUrl: `http://127.0.0.1:${config.port}`,
-      }),
+        };
+      },
     });
     await optimizerWorker.start();
     logger.info({ queue: optimizerQueueName(config.queueName) }, 'optimizer worker started');
@@ -158,12 +176,19 @@ async function main(): Promise<void> {
       metricsSync.start(syncSettings.intervalMs);
       logger.info({ intervalMs: syncSettings.intervalMs, days: syncSettings.days }, 'metrics sync to Twenty started');
     }
+    // Trace retention without loss (archiveTraces: export -> verify -> lighten), off by default.
+    const archiveSettings = traceArchiveSettingsFromEnv();
+    if (archiveSettings.enabled) {
+      traceArchiveJob = new TraceArchiveJob(dbHandle.db, { olderThanDays: config.traceRetentionDays, archiveDir: config.traceArchiveDir, auditTenantId: config.defaultTenantId, logger });
+      traceArchiveJob.start(archiveSettings.intervalMs);
+      logger.info({ intervalMs: archiveSettings.intervalMs, olderThanDays: config.traceRetentionDays, archiveDir: config.traceArchiveDir }, 'scheduled trace archive started');
+    }
   }
 
   const shutdown = async (signal: string) => {
     console.log(`received ${signal}, shutting down`);
     reconciler?.stop();
-    await Promise.allSettled([app?.close(), worker?.close(), eventConsumer?.close(), webhookWorker?.close(), metricsSync?.stop(), optimizerWorker?.close()]);
+    await Promise.allSettled([app?.close(), worker?.close(), eventConsumer?.close(), webhookWorker?.close(), metricsSync?.stop(), optimizerWorker?.close(), traceArchiveJob?.stop()]);
     await Promise.allSettled([scheduler?.close(), eventBus.close(), queue.close(), webhookQueue?.close(), optimizerQueue?.close()]);
     await dbHandle.close();
     process.exit(0);

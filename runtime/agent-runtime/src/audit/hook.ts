@@ -72,11 +72,18 @@ function responseDetails(response: Record<string, unknown> | null, statusCode: n
     out.gate_mode = gate.mode;
     const exp = asRecord(gate.experiment);
     if (typeof exp.name === 'string') out.gate_experiment = exp.name;
+    if (gate.revalidated === true) out.gate_revalidated = true;
+    if (typeof gate.blocked_reason === 'string') out.gate_blocked_reason = gate.blocked_reason;
+    const reval = asRecord(gate.revalidation);
+    if (typeof reval.id === 'string') out.gate_revalidation = { id: reval.id, verdict: reval.verdict };
   }
   if (statusCode >= 400) {
     if (typeof response.message === 'string') out.message = response.message.slice(0, MESSAGE_MAX);
     const details = asRecord(response.details);
     if (typeof details.required === 'string') out.required = details.required.slice(0, MESSAGE_MAX);
+    if (typeof details.reason === 'string') out.reason = details.reason.slice(0, LABEL_MAX);
+    const reval = asRecord(details.revalidation);
+    if (typeof reval.id === 'string') out.revalidation = { id: reval.id, verdict: reval.verdict };
   }
   return out;
 }

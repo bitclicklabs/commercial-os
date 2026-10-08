@@ -107,7 +107,9 @@ Requisitos: Node.js 22, pnpm, y los contenedores `pxos-postgres` (127.0.0.1:5440
 | `DEFAULT_MODEL_PROVIDER` | `stub` | Proveedor para agentes creados sin `model_provider`: `stub`, `anthropic` o `gemini` |
 | `ANTHROPIC_API_KEY` | vacío | Solo para agentes con `model_provider=anthropic` |
 | `GEMINI_API_KEY` | vacío | API key de Google AI Studio para agentes con `model_provider=gemini` |
-| `GEMINI_MODEL` | `gemini-flash-latest` | Modelo de Gemini si la versión del agente no fija uno |
+| `GEMINI_MODEL` | `gemini-flash-latest` | Modelo de Gemini si la versión del agente no fija uno. Fallback antiguo del routing: debajo de `MODEL_ROUTE_*` y de la versión. Consulta [Routing de modelos por rol](#routing-de-modelos-por-rol) |
+| `MODEL_ROUTE_<ROL>` | vacío | `proveedor:modelo` para un rol (`EXECUTOR_CHEAP`, `EXECUTOR_REASONER`, `TRIAGE`, `JUDGE`, `OPTIMIZER`). Gana a la versión del agente y a `GEMINI_MODEL` / `JUDGE_MODEL`. Se valida al arrancar |
+| `JUDGE_MODEL` | `gemini-pro-latest` | Fallback antiguo del rol `judge` (solo el modelo). `MODEL_ROUTE_JUDGE` gana |
 | `TWENTY_BASE_URL` | `http://localhost:3020` | API REST de Twenty. En el contenedor: `http://pxos-twenty:3000` |
 | `TWENTY_API_KEY` | vacío | API key de Twenty. Sin ella, las tools de Twenty responden `TWENTY_NOT_CONFIGURED` |
 | `TWENTY_TIMEOUT_MS` | `10000` | Timeout por petición a Twenty |
@@ -1129,6 +1131,75 @@ La revalidación: `test/unit/experiments-revalidation.test.ts` fija las reglas p
 DATABASE_URL=postgres://agentos:agentos_dev@127.0.0.1:5440/agentos_wt12_reval pnpm vitest run test/integration/experiments-revalidation.test.ts
 ```
 
+## Routing de modelos por rol
+
+El código pide un **rol**, nunca un modelo (LLD v0.1 §18). `src/providers/model-router.ts` resuelve cada rol a `(proveedor, modelo)`. Sin tocar el entorno, el routing reproduce exactamente los modelos de antes del router.
+
+| Rol | Quién lo pide | Modelo por defecto |
+|---|---|---|
+| `executor_cheap` | EmailDrafter, BajasAgent, agentes stub y smoke | `gemini:gemini-flash-latest` |
+| `executor_reasoner` | Prospector (con EventScout) y el ejecutor de `experiment:run`, `skill:compare` y el Skill Optimizer | `gemini:gemini-flash-latest` |
+| `triage` | Clasificador de respuestas del InboxAgent | `gemini:gemini-flash-latest` |
+| `judge` | Evaluadores `LLM_JUDGE` (`pnpm evaluate`, experimentos, optimizador) | `gemini:gemini-pro-latest` |
+| `optimizer` | Clustering y propuesta del Skill Optimizer | `gemini:gemini-flash-latest` |
+
+El rol de un agente sale de su implementación (`configuration.implementation`). Una versión puede fijar otro rol ejecutor con `configuration.model_role` (`executor_cheap`, `executor_reasoner` o `triage`; nunca `judge`).
+
+### Precedencia
+
+En cada resolución gana lo primero que aplique:
+
+1. `MODEL_ROUTE_<ROL>=proveedor:modelo`, por ejemplo `MODEL_ROUTE_EXECUTOR_REASONER=gemini:gemini-3.5-flash-lite`. Proveedores: `stub`, `anthropic` y `gemini`.
+1. El modelo **fijado por la versión del agente** (`agent_versions.model` y `model_provider`). Es estado versionado y gana a cualquier valor por defecto. Las versiones `stub` son fixtures de test y no se re-enrutan nunca, ni siquiera con el paso 1.
+1. Las variables **antiguas**, que siguen funcionando como fallback para no romper despliegues:
+   - `JUDGE_MODEL` para el rol `judge` (solo el modelo; el proveedor se infiere: `claude-*` es Anthropic y el resto, Gemini).
+   - `GEMINI_MODEL` para el resto de roles. **Nunca** re-enruta una versión que fija su modelo: como antes, solo rellena lo que no lo fija (versiones nuevas de Gemini creadas por API, el modelo del optimizador y las peticiones a Gemini con un modelo que no es de Gemini).
+1. La tabla del código `DEFAULT_MODEL_ROUTES`.
+
+Si `MODEL_ROUTE_<ROL>` y su variable antigua están las dos puestas y nombran modelos distintos, gana `MODEL_ROUTE_<ROL>` y el arranque deja un aviso en el log (`[model-router] ... discrepan ...`). Las CLI lo imprimen como `aviso:`.
+
+Los valores de `MODEL_ROUTE_*` se validan al arrancar, tanto el proceso como las CLI. Un formato inválido, un proveedor desconocido o un modelo **sin precio** en las tablas (`gemini-pricing.ts`, `ANTHROPIC_PRICING`) detienen el arranque con un mensaje que nombra la variable: un modelo sin precio costaría 0 y dejaría ciegos los presupuestos. Las variables antiguas se validan como antes, sin exigir precio; un modelo sin precio solo deja un aviso.
+
+> **Importante:** el grounding con Google Search (EventScout, Prospector) solo existe en Gemini. Si mueves `executor_reasoner` a Anthropic, esas llamadas pierden la búsqueda.
+
+### Independencia del juez
+
+El juez nunca puede ser el modelo del ejecutor del mismo experimento, y los alias cuentan (`gemini-flash-latest` es `gemini-3.8-flash`). `experiment:run`, `optimize:run` y el worker del optimizador resuelven las dos rutas con `experimentRoutes` y, si coinciden, se paran antes de crear nada con un error claro: exit 2 en las CLI y el run del optimizador en `ERROR`. El runner también lo comprueba al empezar (`ExperimentAbortedError` `invalid`), antes de leer o gastar nada.
+
+### Ejemplo: mover el juez a Anthropic sin tocar código
+
+```sh
+# runtime/agent-runtime/.env (o deployments/.env)
+ANTHROPIC_API_KEY=sk-ant-...
+MODEL_ROUTE_JUDGE=anthropic:claude-sonnet-5-5
+```
+
+Reinicia el runtime. El arranque valida la ruta, y `pnpm evaluate`, `pnpm experiment:run` y el optimizador ya usan `claude-sonnet-5-5` como juez. El experimento lo guarda en `config.judge` (`model`, `role` y `route_source`).
+
+### Techo de coste del harness
+
+El router acepta un techo (`ceiling`): nunca resuelve a un modelo más caro (entrada + salida por 1M tokens) que el techo. Si lo haría, usa el techo y la ruta lo indica en `capped`. Hoy **ninguna** harness lleva política de modelo (D1 MODEL vive en la versión del agente), así que el processor no pasa techo. Es el gancho para cuando una versión de harness tenga ese campo: se pasa como `{ ceiling }` a `routeAgentVersion` en `RunProcessor.runAgent`, sin más cambios.
+
+### Traza
+
+Cada llamada ya guarda el modelo exacto que la sirvió (`trace_steps.model`). Además, la traza guarda la ruta resuelta en `traces.harness.model_route` (`role`, `provider`, `model`, `source` y, si aplica, `env`). No hace falta migración: es un campo del jsonb existente.
+
+### Costes y la subida de 2027: `pnpm models:costs`
+
+El 2027-01-01, `gemini-3.6-flash`, `gemini-3.7-flash` y `gemini-3.8-flash` (la que sirve `gemini-flash-latest`) duplican precio: la entrada pasa de 0,75 a 1,50, la salida de 3,75 a 7,50 y la caché de 0,075 a 0,15 USD por 1M tokens. `pnpm models:costs` es de solo lectura y muestra:
+
+- Cada rol con su modelo actual, el precio de hoy, el precio desde la fecha (`--at`, por defecto `2027-01-01`) y el cambio en %.
+- El volumen de los últimos `--days` días (30 por defecto) con el routing actual: ejecuciones de agentes (tokens reales, re-tarificados), experimentos (ejecutor y juez) y llamadas propias del optimizador. Los experimentos y el optimizador solo guardan EUR, así que se escalan por el cociente de precios. Cada fila trae el coste real, el proyectado hoy y el proyectado en la fecha, con totales por rol.
+
+```sh
+pnpm models:costs                                   # routing actual, último mes, precios 2027
+pnpm models:costs -- --tenant publiexpe --days 30 --json
+# ¿Y si movemos el Prospector a flash-lite antes de la subida?
+MODEL_ROUTE_EXECUTOR_REASONER=gemini:gemini-3.5-flash-lite pnpm models:costs
+```
+
+Los mismos datos están por HTTP en `GET /metrics/model-costs?since=&until=&at=2027-01-01` (sin ventana, los últimos 30 días). La proyección es solo de tokens: el grounding (que se cobra por consulta) y las tools no cambian con el precio por token y no se modelan.
+
 ## Skill Optimizer
 
 El Skill Optimizer (LLD v0.1 §18, MVP-3) recorre solo el ciclo de mejora de una skill: cosecha sus fallos en producción, los agrupa por patrón, propone una candidata acotada, la pasa por un experimento contra la versión `ACTIVE` y deja la decisión del Release Gate. **Nunca activa nada:** si el gate da `PASS` o `PASS_FORM`, deja en Twenty una nota «Propuesta de promoción — `<skill>` v`<N>`», y la activación sigue siendo una decisión humana por `POST /skills/:id/versions/:v/activate`, que vuelve a comprobar el gate. El código está en `src/optimizer/`.
@@ -1156,7 +1227,7 @@ Cada transición es un `UPDATE … WHERE status IN (<orígenes válidos>)`: dos 
 
    Con menos de `min_failures` fallos (3 por defecto) termina en `BLOCKED_NO_DATA` sin llamar a ningún modelo.
 1. **Comprobación de datos (P5)**, en simulación: cosecha el dataset (`prospeccion-v1` por defecto) sin escribir y cuenta los casos etiquetados de `VALIDATION` sin quemar, quitando las entidades de los fallos (son material de diseño de este run). Con menos de `min_labeled_validation` (5 por defecto) termina en `BLOCKED_NO_DATA` y el mensaje dice cuántos faltan y cuántos están quemados.
-1. **Clustering** con el modelo ejecutor (`GEMINI_MODEL`, `gemini-flash-latest`). Los fallos van en un bloque `DATOS_NO_CONFIABLES`; la respuesta se valida con zod (ids conocidos, un fallo en un cluster como mucho) y se reintenta una vez con el error.
+1. **Clustering** con el rol `optimizer` del [routing](#routing-de-modelos-por-rol) (`MODEL_ROUTE_OPTIMIZER`, si no `GEMINI_MODEL`, si no `gemini-flash-latest`). Los fallos van en un bloque `DATOS_NO_CONFIABLES`; la respuesta se valida con zod (ids conocidos, un fallo en un cluster como mucho) y se reintenta una vez con el error.
 1. **Candidata:** el modelo propone como mucho 5 operaciones (`ADD`, `REMOVE`, `REPLACE`, `MOVE`, `REORDER`) sobre el texto `ACTIVE`, cada una con su `why` y los clusters que ataca. `src/skills/edit-ops.ts` las aplica con los topes de 35 % borrado y 50 % añadido, y la regla de contenido web no confiable debe quedar intacta. Si los topes la rechazan, reintenta una vez pidiendo ser más conservador; si vuelve a fallar, `ERROR` con los dos intentos en `details.proposal_attempts`. La versión se crea `DRAFT` con el servicio de skills, con un `change_reason` que cita el run y los clusters, y `metadata` con las operaciones, su tamaño y los datos de diseño.
 1. **Dataset y P5:** construye la versión siguiente del dataset (los casos quemados siguen quemados y van a `TRAIN`) y marca con `markUsed` como `design` (experimento `OPT-xxxxxxxx`) los casos de las entidades de los fallos **antes** del experimento. Vuelve a contar `VALIDATION` y, si no llega al mínimo, `BLOCKED_NO_DATA`.
 1. **Experimento:** el runner de `pnpm experiment:run`, con la `ACTIVE` como baseline y la candidata, sobre ese dataset (por uuid) y con un CRM en memoria (`MemoryTwenty`: nada llega a Twenty). Registra `experiment_id` y el veredicto.

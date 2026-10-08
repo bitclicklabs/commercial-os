@@ -4,6 +4,8 @@
  * - GET /metrics/agents       - per agent and version: runs, cost, outcome and human acceptance.
  *                               ARCHIVED agents are hidden unless `include_archived=true`.
  * - GET /metrics/evaluations  - human verdicts per day and per subject.
+ * - GET /metrics/model-costs  - roles -> routed model -> price today and on `at` (default
+ *                               2027-01-01) and the window's volume repriced (`pnpm models:costs`).
  * - GET /metrics/runs         - latest TaskRuns (compact) with the link to their trace (same
  *                               `include_archived` rule). /metrics/summary always counts every run.
  * - GET /dashboard            - static HTML page over the endpoints above (local requests only).
@@ -11,7 +13,9 @@
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { z } from 'zod';
 import { DASHBOARD_HTML } from '../../metrics/dashboard.js';
+import { MODEL_COSTS_DEFAULT_DAYS, modelCostProjection, NEXT_PRICE_CHANGE } from '../../metrics/model-costs.js';
 import { metricsAgents, metricsEvaluations, metricsSummary, recentRuns } from '../../metrics/queries.js';
+import { defaultModelRouter, ModelRouteError } from '../../providers/model-router.js';
 import type { ApiContext } from '../context.js';
 import { HttpError, parse, tenantOf } from '../http.js';
 
@@ -56,6 +60,13 @@ export const RecentRunsQuery = z.object({
   limit: z.coerce.number().int().min(1).max(100).default(10),
   include_archived: IncludeArchived,
 });
+
+export const ModelCostsQuery = z
+  .object({
+    ...windowFields,
+    at: z.iso.date().default(NEXT_PRICE_CHANGE),
+  })
+  .refine((q) => !q.since || !q.until || new Date(q.since) < new Date(q.until), { message: 'since must be before until' });
 
 const toDate = (v: string | undefined) => (v ? new Date(v) : undefined);
 
@@ -108,6 +119,22 @@ export async function metricsRoutes(app: FastifyInstance, ctx: ApiContext): Prom
       timezone: q.tz,
       subjectLimit: q.subject_limit,
     });
+  });
+
+  /** Read-only: no window = the last 30 days. */
+  app.get('/metrics/model-costs', async (req) => {
+    const tenantId = tenantOf(req, ctx.config.defaultTenantId);
+    const q = parse(ModelCostsQuery, req.query);
+    const until = toDate(q.until) ?? new Date();
+    const since = toDate(q.since) ?? new Date(until.getTime() - MODEL_COSTS_DEFAULT_DAYS * 86_400_000);
+    let router;
+    try {
+      router = defaultModelRouter();
+    } catch (err) {
+      if (err instanceof ModelRouteError) throw new HttpError(500, 'model_route_invalid', err.message);
+      throw err;
+    }
+    return modelCostProjection(db, { tenantId, since, until, router, at: q.at });
   });
 
   app.get('/metrics/runs', async (req) => {

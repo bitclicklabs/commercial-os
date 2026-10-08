@@ -11,6 +11,7 @@ El sistema propone; tú decides. El sistema nunca contacta con nadie por su cuen
 1. [Cómo leer una hipótesis](#cómo-leer-una-hipótesis)
 1. [Tu rutina diaria de 10 minutos](#tu-rutina-diaria-de-10-minutos)
 1. [Borradores de email](#borradores-de-email)
+1. [Respuestas a tus envíos](#respuestas-a-tus-envíos)
 1. [Estados: cuándo usar cada uno](#estados-cuándo-usar-cada-uno)
 1. [Por qué tu feedback importa](#por-qué-tu-feedback-importa)
 1. [Preguntas frecuentes](#preguntas-frecuentes)
@@ -233,6 +234,24 @@ Para el detalle del procedimiento, consulta [Gestión de bajas y lista de supres
 - **No pongas `Reviewed` sin haber comprobado la lista de supresión.**
 
 > **Importante:** el borrador no es un correo enviado. Si no pones `Reviewed` y pulsas tú el envío (o lo envías a mano), el correo no sale.
+
+## Respuestas a tus envíos
+
+Cuando alguien contesta a un correo de prospección, la respuesta llega a tu bandeja como siempre. Además, cada 2 horas el sistema lee el buzón, la clasifica y, si es una respuesta que te interesa, deja un aviso en Twenty. **El sistema nunca contesta por ti**: responder es siempre cosa tuya, desde tu correo.
+
+Dónde aparece el aviso: como **nota en la ficha de la empresa** (y en la hipótesis, cuando se ha podido asociar). Qué hacer con cada una:
+
+| Qué ves | Qué significa | Qué haces |
+|---|---|---|
+| Nota **📬 Respuesta recibida — INTERESADO** | La persona quiere saber más o hablar | Responde desde tu correo lo antes posible. Lee el correo original: la nota solo trae un extracto |
+| Nota **📬 Respuesta recibida — PREGUNTA** | Pregunta algo concreto sin comprometerse | Responde la duda desde tu correo. Si revela datos erróneos en la hipótesis, corrígelos allí |
+| Nota **⚠️** de email inexistente | El correo rebotó: la dirección no existe | Busca otra dirección válida y corrígela en **Email to**. No vuelvas a enviar a la que rebotó |
+| Nueva línea en la `Lista de supresión — NO contactar` | Una baja, o un "no me interesa" explícito | No hagas nada y **no vuelvas a escribir** a esa dirección |
+| Nada | Una respuesta automática (fuera de oficina) o un mensaje que el sistema no sabe clasificar | Si esperabas respuesta, mira tu bandeja |
+
+Ante la duda, el sistema no avisa y no suprime: nunca da de baja a nadie salvo que lo haya pedido de forma clara. Si una respuesta importante no tiene nota, no significa que no exista: la bandeja manda.
+
+Cómo funciona por dentro, las garantías y el evento para n8n están en [Triaje del inbound](inbound-triaje.md).
 
 ## Estados: cuándo usar cada uno
 

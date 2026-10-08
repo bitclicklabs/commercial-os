@@ -87,6 +87,8 @@ Todos los comandos `docker compose` de este runbook se ejecutan desde `deploymen
 | `TWENTY_API_KEY` | `${TWENTY_API_KEY:-}` | API key de Twenty para que el runtime escriba en el CRM. Debe tener el rol restringido «Agent runtime» ([Rol de la API key](#rol-de-la-api-key-de-twenty)) |
 | `IONOS_IMAP_HOST` / `IONOS_IMAP_USER` / `IONOS_IMAP_PASSWORD` | `${IONOS_IMAP_*:-}` | Buzón que lee el BajasAgent, **solo lectura**. Sin usuario o contraseña, la tarea `process-unsubscribes` termina `SKIPPED` y no lee nada |
 | `RENDERER_URL` | `http://pxos-renderer:3000` | Servicio de render de JavaScript del scout |
+| `TRACE_RETENTION_DAYS` | consulta el README del runtime | Antigüedad (en días) a partir de la cual `pnpm traces:archive` archiva los payloads pesados cuando no se indica `--older-than`. Solo manual: ningún proceso archiva por su cuenta. Consulta [Archivado de trazas](#archivado-de-trazas) |
+| `TRACE_ARCHIVE_DIR` | consulta el README del runtime | Directorio donde `pnpm traces:archive` escribe los JSONL comprimidos. Debe estar en un volumen persistente (consulta [Archivado de trazas](#archivado-de-trazas)) |
 
 > **Nota:** el puente de eventos con n8n ([`docs/n8n-integracion.md`](n8n-integracion.md)) necesita `EXTERNAL_EVENTS_TOKEN` y, para destinos privados, `EXTERNAL_WEBHOOK_ALLOW_PRIVATE`. El `docker-compose.yml` actual no las pasa a `pxos-runtime`: sin ellas, `POST /events/external` responde `503`. Añádelas al bloque `environment` solo si vas a usar el puente.
 
@@ -155,7 +157,7 @@ Las contraseñas de Postgres solo se aplican al crear el volumen por primera vez
    | `0007_email_sends` | Tabla `email_sends` (envíos observados desde Twenty) |
    | `0008_harness` | Tablas `harnesses` y `harness_versions` (inmutables por trigger) y las columnas `agent_versions.harness_ref` y `traces.harness` |
 
-   Las migraciones posteriores (`0009` y siguientes, si llegan) se aplican igual. Para comprobar cuáles están aplicadas (la tabla es la que crea Drizzle por defecto `[NO VERIFICADO]` en esta instancia):
+   Las migraciones posteriores (`0009` y siguientes) se aplican igual. La tanda 12 añade `audit_log` (`0015_audit_log`) y, según la implementación, la tabla `experiment_revalidations` (revalidación de `PASS_FORM`) y los cambios del triaje del inbound; el detalle está en el README del runtime. Antes de fusionarlas, repite la comprobación de fechas del journal que se describe más abajo. Para comprobar cuáles están aplicadas (la tabla es la que crea Drizzle por defecto `[NO VERIFICADO]` en esta instancia):
 
    ```bash
    docker exec pxos-postgres psql -U agentos -d agentos -c "SELECT id, created_at FROM drizzle.__drizzle_migrations ORDER BY id"
@@ -294,7 +296,7 @@ Tu parte como operador es comprobar que la ejecución ha ocurrido:
 
 1. El canal de email de prospección en frío (`publiexpe.info`) tiene su propia operación diaria y semanal: checklists, vigilancia de informes DMARC y Postmaster Tools, y el calendario de warm-up. Sigue el [plan de warm-up del canal de email](email-warmup.md). El sistema solo deja borradores en Twenty; los envíos los hace una persona, con un clic desde Twenty ([Enviar los borradores desde Twenty](twenty-envio-email.md)) o a mano desde el webmail.
 
-1. Comprueba que la tarea `process-unsubscribes` (cada 2 horas) se ejecuta: `curl "http://127.0.0.1:4020/tasks/<TASK_ID>/runs" -H 'x-tenant-id: publiexpe'`. Un `outcome` `SKIPPED` con el motivo `IMAP no configurado` indica que faltan `IONOS_IMAP_USER` o `IONOS_IMAP_PASSWORD`.
+1. Comprueba que la tarea `process-unsubscribes` (cada 2 horas) se ejecuta: `curl "http://127.0.0.1:4020/tasks/<TASK_ID>/runs" -H 'x-tenant-id: publiexpe'`. Un `outcome` `SKIPPED` con el motivo `IMAP no configurado` indica que faltan `IONOS_IMAP_USER` o `IONOS_IMAP_PASSWORD`. Desde la tanda 12 la tarea no solo procesa bajas: clasifica todo el buzón (respuestas, rebotes y automáticos). Consulta [Triaje del inbound](inbound-triaje.md#operación).
 1. Si el comercial avisa de que una hipótesis se queda en `Email status` = `Sending`, abre **Workflows → Runs** en Twenty y revisa la ejecución de **Enviar borrador de email**. No relances el envío hasta saber si el correo salió.
 
 > **Nota:** la tarea usa por defecto la entrada de ejemplo del seed (expositores ficticios con dominio `.example`). Los registros que genera son de demostración. El scouting semanal de ferias reales (lunes 07:30) y la captura del feedback del comercial están activos.
@@ -402,6 +404,72 @@ Rota la clave si se filtra, caduca o el runtime recibe `401` de Twenty.
 
 > **Nota:** el runtime usa `TWENTY_API_KEY` en cada escritura (tools de Twenty del Prospector). Si la clave es inválida, la ejecución registra el error `TWENTY_NOT_CONFIGURED` (sin clave) o `TWENTY_UNAUTHORIZED` (clave rechazada) en el trace.
 
+## Archivado de trazas
+
+Las trazas (`trace_steps`) guardan los payloads de cada paso: prompts, respuestas del modelo y resultados de herramientas. Con el tiempo son lo que más pesa en la base del Agent OS. La política de retención del [LLD v0.1, sección 22](LLD-0.1-publiexpe-commercial-os.md) se aplica **sin pérdida**: los payloads pesados se exportan a un fichero y el paso conserva un puntero, de modo que la traza sigue siendo legible.
+
+> **Importante:** por ahora el archivado es **solo manual**. Ninguna tarea programada lo ejecuta; lo lanzas tú cuando quieras liberar espacio.
+
+### Variables
+
+| Variable | Uso |
+|---|---|
+| `TRACE_RETENTION_DAYS` | Antigüedad por defecto, en días, de lo que se archiva. El argumento `--older-than` la sustituye |
+| `TRACE_ARCHIVE_DIR` | Directorio de destino de los ficheros JSONL comprimidos |
+
+> **Precaución:** `TRACE_ARCHIVE_DIR` debe apuntar a un volumen que sobreviva al contenedor. Si el comando corre dentro de `pxos-runtime` y el directorio está en el sistema de ficheros efímero, perderás el archivo al recrear el contenedor y los punteros quedarán rotos. El `docker-compose.yml` actual puede no pasar estas variables ni montar un volumen: compruébalo antes de la primera vez. Incluye el directorio en tus copias de seguridad: [Backup](#backup) solo cubre las bases de datos.
+
+### Archivar
+
+Desde `runtime/agent-runtime/`, con `DATABASE_URL` apuntando a `127.0.0.1:5440`:
+
+```bash
+cd runtime/agent-runtime
+pnpm traces:archive --older-than 90
+```
+
+El comando, por cada traza más antigua que el umbral:
+
+1. Escribe los payloads pesados de sus pasos en un fichero JSONL comprimido dentro de `TRACE_ARCHIVE_DIR`.
+1. **Verifica lo escrito**: vuelve a leer el fichero y comprueba que cada línea coincide con el original.
+1. Solo si la verificación es correcta, sustituye el payload del paso por un puntero `{archived, file, line}`.
+
+Si la verificación falla, el paso no se toca y el comando lo indica. Nada se borra antes de comprobar que está a salvo en el archivo.
+
+> **Nota:** las trazas son inmutables por triggers de la base de datos. Si los triggers no permiten sustituir el payload por el puntero, el archivado deja los ficheros exportados y verificados y **no modifica** el paso. En ese caso se libera espacio con otra vía, que decide el responsable técnico con la evidencia en la mano. Consulta el README del runtime para saber qué modo aplica en tu versión.
+
+### Comprobar y leer una traza archivada
+
+Una traza archivada sigue siendo legible: el runtime lee el JSONL en el momento de consultarla y devuelve el payload completo (rehidratación bajo demanda). No necesitas hacer nada especial:
+
+```bash
+curl -s "http://127.0.0.1:4020/executions/<EXECUTION_ID>" -H 'x-tenant-id: publiexpe' | jq '.trace.steps[0]'
+```
+
+Para ver qué ficheros se han generado, lista el directorio de archivo (`ls -lh "$TRACE_ARCHIVE_DIR"`); el puntero de un paso archivado indica el fichero y la línea que contienen su payload.
+
+> **Nota:** si un fichero archivado falta, la traza no se puede rehidratar y el paso devuelve el puntero tal cual. Restaura el archivo desde la copia de seguridad.
+
+## Consultar el audit log
+
+Desde la tanda 12 toda acción mutante de la API deja una fila en la tabla `audit_log` (migración `0015`), de solo añadir: activaciones, `force` con su motivo, canario (arranque, promoción, rollback), cierres del optimizador y altas en la lista de supresión. No se edita ni se borra.
+
+Consúltalo con la API:
+
+```bash
+curl -s "http://127.0.0.1:4020/audit" -H 'x-tenant-id: publiexpe' | jq '.items[:5]'
+```
+
+Para qué sirve:
+
+- **Saber quién forzó una activación**: busca las entradas con motivo (`force`). El motivo tiene un mínimo de 10 caracteres.
+- **Reconstruir qué pasó con una versión**: activación, canario, promoción y rollback aparecen en orden.
+- **Auditar las supresiones**: cada alta en la lista (baja o rechazo explícito) consta con su origen.
+
+La respuesta admite filtros y paginación; los nombres exactos de los parámetros y de los campos están en el [README del runtime](../runtime/agent-runtime/README.md).
+
+> **Nota:** `GET /audit` solo lee, y el runtime escucha en `127.0.0.1` sin autenticación propia, como el resto de la API de administración. No expongas el puerto fuera del host.
+
 ## Parada segura
 
 1. Comprueba si hay ejecuciones en curso antes de parar:
@@ -462,6 +530,7 @@ Si cambias `SERVER_URL`, reinicia `pxos-twenty` y `pxos-twenty-worker`. Debe coi
 | Bajas detectadas por el BajasAgent | `GET /tasks/:id/runs` de `process-unsubscribes` y la nota `Lista de supresión — NO contactar` |
 | Resumen comercial de una ejecución | Objeto `agentRunSummary` en Twenty (**Agent runs**), con enlace al trace |
 | Historial de una tarea | `GET /tasks/:id/runs` |
+| Quién hizo una acción mutante (activación, `force`, canario, supresión) | `GET /audit`: [Consultar el audit log](#consultar-el-audit-log) |
 
 Opciones útiles de `docker compose logs`:
 
@@ -520,6 +589,7 @@ ORDER BY created_at DESC;
 | `POST /events/external` devuelve `503` | `EXTERNAL_EVENTS_TOKEN` no está definido en el runtime (el compose actual no lo pasa) | Añádelo al `environment` de `pxos-runtime` y recrea el servicio. |
 | Una hipótesis se queda en `Email status` = `Sending` | El envío falló o sigue en curso | Revisa **Workflows → Runs**. No pulses de nuevo hasta saber si el correo salió: si salió, pon `Sent` a mano; si falló, corrige la causa y vuelve a poner `Reviewed`. |
 | `process-unsubscribes` termina `SKIPPED` | Faltan `IONOS_IMAP_USER` o `IONOS_IMAP_PASSWORD` en el runtime | Añádelas a `deployments/.env` y recrea `pxos-runtime`. |
+| Un intento sano muere con un error de `stalled` de BullMQ tras una re-entrega | Camino de stall de la cola (deuda documentada de la tanda 11) | Desde la tanda 12, una re-entrega con latido fresco ya no mata el intento en curso. Si lo ves en una versión anterior, actualiza el runtime. |
 | Hipótesis duplicadas en Twenty | Fallo de idempotencia | Conserva los datos, anota las `idempotencyKey` afectadas y abre una incidencia. No borres registros sin revisión. |
 
 ## Backup
@@ -559,4 +629,5 @@ Guarda los volcados **fuera** del repositorio. `[POR COMPLETAR]` Ubicación y ro
 - [Plan de warm-up del canal de email](email-warmup.md)
 - [Enviar los borradores desde Twenty](twenty-envio-email.md)
 - [Integración de eventos con n8n](n8n-integracion.md)
+- [Triaje del inbound](inbound-triaje.md)
 - [LLD v0.3: estado real y ADR](LLD-0.3-estado-real.md)

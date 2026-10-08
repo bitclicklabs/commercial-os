@@ -11,6 +11,7 @@ El sistema propone; tú decides. El sistema nunca contacta con nadie por su cuen
 1. [Cómo leer una hipótesis](#cómo-leer-una-hipótesis)
 1. [Tu rutina diaria de 10 minutos](#tu-rutina-diaria-de-10-minutos)
 1. [Borradores de email](#borradores-de-email)
+1. [Respuestas de los clientes](#respuestas-de-los-clientes)
 1. [Estados: cuándo usar cada uno](#estados-cuándo-usar-cada-uno)
 1. [Por qué tu feedback importa](#por-qué-tu-feedback-importa)
 1. [Preguntas frecuentes](#preguntas-frecuentes)
@@ -253,6 +254,9 @@ Qué debes saber:
 - **En caso de duda, el sistema no decide.** Una respuesta ambigua ("ahora no", "escribidme en enero", "habla con mi compañera") queda como *Otro* y no crea nota ni da de baja a nadie.
 - **Las notas se buscan por el título.** Filtra las notas por "Respuesta recibida" para ver las de los últimos días.
 - Si el remitente no corresponde a ningún envío ni a ninguna empresa de Twenty (por ejemplo, una dirección de Gmail), no hay nota: el correo queda en tu bandeja.
+
+Cómo funciona por dentro, las garantías y el evento para n8n están en [Triaje del inbound](inbound-triaje.md).
+
 
 ## Estados: cuándo usar cada uno
 

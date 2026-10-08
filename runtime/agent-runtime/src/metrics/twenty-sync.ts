@@ -13,6 +13,10 @@
  *   one warning per distinct error and tries again on the next tick. Nothing throws out of the
  *   timer, and the runtime API and /dashboard are unaffected.
  * - Opt-in: METRICS_TWENTY_SYNC_ENABLED=true (scheduler role). See .env.example.
+ * - Passive counter of re-validations (optional `revalidations` probe): each tick also counts the
+ *   PASS_FORM experiments ready to re-validate (src/experiments/revalidation-service.ts) and logs
+ *   the number when it changes. It never writes it to Twenty (the agentOsDailyMetric object has
+ *   no field for it) and never re-validates: that stays manual (POST /experiments/:id/revalidate).
  */
 import type { Db } from '../db/client.js';
 import { warmupDay, WARMUP_TIMEZONE, type WarmupStage } from '../email-ops/warmup.js';
@@ -168,18 +172,23 @@ export interface TwentyMetricsSyncOptions {
   now?: () => Date;
   /** Defaults to the real `metricsSummary` over `db`. */
   summary?: SummaryFn;
+  /** Counts the re-validations ready to run (PASS_FORM experiments with fresh labels); logged when it changes. */
+  revalidations?: () => Promise<number>;
 }
 
 export interface SyncResult {
   ok: boolean;
   days: Array<{ date: string; result: 'created' | 'updated' }>;
   error?: { code: string; message: string };
+  /** Re-validations ready to run (only with the `revalidations` probe; null if the count failed). */
+  revalidations_ready?: number | null;
 }
 
 export class TwentyMetricsSync {
   private timer: NodeJS.Timeout | undefined;
   private running: Promise<SyncResult> | undefined;
   private lastErrorKey: string | undefined;
+  private lastRevalidations: number | undefined;
   private readonly summary: SummaryFn;
   private readonly days: number;
   private readonly timezone: string;
@@ -205,10 +214,29 @@ export class TwentyMetricsSync {
 
   /** One pass over the last `days` local days. Never throws; overlapping calls share one pass. */
   syncOnce(days = this.days): Promise<SyncResult> {
-    this.running ??= this.run(days).finally(() => {
-      this.running = undefined;
-    });
+    this.running ??= this.run(days)
+      .then((r) => this.withRevalidations(r))
+      .finally(() => {
+        this.running = undefined;
+      });
     return this.running;
+  }
+
+  /** Adds the passive re-validation counter to a tick. Never throws. */
+  private async withRevalidations(out: SyncResult): Promise<SyncResult> {
+    if (!this.opts.revalidations) return out;
+    let n: number | null;
+    try {
+      n = await this.opts.revalidations();
+    } catch (err) {
+      this.opts.logger?.warn({ err: err instanceof Error ? err.message : String(err) }, 'revalidation counter failed');
+      return { ...out, revalidations_ready: null };
+    }
+    if (n !== this.lastRevalidations && (n > 0 || this.lastRevalidations !== undefined)) {
+      this.opts.logger?.info({ revalidations_ready: n }, `revalidaciones disponibles: ${n} (GET /experiments/pending-revalidation)`);
+    }
+    this.lastRevalidations = n;
+    return { ...out, revalidations_ready: n };
   }
 
   private async run(days: number): Promise<SyncResult> {

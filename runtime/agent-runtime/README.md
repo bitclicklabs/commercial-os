@@ -39,7 +39,7 @@ runtime/agent-runtime/
 │   ├── skills/               Skills versionadas (MVP-1): render, resolución desde la BD con fallback a las constantes, ciclo de estados
 │   ├── harness/              Harness versionado (MVP-1): config v1 por dimensiones, precedencia, resolución desde la BD con fallback y ciclo de estados
 │   ├── datasets/             Datasets de evaluación (MVP-2): cosecha de trazas y veredictos, split determinista, registro de exclusiones de EXP-001/EXP-002 y control de contaminación (markUsed)
-│   ├── experiments/          Experiments y Release Gate (MVP-2): runner de pnpm experiment:run, criterios del gate (seesaw, PASS_FORM), tabla experiments y candado de la activación
+│   ├── experiments/          Experiments y Release Gate (MVP-2): runner de pnpm experiment:run, criterios del gate (seesaw, PASS_FORM), tabla experiments, candado de la activación y revalidación de los PASS_FORM
 │   ├── optimizer/            Skill Optimizer (MVP-3): cosecha de fallos, clustering, candidata con edit-ops, P5, experimento, nota de promoción, tabla optimization_runs y cola {QUEUE_NAME}-optimizer
 │   ├── services/             Lanzamiento idempotente de TaskRuns
 │   └── worker/               RunProcessor, worker BullMQ, locks por entidad y reconciliador
@@ -161,6 +161,7 @@ El esquema vive en `src/db/schema.ts`. Todas las tablas llevan `tenant_id` (C6).
 | `0011_experiments` | Tabla `experiments` (LLD §11.5-11.6): triggers anti-`DELETE`, un experimento nace `DRAFT` o `RUNNING`, identidad y `config` inmutables, transiciones válidas y un experimento terminado (`COMPLETED`, `FAILED`, `CANCELLED`) inmutable entero. SQL idempotente. `when` 1791376000000 e idx 11. Consulta [Experiments y Release Gate](#experiments-y-release-gate) |
 | `0012_skill_canaries` | Tabla `skill_canaries` del canario post-gate: un solo canario `ACTIVE` por skill (índice único parcial); triggers sin `DELETE`, identidad/versiones/porcentaje/experimento inmutables, solo `ACTIVE → PROMOTED | ROLLED_BACK` y un canario terminado es inmutable. SQL idempotente. `when` 1791376200000 e idx 12. Consulta [Canario](#canario-de-skills) |
 | `0013_optimization_runs` | Tabla `optimization_runs` del Skill Optimizer (LLD §18): trigger anti-`DELETE`, CHECK de estados y veredicto, e índice único parcial que permite un solo run abierto por skill. Las transiciones son `UPDATE` guardados por estado en el código (sin trigger de inmutabilidad). SQL idempotente. `when` 1791376300000 e idx 13, detrás de `0012_skill_canaries` (ADR-31: la 0012 del canario se aplicó antes a la BD compartida y el migrador solo avanza por `when`). Consulta [Skill Optimizer](#skill-optimizer) |
+| `0016_experiment_revalidations` | Tabla `experiment_revalidations` (revalidación de experimentos `PASS_FORM`): sin `DELETE` (trigger), fila inmutable salvo `consequence` (nota y evento), que se escribe una sola vez desde `{}`; única por `(tenant_id, experiment_id, labels_hash)`; `CHECK` de veredicto (`CONFIRMED`, `REFUTED`, `INSUFFICIENT`), de `outputs_source` y de `cost_eur = 0`. SQL idempotente. `when` 1791450200000; la 0014 y la 0015 son de otras ramas y el idx lo re-encadena la fusión (ADR-31). Consulta [Revalidación de los PASS_FORM](#revalidación-de-los-pass_form) |
 
 Importante: el migrador de Drizzle aplica solo las migraciones con fecha posterior a la última aplicada. Si dos ramas generan migraciones en paralelo contra la misma BD de desarrollo, aplica primero la más antigua o regenera la nueva tras el merge.
 
@@ -250,6 +251,8 @@ Cabecera opcional `x-tenant-id` en todas las rutas. Las respuestas usan `snake_c
 | `POST /datasets/:id/mark-used` | Registra qué experimento usó qué casos y en qué papel (`design`, `validation`, `test`) |
 | `POST /datasets/:id/activate`, `/archive` | Ciclo de vida de una versión. No hay `DELETE` |
 | `GET /experiments`, `GET /experiments/:id` | Experimentos (solo lectura; `:id` admite el uuid o `EXP-003`). Filtros `subject_type`, `subject_name`, `candidate_version`, `status`. Consulta [Experiments y Release Gate](#experiments-y-release-gate) |
+| `POST /experiments/:id/revalidate` | Revalida un `PASS_FORM` con las etiquetas humanas que llegaron después, sobre las salidas guardadas (sin LLM, coste 0). `201` fila nueva, `200` si ya existía con esas etiquetas. Consulta [Revalidación de los PASS_FORM](#revalidación-de-los-pass_form) |
+| `GET /experiments/:id/revalidations`, `GET /experiments/pending-revalidation` | Revalidaciones de un experimento; `PASS_FORM` cuya versión sigue `ACTIVE` o en canario, con las etiquetas utilizables y frescas |
 | `POST /optimizer/skills/:name/run` | Lanza un run del [Skill Optimizer](#skill-optimizer) sobre la versión `ACTIVE` (`202`, lo procesa el worker). `409` si la skill ya tiene un run abierto, `422` si no hay runner para la skill |
 | `GET /optimizer/runs`, `GET /optimizer/runs/:id` | Runs del optimizador (filtros `skill`, `status`, `limit`); el detalle incluye los fallos cosechados |
 | `POST /optimizer/runs/:id/close` | Cierre humano: `PROMOTED` (solo si la candidata ya es la `ACTIVE`) o `DISCARDED`. No hay `DELETE` |
@@ -386,6 +389,7 @@ Todos los eventos viajan con este sobre. Los campos del sobre y de `data` usan `
 | `email.sent` | Email-ops, al registrar un `SENT` | `hypothesisId`, `companyId`, `toDomain`, `recipients`, `sendId`, `sentAt`. Nunca la dirección |
 | `email.sent_suppressed` | Email-ops, si lo enviado iba a una dirección suprimida (el chequeo de `READY` perdió la carrera) | `hypothesisId`, `companyId`, `matchedBy`, `toDomains`, `noteId` |
 | `email.warmup_target_exceeded` | Email-ops, cuando los envíos del día superan el objetivo del warm-up (una vez por día local) | `date`, `timezone`, `phase`, `restDay`, `target`, `sendsToday`, `countedSource` |
+| `experiment.revalidation_failed` | Revalidación de un `PASS_FORM` con veredicto `REFUTED` cuya versión sigue `ACTIVE` o en canario (una vez por revalidación nueva) | `revalidationId`, `experimentId`, `experimentName`, `subjectType`, `subjectName`, `baselineVersion`, `candidateVersion`, `verdict`, `baselineAccuracy`, `candidateAccuracy`, `labels`, `versionState` (`ACTIVE` o `CANARY`), `noteId` |
 
 Cada evento del runtime lleva una `idempotencyKey` (`evt:{type}:{task_run_id}`, `evt:task.started:{task_run_id}:{attempt}`, `evt:{type}:{execution_id}`, `evt:evaluation.recorded:{evaluation_id}`): publicar dos veces el mismo hecho devuelve la fila existente.
 
@@ -975,9 +979,73 @@ Código de salida: `0` con `PASS`/`PASS_FORM`, `3` con `FAIL`/`INCONCLUSIVE`, `4
 
 Orden de la decisión: un fallo duro es siempre `FAIL`; si no, una medición incompleta (presupuesto del ejecutor agotado, el juez puntuó una versión y no la otra, sin composite) es `INCONCLUSIVE`; si no, cualquier criterio incumplido es `FAIL`; si no, `PASS` (con etiquetas) o `PASS_FORM`.
 
-> **Importante — `PASS_FORM`:** con 0 casos etiquetados en el split (la realidad de `prospeccion-v1` hoy: los 5 veredictos reales están quemados como diseño del EXP-001), el gate opera en **modo forma**: comprueba reglas, juez, coste y regresiones, pero no puede medir si las decisiones aciertan. `PASS_FORM` basta para activar sin `force`, y el experimento queda registrado como pendiente de re-validar cuando haya etiquetas. El informe y la respuesta de la activación lo dicen (`revalidate: true`).
+> **Importante — `PASS_FORM`:** con 0 casos etiquetados en el split (la realidad de `prospeccion-v1` hoy: los 5 veredictos reales están quemados como diseño del EXP-001), el gate opera en **modo forma**: comprueba reglas, juez, coste y regresiones, pero no puede medir si las decisiones aciertan. `PASS_FORM` basta para activar sin `force`, y el experimento queda registrado como pendiente de re-validar cuando haya etiquetas. El informe y la respuesta de la activación lo dicen (`revalidate: true`). La revalidación no repite el experimento: consulta [Revalidación de los PASS_FORM](#revalidación-de-los-pass_form).
 
 La latencia (§11.6, `latency <= max_latency`) aún no es criterio: `skill:compare` no la mide por decisión.
+
+### Revalidación de los PASS_FORM
+
+Un `PASS_FORM` midió reglas, juez y coste, pero no accuracy. El runner guarda lo que decidió cada versión en cada caso (`metrics.phases.<FASE>.case_outputs`: `case_id`, `version`, `repetition`, `relevant`, `writable`, `confidence`, `status`). Cuando una persona etiqueta después esas mismas entidades (veredictos HUMAN en Twenty, cosechados en una versión nueva del dataset con `POST /datasets/:id/build`), la accuracy de cada brazo se mide **sobre esas salidas guardadas**: no se llama a ningún modelo y el coste es 0. El código está en `src/experiments/revalidation.ts` (reglas puras) y `revalidation-service.ts` (BD, nota y evento).
+
+Qué etiquetas cuentan (P5):
+
+- Solo entidades que el experimento ejecutó: `VALIDATION`, `TEST` y la muestra de forma de `TRAIN` (`splits.*.case_ids` y `form_sample_case_ids`).
+- La etiqueta es el último veredicto humano de la entidad (`expected_source: human`, por `evaluated_at`) en cualquier versión del dataset del experimento. Un caso de `VALIDATION`/`TEST` que ya estaba etiquetado al ejecutarse cuenta con su etiqueta.
+- **Nunca un caso de diseño de la candidata:** se excluye la entidad con un uso `design` de un run del optimizador de esa candidata (`OPT-*`, por `optimization_runs.experiment_id` o `candidate_version`) o de cualquiera anterior al inicio del experimento. Un uso `design` posterior de otro (el siguiente optimizador) no contamina a esta candidata.
+- Se excluye también un caso de la muestra de forma que ya tenía etiqueta al ejecutarse: estaba en `TRAIN`, material de diseño.
+- Una etiqueta de otra ocurrencia de la entidad (entrada distinta) cuenta, porque el veredicto es de la entidad, pero se avisa (`input_same: false`).
+
+Veredicto, con el criterio de accuracy del gate del propio experimento (`config.gate.accuracy.min_delta`, 0 por defecto) y la misma regla de acierto (`relevant`, `writable` y `confidence_max`):
+
+| Veredicto | Cuándo |
+|---|---|
+| `INSUFFICIENT` | Menos de `min_labels` etiquetas utilizables (5 por defecto, como `min_labeled_validation` del optimizador), o una versión sin decisiones sobre ellas. Dice cuántas faltan |
+| `CONFIRMED` | accuracy(candidata) ≥ accuracy(baseline) + `min_delta` |
+| `REFUTED` | Lo contrario |
+
+Registro: tabla `experiment_revalidations` (migración `0016`). El experimento terminado no se toca (es inmutable): cada revalidación es una fila nueva enlazada con `experiment_id`, las etiquetas usadas (`label_case_ids`, `evaluation_ids` y el detalle en `labels`), las excluidas con su motivo (`excluded`), la accuracy por brazo (`accuracy`, `baseline_accuracy`, `candidate_accuracy`), `criteria`, `summary`, el estado de la versión (`version_state`), `outputs_source` (`metrics` o `artifact`), `consequence`, `cost_eur` (siempre 0), `source`, `requested_by` y `created_at`. `labels_hash` identifica el conjunto de etiquetas y criterios: repetir la petición con las mismas etiquetas devuelve la fila existente (`200`, `created: false`); con etiquetas nuevas, fila nueva (`201`).
+
+**Consecuencia.** Si el veredicto es `REFUTED` y la versión del experimento está hoy `ACTIVE` o en un canario `ACTIVE`, deja en Twenty la nota «⚠️ Revalidación fallida — `<skill>` v`<N>`» con los números y las opciones (rollback, canario, iterar) y emite `experiment.revalidation_failed`. **No desactiva ni hace rollback**: decide el humano. La nota y el evento quedan en `consequence` (una sola vez). Sin `TWENTY_API_KEY`, `consequence.note` dice `skipped`.
+
+| Método y ruta | Qué hace |
+|---|---|
+| `POST /experiments/:id/revalidate` `{ "min_labels"?, "by"?, "dry_run"?, "note"? }` | Revalida (`:id` uuid o `EXP-NNN`). `409 not_pass_form` si no es un `COMPLETED` `PASS_FORM`; `422 outputs_unavailable` si el experimento es anterior a `case_outputs` y su `informe.json` no está accesible (usa la CLI). `dry_run` calcula sin escribir |
+| `GET /experiments/:id/revalidations` | Sus revalidaciones, la más reciente primero |
+| `GET /experiments/pending-revalidation?min_labels=` | `PASS_FORM` cuya versión sigue `ACTIVE` o en canario, con etiquetas utilizables, frescas (no usadas por la última revalidación), excluidas y `ready` |
+
+```sh
+curl -s -X POST localhost:4020/experiments/EXP-007/revalidate -H 'x-tenant-id: publiexpe' -H 'content-type: application/json' -d '{"by":"jesus"}'
+```
+
+```json
+{
+  "experiment": { "id": "…", "name": "EXP-007", "subject_type": "skill", "subject_name": "prospector-event-exhibitors", "baseline_version": 3, "candidate_version": 4 },
+  "verdict": "REFUTED",
+  "summary": "REFUTED: la candidata queda por debajo de la baseline en accuracy: v4 0,600 (3/5) frente a v3 1,000 (5/5) sobre 5 caso(s) etiquetado(s) (umbral 1,000).",
+  "accuracy": { "baseline": { "value": 1, "correct": 5, "decisions": 5, "labeled_cases": 5 }, "candidate": { "value": 0.6, "correct": 3, "decisions": 5, "labeled_cases": 5 }, "threshold": 1 },
+  "labels": { "used": 5, "excluded": 1, "unlabeled": 3, "min_required": 5, "missing": 0, "executed_cases": 9 },
+  "version_state": { "state": "ACTIVE", "status": "ACTIVE", "canary": null, "relevant": true },
+  "outputs_source": "metrics",
+  "cost_eur": 0,
+  "warnings": [],
+  "dry_run": false,
+  "created": true,
+  "revalidation": { "id": "…", "verdict": "REFUTED", "label_case_ids": ["…"], "evaluation_ids": ["…"], "labels": [], "excluded": [{ "exhibitor": "…", "reason": "design", "detail": "caso de diseño: OPT-1a2b3c4d design (…)" }], "consequence": { "note": { "id": "…", "title": "⚠️ Revalidación fallida — prospector-event-exhibitors v4", "created": true }, "event": { "id": "…", "type": "experiment.revalidation_failed", "dispatched": true }, "at": "…" }, "cost_eur": 0, "created_at": "…" }
+}
+```
+
+```sh
+pnpm experiment:revalidate --pending                         # lista las revalidaciones posibles
+pnpm experiment:revalidate --id EXP-007 --dry-run            # calcula y no escribe
+pnpm experiment:revalidate --id EXP-007 --by "<quién>"       # registra; nota y evento si REFUTED y en uso
+pnpm experiment:revalidate --id EXP-003 --report ../../docs/experimentos/EXP-003-auto/informe.json
+```
+
+La CLI admite `--tenant`, `--min-labels`, `--report` (el `informe.json` de un experimento anterior a `case_outputs`; por defecto, la ruta de `metrics.artifacts.json`), `--by`, `--no-note` y `--dry-run`. Código de salida: `0` `CONFIRMED`, `3` `REFUTED`, `4` `INSUFFICIENT`, `2` argumentos o experimento no válidos, `1` error (también sin salidas accesibles).
+
+**Detección pasiva.** El sync de métricas a Twenty (`METRICS_TWENTY_SYNC_ENABLED=true`, rol `scheduler`) cuenta en cada pasada las revalidaciones listas (`ready`) y escribe en el log «revalidaciones disponibles: N» cuando el número cambia. No lo escribe en Twenty (el objeto `agentOsDailyMetric` no tiene ese campo) y nunca revalida: disparar sigue siendo manual. No hay tarea programada nueva.
+
+> **Importante:** las etiquetas llegan al dataset con una re-cosecha (`POST /datasets/:id/build`): un veredicto en Twenty que aún no se ha cosechado no cuenta. Los experimentos anteriores a esta versión no tienen `case_outputs`: se revalidan desde su `informe.json` (la API lo lee si está en el repositorio; dentro del contenedor, usa la CLI).
 
 ### Experimentos de harness
 
@@ -1050,6 +1118,12 @@ curl -s -X POST localhost:4020/skills/prospector-event-exhibitors/canary/rollbac
 
 ```sh
 DATABASE_URL=postgres://agentos:agentos_dev@127.0.0.1:5440/agentos_wt10_experiments pnpm vitest run test/integration/experiments.test.ts
+```
+
+La revalidación: `test/unit/experiments-revalidation.test.ts` fija las reglas puras (casos ejecutados, salidas guardadas o del `informe.json`, selección de etiquetas y exclusiones P5, accuracy, veredicto, `labels_hash`, la nota y el contador del sync). `test/integration/experiments-revalidation.test.ts` recorre `PASS_FORM` con 0 etiquetas (`INSUFFICIENT`), etiquetas nuevas (`CONFIRMED`, sin casos de diseño), `REFUTED` sin nota con la versión fuera de uso y con nota y evento en canario, la inmutabilidad del experimento y de la revalidación, los endpoints y el `informe.json`:
+
+```sh
+DATABASE_URL=postgres://agentos:agentos_dev@127.0.0.1:5440/agentos_wt12_reval pnpm vitest run test/integration/experiments-revalidation.test.ts
 ```
 
 ## Skill Optimizer
@@ -2111,5 +2185,5 @@ Solo cuenta los envíos desde Twenty: los del webmail van aparte. El dashboard m
 - Borradores de email: disparar también con `EDITED` (necesita una segunda tarea o un operador OR en el filtro), plantillas por sector y registro de si el comercial envió el borrador. (Hecho: la entrada de eventos externos por HTTP y la entrega a n8n por webhook, consulta [Eventos externos](#eventos-externos).)
 - Harness, skills, memoria y verificador reales; promote, rollback y evaluate.
 - Export de los contratos zod a JSON Schema versionado en `schemas/`.
-- Experiments: criterio de latencia, re-validación automática de los `PASS_FORM` cuando el dataset tenga etiquetas en VALIDATION/TEST, y registrar los overrides también en el log de eventos (hoy van al log del proceso y a la respuesta). El runner para harness existe desde la tanda 11 ([Experimentos de harness](#experimentos-de-harness)).
+- Experiments: criterio de latencia, que el Release Gate tenga en cuenta una revalidación `REFUTED` (hoy solo avisa con nota y evento; la revalidación es manual, ver [Revalidación de los PASS_FORM](#revalidación-de-los-pass_form)), y registrar los overrides también en el log de eventos (hoy van al log del proceso y a la respuesta). El runner para harness existe desde la tanda 11 ([Experimentos de harness](#experimentos-de-harness)).
 - Métricas: AC-17 y AC-18 piden hipótesis `HOT`, pero el resumen de ejecución solo cuenta hipótesis creadas; falta el desglose por prioridad (en Twenty o en `output.counters`). El dashboard oculta por defecto los agentes `ARCHIVED` (los de prueba se archivan con `pnpm cleanup:archive-test-agents`); `include_archived=true` los muestra.

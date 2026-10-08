@@ -5,6 +5,7 @@ import { loadConfig } from './config.js';
 import { createDb } from './db/client.js';
 import { BullEventQueue, EventBus, eventsQueueName } from './events/event-bus.js';
 import { BullWebhookDeliveryQueue, WebhookDeliveryWorker, WebhookDispatcher, webhooksQueueName } from './events/webhook-delivery.js';
+import { countReadyRevalidations } from './experiments/revalidation-service.js';
 import { twentyClientFromEnv } from './integrations/twenty/index.js';
 import { metricsSyncSettingsFromEnv, TwentyMetricsSync } from './metrics/twenty-sync.js';
 import { BullOptimizerQueue, OptimizerWorker, optimizerQueueName } from './optimizer/queue.js';
@@ -145,7 +146,13 @@ async function main(): Promise<void> {
     // Daily metrics -> Twenty (agentOsDailyMetric), for the native "Agent OS · Métricas" page.
     const syncSettings = metricsSyncSettingsFromEnv();
     if (syncSettings.enabled) {
-      metricsSync = new TwentyMetricsSync(dbHandle.db, twentyClientFromEnv(), { tenantId: config.defaultTenantId, days: syncSettings.days, logger });
+      // The same tick also counts the PASS_FORM re-validations ready to run (log only, no Twenty field).
+      metricsSync = new TwentyMetricsSync(dbHandle.db, twentyClientFromEnv(), {
+        tenantId: config.defaultTenantId,
+        days: syncSettings.days,
+        logger,
+        revalidations: () => countReadyRevalidations(dbHandle.db, config.defaultTenantId),
+      });
       metricsSync.start(syncSettings.intervalMs);
       logger.info({ intervalMs: syncSettings.intervalMs, days: syncSettings.days }, 'metrics sync to Twenty started');
     }

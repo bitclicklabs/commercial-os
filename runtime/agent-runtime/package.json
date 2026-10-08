@@ -28,6 +28,7 @@
     "evaluate": "tsx --env-file-if-exists=.env scripts/evaluate.ts",
     "dataset:build": "tsx --env-file-if-exists=.env scripts/dataset-build.ts",
     "experiment:run": "tsx --env-file-if-exists=.env scripts/experiment-run.ts",
+    "experiment:revalidate": "tsx --env-file-if-exists=.env scripts/experiment-revalidate.ts",
     "optimize:run": "tsx --env-file-if-exists=.env scripts/optimize-run.ts",
     "test": "vitest run",
     "test:unit": "vitest run test/unit",

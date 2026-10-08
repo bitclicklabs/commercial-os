@@ -56,7 +56,7 @@ Abre Twenty (`http://localhost:3020` en el entorno local) y localiza en la barra
 | Entrada | Qué es | Quién la escribe | Qué haces tú |
 |---|---|---|---|
 | **Commercial OS → Signals** | Hechos que justifican un contacto: una feria, un lanzamiento, una contratación. | El sistema | Revisarlas y clasificarlas (opcional pero recomendable). |
-| **Commercial OS → Research** | Investigación de apoyo sobre una empresa o señal. | El sistema | Consultarla cuando exista. El Prospector actual no la rellena, así que hoy suele estar vacía. |
+| **Commercial OS → Research** | Investigación de apoyo sobre una empresa o señal. | El sistema | Consultarla al preparar un contacto: el Prospector la rellena desde la tanda 9 con hechos observados y sus fuentes. |
 | **Commercial OS → Hypotheses** | Las propuestas comerciales: qué vender, a quién y por qué ahora. | El sistema | **Validarlas, editarlas o rechazarlas. Es tu tarea diaria.** |
 | **Commercial OS → Agent runs** | Un resumen por cada ejecución del sistema: qué hizo, si fue bien y cuánto costó. | El sistema | Solo lectura. Sirve para saber si hoy se ha ejecutado todo. |
 

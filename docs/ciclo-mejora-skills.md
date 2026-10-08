@@ -151,7 +151,7 @@ El informe automático ya trae la decisión del gate, cada criterio con sus valo
 
 | Decisión | Cuándo |
 |---|---|
-| **Activar** | El gate da `PASS` (o `PASS_FORM`, sabiendo que falta re-validar con etiquetas), cumple la hipótesis y la lectura cualitativa no muestra problemas |
+| **Activar** | El gate da `PASS` (o `PASS_FORM`, sabiendo que falta [re-validar con etiquetas](#revalida-un-pass_form-cuando-lleguen-etiquetas)), cumple la hipótesis y la lectura cualitativa no muestra problemas |
 | **Iterar** | Mejora lo propuesto pero rompe algo, o el efecto no se distingue del ruido. Crea otra versión desde la base con la operación que falte y valídala con datos nuevos |
 | **Descartar** | No mejora o empeora. Depreca la versión: `POST /skills/<skill>/versions/<v>/deprecate` |
 

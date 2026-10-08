@@ -185,6 +185,12 @@ services:
       METRICS_TWENTY_SYNC_INTERVAL_MS: ${METRICS_TWENTY_SYNC_INTERVAL_MS:-900000}
       METRICS_TWENTY_SYNC_DAYS: ${METRICS_TWENTY_SYNC_DAYS:-2}
       RENDERER_URL: ${RENDERER_URL:-http://pxos-renderer:3000}
+      TRACE_RETENTION_DAYS: ${TRACE_RETENTION_DAYS:-90}
+      TRACE_ARCHIVE_DIR: /data/trace-archive
+      RUN_HEARTBEAT_MS: ${RUN_HEARTBEAT_MS:-30000}
+    volumes:
+      # Única copia de los payloads aligerados por traces:archive — persistente.
+      - pxos_trace_archive:/data/trace-archive
     depends_on:
       pxos-postgres:
         condition: service_healthy
@@ -243,6 +249,7 @@ networks:
     name: pxos-net
 
 volumes:
+  pxos_trace_archive:
   pxos-twenty-db-data:
     name: pxos-twenty-db-data
   pxos-twenty-local-data:

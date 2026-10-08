@@ -343,7 +343,7 @@ Haz esta comprobación **antes de enviar cualquier correo en frío**, sin excepc
 
 > **Importante:** escribir a alguien que se ha dado de baja incumple la normativa (LSSI y RGPD) y daña la reputación del dominio.
 
-Desde la tanda 6, el sistema revisa el buzón cada 2 horas y añade a la nota las bajas que detecta, sin intervención humana (primera pieza del Inbound Manager, [sección 10.2 del LLD v0.1](LLD-0.1-publiexpe-commercial-os.md#102-inbound-y-conversaciones)). Solo lee el correo: no responde ni mueve mensajes. Si una baja no está en la nota, añádela tú el mismo día. La nota de Twenty es la única fuente de verdad.
+Desde la tanda 6, el sistema revisa el buzón cada 2 horas y añade a la nota las bajas que detecta, sin intervención humana (primera pieza del Inbound Manager, [sección 10.2 del LLD v0.1](LLD-0.1-publiexpe-commercial-os.md#102-inbound-y-conversaciones)); desde la tanda 12 además clasifica el resto de respuestas ([triaje del inbound](inbound-triaje.md)). Solo lee el correo: no responde ni mueve mensajes. Si una baja no está en la nota, añádela tú el mismo día. La nota de Twenty es la única fuente de verdad.
 
 ## Checklist diaria de 5 minutos
 

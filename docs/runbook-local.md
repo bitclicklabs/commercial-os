@@ -147,7 +147,7 @@ Las contraseñas de Postgres solo se aplican al crear el volumen por primera vez
 
    En el contenedor no tienes que hacer nada: `pxos-runtime` las aplica al arrancar porque `RUN_MIGRATIONS=true`. Las migraciones son idempotentes (journal de Drizzle).
 
-   Hoy hay nueve migraciones, `0000` a `0008`. Las de las tandas 6 a 9 se aplican solas al arrancar, sin pasos extra:
+   Hoy hay diecisiete migraciones, `0000` a `0016` (la lista completa, con lo que añade cada una, está en el [README del runtime](../runtime/agent-runtime/README.md#migraciones)). Todas se aplican solas al arrancar, sin pasos extra. Las más antiguas con pasos manuales históricos:
 
    | Migración | Qué añade |
    |---|---|
@@ -157,7 +157,7 @@ Las contraseñas de Postgres solo se aplican al crear el volumen por primera vez
    | `0007_email_sends` | Tabla `email_sends` (envíos observados desde Twenty) |
    | `0008_harness` | Tablas `harnesses` y `harness_versions` (inmutables por trigger) y las columnas `agent_versions.harness_ref` y `traces.harness` |
 
-   Las migraciones posteriores (`0009` y siguientes) se aplican igual. La tanda 12 añade `audit_log` (`0015_audit_log`) y, según la implementación, la tabla `experiment_revalidations` (revalidación de `PASS_FORM`) y los cambios del triaje del inbound; el detalle está en el README del runtime. Antes de fusionarlas, repite la comprobación de fechas del journal que se describe más abajo. Para comprobar cuáles están aplicadas (la tabla es la que crea Drizzle por defecto `[NO VERIFICADO]` en esta instancia):
+   Las posteriores: `0009_knowledge`, `0010_eval_datasets`, `0011_experiments`, `0012_skill_canaries`, `0013_optimization_runs`, `0014_inbound_triage` (triaje del buzón), `0015_audit_retention` (`audit_log` y los triggers de archivado de trazas) y `0016_experiment_revalidations` (revalidación de `PASS_FORM`). Si dos ramas generan migraciones en paralelo, comprueba las fechas del journal antes de fusionar (el migrador solo avanza por `when`). Para comprobar cuáles están aplicadas (la tabla es la que crea Drizzle por defecto `[NO VERIFICADO]` en esta instancia):
 
    ```bash
    docker exec pxos-postgres psql -U agentos -d agentos -c "SELECT id, created_at FROM drizzle.__drizzle_migrations ORDER BY id"

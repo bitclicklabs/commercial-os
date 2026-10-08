@@ -1173,3 +1173,71 @@ export const optimizationRuns = pgTable(
 );
 
 export type OptimizationRun = typeof optimizationRuns.$inferSelect;
+
+// ---------------------------------------------------------------------------
+// Re-validation of PASS_FORM experiments (src/experiments/revalidation.ts). Migration 0016.
+// ---------------------------------------------------------------------------
+export const REVALIDATION_VERDICTS = ['CONFIRMED', 'REFUTED', 'INSUFFICIENT'] as const;
+export type RevalidationVerdict = (typeof REVALIDATION_VERDICTS)[number];
+
+/**
+ * A re-validation of a finished PASS_FORM experiment: the accuracy of each arm measured on the
+ * per-case outputs the experiment already stored, against human labels that arrived later.
+ * No model runs (cost 0). The experiment itself is immutable, so this is a new linked record.
+ * One row per (experiment, label set + criteria): `labels_hash` makes a repeated request with
+ * the same labels return the existing row. Trigger: no DELETE; everything immutable except
+ * `consequence` (the Twenty note and the event), which can be written once, from `{}`.
+ */
+export const experimentRevalidations = pgTable(
+  'experiment_revalidations',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    tenantId: tenantId(),
+    experimentId: uuid('experiment_id')
+      .notNull()
+      .references(() => experiments.id),
+    experimentName: text('experiment_name').notNull(),
+    subjectType: text('subject_type').$type<ExperimentSubjectType>().notNull(),
+    subjectName: text('subject_name').notNull(),
+    baselineVersion: integer('baseline_version'),
+    candidateVersion: integer('candidate_version').notNull(),
+    verdict: text('verdict').$type<RevalidationVerdict>().notNull(),
+    /** sha256 of the labels used (executed case, label case, evaluation) and the criteria. */
+    labelsHash: text('labels_hash').notNull(),
+    /** Dataset cases whose label was used (the newer version's case, or the executed one). */
+    labelCaseIds: text('label_case_ids').array().notNull().default(sql`'{}'::text[]`),
+    /** HUMAN evaluations behind those labels. */
+    evaluationIds: text('evaluation_ids').array().notNull().default(sql`'{}'::text[]`),
+    /** Every label used: executed case, label case, dataset version, evaluation, expected. */
+    labels: jsonb('labels').$type<Record<string, unknown>[]>().notNull().default([]),
+    /** Labels left out and why (P5 design, TRAIN label at run time, no outputs). */
+    excluded: jsonb('excluded').$type<Record<string, unknown>[]>().notNull().default([]),
+    /** Accuracy per arm (`baseline`, `candidate`): labelled cases, decisions, correct, value, mismatches. */
+    accuracy: jsonb('accuracy').$type<Record<string, unknown>>().notNull().default({}),
+    baselineAccuracy: numeric('baseline_accuracy', { precision: 5, scale: 4, mode: 'number' }),
+    candidateAccuracy: numeric('candidate_accuracy', { precision: 5, scale: 4, mode: 'number' }),
+    /** Criteria applied: minimum labels, accuracy min_delta of the experiment's gate, threshold. */
+    criteria: jsonb('criteria').$type<Record<string, unknown>>().notNull().default({}),
+    summary: text('summary').notNull(),
+    /** State of the candidate when re-validated (ACTIVE, canary, other) and whether it still matters. */
+    versionState: jsonb('version_state').$type<Record<string, unknown>>().notNull().default({}),
+    /** Where the per-case outputs came from: `metrics` (experiments row) or `artifact` (informe.json). */
+    outputsSource: text('outputs_source').notNull(),
+    /** Note in Twenty and event emitted on a REFUTED of a version still in use (written once). */
+    consequence: jsonb('consequence').$type<Record<string, unknown>>().notNull().default({}),
+    /** Always 0: a re-validation never calls a model. */
+    costEur: money('cost_eur'),
+    source: text('source').notNull().default('api'),
+    requestedBy: text('requested_by'),
+    createdAt: createdAt(),
+  },
+  (t) => [
+    uniqueIndex('experiment_revalidations_labels_uq').on(t.tenantId, t.experimentId, t.labelsHash),
+    index('experiment_revalidations_experiment_idx').on(t.tenantId, t.experimentId, t.createdAt),
+    check('experiment_revalidations_verdict_ck', sql`${t.verdict} in ('CONFIRMED', 'REFUTED', 'INSUFFICIENT')`),
+    check('experiment_revalidations_cost_ck', sql`${t.costEur} = 0`),
+    check('experiment_revalidations_outputs_ck', sql`${t.outputsSource} in ('metrics', 'artifact')`),
+  ],
+);
+
+export type ExperimentRevalidation = typeof experimentRevalidations.$inferSelect;

@@ -10,3 +10,4 @@ Dockerfile
 docker-compose.runtime.yml
 README.md
 scripts
+data

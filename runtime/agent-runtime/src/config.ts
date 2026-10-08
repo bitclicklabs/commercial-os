@@ -60,6 +60,11 @@ const ConfigSchema = z.object({
   webhookDeliveryTimeoutMs: z.coerce.number().int().positive().default(DEFAULT_WEBHOOK_TIMEOUT_MS),
   webhookDeliveryBackoffMs: z.coerce.number().int().positive().default(DEFAULT_WEBHOOK_BACKOFF_MS),
   webhookDeliveryConcurrency: z.coerce.number().int().positive().default(4),
+  // Trace retention without loss (src/maintenance/trace-archive.ts, LLD v0.1 section 22)
+  /** Age (days) from which `pnpm traces:archive` archives heavy step payloads. */
+  traceRetentionDays: z.coerce.number().nonnegative().default(90),
+  /** Where the archive files live (`<tenant>/<YYYY-MM>.jsonl.gz`); GET /traces/:id rehydrates from here. */
+  traceArchiveDir: z.string().min(1).default('./data/trace-archive'),
 });
 
 export type Config = z.infer<typeof ConfigSchema>;
@@ -104,5 +109,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env, argv: string[] 
     webhookDeliveryTimeoutMs: emptyToUndefined(env.WEBHOOK_DELIVERY_TIMEOUT_MS),
     webhookDeliveryBackoffMs: emptyToUndefined(env.WEBHOOK_DELIVERY_BACKOFF_MS),
     webhookDeliveryConcurrency: emptyToUndefined(env.WEBHOOK_DELIVERY_CONCURRENCY),
+    traceRetentionDays: emptyToUndefined(env.TRACE_RETENTION_DAYS),
+    traceArchiveDir: emptyToUndefined(env.TRACE_ARCHIVE_DIR),
   });
 }

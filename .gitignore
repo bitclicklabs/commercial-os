@@ -12,3 +12,5 @@ Thumbs.db
 .turbo/
 .cache/
 tmp/
+# Archivo de trazas (pnpm traces:archive): datos, no código
+runtime/agent-runtime/data/

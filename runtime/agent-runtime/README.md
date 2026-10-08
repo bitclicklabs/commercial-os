@@ -21,8 +21,8 @@ runtime/agent-runtime/
 │   ├── main.ts               Entrada: API, worker y/o scheduler según RUNTIME_ROLE o --role=
 │   ├── config.ts             Configuración desde variables de entorno
 │   ├── api/                  Servidor Fastify, contratos zod y rutas
-│   ├── agents/               Interfaz de agente, StubAgent, SmokeAgent, ProspectorAgent (modos directo y scout, prompts, SourceLedger) EmailDrafterAgent (borradores, nunca envía) y BajasAgent (inbound de bajas, sin LLM)
-│   ├── inbound/              Inbound de bajas: lector IMAP de solo lectura, clasificador determinista, lista de supresión y cursor (inbound_state)
+│   ├── agents/               Interfaz de agente, StubAgent, SmokeAgent, ProspectorAgent (modos directo y scout, prompts, SourceLedger) EmailDrafterAgent (borradores, nunca envía), BajasAgent (inbound de bajas, sin LLM) e InboxAgent (triaje del buzón: reglas + LLM, nunca responde)
+│   ├── inbound/              Inbound: lector IMAP de solo lectura, clasificador de bajas, reglas de triaje (rebotes, autorrespuestas), clasificador LLM de respuestas, lista de supresión, enlace con email_sends, cursor (inbound_state) y triaje (inbound_triage)
 │   ├── integrations/twenty/  TwentyClient REST tipado, mapeo de objetos de la App y MemoryTwenty (CRM en memoria para los experimentos del optimizador)
 │   ├── tools/                Interfaz Tool, registry, tool_policy, executor, tools de Twenty y web/ (fetch_url con texto de PDF, render_url y guarda SSRF)
 │   ├── db/                   Esquema Drizzle, cliente y migrador
@@ -39,7 +39,7 @@ runtime/agent-runtime/
 │   ├── skills/               Skills versionadas (MVP-1): render, resolución desde la BD con fallback a las constantes, ciclo de estados
 │   ├── harness/              Harness versionado (MVP-1): config v1 por dimensiones, precedencia, resolución desde la BD con fallback y ciclo de estados
 │   ├── datasets/             Datasets de evaluación (MVP-2): cosecha de trazas y veredictos, split determinista, registro de exclusiones de EXP-001/EXP-002 y control de contaminación (markUsed)
-│   ├── experiments/          Experiments y Release Gate (MVP-2): runner de pnpm experiment:run, criterios del gate (seesaw, PASS_FORM), tabla experiments y candado de la activación
+│   ├── experiments/          Experiments y Release Gate (MVP-2): runner de pnpm experiment:run, criterios del gate (seesaw, PASS_FORM), tabla experiments, candado de la activación y revalidación de los PASS_FORM
 │   ├── optimizer/            Skill Optimizer (MVP-3): cosecha de fallos, clustering, candidata con edit-ops, P5, experimento, nota de promoción, tabla optimization_runs y cola {QUEUE_NAME}-optimizer
 │   ├── services/             Lanzamiento idempotente de TaskRuns
 │   └── worker/               RunProcessor, worker BullMQ, locks por entidad y reconciliador
@@ -128,6 +128,8 @@ Requisitos: Node.js 22, pnpm, y los contenedores `pxos-postgres` (127.0.0.1:5440
 | `WEBHOOK_DELIVERY_BACKOFF_MS` | `5000` | Base del backoff exponencial entre los 3 intentos de entrega |
 | `WEBHOOK_DELIVERY_CONCURRENCY` | `4` | Entregas simultáneas del worker de webhooks (rol `scheduler`) |
 | `RENDERER_URL` | `http://pxos-renderer:3000` | Servicio de render JavaScript de `render_url`. En desarrollo, `http://127.0.0.1:4030` si el renderer está publicado ahí. Vacío u `off` = desactivado (`render_url` devuelve `RENDERER_NOT_CONFIGURED`) |
+| `TRACE_RETENTION_DAYS` | `90` | Antigüedad (días) por defecto de `pnpm traces:archive`. Consulta [Retención de trazas](#retención-de-trazas-sin-pérdida-pnpm-tracesarchive) |
+| `TRACE_ARCHIVE_DIR` | `./data/trace-archive` | Directorio del archivo de trazas (`<tenant>/<YYYY-MM>.jsonl.gz`); en Docker, un volumen persistente |
 
 ## Migraciones
 
@@ -161,6 +163,8 @@ El esquema vive en `src/db/schema.ts`. Todas las tablas llevan `tenant_id` (C6).
 | `0011_experiments` | Tabla `experiments` (LLD §11.5-11.6): triggers anti-`DELETE`, un experimento nace `DRAFT` o `RUNNING`, identidad y `config` inmutables, transiciones válidas y un experimento terminado (`COMPLETED`, `FAILED`, `CANCELLED`) inmutable entero. SQL idempotente. `when` 1791376000000 e idx 11. Consulta [Experiments y Release Gate](#experiments-y-release-gate) |
 | `0012_skill_canaries` | Tabla `skill_canaries` del canario post-gate: un solo canario `ACTIVE` por skill (índice único parcial); triggers sin `DELETE`, identidad/versiones/porcentaje/experimento inmutables, solo `ACTIVE → PROMOTED | ROLLED_BACK` y un canario terminado es inmutable. SQL idempotente. `when` 1791376200000 e idx 12. Consulta [Canario](#canario-de-skills) |
 | `0013_optimization_runs` | Tabla `optimization_runs` del Skill Optimizer (LLD §18): trigger anti-`DELETE`, CHECK de estados y veredicto, e índice único parcial que permite un solo run abierto por skill. Las transiciones son `UPDATE` guardados por estado en el código (sin trigger de inmutabilidad). SQL idempotente. `when` 1791376300000 e idx 13, detrás de `0012_skill_canaries` (ADR-31: la 0012 del canario se aplicó antes a la BD compartida y el migrador solo avanza por `when`). Consulta [Skill Optimizer](#skill-optimizer) |
+| `0015_audit_retention` | Tabla `audit_log` (append-only: triggers anti-`UPDATE`, anti-`DELETE` y anti-`TRUNCATE`); triggers anti-`DELETE` en `traces` y `trace_steps`, y `trace_steps` inmutable salvo la transición exacta payload → puntero del archivado. SQL idempotente. `when` 1791450100000; la `0014` la reserva otra rama de la tanda 12 (ADR-31). Consulta [Auditoría y retención de trazas](#auditoría-y-retención-de-trazas) |
+| `0016_experiment_revalidations` | Tabla `experiment_revalidations` (revalidación de experimentos `PASS_FORM`): sin `DELETE` (trigger), fila inmutable salvo `consequence` (nota y evento), que se escribe una sola vez desde `{}`; única por `(tenant_id, experiment_id, labels_hash)`; `CHECK` de veredicto (`CONFIRMED`, `REFUTED`, `INSUFFICIENT`), de `outputs_source` y de `cost_eur = 0`. SQL idempotente. `when` 1791450200000, detrás de la 0015 (ADR-31). Consulta [Revalidación de los PASS_FORM](#revalidación-de-los-pass_form) |
 
 Importante: el migrador de Drizzle aplica solo las migraciones con fecha posterior a la última aplicada. Si dos ramas generan migraciones en paralelo contra la misma BD de desarrollo, aplica primero la más antigua o regenera la nueva tras el merge.
 
@@ -250,6 +254,8 @@ Cabecera opcional `x-tenant-id` en todas las rutas. Las respuestas usan `snake_c
 | `POST /datasets/:id/mark-used` | Registra qué experimento usó qué casos y en qué papel (`design`, `validation`, `test`) |
 | `POST /datasets/:id/activate`, `/archive` | Ciclo de vida de una versión. No hay `DELETE` |
 | `GET /experiments`, `GET /experiments/:id` | Experimentos (solo lectura; `:id` admite el uuid o `EXP-003`). Filtros `subject_type`, `subject_name`, `candidate_version`, `status`. Consulta [Experiments y Release Gate](#experiments-y-release-gate) |
+| `POST /experiments/:id/revalidate` | Revalida un `PASS_FORM` con las etiquetas humanas que llegaron después, sobre las salidas guardadas (sin LLM, coste 0). `201` fila nueva, `200` si ya existía con esas etiquetas. Consulta [Revalidación de los PASS_FORM](#revalidación-de-los-pass_form) |
+| `GET /experiments/:id/revalidations`, `GET /experiments/pending-revalidation` | Revalidaciones de un experimento; `PASS_FORM` cuya versión sigue `ACTIVE` o en canario, con las etiquetas utilizables y frescas |
 | `POST /optimizer/skills/:name/run` | Lanza un run del [Skill Optimizer](#skill-optimizer) sobre la versión `ACTIVE` (`202`, lo procesa el worker). `409` si la skill ya tiene un run abierto, `422` si no hay runner para la skill |
 | `GET /optimizer/runs`, `GET /optimizer/runs/:id` | Runs del optimizador (filtros `skill`, `status`, `limit`); el detalle incluye los fallos cosechados |
 | `POST /optimizer/runs/:id/close` | Cierre humano: `PROMOTED` (solo si la candidata ya es la `ACTIVE`) o `DISCARDED`. No hay `DELETE` |
@@ -333,7 +339,7 @@ El reconciliador solo ve su propia cola: un run procesado en proceso por un test
 
 Antes de este latido, los scouts largos (más de dos minutos) lanzados por los tests en vivo acababan `FAILED` con `orphaned RUNNING run (job missing)` aunque su traza terminaba en `SUCCESS`.
 
-Los jobs `active` de un worker caído los gestiona el chequeo de stalled de BullMQ (`STALLED_INTERVAL_MS`, `MAX_STALLED_COUNT`): los devuelve a `wait`. Cuando el processor recibe un job cuyo run sigue `RUNNING`, sabe que el intento anterior murió y aplica la misma recuperación antes de continuar. Si BullMQ lo marca `failed` por superar `MAX_STALLED_COUNT`, lo recoge el reconciliador.
+Los jobs `active` de un worker caído los gestiona el chequeo de stalled de BullMQ (`STALLED_INTERVAL_MS`, `MAX_STALLED_COUNT`): los devuelve a `wait`. Cuando el processor recibe un job cuyo run sigue `RUNNING`, solo lo recupera si su latido es más antiguo que `RECONCILE_GRACE_MS` (con la misma guarda `staleBefore` y de intento); con un latido reciente aplaza la entrega, porque el primer worker sigue vivo. Consulta [Stall-guard de BullMQ](#stall-guard-de-bullmq). Si BullMQ lo marca `failed` por superar `MAX_STALLED_COUNT`, lo recoge el reconciliador.
 
 ### Espera a Twenty al arrancar
 
@@ -386,6 +392,7 @@ Todos los eventos viajan con este sobre. Los campos del sobre y de `data` usan `
 | `email.sent` | Email-ops, al registrar un `SENT` | `hypothesisId`, `companyId`, `toDomain`, `recipients`, `sendId`, `sentAt`. Nunca la dirección |
 | `email.sent_suppressed` | Email-ops, si lo enviado iba a una dirección suprimida (el chequeo de `READY` perdió la carrera) | `hypothesisId`, `companyId`, `matchedBy`, `toDomains`, `noteId` |
 | `email.warmup_target_exceeded` | Email-ops, cuando los envíos del día superan el objetivo del warm-up (una vez por día local) | `date`, `timezone`, `phase`, `restDay`, `target`, `sendsToday`, `countedSource` |
+| `experiment.revalidation_failed` | Revalidación de un `PASS_FORM` con veredicto `REFUTED` cuya versión sigue `ACTIVE` o en canario (una vez por revalidación nueva) | `revalidationId`, `experimentId`, `experimentName`, `subjectType`, `subjectName`, `baselineVersion`, `candidateVersion`, `verdict`, `baselineAccuracy`, `candidateAccuracy`, `labels`, `versionState` (`ACTIVE` o `CANARY`), `noteId` |
 
 Cada evento del runtime lleva una `idempotencyKey` (`evt:{type}:{task_run_id}`, `evt:task.started:{task_run_id}:{attempt}`, `evt:{type}:{execution_id}`, `evt:evaluation.recorded:{evaluation_id}`): publicar dos veces el mismo hecho devuelve la fila existente.
 
@@ -975,9 +982,73 @@ Código de salida: `0` con `PASS`/`PASS_FORM`, `3` con `FAIL`/`INCONCLUSIVE`, `4
 
 Orden de la decisión: un fallo duro es siempre `FAIL`; si no, una medición incompleta (presupuesto del ejecutor agotado, el juez puntuó una versión y no la otra, sin composite) es `INCONCLUSIVE`; si no, cualquier criterio incumplido es `FAIL`; si no, `PASS` (con etiquetas) o `PASS_FORM`.
 
-> **Importante — `PASS_FORM`:** con 0 casos etiquetados en el split (la realidad de `prospeccion-v1` hoy: los 5 veredictos reales están quemados como diseño del EXP-001), el gate opera en **modo forma**: comprueba reglas, juez, coste y regresiones, pero no puede medir si las decisiones aciertan. `PASS_FORM` basta para activar sin `force`, y el experimento queda registrado como pendiente de re-validar cuando haya etiquetas. El informe y la respuesta de la activación lo dicen (`revalidate: true`).
+> **Importante — `PASS_FORM`:** con 0 casos etiquetados en el split (la realidad de `prospeccion-v1` hoy: los 5 veredictos reales están quemados como diseño del EXP-001), el gate opera en **modo forma**: comprueba reglas, juez, coste y regresiones, pero no puede medir si las decisiones aciertan. `PASS_FORM` basta para activar sin `force`, y el experimento queda registrado como pendiente de re-validar cuando haya etiquetas. El informe y la respuesta de la activación lo dicen (`revalidate: true`). La revalidación no repite el experimento: consulta [Revalidación de los PASS_FORM](#revalidación-de-los-pass_form).
 
 La latencia (§11.6, `latency <= max_latency`) aún no es criterio: `skill:compare` no la mide por decisión.
+
+### Revalidación de los PASS_FORM
+
+Un `PASS_FORM` midió reglas, juez y coste, pero no accuracy. El runner guarda lo que decidió cada versión en cada caso (`metrics.phases.<FASE>.case_outputs`: `case_id`, `version`, `repetition`, `relevant`, `writable`, `confidence`, `status`). Cuando una persona etiqueta después esas mismas entidades (veredictos HUMAN en Twenty, cosechados en una versión nueva del dataset con `POST /datasets/:id/build`), la accuracy de cada brazo se mide **sobre esas salidas guardadas**: no se llama a ningún modelo y el coste es 0. El código está en `src/experiments/revalidation.ts` (reglas puras) y `revalidation-service.ts` (BD, nota y evento).
+
+Qué etiquetas cuentan (P5):
+
+- Solo entidades que el experimento ejecutó: `VALIDATION`, `TEST` y la muestra de forma de `TRAIN` (`splits.*.case_ids` y `form_sample_case_ids`).
+- La etiqueta es el último veredicto humano de la entidad (`expected_source: human`, por `evaluated_at`) en cualquier versión del dataset del experimento. Un caso de `VALIDATION`/`TEST` que ya estaba etiquetado al ejecutarse cuenta con su etiqueta.
+- **Nunca un caso de diseño de la candidata:** se excluye la entidad con un uso `design` de un run del optimizador de esa candidata (`OPT-*`, por `optimization_runs.experiment_id` o `candidate_version`) o de cualquiera anterior al inicio del experimento. Un uso `design` posterior de otro (el siguiente optimizador) no contamina a esta candidata.
+- Se excluye también un caso de la muestra de forma que ya tenía etiqueta al ejecutarse: estaba en `TRAIN`, material de diseño.
+- Una etiqueta de otra ocurrencia de la entidad (entrada distinta) cuenta, porque el veredicto es de la entidad, pero se avisa (`input_same: false`).
+
+Veredicto, con el criterio de accuracy del gate del propio experimento (`config.gate.accuracy.min_delta`, 0 por defecto) y la misma regla de acierto (`relevant`, `writable` y `confidence_max`):
+
+| Veredicto | Cuándo |
+|---|---|
+| `INSUFFICIENT` | Menos de `min_labels` etiquetas utilizables (5 por defecto, como `min_labeled_validation` del optimizador), o una versión sin decisiones sobre ellas. Dice cuántas faltan |
+| `CONFIRMED` | accuracy(candidata) ≥ accuracy(baseline) + `min_delta` |
+| `REFUTED` | Lo contrario |
+
+Registro: tabla `experiment_revalidations` (migración `0016`). El experimento terminado no se toca (es inmutable): cada revalidación es una fila nueva enlazada con `experiment_id`, las etiquetas usadas (`label_case_ids`, `evaluation_ids` y el detalle en `labels`), las excluidas con su motivo (`excluded`), la accuracy por brazo (`accuracy`, `baseline_accuracy`, `candidate_accuracy`), `criteria`, `summary`, el estado de la versión (`version_state`), `outputs_source` (`metrics` o `artifact`), `consequence`, `cost_eur` (siempre 0), `source`, `requested_by` y `created_at`. `labels_hash` identifica el conjunto de etiquetas y criterios: repetir la petición con las mismas etiquetas devuelve la fila existente (`200`, `created: false`); con etiquetas nuevas, fila nueva (`201`).
+
+**Consecuencia.** Si el veredicto es `REFUTED` y la versión del experimento está hoy `ACTIVE` o en un canario `ACTIVE`, deja en Twenty la nota «⚠️ Revalidación fallida — `<skill>` v`<N>`» con los números y las opciones (rollback, canario, iterar) y emite `experiment.revalidation_failed`. **No desactiva ni hace rollback**: decide el humano. La nota y el evento quedan en `consequence` (una sola vez). Sin `TWENTY_API_KEY`, `consequence.note` dice `skipped`.
+
+| Método y ruta | Qué hace |
+|---|---|
+| `POST /experiments/:id/revalidate` `{ "min_labels"?, "by"?, "dry_run"?, "note"? }` | Revalida (`:id` uuid o `EXP-NNN`). `409 not_pass_form` si no es un `COMPLETED` `PASS_FORM`; `422 outputs_unavailable` si el experimento es anterior a `case_outputs` y su `informe.json` no está accesible (usa la CLI). `dry_run` calcula sin escribir |
+| `GET /experiments/:id/revalidations` | Sus revalidaciones, la más reciente primero |
+| `GET /experiments/pending-revalidation?min_labels=` | `PASS_FORM` cuya versión sigue `ACTIVE` o en canario, con etiquetas utilizables, frescas (no usadas por la última revalidación), excluidas y `ready` |
+
+```sh
+curl -s -X POST localhost:4020/experiments/EXP-007/revalidate -H 'x-tenant-id: publiexpe' -H 'content-type: application/json' -d '{"by":"jesus"}'
+```
+
+```json
+{
+  "experiment": { "id": "…", "name": "EXP-007", "subject_type": "skill", "subject_name": "prospector-event-exhibitors", "baseline_version": 3, "candidate_version": 4 },
+  "verdict": "REFUTED",
+  "summary": "REFUTED: la candidata queda por debajo de la baseline en accuracy: v4 0,600 (3/5) frente a v3 1,000 (5/5) sobre 5 caso(s) etiquetado(s) (umbral 1,000).",
+  "accuracy": { "baseline": { "value": 1, "correct": 5, "decisions": 5, "labeled_cases": 5 }, "candidate": { "value": 0.6, "correct": 3, "decisions": 5, "labeled_cases": 5 }, "threshold": 1 },
+  "labels": { "used": 5, "excluded": 1, "unlabeled": 3, "min_required": 5, "missing": 0, "executed_cases": 9 },
+  "version_state": { "state": "ACTIVE", "status": "ACTIVE", "canary": null, "relevant": true },
+  "outputs_source": "metrics",
+  "cost_eur": 0,
+  "warnings": [],
+  "dry_run": false,
+  "created": true,
+  "revalidation": { "id": "…", "verdict": "REFUTED", "label_case_ids": ["…"], "evaluation_ids": ["…"], "labels": [], "excluded": [{ "exhibitor": "…", "reason": "design", "detail": "caso de diseño: OPT-1a2b3c4d design (…)" }], "consequence": { "note": { "id": "…", "title": "⚠️ Revalidación fallida — prospector-event-exhibitors v4", "created": true }, "event": { "id": "…", "type": "experiment.revalidation_failed", "dispatched": true }, "at": "…" }, "cost_eur": 0, "created_at": "…" }
+}
+```
+
+```sh
+pnpm experiment:revalidate --pending                         # lista las revalidaciones posibles
+pnpm experiment:revalidate --id EXP-007 --dry-run            # calcula y no escribe
+pnpm experiment:revalidate --id EXP-007 --by "<quién>"       # registra; nota y evento si REFUTED y en uso
+pnpm experiment:revalidate --id EXP-003 --report ../../docs/experimentos/EXP-003-auto/informe.json
+```
+
+La CLI admite `--tenant`, `--min-labels`, `--report` (el `informe.json` de un experimento anterior a `case_outputs`; por defecto, la ruta de `metrics.artifacts.json`), `--by`, `--no-note` y `--dry-run`. Código de salida: `0` `CONFIRMED`, `3` `REFUTED`, `4` `INSUFFICIENT`, `2` argumentos o experimento no válidos, `1` error (también sin salidas accesibles).
+
+**Detección pasiva.** El sync de métricas a Twenty (`METRICS_TWENTY_SYNC_ENABLED=true`, rol `scheduler`) cuenta en cada pasada las revalidaciones listas (`ready`) y escribe en el log «revalidaciones disponibles: N» cuando el número cambia. No lo escribe en Twenty (el objeto `agentOsDailyMetric` no tiene ese campo) y nunca revalida: disparar sigue siendo manual. No hay tarea programada nueva.
+
+> **Importante:** las etiquetas llegan al dataset con una re-cosecha (`POST /datasets/:id/build`): un veredicto en Twenty que aún no se ha cosechado no cuenta. Los experimentos anteriores a esta versión no tienen `case_outputs`: se revalidan desde su `informe.json` (la API lo lee si está en el repositorio; dentro del contenedor, usa la CLI).
 
 ### Experimentos de harness
 
@@ -1050,6 +1121,12 @@ curl -s -X POST localhost:4020/skills/prospector-event-exhibitors/canary/rollbac
 
 ```sh
 DATABASE_URL=postgres://agentos:agentos_dev@127.0.0.1:5440/agentos_wt10_experiments pnpm vitest run test/integration/experiments.test.ts
+```
+
+La revalidación: `test/unit/experiments-revalidation.test.ts` fija las reglas puras (casos ejecutados, salidas guardadas o del `informe.json`, selección de etiquetas y exclusiones P5, accuracy, veredicto, `labels_hash`, la nota y el contador del sync). `test/integration/experiments-revalidation.test.ts` recorre `PASS_FORM` con 0 etiquetas (`INSUFFICIENT`), etiquetas nuevas (`CONFIRMED`, sin casos de diseño), `REFUTED` sin nota con la versión fuera de uso y con nota y evento en canario, la inmutabilidad del experimento y de la revalidación, los endpoints y el `informe.json`:
+
+```sh
+DATABASE_URL=postgres://agentos:agentos_dev@127.0.0.1:5440/agentos_wt12_reval pnpm vitest run test/integration/experiments-revalidation.test.ts
 ```
 
 ## Skill Optimizer
@@ -1481,7 +1558,8 @@ Es idempotente:
 - **Agente `Prospector`**: si no existe, lo crea con la versión 1 `ACTIVE` (`model_provider = gemini`, `model = gemini-flash-latest`, `thinking_level = low`, la tool policy anterior y el prompt en español con los diferenciales de PubliEXPE: ofertas, trato cercano, taller propio y precio). Si existe y su versión activa es distinta, añade una versión nueva, la activa y pasa la anterior a `DEPRECATED`. Si es igual, no cambia nada.
 - **Tarea `daily-event-prospecting`**: `CRON 0 8 * * *` en `Europe/Madrid`, `timeout_ms = 900000`, sin reintentos, con `test/fixtures/feria-ejemplo.json` como `default_input`. Si cambia, se actualiza y se guarda una `TaskDefinitionVersion` nueva.
 - **Tarea `weekly-event-scouting`** (modo scout): `CRON 30 7 * * 1` (lunes 07:30) en `Europe/Madrid`, `timeout_ms = 1800000`, sin reintentos, `default_input = { "sector": "alimentación y bebidas", "region": "España", "horizon_months": 6 }`.
-- **Agente `BajasAgent` y tarea `process-unsubscribes`**: `CRON 0 */2 * * *` en `Europe/Madrid`, sin LLM (`model_provider = stub`), tool policy `get_note` + `update_note` (una escritura por ejecución). Consulta [Inbound de bajas](#inbound-de-bajas).
+- **Agente `BajasAgent` y tarea `process-unsubscribes`**: `CRON 0 */2 * * *` en `Europe/Madrid`, sin LLM (`model_provider = stub`), tool policy `get_note` + `update_note` (una escritura por ejecución). Desde la tanda 12 la tarea queda **desactivada** (`enabled = false`). Consulta [Inbound de bajas](#inbound-de-bajas).
+- **Agente `InboxAgent` y tarea `process-inbox`**: `CRON 0 */2 * * *` en `Europe/Madrid`, Gemini Flash solo para las respuestas que las reglas no deciden, tool policy `get_note` + `update_note` + `create_note` + `find_company`. Consulta [Triaje del buzón](#triaje-del-buzón).
 
 Las dos tareas usan la misma versión del agente. La versión del seed añade `fetch_url` a la tool policy, la configuración `scout` y la skill `event-source-discovery` v1, y sube la skill `prospector-event-exhibitors` a v2 (datos en bloques `DATOS_NO_CONFIABLES`): al ejecutar el seed sobre una BD existente se crea una versión nueva del agente.
 
@@ -1551,7 +1629,9 @@ pnpm vitest run test/integration/prospector-live.test.ts
 
 ## Inbound de bajas
 
-Primera pieza del Inbound Manager ([LLD v0.1, sección 10.2](../../docs/LLD-0.1-publiexpe-commercial-os.md#102-inbound-y-conversaciones)): procesa las peticiones de baja de forma automática, sin LLM y sin aprobación (cumplimiento). Todo lo que no es una baja se ignora; el triaje general del inbound llegará después.
+Primera pieza del Inbound Manager ([LLD v0.1, sección 10.2](../../docs/LLD-0.1-publiexpe-commercial-os.md#102-inbound-y-conversaciones)): procesa las peticiones de baja de forma automática, sin LLM y sin aprobación (cumplimiento).
+
+> **Nota:** desde la tanda 12 el buzón lo lee la tarea `process-inbox` (InboxAgent, consulta [Triaje del buzón](#triaje-del-buzón)), que procesa las bajas exactamente con estas reglas y además clasifica el resto del correo. El seed deja `process-unsubscribes` **desactivada** (no se archiva ni se borra; se puede lanzar a mano) para que el buzón tenga un solo lector. Esta sección describe el procesamiento de bajas, común a los dos agentes.
 
 > **Importante:** este componente solo **lee** correo y solo **añade** líneas a la lista de supresión. No envía, responde, reenvía, mueve ni borra mensajes, y el runtime no usa SMTP en ningún sitio.
 
@@ -1592,7 +1672,7 @@ Reglas comunes:
 
 - Las frases se comparan en minúsculas, sin tildes y con límites de palabra.
 - Del cuerpo se descarta el texto citado (líneas `>`, el bloque "El ... escribió:" y la cabecera "De: / Enviado:" de Outlook), nuestro pie de baja y la firma `-- `. Se analizan como máximo 4.000 caracteres.
-- Nunca es baja: el correo automático (`Auto-Submitted`, `List-Unsubscribe`, `List-Id`, `Precedence: bulk`, rebotes `multipart/report`, remitentes `mailer-daemon`, `no-reply`...), el de nuestros dominios (`publiexpe.info`, `publiexpe.com`) y el que no tiene un `From` válido.
+- Nunca es baja: el correo automático (`Auto-Submitted`, `List-Unsubscribe`, `List-Id`, `Precedence: bulk`, rebotes `multipart/report`, remitentes `mailer-daemon`, `no-reply`...), el de nuestros dominios (`publiexpe.info`, `publiexpe.com`) y el que no tiene un `From` válido. Las cabeceras `List-*` se buscan en las líneas originales: mailparser las agrupa en una sola entrada `list` (hasta la tanda 12 no se detectaban y solo contaba el remitente).
 
 ### Buzón: lo único que se modifica
 
@@ -1618,7 +1698,7 @@ Migración `0004_inbound`. Un cursor por `(tenant_id, consumer, mailbox)`; se ac
 | Columna | Tipo | Uso |
 |---|---|---|
 | `tenant_id` | `text` | Tenant |
-| `consumer` | `text` | Lector del buzón: `bajas` (el triaje general tendrá el suyo) |
+| `consumer` | `text` | Lector del buzón: `bajas` (BajasAgent) o `inbox` (InboxAgent, triaje general); cada uno con su cursor |
 | `mailbox` | `text` | `usuario@host/CARPETA` (sin contraseña) |
 | `uid_validity` | `bigint` | `UIDVALIDITY` de la carpeta cuando se guardó el cursor |
 | `last_uid` | `bigint` | Último UID procesado; nunca retrocede con el mismo `UIDVALIDITY` |
@@ -1636,6 +1716,116 @@ Migración `0004_inbound`. Un cursor por `(tenant_id, consumer, mailbox)`; se ac
 - `test/unit/inbound-bajas.test.ts`: clasificación con fixtures RFC 822 (incluidos citas, Outlook, HTML en base64, newsletters, rebotes, autorrespuestas e intentos de inyección), formato y deduplicación de la lista, cursor, degradación sin credenciales y el cliente imapflow real contra `FakeImapServer` (comprueba que solo se envían `EXAMINE`, `UID SEARCH` y `UID FETCH ... BODY.PEEK[]`).
 - `test/integration/inbound-bajas.test.ts` (PostgreSQL): seed, `process-unsubscribes` → `RunProcessor` → BajasAgent → servidor IMAP falso → nota en FakeTwenty → `inbound_state` y trace.
 - `test/integration/inbound-bajas-live.test.ts`: con `IONOS_IMAP_*` en el entorno o en `.env`, conecta al buzón real en solo lectura, lista y clasifica **sin escribir nada** (ni en el buzón ni en Twenty) e imprime lo que añadiría. Con `TWENTY_API_KEY`, prueba además `update_note` sobre una nota de prueba `[TEST] pxos-it ...` (nunca sobre la lista real). Sin credenciales se salta.
+
+## Triaje del buzón
+
+La tarea `process-inbox` (`CRON 0 */2 * * *`, `Europe/Madrid`, `max_concurrency = 1`, la cadencia de la antigua `process-unsubscribes`) ejecuta el **InboxAgent** (`implementation = "inbound_inbox"`). Clasifica cada correo entrante **una sola vez** y prepara al comercial lo que necesita. **Nunca envía ni responde**: el lector IMAP es el mismo de solo lectura (`EXAMINE` + `BODY.PEEK[]`) y no existe ninguna tool de correo.
+
+### Clases
+
+Primero van las reglas deterministas, sin LLM ([src/inbound/triage-rules.ts](src/inbound/triage-rules.ts)), en este orden:
+
+| Clase | Señales (`signals`) |
+|---|---|
+| `REBOTE` | `dsn_report` (`multipart/report; report-type=delivery-status` o parte `message/delivery-status`); `daemon_sender` (`MAILER-DAEMON`, `postmaster`...) + `bounce_subject` ("Undelivered Mail", "Mail delivery failed", "Delivery Status Notification", "Mensaje no entregado"...); o `Auto-Submitted` + asunto de rebote. `hard_bounce` si el DSN dice `Action: failed` con `Status: 5.x.x` (sin DSN: códigos 55x / 5.x.x o "user unknown", "no existe"...); `soft_or_unknown_bounce` si es 4.x.x, `delayed` o no se sabe. El destinatario fallido sale de `Final-Recipient`, de las cabeceras devueltas (`text/rfc822-headers`) o de la única dirección del texto; nunca de nuestros dominios |
+| `AUTO_REPLY` | `read_receipt` (MDN); `auto_submitted`, `x_autoreply`, `precedence_auto_reply`, `precedence_bulk`, `bulk_list` (`List-*`, `Feedback-ID`), `automated_sender` (`no-reply`, `newsletter`...); y, **después** del chequeo de baja, `auto_reply_subject` ("Respuesta automática:", "Automatic reply:", "Fuera de la oficina:", "Out of office"...) |
+| `OTRO` | `invalid_sender`, `own_domain`, `empty_text` (solo trae el mensaje citado) |
+| `BAJA` | Exactamente el clasificador de bajas ([Señales de baja](#señales-de-baja)) |
+
+El resto va al modelo ([src/inbound/reply-classifier.ts](src/inbound/reply-classifier.ts)): **una** llamada por mensaje, con el modelo de la versión (`gemini-flash-latest`, `thinking_level: low`, `max_output_tokens` 1024), el asunto y como máximo 2.000 caracteres del texto que escribió el remitente. El modelo devuelve `INTERESADO`, `PREGUNTA`, `NO_INTERESADO` u `OTRO` con su confianza. La decisión es conservadora:
+
+- Respuesta inválida o error del modelo: `OTRO` (`llm_invalid_output` / `llm_error`).
+- Confianza menor que `min_confidence` (0,6): `OTRO` (`low_confidence`).
+- `NO_INTERESADO` con confianza menor que `no_interest_min_confidence` (0,85): `OTRO` (`no_interest_unconfirmed`).
+- Un aplazamiento o una redirección es `OTRO`, nunca `NO_INTERESADO`.
+
+> **Importante:** el correo es dato no confiable. Entra en el prompt solo dentro del bloque `<<<DATOS_NO_CONFIABLES id=…>>>` (id aleatorio, marcadores neutralizados), en el mensaje de usuario. El prompt de sistema (sin contenido del correo) ordena ignorar cualquier instrucción del bloque. El modelo solo puede elegir una de cuatro etiquetas: nada de lo que diga el correo dispara otra acción.
+
+### Acciones
+
+| Clase | Acción |
+|---|---|
+| `BAJA` | Línea `email — AAAA-MM-DD — baja solicitada (asunto: "...")` en la lista de supresión (igual que el BajasAgent) |
+| `NO_INTERESADO` | Línea `email — AAAA-MM-DD — no interesado (respuesta) (asunto: "...")` en la lista de supresión **y** nota de respuesta |
+| `INTERESADO`, `PREGUNTA` | Nota `📬 Respuesta recibida — <Interesado/Pregunta> (AAAA-MM-DD HH:mm)` |
+| `REBOTE` duro | Nota `⚠️ Rebote: el email no existe (AAAA-MM-DD HH:mm)`; la lista de supresión no se toca |
+| `AUTO_REPLY`, rebote blando, `OTRO` | Solo registro |
+
+Las altas en la lista se escriben con **un** `get_note` + **un** `update_note` por ejecución (append-only, deduplicadas, mismo código que el BajasAgent: [src/inbound/suppression-writer.ts](src/inbound/suppression-writer.ts)).
+
+Las notas se crean con `create_note` sobre la empresa y la hipótesis del envío al que responden. El envío se busca en `email_sends` ([src/inbound/reply-links.ts](src/inbound/reply-links.ts)):
+
+1. Por la dirección del remitente (o, en un rebote, la del destinatario fallido): el último envío anterior a la recepción.
+1. Si no hay, por dominio, cuando todos los envíos a ese dominio son de **una** empresa. Nunca en dominios de correo gratuito (`gmail.com`, `hotmail.com`...).
+1. Sin envío, una respuesta se enlaza a la empresa de Twenty con ese dominio (`find_company`, solo si hay exactamente una). Sin empresa no hay nota (`no_company_match`, contador `unmatched`).
+
+El extracto de la nota es texto plano: sin el mensaje citado, sin enlaces (`[enlace]`), sin sintaxis markdown o HTML, máximo 500 caracteres. El título lleva la hora local de recepción: cada respuesta tiene su nota y `create_note` (idempotente por empresa + título) no la duplica al reintentar.
+
+La hipótesis **no se marca**. El único campo de estado de email (`emailStatus`: `DRAFT`, `READY`, `SENDING`, `SENT`) es el del flujo de envío y no tiene un valor de "respondido"; cambiarlo rompería el workflow de Twenty, y no se añaden campos a la Twenty App.
+
+Ejemplo de nota:
+
+```
+📬 Respuesta recibida — Interesado (2026-10-08 10:30)
+
+**Ha respondido carmen@cliente.example.** Clasificación automática: **Interesado** (modelo, confianza 0,93).
+
+- Recibido: 2026-10-08 10:30 (Europe/Madrid)
+- Asunto: Re: Material para vuestro stand
+- Responde a: envío del 2026-10-07 10:15 «Material para vuestro stand» (coincide la dirección)
+
+Extracto (texto plano, sin el mensaje citado):
+
+> ¡Hola Jesús! Sí, nos interesa. ¿Me pasas precios de bolsas tote para 500 uds?
+
+Qué hacer: Abre el correo en tu bandeja y respóndelo tú hoy: pide lo que falte (cantidades, fechas, logo) y prepara la propuesta.
+
+El Commercial OS no responde ni envía nada: la respuesta es tuya.
+```
+
+### Evento `email.reply_received`
+
+Se emite uno por mensaje triado (para n8n y los triggers `EVENT`), con `idempotencyKey` derivada del Message-ID. Campos de `data`: `class`, `confidence`, `method` (`RULES` | `LLM`), `signals`, `fromDomain`, `companyId`, `hypothesisId`, `sendId`, `matchBy` (`email` | `domain` | `company_domain`), `noteId`, `suppressionAdded`, `receivedAt` y, en los rebotes, `bouncedDomain` y `hardBounce`. Como los demás eventos `email.*`, lleva dominios, nunca direcciones. Para filtrar por clase, usa `filter: {"class": {"in": ["INTERESADO", "PREGUNTA"]}}`.
+
+### Idempotencia, cursor y presupuestos
+
+- Cada mensaje se triaja **una vez**: clave `mid:<Message-ID>` (o `sha256:` del fuente si no tiene) en `inbound_triage`. Una segunda ejecución, un cambio de `UIDVALIDITY` o una segunda copia del mismo mensaje no repiten LLM, notas, altas ni eventos.
+- El cursor es propio (`inbound_state`, consumer `inbox`). En la primera ejecución lee desde `initial_since` (`2026-10-06`); el triaje del histórico se reparte entre ejecuciones según los presupuestos.
+- `triage.max_llm_calls_per_run` (40) y `triage.max_notes_per_run` (40): al agotarse, la ejecución termina `SUCCESS` con `stopped` (`llm_budget` / `notes_budget`) y la siguiente continúa desde ese mensaje.
+- Si Twenty falla al crear una nota, la ejecución termina `FAILED` con el cursor en el último mensaje terminado, y la siguiente reintenta sin duplicar nada. Si falla la lista de supresión, el cursor no avanza.
+- `mark_seen: true` marca `\Seen` solo en las bajas, como el BajasAgent (por defecto, `false`).
+
+### Tabla `inbound_triage`
+
+Migración `0014_inbound_triage`. Es append-only: hay triggers que rechazan `UPDATE` y `DELETE`. La fila se escribe después de las acciones, así que registra lo que se hizo. No guarda el cuerpo del correo.
+
+| Columna | Uso |
+|---|---|
+| `message_key` | `mid:<Message-ID>` o `sha256:<hash>`; único por tenant |
+| `message_id`, `mailbox`, `uid_validity`, `uid`, `received_at` | Origen del mensaje |
+| `from_email`, `from_domain`, `subject` | Remitente y asunto saneado (120 caracteres) |
+| `class`, `confidence`, `method`, `signals` | Resultado del triaje |
+| `company_id`, `hypothesis_id`, `send_id`, `match_by` | Enlace con Twenty y `email_sends` |
+| `note_id`, `suppression_added`, `event_id` | Lo que se hizo |
+| `execution_id`, `cost_eur`, `created_at` | Ejecución, coste del LLM del mensaje y hora del triaje |
+
+### Configuración (`triage`)
+
+| Clave | Por defecto | Uso |
+|---|---|---|
+| `min_confidence` | `0.6` | Por debajo, `OTRO` |
+| `no_interest_min_confidence` | `0.85` | Por debajo, un `NO_INTERESADO` queda como `OTRO` (nunca menor que `min_confidence`) |
+| `max_llm_calls_per_run` / `max_notes_per_run` | `40` / `40` | Presupuestos por ejecución |
+| `llm_text_max` / `max_output_tokens` | `2000` / `1024` | Presupuesto por mensaje |
+| `lookup_company_by_domain` | `true` | `find_company` por dominio si no hay envío |
+| `emit_events` | `true` | Emite `email.reply_received` |
+
+El resto de claves (`suppression_note_id`, `own_domains`, `imap_mailbox`, `initial_since`, límites de mensajes, `mark_seen`, `timezone`) son las del BajasAgent. Tool policy: `get_note` y `update_note` (1 cada una), `create_note` y `find_company` (40 cada una), `LOW_WRITE`.
+
+### Tests del triaje
+
+- `test/unit/inbound-triage.test.ts`: reglas con cabeceras reales (fuera de oficina de Exchange y Gmail, autorrespondedores, boletines, rebotes de Exim/IONOS, Postfix y Gmail, acuses de lectura), parseo DSN, prompt con bloque no confiable e intento de inyección, confianza baja → `OTRO`, notas y extracto saneado, enlace con envíos, y el InboxAgent con buzón falso, FakeTwenty y StubProvider (lote mixto, idempotencia, presupuesto LLM, fallo de Twenty, error del modelo, remitentes sin empresa, `\Seen`).
+- `test/integration/inbound-triage.test.ts` (PostgreSQL): seed, `process-inbox` → `RunProcessor` → InboxAgent → servidor IMAP falso → StubProvider → notas y lista en FakeTwenty → filas de `inbound_triage`, eventos en `events`, cursor, idempotencia tras un cambio de `UIDVALIDITY` y triggers append-only.
 
 ## Docker
 
@@ -2094,6 +2284,87 @@ Solo cuenta los envíos desde Twenty: los del webmail van aparte. El dashboard m
 - `test/integration/email-ops.test.ts` (PostgreSQL + `FakeTwenty` + payload real de Twenty): bloqueo y vuelta a `DRAFT`, dedupe de `SENT`, una sola emisión diaria del exceso, bloque `email` del resumen y del dashboard, trigger anti-`DELETE`.
 - `test/integration/email-ops-live.test.ts` (opcional, `EMAIL_OPS_LIVE=1`, Twenty real): añade a la nota real de supresión la línea de prueba `suprimido-test@ejemplo-supresion.example` (TLD `.example`, no recibe correo; no se borra), simula el webhook de `READY` sobre la hipótesis `[TEST] pxos-emailops READY a dirección suprimida` (estado `PROPOSED`, que el workflow nunca enviaría) y comprueba que vuelve a `DRAFT` con su nota ⛔; después simula un `SENT` sobre `[TEST] pxos-emailops SENT simulado` (la transición solo existe en el payload). Tenant `it-emailops`, colas en memoria. No envía nada.
 
+## Auditoría y retención de trazas
+
+Tanda 12, migración `0015_audit_retention` (LLD v0.1 §22 y §24).
+
+### `audit_log`: acciones administrativas
+
+Cada petición a una ruta administrativa de la API deja una fila en `audit_log`, también si se rechaza (un `409` del Release Gate, un `400` de validación). Escribe el hook `onSend` de `src/audit/hook.ts`, antes de que salga la respuesta. No es un logger global: los `GET` y las rutas operativas no se auditan.
+
+| Columna | Contenido |
+|---------|-----------|
+| `tenant_id`, `occurred_at` | Tenant de la petición e instante |
+| `actor`, `actor_ip`, `actor_label` | `api` (la API no tiene autenticación), IP del cliente y una etiqueta libre: cabecera `x-actor` o, si falta, el `by` / `created_by` del cuerpo. La etiqueta **no** está autenticada |
+| `action` | `skill.activate`, `skill.force_activate`, `canary.start`, `canary.promote`, `canary.rollback`, `harness.activate`, `harness.force_activate`, `optimizer.run`, `optimizer.close`, `dataset.*`, `knowledge.*`, `agent.*`, `task.*`, `execution.cancel`, `event_subscription.*` |
+| `subject_type`, `subject_id`, `subject_version` | Sujeto tal como lo pidió la ruta (nombre o id) y versión cuando aplica |
+| `method`, `route`, `request_id` | Patrón de la ruta (`/skills/:id/versions/:v/activate`) |
+| `payload` | Resumen del cuerpo: flags, números, textos cortos, listas cortas de ids y el `reason` completo de una decisión humana. Los textos largos y los objetos anidados van como `{ sha256, length, excerpt }`, nunca enteros |
+| `result`, `status_code`, `error_code` | `ok` (2xx), `rejected` (4xx) o `error` (5xx), con el `error` de la respuesta (`release_gate_blocked`, `conflict`, `validation_error`...) |
+| `details` | Hechos breves de la respuesta: `changed`, `gate_mode` (`override`, `experiment`, `rollback`), experimento del gate, mensaje del error |
+
+- **Append-only**: los triggers rechazan `UPDATE`, `DELETE` y `TRUNCATE`.
+- **`force` siempre auditado**: una activación con `force: true` se registra como `*.force_activate` con el motivo completo y el modo del gate, se acepte o no.
+- **Catálogo** (`src/audit/catalog.ts`): cada ruta mutante está en `AUDITED_ROUTES` o en `NOT_AUDITED` con su motivo (`POST /executions`, `POST /tasks/:id/run`, `POST /evaluations/human`, webhooks y rutas `501`: tienen su propio registro). `test/unit/audit.test.ts` falla si una ruta nueva no está clasificada.
+- Si el insert de auditoría falla, se registra en el log del proceso como error y la respuesta no cambia (la acción ya está decidida).
+- Código fuera de la API puede auditar con `recordAudit(db, row)` (`src/audit/service.ts`).
+
+`GET /audit` devuelve las filas del tenant, de la más reciente a la más antigua. Filtros: `action` (una o varias separadas por comas), `subject_type`, `subject_id`, `result`, `from` / `to` (ISO 8601) y `limit` (1-500, por defecto 100).
+
+```sh
+# Todos los force de skills y harness del tenant
+curl -s 'http://127.0.0.1:4020/audit?action=skill.force_activate,harness.force_activate' -H 'x-tenant-id: publiexpe'
+# Quién te identifica en la auditoría
+curl -s -X POST http://127.0.0.1:4020/skills/<skill>/versions/3/activate -H 'content-type: application/json' \
+  -H 'x-actor: jesus' -d '{"force": true, "reason": "motivo de al menos 10 caracteres", "by": "jesus"}'
+```
+
+### Retención de trazas sin pérdida: `pnpm traces:archive`
+
+Las trazas crecen por los payloads `jsonb` de los pasos. La retención archiva antes de aligerar y nunca borra: ni filas ni ficheros. Es una tarea manual (no hay tarea programada).
+
+```sh
+# Simulación: qué se archivaría (por tenant y mes), sin escribir nada
+pnpm traces:archive --older-than 90 --dry-run
+# Archiva y aligera los pasos de trazas de más de 90 días (por defecto TRACE_RETENTION_DAYS)
+pnpm traces:archive --older-than 90 [--tenant publiexpe] [--min-bytes 4096] [--batch 200] [--dir ./data/trace-archive]
+```
+
+1. **Selección**: pasos de trazas más antiguas que N días, de ejecuciones terminadas, con algún campo pesado: `input`, `output`, `tool_input` o `tool_output` con un JSON de `--min-bytes` (4096) o más. Los payloads pequeños se quedan en la BD (los usan `link-resolver` y la cosecha de datasets: ids de Twenty, `created`, `input.exhibitor`...).
+2. **Exportación**: JSONL con gzip en `TRACE_ARCHIVE_DIR/<tenant>/<YYYY-MM>.jsonl.gz` (mes de la traza, UTC), una línea por paso. Los ficheros se crean con `O_EXCL`: nunca se sobrescribe ni se amplía uno existente; otra pasada del mismo mes escribe `<YYYY-MM>.2.jsonl.gz`. Antes de escribir, PostgreSQL comprueba que la copia que lleva JavaScript tiene el mismo texto `jsonb` canónico; un campo que no se puede representar exacto (p. ej. un entero de 25 cifras) no se archiva ni se aligera y se informa en `fields_unrepresentable`.
+3. **Verificación**: relee el fichero, lo descomprime y compara el número de líneas, el sha256 del contenido y cada línea (paso y valor de cada campo). Si falla, el proceso para con error, el fichero se queda donde está (nada apunta a él) y la BD no cambia.
+4. **Aligerado**: solo tras verificar, campo a campo y en una transacción por fichero, el campo pasa a `{ "archived": true, "file", "line", "field", "sha256", "bytes" }`. El `UPDATE` va guardado por el sha256 del contenido que sustituye. Tipo, timestamps, tokens, modelo, tool, latencia, `error`, `reward` y las versiones de la traza (P4) no cambian.
+
+**Triggers (0015)**. `traces` y `trace_steps` no tenían ningún trigger. Ahora:
+
+- Sin `DELETE` físico en `traces` ni en `trace_steps`.
+- `trace_steps` es inmutable salvo una vía estrecha: un campo pesado solo puede pasar de su contenido a su puntero exacto, con las claves exactas y el sha256 del contenido sustituido calculado por el trigger sobre `OLD`. Un puntero no vuelve a cambiar. Cualquier otro `UPDATE` falla.
+
+**Lectura**. `GET /traces/:id` sirve la traza con sus pasos; cada paso lista sus `archived_fields` y la traza su `archived_steps`. Con `?rehydrate=true`, cada puntero se lee del fichero y se sustituye por el contenido original; `rehydrated[campo]` indica `status` (`ok`, `missing_file`, `missing_line`, `mismatch`, `invalid`) y `verified` (el contenido tiene el sha256 del puntero). Un fichero ausente nunca falla la petición: el puntero se queda. `GET /executions/:id` y `GET /task-runs/:id` sirven el puntero tal cual.
+
+> **Importante:** tras archivar, las consultas que leen payloads pesados de pasos antiguos (la cosecha de datasets de `render_url` y del `scout_extract`) ven el puntero, no el contenido. Archiva solo trazas que ya no vayas a cosechar, o rehidrata antes. En Docker, monta `TRACE_ARCHIVE_DIR` como volumen persistente: el directorio es la única copia de lo aligerado.
+
+| Variable | Por defecto | Descripción |
+|----------|-------------|-------------|
+| `TRACE_RETENTION_DAYS` | `90` | Antigüedad (días) por defecto de `pnpm traces:archive` |
+| `TRACE_ARCHIVE_DIR` | `./data/trace-archive` | Directorio de los ficheros del archivo (relativo al proceso). `GET /traces/:id?rehydrate=true` lee de aquí |
+
+### Stall-guard de BullMQ
+
+Cuando BullMQ re-entrega un job tras un stall (el worker no renovó el lock) y el run sigue `RUNNING`, el processor ya no lo da por muerto: aplica la misma regla de vida que el reconciliador (`decideStalledDelivery` en `src/worker/processor.ts`).
+
+- Latido (`task_runs.updated_at`) más antiguo que `RECONCILE_GRACE_MS`: el intento murió. `recoverOrphanRun` con la guarda `staleBefore` y el mismo número de intento (`RUNNING → QUEUED` y vuelve a ejecutarse, o `→ FAILED` sin intentos).
+- Latido reciente: el primer worker sigue vivo y solo perdió el lock. El processor lanza `StalledRunAliveError` y el worker de BullMQ aparca el job en `delayed` hasta que el latido podría caducar (sin consumir intento). En la siguiente entrega, el run está terminado (se omite), en `QUEUED` por un reintento (se ejecuta) o es un huérfano real (se recupera).
+- Si un latido gana la carrera entre la lectura y el `UPDATE` guardado, también se aplaza.
+
+### Tests
+
+- `test/unit/audit.test.ts`: resumen del payload, fila de auditoría (`force_activate`, `409`, tenant inválido) y clasificación de todas las rutas mutantes.
+- `test/unit/trace-archive.test.ts` y `test/unit/stall-guard.test.ts`: punteros, rutas fuera del directorio, verificación de un fichero alterado y la decisión del stall-guard.
+- `test/integration/audit.test.ts` (PostgreSQL): auditoría de create, activate bloqueado (`409`), force sin motivo (`400`) y con motivo, canario, cierre del optimizador, knowledge, `GET /audit` y los triggers append-only (en transacciones que siempre se deshacen).
+- `test/integration/trace-archive.test.ts` (PostgreSQL): simulación, archivado → verificación → aligerado → lectura con puntero → rehidratación verificada, campo no representable que se queda en la BD, idempotencia, fichero ausente y la vía estrecha del trigger.
+- `test/integration/recovery-race.test.ts`: re-entrega con latido fresco (el intento sobrevive) y con huérfano real (se recupera o falla sin intentos).
+
 ## Pendiente
 
 - Triggers `DEPENDENCY` y `CONDITION` (hoy no registran nada).
@@ -2111,5 +2382,5 @@ Solo cuenta los envíos desde Twenty: los del webmail van aparte. El dashboard m
 - Borradores de email: disparar también con `EDITED` (necesita una segunda tarea o un operador OR en el filtro), plantillas por sector y registro de si el comercial envió el borrador. (Hecho: la entrada de eventos externos por HTTP y la entrega a n8n por webhook, consulta [Eventos externos](#eventos-externos).)
 - Harness, skills, memoria y verificador reales; promote, rollback y evaluate.
 - Export de los contratos zod a JSON Schema versionado en `schemas/`.
-- Experiments: criterio de latencia, re-validación automática de los `PASS_FORM` cuando el dataset tenga etiquetas en VALIDATION/TEST, y registrar los overrides también en el log de eventos (hoy van al log del proceso y a la respuesta). El runner para harness existe desde la tanda 11 ([Experimentos de harness](#experimentos-de-harness)).
+- Experiments: criterio de latencia, y que el Release Gate tenga en cuenta una revalidación `REFUTED` (hoy solo avisa con nota y evento; la revalidación es manual, ver [Revalidación de los PASS_FORM](#revalidación-de-los-pass_form)). Los overrides quedan desde la tanda 12 en `audit_log` como `*.force_activate`, además del log del proceso y la respuesta. El runner para harness existe desde la tanda 11 ([Experimentos de harness](#experimentos-de-harness)).
 - Métricas: AC-17 y AC-18 piden hipótesis `HOT`, pero el resumen de ejecución solo cuenta hipótesis creadas; falta el desglose por prioridad (en Twenty o en `output.counters`). El dashboard oculta por defecto los agentes `ARCHIVED` (los de prueba se archivan con `pnpm cleanup:archive-test-agents`); `include_archived=true` los muestra.

@@ -5,3 +5,5 @@ export * from './service.js';
 export * from './release-gate.js';
 export * from './runner.js';
 export * from './render.js';
+export * from './revalidation.js';
+export * from './revalidation-service.js';

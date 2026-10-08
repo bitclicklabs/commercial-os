@@ -29,7 +29,9 @@ export const EVALUATION_EVENT_TYPES = ['evaluation.recorded'] as const;
 export type EvaluationEventType = (typeof EVALUATION_EVENT_TYPES)[number];
 
 /**
- * Email-ops events (src/email-ops/): guard and tracking of the send-from-Twenty flow.
+ * Email-ops events (src/email-ops/): guard and tracking of the send-from-Twenty flow, plus
+ * `email.reply_received` from the inbound triage (src/agents/inbox-agent.ts, one per triaged
+ * message, `data.class` = BAJA | NO_INTERESADO | INTERESADO | PREGUNTA | AUTO_REPLY | REBOTE | OTRO).
  * Payloads never carry a full address, only domains.
  */
 export const EMAIL_EVENT_TYPES = [
@@ -37,6 +39,7 @@ export const EMAIL_EVENT_TYPES = [
   'email.sent',
   'email.sent_suppressed',
   'email.warmup_target_exceeded',
+  'email.reply_received',
 ] as const;
 export type EmailEventType = (typeof EMAIL_EVENT_TYPES)[number];
 

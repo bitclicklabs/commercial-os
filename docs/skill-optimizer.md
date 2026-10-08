@@ -6,7 +6,7 @@ Este documento es para quien decide (comercial y responsable técnico) y para qu
 
 > **Importante:** el optimizador **nunca activa nada**. Un agente puede proponer, experimentar y evaluarse; la promoción a producción es siempre una decisión humana y la activación vuelve a comprobar el gate ([LLD §19](LLD-0.1-publiexpe-commercial-os.md#19-regla-de-oro-del-sistema-evolutivo)). Lo más lejos que llega una optimización es una versión `DRAFT` con un experimento `PASS` y una nota en Twenty.
 
-> **Nota:** este documento describe la especificación de la tanda 11. Los nombres exactos de fases, estados y campos son los del README del runtime; si alguno difiere, manda el README.
+> **Nota:** este documento describe la especificación de las tandas 11 y 12 (la revalidación de `PASS_FORM` es de la tanda 12). Los nombres exactos de fases, estados y campos son los del README del runtime; si alguno difiere, manda el README.
 
 ## Qué dispara una optimización
 
@@ -105,7 +105,7 @@ Qué debes encontrar en la nota (y qué hacer con cada parte):
 
 1. **Skill y versiones**: skill, versión activa (baseline) y versión candidata. Confirma que la baseline sigue siendo la activa; si alguien activó otra versión mientras tanto, el gate bloqueará la activación y habrá que repetir el experimento.
 1. **Qué cambia y por qué**: el *changelog* de la candidata cita los clusters de fallos. Comprueba que cada cluster es un problema real que reconoces del trabajo diario.
-1. **Resultado del gate**: decisión (`PASS` o `PASS_FORM`), cada criterio con su valor y el coste del experimento. `PASS_FORM` significa que no había etiquetas para medir si las decisiones aciertan: es válido para activar, pero queda pendiente de revalidar.
+1. **Resultado del gate**: decisión (`PASS` o `PASS_FORM`), cada criterio con su valor y el coste del experimento. `PASS_FORM` significa que no había etiquetas para medir si las decisiones aciertan: es válido para activar, pero queda pendiente de [revalidar](#revalidación-de-un-pass_form) cuando haya etiquetas.
 1. **Enlaces**: el informe `EXP-NNN` (tabla lado a lado por expositor) y la versión `DRAFT` con su diff.
 
 Lista de revisión:
@@ -113,7 +113,7 @@ Lista de revisión:
 - [ ] Leí el diff de la candidata: cambia lo que dice el changelog y nada más.
 - [ ] Leí las razones por expositor del informe, no solo las métricas. Las métricas no lo ven todo (EXP-003 lo demostró).
 - [ ] La candidata no inventa datos ni eleva la confianza sin respaldo.
-- [ ] Si el gate fue `PASS_FORM`, acepto que falta revalidar con etiquetas o, mejor, uso el [canario](#canario-despliegue-gradual-tras-el-gate).
+- [ ] Si el gate fue `PASS_FORM`, acepto que falta [revalidar](#revalidación-de-un-pass_form) con etiquetas o, mejor, uso el [canario](#canario-despliegue-gradual-tras-el-gate).
 - [ ] Sé cómo deshacerlo (rollback, más abajo).
 
 ### Decidir
@@ -151,7 +151,7 @@ Cómo funciona:
 
 Cuándo usarlo:
 
-- El gate fue `PASS_FORM` y no hay etiquetas con las que confirmar la accuracy.
+- El gate fue `PASS_FORM` y no hay etiquetas con las que confirmar la accuracy (cuando las haya, puedes [revalidar](#revalidación-de-un-pass_form) sin gastar nada). Si durante el canario la revalidación da `REFUTED`, verás la nota «⚠️ Revalidación fallida» en Twenty: el rollback es `POST /skills/:name/canary/rollback`.
 - El cambio toca la forma de los mensajes (tono, confianza, presentación) y quieres verlo con hipótesis reales antes de generalizarlo.
 - La skill tiene mucho volumen o un fallo costaría caro.
 
@@ -160,6 +160,69 @@ Cuándo no hace falta: cambios triviales con `PASS` estricto, o skills con tan p
 > **Nota:** el [ciclo manual](ciclo-mejora-skills.md#7-mide-la-aceptación-por-versión) pide al menos 30 hipótesis revisadas por versión antes de concluir. Un canario del 10 % tarda mucho en llegar a esa cifra con el volumen actual (unas decenas de hipótesis por scout semanal). Usa un porcentaje mayor (20-50 %) o acepta que la comparativa será orientativa.
 
 El mismo mecanismo de gate protege ahora a las versiones de **harness**: activar una versión de harness exige un experimento con `PASS` o `PASS_FORM`, o `force` con motivo; sin ello responde `409 release_gate_blocked`.
+
+## Revalidación de un PASS_FORM
+
+Un experimento que termina en `PASS_FORM` no pudo medir la accuracy porque no había casos etiquetados en el split (0 etiquetas): el gate comprobó reglas, juez, coste y regresiones, pero no si las decisiones aciertan. Esa pregunta queda abierta. La revalidación la cierra más tarde, cuando el equipo comercial ya ha dado veredictos sobre esos casos.
+
+**Cuándo ocurre.** Solo cuando alguien la pide, y tiene sentido cuando:
+
+- El experimento original terminó en `PASS_FORM`.
+- Desde entonces el equipo comercial ha validado, editado o descartado hipótesis en Twenty que corresponden a casos que el experimento **ejecutó** (consulta [la rutina diaria](guia-comercial.md#tu-rutina-diaria-de-10-minutos)).
+
+**Qué hace.** Mide la accuracy sobre los **outputs ya guardados** del experimento, con las etiquetas nuevas. No vuelve a ejecutar ni la skill ni el juez: el coste en LLM es **0 €** y el resultado es reproducible.
+
+> **Importante (P5):** solo cuentan las etiquetas de casos que el experimento ejecutó y que **no** eran casos de diseño (los que originaron la candidata). Etiquetar a posteriori una entidad que sirvió para diseñar el cambio no vale como evidencia: sería evaluar sobre lo que generó el cambio.
+
+### Ver qué está pendiente
+
+```sh
+curl -s "http://127.0.0.1:4020/experiments/pending-revalidation" -H 'x-tenant-id: publiexpe'
+```
+
+Lista los experimentos `PASS_FORM` que ya tienen etiquetas frescas disponibles. Si un experimento no aparece, todavía no hay con qué revalidarlo.
+
+### Lanzarla
+
+Por línea de comandos:
+
+```sh
+cd runtime/agent-runtime
+pnpm experiment:revalidate --id <id-del-experimento>
+```
+
+O por API:
+
+```sh
+curl -s -X POST "http://127.0.0.1:4020/experiments/<id-del-experimento>/revalidate" -H 'x-tenant-id: publiexpe'
+```
+
+El experimento original **no se modifica** (es inmutable). El resultado se guarda en un registro nuevo y de solo añadir (`experiment_revalidations`), de modo que puedes repetir la revalidación más adelante, con más etiquetas, y conservar el historial completo.
+
+### Los tres veredictos
+
+| Veredicto | Significa | Qué haces |
+|---|---|---|
+| `CONFIRMED` | Con las etiquetas disponibles, la accuracy de la candidata cumple el criterio del gate (no es peor que la baseline). El `PASS_FORM` queda respaldado | Nada. Puedes dar por cerrado el pendiente; si la versión estaba en canario, es un argumento más para promoverla |
+| `REFUTED` | La accuracy medida es peor que la de la baseline: el gate habría dicho `FAIL` | Consulta el apartado siguiente |
+| `INSUFFICIENT` | No hay etiquetas suficientes (o ninguna válida bajo P5) para concluir | No es un fallo. Espera a que el equipo comercial etiquete más casos y repite |
+
+### Qué hacer con un REFUTED
+
+Un `REFUTED` es una alerta, no una orden. **El sistema no desactiva nada por su cuenta** y no hace rollback: la versión sigue funcionando hasta que una persona decide.
+
+Si la versión sigue `ACTIVE` o en canario, el runtime deja en Twenty una nota **⚠️ Revalidación fallida** con la skill, la versión, el experimento original y los números de la accuracy medida. Si la versión ya no está activa ni en canario (por ejemplo, ya se sustituyó o se hizo rollback), solo queda el registro de la revalidación y no hay nota.
+
+Opciones, de menos a más drástica:
+
+| Opción | Cuándo | Cómo |
+|---|---|---|
+| **Rollback** | La accuracy medida es claramente peor y el daño es real | [Rollback](#rollback) (`deprecate`, o rollback del canario) |
+| **Pasar a canario o reducir el alcance** | Es peor, pero con pocos casos y quieres ver más tráfico antes de decidir | [Canario](#canario-despliegue-gradual-tras-el-gate): la comparativa con hipótesis reales aporta más datos |
+| **Iterar** | La candidata corrige un problema pero introduce otro | Crea una candidata nueva con `pnpm skill:candidate` y valídala con datos frescos ([ciclo manual](ciclo-mejora-skills.md)) |
+| **Mantener** | Revisas los casos y las etiquetas no representan el uso real | Deja constancia en la nota de Twenty y, si procede, repite cuando haya más etiquetas |
+
+> **Nota:** con pocas etiquetas, un `REFUTED` puede deberse al azar. Lee los casos concretos que fallaron, igual que harías con las razones por expositor de un informe, antes de decidir un rollback.
 
 ## Rollback
 

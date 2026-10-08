@@ -20,15 +20,8 @@
 import type { Db } from '../db/client.js';
 import { ImapError, ImapFlowMailboxReader, imapConfigFromEnv, mailboxKey, type ImapConfig, type MailboxReader, type MailboxSession } from '../inbound/imap-mailbox.js';
 import { DrizzleInboundStateStore, type InboundStateStore } from '../inbound/inbound-state.js';
-import {
-  isSuppressed,
-  localDate,
-  parseSuppressionList,
-  sanitizeSubject,
-  SUPPRESSION_NOTE_ID,
-  SUPPRESSION_NOTE_TITLE,
-  suppressionLine,
-} from '../inbound/suppression-list.js';
+import { localDate, sanitizeSubject, SUPPRESSION_NOTE_ID, SUPPRESSION_NOTE_TITLE, suppressionLine } from '../inbound/suppression-list.js';
+import { appendSuppressionEntries } from '../inbound/suppression-writer.js';
 import { classifyMessage, DEFAULT_CLASSIFIER_CONFIG, parseMessage, type BajaSignal, type ClassifierConfig } from '../inbound/unsubscribe-classifier.js';
 import type { AgentContext, AgentImplementation, AgentResult, AgentStep } from './agent.js';
 
@@ -238,46 +231,20 @@ export class BajasAgent implements AgentImplementation {
       });
 
       // Suppression list: only when there is something to add.
-      const newEntries: string[] = [];
-      const duplicates: string[] = [];
+      let newEntries: string[] = [];
+      let duplicates: string[] = [];
       if (bajas.length > 0) {
-        const got = await ctx.tools.call('get_note', { noteId: cfg.noteId });
-        steps.push(redactNoteStep(got.step));
-        if (got.result.status !== 'ok') return finish('FAILED', { mailbox: key.mailbox, error: toolError('get_note', got.result), cursor_advanced: false });
-        const out = got.result.output as { found: boolean; note: { title: string | null; markdown: string } | null };
-        if (!out.found || !out.note) {
-          return finish('FAILED', { mailbox: key.mailbox, error: { code: 'NOTE_NOT_FOUND', message: `la nota ${cfg.noteId} no existe en Twenty` }, cursor_advanced: false });
+        const written = await appendSuppressionEntries(
+          ctx.tools,
+          { noteId: cfg.noteId, noteTitle: cfg.noteTitle },
+          bajas.map((b) => ({ email: b.email, line: suppressionLine(b.email, b.date, b.subject) })),
+          steps,
+        );
+        if (!written.ok) {
+          return finish('FAILED', { mailbox: key.mailbox, error: written.error, cursor_advanced: false, ...(written.pendingEntries ? { pending_entries: written.pendingEntries } : {}) });
         }
-        const list = parseSuppressionList(out.note.markdown);
-        const lines: string[] = [];
-        const seenNow = new Set<string>();
-        for (const b of bajas) {
-          if (isSuppressed(b.email, list) || seenNow.has(b.email)) {
-            duplicates.push(b.email);
-            continue;
-          }
-          seenNow.add(b.email);
-          lines.push(suppressionLine(b.email, b.date, b.subject));
-          newEntries.push(b.email);
-        }
-        if (lines.length > 0) {
-          const upd = await ctx.tools.call('update_note', { noteId: cfg.noteId, expectedTitle: cfg.noteTitle, appendLines: lines });
-          steps.push(upd.step);
-          if (upd.result.status !== 'ok') {
-            return finish('FAILED', { mailbox: key.mailbox, error: toolError('update_note', upd.result), cursor_advanced: false, pending_entries: newEntries });
-          }
-          const u = upd.result.output as { skippedExisting: string[] };
-          // Lines that were already there verbatim (a run that died after the PATCH).
-          const already = u.skippedExisting.length;
-          if (already > 0) {
-            for (const line of u.skippedExisting) {
-              const email = line.split(' — ')[0]!;
-              const i = newEntries.indexOf(email);
-              if (i >= 0) newEntries.splice(i, 1);
-              duplicates.push(email);
-            }
-          }
-        }
+        newEntries = written.newEntries;
+        duplicates = written.duplicates;
         counters.new_entries = newEntries.length;
         counters.duplicates = duplicates.length;
 
@@ -306,19 +273,7 @@ export class BajasAgent implements AgentImplementation {
   }
 }
 
-function imapErrorPayload(err: unknown): Record<string, unknown> {
+export function imapErrorPayload(err: unknown): Record<string, unknown> {
   if (err instanceof ImapError) return { code: err.code, message: err.message };
   return { code: 'IMAP_ERROR', message: err instanceof Error ? err.message.slice(0, 300) : String(err).slice(0, 300) };
-}
-
-function toolError(tool: string, result: { status: string } & Record<string, unknown>): Record<string, unknown> {
-  return { tool, status: result.status, code: result.code ?? null, message: result.message ?? null };
-}
-
-/** The trace keeps the size of the note, not the whole suppression list. */
-function redactNoteStep(step: AgentStep): AgentStep {
-  const out = step.toolOutput as { found?: boolean; note?: { id?: string; title?: string | null; markdown?: string } | null } | null | undefined;
-  const note = out?.note;
-  if (!note || typeof note.markdown !== 'string') return step;
-  return { ...step, toolOutput: { found: out.found, note: { id: note.id, title: note.title, markdown_chars: note.markdown.length } } };
 }

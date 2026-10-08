@@ -47,6 +47,28 @@ const silentLogger: ProcessorLogger = { info() {}, warn() {}, error() {} };
 
 /** Default TaskRun heartbeat: 30 s, a quarter of the default RECONCILE_GRACE_MS (120 s). */
 export const DEFAULT_RUN_HEARTBEAT_MS = 30_000;
+/** Default liveness window of a re-delivered stalled job: the default RECONCILE_GRACE_MS. */
+export const DEFAULT_STALL_GRACE_MS = 120_000;
+/** Bounds of the wait of a re-delivered job whose attempt is still alive. */
+const STALL_DEFER_MIN_MS = 1_000;
+const STALL_DEFER_MARGIN_MS = 1_000;
+
+export type StalledDeliveryDecision = { action: 'recover'; staleBefore: Date } | { action: 'defer'; delayMs: number };
+
+/**
+ * A job re-delivered while its run is still RUNNING (BullMQ thought the worker was dead: its
+ * lock was not renewed). Same liveness rule as the OrphanReconciler: the attempt is an orphan
+ * only if `task_runs.updated_at` (the heartbeat) is older than `graceMs`. A fresh heartbeat
+ * means the first worker is alive and only lost its lock (event-loop stall, Redis blip): the
+ * delivery waits until the heartbeat could have gone stale and looks again, instead of killing
+ * a healthy attempt. Pure (unit tested).
+ */
+export function decideStalledDelivery(input: { updatedAt: Date; now: Date; graceMs: number }): StalledDeliveryDecision {
+  const staleBefore = new Date(input.now.getTime() - input.graceMs);
+  if (input.updatedAt.getTime() < staleBefore.getTime()) return { action: 'recover', staleBefore };
+  const remaining = input.updatedAt.getTime() + input.graceMs - input.now.getTime();
+  return { action: 'defer', delayMs: Math.max(STALL_DEFER_MIN_MS, Math.min(input.graceMs, remaining) + STALL_DEFER_MARGIN_MS) };
+}
 
 export interface AttemptInfo {
   /** 1-based attempt number. */
@@ -93,6 +115,22 @@ export class TwentyUnavailableError extends Error {
   }
 }
 
+/**
+ * Thrown when BullMQ re-delivers a stalled job whose attempt is still alive (fresh heartbeat).
+ * The run is left RUNNING for its worker; the BullMQ worker parks the job in `delayed` for
+ * `delayMs` without consuming an attempt, and the next delivery decides again (the run is then
+ * finished, back in QUEUED for a retry, or a real orphan that is recovered).
+ */
+export class StalledRunAliveError extends Error {
+  constructor(
+    readonly taskRunId: string,
+    readonly delayMs: number,
+  ) {
+    super(`task run ${taskRunId} is RUNNING with a fresh heartbeat; re-delivery deferred ${delayMs} ms`);
+    this.name = 'StalledRunAliveError';
+  }
+}
+
 class TimeoutError extends Error {
   constructor(ms: number) {
     super(`Execution timed out after ${ms} ms`);
@@ -130,6 +168,11 @@ export class RunProcessor {
    * below RECONCILE_GRACE_MS. 0 disables it (then only BullMQ's job state protects a long run).
    */
   heartbeatMs: number = DEFAULT_RUN_HEARTBEAT_MS;
+  /**
+   * Liveness window of a stalled job re-delivered while its run is RUNNING (RECONCILE_GRACE_MS
+   * in main.ts): the run is recovered only if its heartbeat is older than this.
+   */
+  stallGraceMs: number = DEFAULT_STALL_GRACE_MS;
 
   constructor(
     private readonly db: Db,
@@ -166,13 +209,26 @@ export class RunProcessor {
 
     if (run.status === 'RUNNING') {
       // The job id is unique per run and every other path leaves the run QUEUED before the
-      // job is delivered again, so a RUNNING run here means BullMQ re-delivered a stalled job:
-      // the previous attempt died. Recover it (RUNNING -> QUEUED | FAILED) and go on.
-      const outcome = await recoverOrphanRun(this.db, run, maxAttempts, 'stalled job re-delivered');
+      // job is delivered again, so a RUNNING run here means BullMQ re-delivered a stalled job.
+      // That does not prove the previous attempt died (its worker may only have lost the lock):
+      // recover it (RUNNING -> QUEUED | FAILED) only with a stale heartbeat, guarded like the
+      // reconciler (same attempt, not touched since the cutoff); otherwise defer the delivery.
+      const decision = decideStalledDelivery({ updatedAt: run.updatedAt, now: new Date(), graceMs: this.stallGraceMs });
+      if (decision.action === 'defer') {
+        this.logger.warn({ taskRunId, attempts: run.attempts, updatedAt: run.updatedAt, delayMs: decision.delayMs }, 'stalled job re-delivered but the attempt is alive (fresh heartbeat); deferring');
+        throw new StalledRunAliveError(taskRunId, decision.delayMs);
+      }
+      const outcome = await recoverOrphanRun(this.db, run, maxAttempts, 'stalled job re-delivered', { staleBefore: decision.staleBefore });
       this.logger.warn({ taskRunId, outcome }, 'recovered stalled task run');
-      if (outcome !== 'requeued') return;
+      if (outcome === 'failed') return;
       run = await findRun();
       if (!run) return;
+      if (outcome === 'noop' && run.status === 'RUNNING') {
+        // A heartbeat (or a new attempt) won the race against the guarded UPDATE: alive.
+        const again = decideStalledDelivery({ updatedAt: run.updatedAt, now: new Date(), graceMs: this.stallGraceMs });
+        throw new StalledRunAliveError(taskRunId, again.action === 'defer' ? again.delayMs : STALL_DEFER_MIN_MS);
+      }
+      // requeued -> QUEUED (go on); noop -> it moved on by itself (QUEUED for a retry, or terminal: skipped below).
     }
     if (run.status !== 'QUEUED') {
       this.logger.info({ taskRunId, status: run.status }, 'task run not in QUEUED; skipping');
@@ -473,7 +529,7 @@ export class RunProcessor {
     const controller = new AbortController();
     let timer: NodeJS.Timeout | undefined;
     try {
-      const impl = resolveAgentImplementation(version.configuration, { db: this.db });
+      const impl = resolveAgentImplementation(version.configuration, { db: this.db, events: this.events });
       const provider = this.providers(version.modelProvider);
       // Knowledge layer (LLD 6.4): ACTIVE entries of the version's knowledge_domains. Never throws.
       const knowledge = await resolveKnowledge(this.db, execution.tenantId, version.configuration, {

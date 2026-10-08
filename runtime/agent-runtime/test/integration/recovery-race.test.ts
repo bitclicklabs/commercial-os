@@ -25,7 +25,7 @@ import { agentExecutions, taskRuns, traces } from '../../src/db/schema.js';
 import { taskRunIdempotencyKey } from '../../src/domain/idempotency.js';
 import { createProviderRegistry, type ModelProvider, type ProviderFactory } from '../../src/providers/index.js';
 import { MemoryRunQueue, type EnqueueResult, type QueueJobState, type RunQueue } from '../../src/queue/run-queue.js';
-import { RunProcessor } from '../../src/worker/processor.js';
+import { RunProcessor, StalledRunAliveError } from '../../src/worker/processor.js';
 import { OrphanReconciler } from '../../src/worker/recovery.js';
 
 const DATABASE_URL = process.env.DATABASE_URL ?? 'postgres://agentos:agentos_dev@127.0.0.1:5440/agentos';
@@ -246,5 +246,66 @@ describe.skipIf(!dbAvailable)('orphan reconciler vs. live attempts (PostgreSQL)'
     expect((await getExec(executionId))?.status).toBe('FAILED');
     // No trace was written for the dead attempt (sanity: the table is reachable).
     expect(await handle.db.query.traces.findFirst({ where: eq(traces.executionId, executionId) })).toBeUndefined();
+  });
+
+  // Stall-guard (tanda 12): BullMQ re-delivers a job whose lock was lost while its worker is alive.
+  it('a stalled job re-delivered while the first worker still heartbeats is deferred and the attempt survives', async () => {
+    const task = await createTask('stalled but alive');
+    const queue = new MemoryRunQueue();
+    const local = await buildServer({ db: handle.db, queue, config: { defaultTenantId: 'publiexpe', defaultModelProvider: 'stub' } });
+    try {
+      const runRes = await local.inject({ method: 'POST', url: `/tasks/${task.id}/run`, headers, payload: { scheduled_at: '2026-10-06T14:00:00Z' } });
+      expect(runRes.statusCode).toBe(202);
+      const runId = runRes.json().task_run.id as string;
+      const jobs = queue.drain();
+      expect(jobs).toHaveLength(1);
+      const job = jobs[0]!.job;
+
+      const first = new RunProcessor(handle.db, slowProviders(1_500));
+      first.heartbeatMs = 100;
+      const processing = first.process(job);
+      await sleep(700); // RUNNING for longer than the second worker's grace would allow without a heartbeat
+
+      // The same job delivered to another worker (BullMQ moved it back to wait after a stall).
+      const second = new RunProcessor(handle.db, createProviderRegistry());
+      second.stallGraceMs = 400;
+      const err = await second.process(job, { attempt: 1, maxAttempts: 1 }).catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(StalledRunAliveError);
+      expect((err as StalledRunAliveError).delayMs).toBeGreaterThanOrEqual(1_000);
+      const during = await getRun(runId);
+      expect(during).toMatchObject({ status: 'RUNNING', attempts: 1, error: null });
+      expect((await getExec(during!.executionId!))?.status).toBe('RUNNING');
+
+      await processing;
+      const after = await getRun(runId);
+      expect(after).toMatchObject({ status: 'COMPLETED', attempts: 1, error: null });
+      expect((await getExec(after!.executionId!))?.status).toBe('COMPLETED');
+      // The deferred delivery comes back later and finds nothing to do.
+      await second.process(job, { attempt: 1, maxAttempts: 1 });
+      expect(await getRun(runId)).toMatchObject({ status: 'COMPLETED', attempts: 1 });
+    } finally {
+      await local.close();
+    }
+  });
+
+  it('a stalled job re-delivered for a genuinely dead attempt recovers the run and runs it again', async () => {
+    const { runId, executionId } = await insertStaleRunning('stalled and dead', 1, 2);
+    const run = (await getRun(runId))!;
+    const processor = new RunProcessor(handle.db, createProviderRegistry());
+    processor.stallGraceMs = 60_000; // the heartbeat is 10 minutes old
+    await processor.process({ kind: 'task_run', tenantId: tenant, taskRunId: runId, idempotencyKey: run.idempotencyKey }, { attempt: 1, maxAttempts: 2 });
+    const after = await getRun(runId);
+    expect(after).toMatchObject({ status: 'COMPLETED', attempts: 2 });
+    expect(after!.executionId).not.toBe(executionId);
+    expect(await getExec(executionId)).toMatchObject({ status: 'FAILED', error: { name: 'OrphanedRun', message: 'stalled job re-delivered' } });
+  });
+
+  it('a stalled job re-delivered for a dead attempt with no attempts left fails the run', async () => {
+    const { runId, executionId } = await insertStaleRunning('stalled, dead, exhausted', 1, 1);
+    const run = (await getRun(runId))!;
+    const processor = new RunProcessor(handle.db, createProviderRegistry());
+    await processor.process({ kind: 'task_run', tenantId: tenant, taskRunId: runId, idempotencyKey: run.idempotencyKey }, { attempt: 1, maxAttempts: 1 });
+    expect(await getRun(runId)).toMatchObject({ status: 'FAILED', attempts: 1, error: { name: 'OrphanedRun' } });
+    expect((await getExec(executionId))?.status).toBe('FAILED');
   });
 });

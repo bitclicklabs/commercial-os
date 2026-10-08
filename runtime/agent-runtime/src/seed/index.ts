@@ -8,8 +8,9 @@
  * (ACTIVE, with evidence; existing domain/topic pairs are never touched), then the Prospector
  * agent and its tasks `daily-event-prospecting` and
  * `weekly-event-scouting`, and the EmailDrafter agent with its task
- * `draft-email-on-validated`, and the BajasAgent with its task `process-unsubscribes`
- * (CRON every 2 hours; all idempotent).
+ * `draft-email-on-validated`, the BajasAgent with its task `process-unsubscribes` (kept
+ * DISABLED since the inbound triage) and the InboxAgent with its task `process-inbox` (CRON
+ * every 2 hours; all idempotent).
  * The daily task default input is the demo fixture `test/fixtures/feria-ejemplo.json`
  * unless `--input` points to another file with the same shape.
  */
@@ -22,6 +23,7 @@ import { createDb } from '../db/client.js';
 import { seedBajas } from './bajas-seed.js';
 import { seedEmailDrafter } from './email-drafter-seed.js';
 import { seedHarnesses } from './harness-seed.js';
+import { seedInbox } from './inbox-seed.js';
 import { seedKnowledge } from './knowledge-seed.js';
 import { seedProspector } from './prospector-seed.js';
 import { seedSkills } from './skills-seed.js';
@@ -52,6 +54,7 @@ if (isMain) {
     .then(async (r) => ({ ...r, prospector: await seedProspector(handle.db, { tenantId, defaultInput, log }) }))
     .then(async (r) => ({ ...r, emailDrafter: await seedEmailDrafter(handle.db, { tenantId, log }) }))
     .then(async (r) => ({ ...r, bajas: await seedBajas(handle.db, { tenantId, log }) }))
+    .then(async (r) => ({ ...r, inbox: await seedInbox(handle.db, { tenantId, log }) }))
     .then((r) => console.log(JSON.stringify({ tenant: tenantId, ...r }, null, 2)))
     .catch((err: unknown) => {
       console.error('[seed] failed', err);

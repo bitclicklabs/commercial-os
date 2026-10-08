@@ -11,6 +11,7 @@ El sistema propone; tú decides. El sistema nunca contacta con nadie por su cuen
 1. [Cómo leer una hipótesis](#cómo-leer-una-hipótesis)
 1. [Tu rutina diaria de 10 minutos](#tu-rutina-diaria-de-10-minutos)
 1. [Borradores de email](#borradores-de-email)
+1. [Respuestas de los clientes](#respuestas-de-los-clientes)
 1. [Estados: cuándo usar cada uno](#estados-cuándo-usar-cada-uno)
 1. [Por qué tu feedback importa](#por-qué-tu-feedback-importa)
 1. [Preguntas frecuentes](#preguntas-frecuentes)
@@ -46,7 +47,7 @@ Cada lunes, el sistema busca ferias y eventos reales relevantes para PubliEXPE, 
 - **No cambia etapas de oportunidad ni crea presupuestos.**
 - **No borra nada.**
 
-El sistema sí prepara **borradores de email** cuando validas una hipótesis, pero nunca los envía: los revisas y los envías tú, con un clic desde Twenty o a mano desde tu correo. Consulta [Borradores de email](#borradores-de-email).
+El sistema sí prepara **borradores de email** cuando validas una hipótesis, pero nunca los envía: los revisas y los envías tú, con un clic desde Twenty o a mano desde tu correo. Consulta [Borradores de email](#borradores-de-email). También clasifica las respuestas que llegan al buzón y te deja una nota con las que piden tu atención, sin responder nunca por ti. Consulta [Respuestas de los clientes](#respuestas-de-los-clientes).
 
 ## Dónde mirar en Twenty
 
@@ -55,7 +56,7 @@ Abre Twenty (`http://localhost:3020` en el entorno local) y localiza en la barra
 | Entrada | Qué es | Quién la escribe | Qué haces tú |
 |---|---|---|---|
 | **Commercial OS → Signals** | Hechos que justifican un contacto: una feria, un lanzamiento, una contratación. | El sistema | Revisarlas y clasificarlas (opcional pero recomendable). |
-| **Commercial OS → Research** | Investigación de apoyo sobre una empresa o señal. | El sistema | Consultarla cuando exista. El Prospector actual no la rellena, así que hoy suele estar vacía. |
+| **Commercial OS → Research** | Investigación de apoyo sobre una empresa o señal. | El sistema | Consultarla al preparar un contacto: el Prospector la rellena desde la tanda 9 con hechos observados y sus fuentes. |
 | **Commercial OS → Hypotheses** | Las propuestas comerciales: qué vender, a quién y por qué ahora. | El sistema | **Validarlas, editarlas o rechazarlas. Es tu tarea diaria.** |
 | **Commercial OS → Agent runs** | Un resumen por cada ejecución del sistema: qué hizo, si fue bien y cuánto costó. | El sistema | Solo lectura. Sirve para saber si hoy se ha ejecutado todo. |
 
@@ -217,7 +218,7 @@ Usa esta forma si el envío desde Twenty no está disponible. El sistema deja el
 ### Lista de supresión: qué haces antes de enviar
 
 1. **Antes de enviar cualquier correo en frío**, abre en Twenty la nota `Lista de supresión — NO contactar` (búscala por "supresión") y comprueba que ni la dirección ni el dominio del destinatario aparecen. Si aparecen, no envíes ni vuelvas a contactar nunca.
-1. **Toda petición de baja** (una respuesta a tu correo o un mensaje a `baja@publiexpe.info`) acaba como una línea nueva al final de la nota, con el formato `email — fecha — motivo`. El sistema revisa el buzón cada 2 horas y añade las bajas que detecta. Si recibes una petición de baja y todavía no está en la nota, añádela tú **el mismo día**.
+1. **Toda petición de baja** (una respuesta a tu correo o un mensaje a `baja@publiexpe.info`) acaba como una línea nueva al final de la nota, con el formato `email — fecha — motivo`. El sistema revisa el buzón cada 2 horas y añade las bajas que detecta, y también las respuestas que dicen claramente "no nos interesa" (motivo `no interesado (respuesta)`). Si recibes una petición de baja y todavía no está en la nota, añádela tú **el mismo día**.
 1. **No borres ni edites** las líneas existentes de la nota.
 
 Para el detalle del procedimiento, consulta [Gestión de bajas y lista de supresión](email-warmup.md#gestión-de-bajas-y-lista-de-supresión).
@@ -233,6 +234,29 @@ Para el detalle del procedimiento, consulta [Gestión de bajas y lista de supres
 - **No pongas `Reviewed` sin haber comprobado la lista de supresión.**
 
 > **Importante:** el borrador no es un correo enviado. Si no pones `Reviewed` y pulsas tú el envío (o lo envías a mano), el correo no sale.
+
+### Respuestas de los clientes
+
+Cada 2 horas el sistema lee el buzón (sin marcar ni mover nada) y clasifica cada correo nuevo una sola vez. **Nunca responde ni envía nada**: te prepara la información y la respuesta es tuya.
+
+| Lo que llega | Lo que hace el sistema | Lo que haces tú |
+|---|---|---|
+| **Interesado** (pide precios, catálogo, una llamada...) | Deja en la empresa (y en la hipótesis del envío) una nota `📬 Respuesta recibida — Interesado (fecha hora)` con un extracto del texto y el envío al que responde. | Abre el correo en tu bandeja y respóndelo hoy. |
+| **Pregunta** concreta | Nota `📬 Respuesta recibida — Pregunta (...)`. | Contesta la pregunta desde tu correo. |
+| **No interesado** explícito | Nota `📬 Respuesta recibida — No interesado (...)` y alta en la lista de supresión. | No vuelvas a escribirle. Si la clasificación es un error, avisa al operador. |
+| **Baja** | Alta en la lista de supresión (como hasta ahora). | Nada. |
+| **Rebote**: la dirección no existe | Nota `⚠️ Rebote: el email no existe (...)` en la empresa. No la añade a la supresión. | Busca otro contacto y corrige **Email to** antes de volver a enviar. |
+| Respuesta automática, fuera de la oficina, boletines u otros | Solo lo registra. | Nada: lo verás en tu bandeja como siempre. |
+
+Qué debes saber:
+
+- **La clasificación es una ayuda, no un filtro.** Sigue leyendo tu bandeja: todo el correo sigue ahí.
+- **En caso de duda, el sistema no decide.** Una respuesta ambigua ("ahora no", "escribidme en enero", "habla con mi compañera") queda como *Otro* y no crea nota ni da de baja a nadie.
+- **Las notas se buscan por el título.** Filtra las notas por "Respuesta recibida" para ver las de los últimos días.
+- Si el remitente no corresponde a ningún envío ni a ninguna empresa de Twenty (por ejemplo, una dirección de Gmail), no hay nota: el correo queda en tu bandeja.
+
+Cómo funciona por dentro, las garantías y el evento para n8n están en [Triaje del inbound](inbound-triaje.md).
+
 
 ## Estados: cuándo usar cada uno
 

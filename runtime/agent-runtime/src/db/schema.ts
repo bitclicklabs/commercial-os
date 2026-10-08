@@ -1173,3 +1173,192 @@ export const optimizationRuns = pgTable(
 );
 
 export type OptimizationRun = typeof optimizationRuns.$inferSelect;
+
+// ---------------------------------------------------------------------------
+// Re-validation of PASS_FORM experiments (src/experiments/revalidation.ts). Migration 0016.
+// ---------------------------------------------------------------------------
+export const REVALIDATION_VERDICTS = ['CONFIRMED', 'REFUTED', 'INSUFFICIENT'] as const;
+export type RevalidationVerdict = (typeof REVALIDATION_VERDICTS)[number];
+
+/**
+ * A re-validation of a finished PASS_FORM experiment: the accuracy of each arm measured on the
+ * per-case outputs the experiment already stored, against human labels that arrived later.
+ * No model runs (cost 0). The experiment itself is immutable, so this is a new linked record.
+ * One row per (experiment, label set + criteria): `labels_hash` makes a repeated request with
+ * the same labels return the existing row. Trigger: no DELETE; everything immutable except
+ * `consequence` (the Twenty note and the event), which can be written once, from `{}`.
+ */
+export const experimentRevalidations = pgTable(
+  'experiment_revalidations',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    tenantId: tenantId(),
+    experimentId: uuid('experiment_id')
+      .notNull()
+      .references(() => experiments.id),
+    experimentName: text('experiment_name').notNull(),
+    subjectType: text('subject_type').$type<ExperimentSubjectType>().notNull(),
+    subjectName: text('subject_name').notNull(),
+    baselineVersion: integer('baseline_version'),
+    candidateVersion: integer('candidate_version').notNull(),
+    verdict: text('verdict').$type<RevalidationVerdict>().notNull(),
+    /** sha256 of the labels used (executed case, label case, evaluation) and the criteria. */
+    labelsHash: text('labels_hash').notNull(),
+    /** Dataset cases whose label was used (the newer version's case, or the executed one). */
+    labelCaseIds: text('label_case_ids').array().notNull().default(sql`'{}'::text[]`),
+    /** HUMAN evaluations behind those labels. */
+    evaluationIds: text('evaluation_ids').array().notNull().default(sql`'{}'::text[]`),
+    /** Every label used: executed case, label case, dataset version, evaluation, expected. */
+    labels: jsonb('labels').$type<Record<string, unknown>[]>().notNull().default([]),
+    /** Labels left out and why (P5 design, TRAIN label at run time, no outputs). */
+    excluded: jsonb('excluded').$type<Record<string, unknown>[]>().notNull().default([]),
+    /** Accuracy per arm (`baseline`, `candidate`): labelled cases, decisions, correct, value, mismatches. */
+    accuracy: jsonb('accuracy').$type<Record<string, unknown>>().notNull().default({}),
+    baselineAccuracy: numeric('baseline_accuracy', { precision: 5, scale: 4, mode: 'number' }),
+    candidateAccuracy: numeric('candidate_accuracy', { precision: 5, scale: 4, mode: 'number' }),
+    /** Criteria applied: minimum labels, accuracy min_delta of the experiment's gate, threshold. */
+    criteria: jsonb('criteria').$type<Record<string, unknown>>().notNull().default({}),
+    summary: text('summary').notNull(),
+    /** State of the candidate when re-validated (ACTIVE, canary, other) and whether it still matters. */
+    versionState: jsonb('version_state').$type<Record<string, unknown>>().notNull().default({}),
+    /** Where the per-case outputs came from: `metrics` (experiments row) or `artifact` (informe.json). */
+    outputsSource: text('outputs_source').notNull(),
+    /** Note in Twenty and event emitted on a REFUTED of a version still in use (written once). */
+    consequence: jsonb('consequence').$type<Record<string, unknown>>().notNull().default({}),
+    /** Always 0: a re-validation never calls a model. */
+    costEur: money('cost_eur'),
+    source: text('source').notNull().default('api'),
+    requestedBy: text('requested_by'),
+    createdAt: createdAt(),
+  },
+  (t) => [
+    uniqueIndex('experiment_revalidations_labels_uq').on(t.tenantId, t.experimentId, t.labelsHash),
+    index('experiment_revalidations_experiment_idx').on(t.tenantId, t.experimentId, t.createdAt),
+    check('experiment_revalidations_verdict_ck', sql`${t.verdict} in ('CONFIRMED', 'REFUTED', 'INSUFFICIENT')`),
+    check('experiment_revalidations_cost_ck', sql`${t.costEur} = 0`),
+    check('experiment_revalidations_outputs_ck', sql`${t.outputsSource} in ('metrics', 'artifact')`),
+  ],
+);
+
+export type ExperimentRevalidation = typeof experimentRevalidations.$inferSelect;
+
+// ---------------------------------------------------------------------------
+// Audit log of administrative API actions (LLD v0.1 sections 22 and 24). Migration 0015.
+// ---------------------------------------------------------------------------
+
+export const AUDIT_RESULTS = ['ok', 'rejected', 'error'] as const;
+export type AuditResult = (typeof AUDIT_RESULTS)[number];
+
+/**
+ * One row per administrative API request (activations, force overrides, canary steps, optimizer
+ * close, datasets, knowledge, harnesses...), written by the hook of src/audit/ with the outcome:
+ * `ok` (2xx), `rejected` (4xx, e.g. a 409 of the Release Gate) or `error` (5xx). GETs are never
+ * audited. Append-only: triggers reject UPDATE, DELETE and TRUNCATE. `payload` is a summary of
+ * the request body (long texts and objects go as sha256 + length + excerpt, never in full).
+ */
+export const auditLog = pgTable(
+  'audit_log',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    tenantId: tenantId(),
+    occurredAt: timestamp('occurred_at', { withTimezone: true }).notNull().defaultNow(),
+    /** Who acted: `api` today (the API has no authentication yet). */
+    actor: text('actor').notNull().default('api'),
+    actorIp: text('actor_ip'),
+    /** Free label: `x-actor` header, else the `by` / `created_by` of the body. Not authenticated. */
+    actorLabel: text('actor_label'),
+    /** e.g. `skill.activate`, `skill.force_activate`, `canary.promote`, `optimizer.close`. */
+    action: text('action').notNull(),
+    subjectType: text('subject_type').notNull(),
+    /** Id or name of the subject as the request addressed it (or as the response resolved it). */
+    subjectId: text('subject_id'),
+    subjectVersion: integer('subject_version'),
+    method: text('method').notNull(),
+    /** Route pattern (e.g. `/skills/:id/versions/:v/activate`). */
+    route: text('route').notNull(),
+    requestId: text('request_id'),
+    /** Summary of the request body (src/audit/summary.ts). */
+    payload: jsonb('payload').$type<Record<string, unknown>>().notNull().default({}),
+    result: text('result').$type<AuditResult>().notNull(),
+    statusCode: integer('status_code').notNull(),
+    /** `error` of the response body when rejected (e.g. `release_gate_blocked`). */
+    errorCode: text('error_code'),
+    /** Short facts of the response: `changed`, gate mode, message of the error. */
+    details: jsonb('details').$type<Record<string, unknown>>().notNull().default({}),
+  },
+  (t) => [
+    index('audit_log_tenant_occurred_idx').on(t.tenantId, t.occurredAt),
+    index('audit_log_tenant_action_idx').on(t.tenantId, t.action, t.occurredAt),
+    index('audit_log_subject_idx').on(t.tenantId, t.subjectType, t.subjectId),
+    check('audit_log_result_ck', sql`${t.result} in ('ok', 'rejected', 'error')`),
+    check('audit_log_status_ck', sql`${t.statusCode} between 100 and 599`),
+  ],
+);
+
+export type AuditLogRow = typeof auditLog.$inferSelect;
+
+// ---------------------------------------------------------------------------
+// 10.2 Inbound Manager (LLD v0.1): general triage of the mailbox. Migration 0014.
+// ---------------------------------------------------------------------------
+
+/** Classes of the inbound triage (src/inbound/triage-rules.ts and reply-classifier.ts). */
+export const INBOUND_TRIAGE_CLASSES = ['BAJA', 'NO_INTERESADO', 'INTERESADO', 'PREGUNTA', 'AUTO_REPLY', 'REBOTE', 'OTRO'] as const;
+export type InboundTriageClass = (typeof INBOUND_TRIAGE_CLASSES)[number];
+export const INBOUND_TRIAGE_METHODS = ['RULES', 'LLM'] as const;
+export type InboundTriageMethod = (typeof INBOUND_TRIAGE_METHODS)[number];
+
+/**
+ * One row per incoming message the InboxAgent triaged (append-only: a trigger forbids UPDATE
+ * and DELETE). `message_key` is the Message-ID (or `sha256:` of the source when there is none);
+ * the unique index makes the triage idempotent: a message is classified and acted on once,
+ * even if the IMAP cursor is reset or the same message lands twice in the mailbox.
+ * The row is written AFTER the actions (suppression entry, note, event), so it records what
+ * was really done. No body content is stored: only the sanitised subject and the signals.
+ */
+export const inboundTriage = pgTable(
+  'inbound_triage',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    tenantId: tenantId(),
+    messageKey: text('message_key').notNull(),
+    messageId: text('message_id'),
+    /** `user@host/MAILBOX` (no password), as in `inbound_state`. */
+    mailbox: text('mailbox').notNull(),
+    uidValidity: bigint('uid_validity', { mode: 'number' }).notNull(),
+    uid: bigint('uid', { mode: 'number' }).notNull(),
+    receivedAt: timestamp('received_at', { withTimezone: true }),
+    fromEmail: text('from_email'),
+    fromDomain: text('from_domain'),
+    /** Sanitised, bounded subject (plain text). */
+    subject: text('subject'),
+    class: text('class').$type<InboundTriageClass>().notNull(),
+    /** 0..1; null for deterministic decisions. */
+    confidence: numeric('confidence', { precision: 4, scale: 3, mode: 'number' }),
+    method: text('method').$type<InboundTriageMethod>().notNull(),
+    signals: text('signals').array().notNull().default(sql`'{}'::text[]`),
+    /** Twenty records the message was linked to (company / hypothesis) and how. */
+    companyId: text('company_id'),
+    hypothesisId: text('hypothesis_id'),
+    /** `email_sends.id` of the send it answers, when found. */
+    sendId: uuid('send_id'),
+    matchBy: text('match_by'),
+    /** Twenty note created for the commercial (replies, hard bounces). */
+    noteId: text('note_id'),
+    /** True when this message added a line to the suppression list. */
+    suppressionAdded: boolean('suppression_added').notNull().default(false),
+    eventId: uuid('event_id'),
+    executionId: text('execution_id'),
+    costEur: money('cost_eur'),
+    createdAt: createdAt(),
+  },
+  (t) => [
+    uniqueIndex('inbound_triage_message_uq').on(t.tenantId, t.messageKey),
+    index('inbound_triage_tenant_created_idx').on(t.tenantId, t.createdAt),
+    index('inbound_triage_tenant_class_idx').on(t.tenantId, t.class, t.createdAt),
+    check('inbound_triage_class_ck', sql`${t.class} in ('BAJA', 'NO_INTERESADO', 'INTERESADO', 'PREGUNTA', 'AUTO_REPLY', 'REBOTE', 'OTRO')`),
+    check('inbound_triage_method_ck', sql`${t.method} in ('RULES', 'LLM')`),
+    check('inbound_triage_confidence_ck', sql`${t.confidence} is null or (${t.confidence} >= 0 and ${t.confidence} <= 1)`),
+  ],
+);
+
+export type InboundTriage = typeof inboundTriage.$inferSelect;

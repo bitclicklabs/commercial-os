@@ -84,6 +84,18 @@ export function localDate(date: Date, timeZone = 'Europe/Madrid'): string {
 
 /** `email — AAAA-MM-DD — baja solicitada (asunto: "...")`. */
 export function suppressionLine(email: string, date: string, subject: string): string {
+  return reasonLine(email, date, 'baja solicitada', subject);
+}
+
+/** Motive of the entries added by the inbound triage for an explicit "not interested" reply. */
+export const NO_INTEREST_MOTIVE = 'no interesado (respuesta)';
+
+/** `email — AAAA-MM-DD — no interesado (respuesta) (asunto: "...")`. */
+export function noInterestLine(email: string, date: string, subject: string): string {
+  return reasonLine(email, date, NO_INTEREST_MOTIVE, subject);
+}
+
+function reasonLine(email: string, date: string, motive: string, subject: string): string {
   const s = sanitizeSubject(subject);
-  return `${email} — ${date} — baja solicitada (asunto: "${s.length > 0 ? s : 'sin asunto'}")`;
+  return `${email} — ${date} — ${motive} (asunto: "${s.length > 0 ? s : 'sin asunto'}")`;
 }

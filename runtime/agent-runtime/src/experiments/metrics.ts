@@ -28,8 +28,17 @@ export interface PhaseOutcome {
 
 const round = (n: number, d = 6) => Math.round(n * 10 ** d) / 10 ** d;
 
+/**
+ * The only `expected.kind` values that are labels for the Release Gate accuracy: a human verdict
+ * and a declared rule of the skill. An allow-list on purpose: any other kind (`unlabeled`, the
+ * `synthetic` ground truth of src/synthetic/, or one added later) is never a label unless it is
+ * added here deliberately. Synthetic cases feed the rules, the seesaw and the form comparison
+ * (`synth.*` evaluators), never the accuracy (decision of the PM, MVP-4).
+ */
+export const ACCURACY_LABEL_KINDS: readonly string[] = ['human_verdict', 'structural_discard'];
+
 export function isLabeled(expected: Record<string, unknown> | undefined): boolean {
-  return !!expected && expected.kind !== undefined && expected.kind !== 'unlabeled';
+  return !!expected && typeof expected.kind === 'string' && ACCURACY_LABEL_KINDS.includes(expected.kind);
 }
 
 /**

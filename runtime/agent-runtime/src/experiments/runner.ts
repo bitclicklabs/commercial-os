@@ -18,6 +18,13 @@
  *     spend TEST unless asked (`testOnForm`): TEST is the last clean data.
  *  6. Writes the report (callback) and completes the experiment: COMPLETED, immutable.
  *
+ * Synthetic cases (split SYNTH, src/synthetic/): in VALIDATION the runner adds a "synthetic
+ * sample" (all of them or what the budget allows, stratified by template). They are NOT marked
+ * with markUsed (regenerable, P5 does not apply), never count for the accuracy (their kind is not
+ * a label), run with the web tools refused (`offlineToolbox`) and their ground truth reaches only
+ * the `synth.*` evaluators through the subject context. A dataset with only synthetic cases can
+ * therefore give PASS_FORM at most, and TEST is never touched by them.
+ *
  * It never activates anything and never writes to Twenty: the tools are whatever `makeTools`
  * returns (the CLI injects FakeTwenty).
  *
@@ -40,6 +47,9 @@ import { DEFAULT_USD_TO_EUR } from '../providers/gemini-pricing.js';
 import { applyHarness, effectiveRecord, parseStoredHarnessConfig } from '../harness/config.js';
 import { findHarness, listHarnessVersions } from '../harness/service.js';
 import { BudgetGuardProvider, COMPARABLE_SKILLS, runSkillComparison, type CompareAgentVersion, type CompareVersion, type ComparisonReport } from '../skills/compare.js';
+import { offlineToolbox } from '../synthetic/offline.js';
+import { syntheticBreakdown, type SyntheticBreakdown } from '../synthetic/report.js';
+import { isSyntheticExpected, type SyntheticTruth } from '../synthetic/truth.js';
 import { renderSkill } from '../skills/render.js';
 import { findSkill, listVersions } from '../skills/service.js';
 import type { AgentToolbox } from '../tools/executor.js';
@@ -112,6 +122,11 @@ export interface RunOptions {
   formSample?: number | 'auto';
   /** Spend TEST after a PASS_FORM too (default false: only after a strict PASS). */
   testOnForm?: boolean;
+  /**
+   * Synthetic cases (split SYNTH) added to VALIDATION: a number, 'auto' (what the budget allows
+   * after the other cases; default) or 0 (none). Never marked used, never labels.
+   */
+  synthSample?: number | 'auto';
   gate: GateConfig;
   judge?: boolean;
   createdBy?: string;
@@ -123,11 +138,15 @@ export interface PhaseCase {
   entity_key: string;
   exhibitor: string;
   split: string;
-  /** `validation`/`test`, and `form_sample` for TRAIN cases added in form mode. */
-  use: 'validation' | 'test' | 'form_sample';
+  /** `validation`/`test`, `form_sample` for TRAIN cases added in form mode, `synthetic` for SYNTH cases. */
+  use: 'validation' | 'test' | 'form_sample' | 'synthetic';
   labeled: boolean;
   kind: string;
+  /** Level of the input data (easy / medium / hard). */
   difficulty: string | null;
+  /** Synthetic cases: template and curriculum level (1-3). */
+  template?: string;
+  curriculum_level?: number | null;
 }
 
 export interface PhaseReport {
@@ -143,6 +162,8 @@ export interface PhaseReport {
   executor_cost_eur: number;
   judge_cost_eur: number;
   evaluations: { tenant: string; inserted: number; existing: number; rows: number } | null;
+  /** Ground-truth breakdown of the synthetic cases (null without them). */
+  synthetic: SyntheticBreakdown | null;
 }
 
 export interface ExperimentReport {
@@ -236,7 +257,36 @@ export async function resolveHarnessArms(
 
 function phaseCase(c: EvaluationCase, use: PhaseCase['use']): PhaseCase {
   const ex = (c.input.exhibitor ?? {}) as { name?: string };
-  return { id: c.id, entity_key: c.entityKey, exhibitor: String(ex.name ?? c.entityKey), split: c.split, use, labeled: isLabeled(c.expected), kind: String(c.expected.kind ?? 'unlabeled'), difficulty: c.difficulty };
+  const synth = isSyntheticExpected(c.expected) ? { template: c.expected.ground_truth.template, curriculum_level: c.curriculumLevel } : {};
+  return { id: c.id, entity_key: c.entityKey, exhibitor: String(ex.name ?? c.entityKey), split: c.split, use, labeled: isLabeled(c.expected), kind: String(c.expected.kind ?? 'unlabeled'), difficulty: c.difficulty, ...synth };
+}
+
+/** Truth of a SYNTH case (null for any other case). */
+function truthOf(c: Pick<EvaluationCase, 'split' | 'expected'>): SyntheticTruth | null {
+  return c.split === 'SYNTH' && isSyntheticExpected(c.expected) ? c.expected.ground_truth : null;
+}
+
+/**
+ * Deterministic pick of `n` synthetic cases, stratified: round-robin over the templates (each
+ * template in hash order of experiment + entity), so a small budget still covers every
+ * template before repeating one.
+ */
+export function pickSyntheticSample(cases: readonly EvaluationCase[], experiment: string, n: number): EvaluationCase[] {
+  if (n <= 0) return [];
+  const byTemplate = new Map<string, EvaluationCase[]>();
+  for (const c of cases) {
+    const t = truthOf(c);
+    if (!t) continue;
+    byTemplate.set(t.template, [...(byTemplate.get(t.template) ?? []), c]);
+  }
+  const queues = [...byTemplate.entries()]
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([, list]) => list.map((c) => ({ c, k: sha(`${experiment}\u0000${c.entityKey}`) })).sort((a, b) => a.k.localeCompare(b.k)).map((x) => x.c));
+  const out: EvaluationCase[] = [];
+  for (let round = 0; out.length < n && queues.some((q) => q.length > round); round++) {
+    for (const q of queues) if (q[round] && out.length < n) out.push(q[round]!);
+  }
+  return out;
 }
 
 /** Deterministic, unbiased pick of TRAIN cases nobody has used (order by hash of experiment + entity). */
@@ -281,7 +331,7 @@ export async function runExperiment(deps: RunnerDeps, opts: RunOptions): Promise
   const dataset = await resolveDataset(db, opts.tenantId, opts.dataset);
   const guard = new BudgetGuardProvider(deps.executorProvider, executorBudgetEur, cfg.usdToEur);
   const judgeBudget = useJudge ? new JudgeBudgetProvider(deps.judgeProvider!, judgeBudgetEur, DEFAULT_USD_TO_EUR) : null;
-  const ev = defaultEvaluators({ ...(judgeBudget ? { judgeProvider: judgeBudget } : {}), ...(deps.judgeModel ? { judgeModel: deps.judgeModel } : {}) });
+  const ev = defaultEvaluators({ synthetic: true, ...(judgeBudget ? { judgeProvider: judgeBudget } : {}), ...(deps.judgeModel ? { judgeModel: deps.judgeModel } : {}) });
 
   const config: Record<string, unknown> = {
     runner_version: RUNNER_VERSION,
@@ -346,8 +396,12 @@ export async function runExperiment(deps: RunnerDeps, opts: RunOptions): Promise
     const meta = held.map((c) => phaseCase(c, role));
     let cases: EvaluationCase[] = [...held];
     const labeled = held.filter((c) => isLabeled(c.expected)).length;
+    const eurPerDecision = opts.eurPerDecision ?? DEFAULT_EUR_PER_DECISION;
+    const synthPool = phase === 'VALIDATION' && opts.synthSample !== 0 ? (await listCases(db, { tenantId: opts.tenantId, datasetId: dataset.id, split: 'SYNTH', includeVetoed: true, limit: 100_000 })).items : [];
     if (phase === 'VALIDATION' && labeled === 0 && opts.formSample !== 0) {
-      const n = opts.formSample === 'auto' || opts.formSample === undefined ? autoFormSampleSize(executorBudgetEur, opts.eurPerDecision ?? DEFAULT_EUR_PER_DECISION, repeat, held.length) : Math.min(opts.formSample, MAX_CASES_PER_PHASE - held.length);
+      const auto = autoFormSampleSize(executorBudgetEur, eurPerDecision, repeat, held.length);
+      // A mixed dataset shares the automatic budget between the form sample and the synthetic sample.
+      const n = opts.formSample === 'auto' || opts.formSample === undefined ? (synthPool.length > 0 && opts.synthSample !== 0 ? Math.floor(auto / 2) : auto) : Math.min(opts.formSample, MAX_CASES_PER_PHASE - held.length);
       if (n > 0) {
         const train = await listCases(db, { tenantId: opts.tenantId, datasetId: dataset.id, split: 'TRAIN', experiment: exp.name, role: 'validation', includeVetoed: true });
         const sample = pickFormSample(train.items, exp.name, n);
@@ -356,11 +410,23 @@ export async function runExperiment(deps: RunnerDeps, opts: RunOptions): Promise
         meta.push(...sample.map((c) => phaseCase(c, 'form_sample')));
       }
     }
+    if (synthPool.length > 0) {
+      // Synthetic sample: never marked (regenerable; P5 does not apply), never a label.
+      const n = opts.synthSample === 'auto' || opts.synthSample === undefined ? autoFormSampleSize(executorBudgetEur, eurPerDecision, repeat, cases.length) : Math.min(opts.synthSample!, MAX_CASES_PER_PHASE - cases.length);
+      const sample = pickSyntheticSample(synthPool, exp.name, n);
+      cases = [...cases, ...sample];
+      meta.push(...sample.map((c) => phaseCase(c, 'synthetic')));
+    }
     return { cases, meta, marks };
   };
 
   const runPhase = async (phase: PhaseName, reserved: Awaited<ReturnType<typeof reserve>>): Promise<PhaseReport> => {
     const { fixtures: raw, skipped } = toCompareInputs(reserved.cases.map((c) => ({ id: c.id, input: c.input })));
+    const truths = new Map<string, SyntheticTruth>();
+    for (const c of reserved.cases) {
+      const t = truthOf(c);
+      if (t) truths.set(c.id, t);
+    }
     const fixtures: PhaseFixture[] = raw.map((f, i) => ({ name: `${exp.name}/${phase.toLowerCase()}-${i + 1}`, input: { event: f.event, exhibitors: f.exhibitors }, case_ids: f.case_ids }));
     const executorBefore = guard.spentEur;
     const judgeBefore = judgeBudget?.spentEur ?? 0;
@@ -368,6 +434,9 @@ export async function runExperiment(deps: RunnerDeps, opts: RunOptions): Promise
     for (const f of fixtures) {
       checkCancel();
       if (guard.exceeded) break;
+      // A fixture with synthetic cases runs offline: the web tools are refused before they run.
+      const offline = f.case_ids.some((id) => truths.has(id));
+      const makeTools = offline ? (label: string, policy?: AgentToolPolicy) => offlineToolbox(deps.makeTools(label, policy)) : deps.makeTools;
       reports.push(
         await runSkillComparison({
           skillName,
@@ -375,7 +444,7 @@ export async function runExperiment(deps: RunnerDeps, opts: RunOptions): Promise
           input: f.input,
           provider: deps.executorProvider,
           budget: guard,
-          makeTools: deps.makeTools,
+          makeTools,
           agentVersion: deps.agentVersion,
           repeat,
           now,
@@ -387,6 +456,20 @@ export async function runExperiment(deps: RunnerDeps, opts: RunOptions): Promise
     checkCancel();
     const saved = { skill: skillName, reports: reports.map((report, i) => ({ fixture: fixtures[i]!.name, report })) };
     const loaded = subjectsFromComparison(saved, `${exp.name}:${phase}`, { minConfidence: cfg.minConfidence, fixtureInputs: Object.fromEntries(fixtures.map((f) => [f.name, f.input])) });
+    // Ground truth of the synthetic cases -> subject context (by exhibitor name of the fixture), for the synth.* evaluators only.
+    if (truths.size > 0) {
+      for (const s of loaded.subjects) {
+        const f = fixtures.find((x) => x.name === s.meta.fixture);
+        if (!f) continue;
+        const byName: Record<string, SyntheticTruth> = {};
+        f.case_ids.forEach((id, i) => {
+          const t = truths.get(id);
+          const name = f.input.exhibitors[i]?.name;
+          if (t && typeof name === 'string') byName[name] = t;
+        });
+        if (Object.keys(byName).length > 0) s.context = { ...s.context, synthetic: byName };
+      }
+    }
     const pipeline = await runEvaluationPipeline(loaded.subjects, { rules: ev.rules, judges: ev.judges, composite: ev.composite, ...(judgeBudget ? { budget: judgeBudget } : {}), onProgress: (m) => log(`${phase} evaluación: ${m}`) });
     pipeline.warnings.unshift(...loaded.warnings);
     let evaluations: PhaseReport['evaluations'] = null;
@@ -399,7 +482,8 @@ export async function runExperiment(deps: RunnerDeps, opts: RunOptions): Promise
       reports,
       pipeline,
       expected: new Map(reserved.cases.map((c) => [c.id, c.expected])),
-      accuracyCaseIds: new Set(reserved.meta.filter((m) => m.use !== 'form_sample').map((m) => m.id)),
+      // Only the cases of the split itself: never the TRAIN form sample nor the synthetic sample.
+      accuracyCaseIds: new Set(reserved.meta.filter((m) => m.use === 'validation' || m.use === 'test').map((m) => m.id)),
       executorBudgetExceeded: guard.exceeded,
     };
     const vb = versionPhaseMetrics(versions.baseline.version, outcome);
@@ -419,6 +503,7 @@ export async function runExperiment(deps: RunnerDeps, opts: RunOptions): Promise
       executor_cost_eur: round(guard.spentEur - executorBefore),
       judge_cost_eur: round((judgeBudget?.spentEur ?? 0) - judgeBefore),
       evaluations,
+      synthetic: syntheticBreakdown(fixtures, reports, truths, [versions.baseline.version, versions.candidate.version]),
     };
   };
 
@@ -426,6 +511,8 @@ export async function runExperiment(deps: RunnerDeps, opts: RunOptions): Promise
     cases: p.cases.length,
     labeled: p.cases.filter((c) => c.labeled && c.use !== 'form_sample').length,
     form_sample: p.cases.filter((c) => c.use === 'form_sample').length,
+    synthetic: p.cases.filter((c) => c.use === 'synthetic').length,
+    ...(p.synthetic ? { synthetic_breakdown: { by_level: p.synthetic.by_level, by_template: p.synthetic.by_template } } : {}),
     fixtures: p.fixtures.map((f) => ({ name: f.name, exhibitors: f.input.exhibitors.length })),
     executor_cost_eur: p.executor_cost_eur,
     judge: { model: p.pipeline.judge.model, calls: p.pipeline.judge.calls.length, cost_eur: p.judge_cost_eur, errors: p.pipeline.judge.errors, budget_exceeded: p.pipeline.judge.budget_exceeded },
@@ -437,19 +524,28 @@ export async function runExperiment(deps: RunnerDeps, opts: RunOptions): Promise
   });
   const splitsOf = (p: PhaseReport) => ({
     role: p.phase === 'VALIDATION' ? 'validation' : 'test',
-    case_ids: p.cases.filter((c) => c.use !== 'form_sample').map((c) => c.id),
+    case_ids: p.cases.filter((c) => c.use === 'validation' || c.use === 'test').map((c) => c.id),
     form_sample_case_ids: p.cases.filter((c) => c.use === 'form_sample').map((c) => c.id),
-    labeled: p.cases.filter((c) => c.labeled && c.use !== 'form_sample').length,
+    synthetic_case_ids: p.cases.filter((c) => c.use === 'synthetic').map((c) => c.id),
+    labeled: p.cases.filter((c) => c.labeled && (c.use === 'validation' || c.use === 'test')).length,
     mark_used: p.mark_used,
   });
 
   try {
     // VALIDATION
     const valRes = await reserve('VALIDATION');
-    splits.VALIDATION = { role: 'validation', case_ids: valRes.meta.filter((m) => m.use !== 'form_sample').map((m) => m.id), form_sample_case_ids: valRes.meta.filter((m) => m.use === 'form_sample').map((m) => m.id), mark_used: valRes.marks };
+    splits.VALIDATION = {
+      role: 'validation',
+      case_ids: valRes.meta.filter((m) => m.use === 'validation').map((m) => m.id),
+      form_sample_case_ids: valRes.meta.filter((m) => m.use === 'form_sample').map((m) => m.id),
+      synthetic_case_ids: valRes.meta.filter((m) => m.use === 'synthetic').map((m) => m.id),
+      mark_used: valRes.marks,
+    };
     exp = await recordProgress(db, exp.id, { splits });
-    if (valRes.cases.length === 0) throw new ExperimentAbortedError('no_cases', `el split VALIDATION de ${dataset.name} v${dataset.version} no tiene casos utilizables por ${exp.name} (todos vetados por P5 o vacío)`, exp);
-    log(`VALIDATION: ${valRes.meta.filter((m) => m.use !== 'form_sample').length} caso(s) del split (${valRes.meta.filter((m) => m.labeled && m.use !== 'form_sample').length} etiquetados) + ${valRes.meta.filter((m) => m.use === 'form_sample').length} de muestra de forma (TRAIN)`);
+    if (valRes.cases.length === 0) throw new ExperimentAbortedError('no_cases', `el split VALIDATION de ${dataset.name} v${dataset.version} no tiene casos utilizables por ${exp.name} (todos vetados por P5 o vacío) y no hay casos sintéticos`, exp);
+    log(
+      `VALIDATION: ${valRes.meta.filter((m) => m.use === 'validation').length} caso(s) del split (${valRes.meta.filter((m) => m.labeled && m.use === 'validation').length} etiquetados) + ${valRes.meta.filter((m) => m.use === 'form_sample').length} de muestra de forma (TRAIN) + ${valRes.meta.filter((m) => m.use === 'synthetic').length} sintéticos (SYNTH, sin quemar)`,
+    );
     const val = await runPhase('VALIDATION', valRes);
     phases.push(val);
     splits.VALIDATION = splitsOf(val);

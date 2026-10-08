@@ -7,10 +7,10 @@
  * of those uses; `vetoReason` reads it when a dataset is built and when a split is served.
  */
 import { createHash } from 'node:crypto';
-import type { CaseUse, CaseUseRole, DatasetSplit } from '../db/schema.js';
+import type { CaseUse, CaseUseRole, HeldSplit } from '../db/schema.js';
 
 /** 50 / 25 / 25 (TRAIN / VALIDATION / TEST), by hash of the entity: stable between runs. */
-export const SPLIT_RATIOS: Readonly<Record<DatasetSplit, number>> = { TRAIN: 0.5, VALIDATION: 0.25, TEST: 0.25 };
+export const SPLIT_RATIOS: Readonly<Record<HeldSplit, number>> = { TRAIN: 0.5, VALIDATION: 0.25, TEST: 0.25 };
 
 /** JSON with object keys sorted at every level and `undefined` dropped (stable hash input). */
 export function canonicalJson(value: unknown): string {
@@ -73,7 +73,7 @@ export function splitBucket(salt: string, key: string): number {
 }
 
 /** Split by hash only (the 50/25/25 rule, before exclusions). */
-export function hashSplit(salt: string, key: string, ratios: Readonly<Record<DatasetSplit, number>> = SPLIT_RATIOS): DatasetSplit {
+export function hashSplit(salt: string, key: string, ratios: Readonly<Record<HeldSplit, number>> = SPLIT_RATIOS): HeldSplit {
   const b = splitBucket(salt, key);
   if (b < ratios.TRAIN) return 'TRAIN';
   if (b < ratios.TRAIN + ratios.VALIDATION) return 'VALIDATION';
@@ -81,9 +81,9 @@ export function hashSplit(salt: string, key: string, ratios: Readonly<Record<Dat
 }
 
 export interface SplitDecision {
-  split: DatasetSplit;
+  split: HeldSplit;
   /** What the hash alone says (differs from `split` when the case is burned). */
-  hashSplit: DatasetSplit;
+  hashSplit: HeldSplit;
   /** True when an earlier use forced the case to TRAIN. */
   forcedTrain: boolean;
 }

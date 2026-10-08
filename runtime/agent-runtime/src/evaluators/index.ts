@@ -6,6 +6,7 @@ import type { ModelProvider } from '../providers/model-provider.js';
 import { CompositeEvaluator, type CompositeConfig } from './composite.js';
 import { COMMERCIAL_RELEVANCE_RUBRIC, DEFAULT_JUDGE_MODEL, LlmJudgeEvaluator, NEXT_ACTION_QUALITY_RUBRIC } from './judge.js';
 import { RULE_EVALUATORS } from './rules.js';
+import { SYNTHETIC_EVALUATORS } from '../synthetic/evaluators.js';
 import { EvaluatorRegistry, type EvaluatorMeta } from './types.js';
 
 export * from './types.js';
@@ -23,6 +24,12 @@ export interface DefaultEvaluatorsOptions {
   judgeModel?: string;
   judgeMaxItemsPerCall?: number;
   composite?: Partial<CompositeConfig>;
+  /**
+   * Ground-truth evaluators of the synthetic cases (`synth.*`, src/synthetic/evaluators.ts).
+   * Default false (the catalog of `pnpm evaluate` stays the same); the experiment runner turns
+   * them on. They are inert (not applicable) on any case without a synthetic truth.
+   */
+  synthetic?: boolean;
 }
 
 export function defaultEvaluators(o: DefaultEvaluatorsOptions = {}) {
@@ -38,7 +45,8 @@ export function defaultEvaluators(o: DefaultEvaluatorsOptions = {}) {
       )
     : [];
   const composite = new CompositeEvaluator(o.composite);
+  const rules = o.synthetic === true ? [...RULE_EVALUATORS, ...SYNTHETIC_EVALUATORS] : RULE_EVALUATORS;
   const registry = new EvaluatorRegistry<EvaluatorMeta>();
-  for (const e of [...RULE_EVALUATORS, ...judges, composite]) registry.register(e);
-  return { rules: RULE_EVALUATORS, judges, composite, registry };
+  for (const e of [...rules, ...judges, composite]) registry.register(e);
+  return { rules, judges, composite, registry };
 }

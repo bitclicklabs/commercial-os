@@ -97,7 +97,7 @@ async function main(): Promise<void> {
     console.log(`${values['dry-run'] ? '[dry-run] ' : ''}dataset ${values.dataset} v${r.version} · ${r.origin}${r.dataset ? ` (${r.dataset.id}, ${r.dataset.status}: actívalo con POST /datasets/${r.dataset.id}/activate)` : ''}`);
     console.log(`generador                ${g.generator} v${g.generator_version} · seed ${g.seed} · ${g.per_template} por plantilla`);
     console.log(`casos sintéticos         ${g.total} (split SYNTH)`);
-    line('por nivel de curriculum', g.by_curriculum_level);
+    line('por nivel de curriculum', Object.fromEntries(Object.entries(g.by_curriculum_level).map(([k, v]) => [`nivel ${k}:`, v])));
     line('por plantilla', g.by_template);
     line('por split (todo)', r.summary.by_split);
     console.log(`ferias ficticias         ${g.events.map((e) => `${e.name} (${e.source_url})`).join(' · ')}`);

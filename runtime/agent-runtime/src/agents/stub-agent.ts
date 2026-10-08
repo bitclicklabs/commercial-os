@@ -1,7 +1,9 @@
 import type { Db } from '../db/client.js';
+import type { EventPublisher } from '../events/event-bus.js';
 import type { AgentContext, AgentImplementation, AgentResult, AgentStep } from './agent.js';
 import { BAJAS_IMPLEMENTATION, BajasAgent } from './bajas-agent.js';
 import { EmailDrafterAgent } from './email-drafter.js';
+import { INBOX_IMPLEMENTATION, InboxAgent } from './inbox-agent.js';
 import { ProspectorAgent } from './prospector-agent.js';
 import { SmokeAgent } from './smoke-agent.js';
 
@@ -75,6 +77,8 @@ export class StubAgent implements AgentImplementation {
 /** Runtime services some implementations need (e.g. the inbound cursor in the database). */
 export interface AgentImplementationDeps {
   db?: Db;
+  /** Domain events emitted by the agent itself (the InboxAgent's `email.reply_received`). */
+  events?: EventPublisher;
 }
 
 export function resolveAgentImplementation(configuration: Record<string, unknown>, deps: AgentImplementationDeps = {}): AgentImplementation {
@@ -90,6 +94,8 @@ export function resolveAgentImplementation(configuration: Record<string, unknown
       return new EmailDrafterAgent();
     case BAJAS_IMPLEMENTATION:
       return new BajasAgent(deps.db ? { db: deps.db } : {});
+    case INBOX_IMPLEMENTATION:
+      return new InboxAgent({ ...(deps.db ? { db: deps.db } : {}), ...(deps.events ? { events: deps.events } : {}) });
     default:
       throw new Error(`Unknown agent implementation: ${kind}`);
   }

@@ -21,8 +21,8 @@ runtime/agent-runtime/
 │   ├── main.ts               Entrada: API, worker y/o scheduler según RUNTIME_ROLE o --role=
 │   ├── config.ts             Configuración desde variables de entorno
 │   ├── api/                  Servidor Fastify, contratos zod y rutas
-│   ├── agents/               Interfaz de agente, StubAgent, SmokeAgent, ProspectorAgent (modos directo y scout, prompts, SourceLedger) EmailDrafterAgent (borradores, nunca envía) y BajasAgent (inbound de bajas, sin LLM)
-│   ├── inbound/              Inbound de bajas: lector IMAP de solo lectura, clasificador determinista, lista de supresión y cursor (inbound_state)
+│   ├── agents/               Interfaz de agente, StubAgent, SmokeAgent, ProspectorAgent (modos directo y scout, prompts, SourceLedger) EmailDrafterAgent (borradores, nunca envía), BajasAgent (inbound de bajas, sin LLM) e InboxAgent (triaje del buzón: reglas + LLM, nunca responde)
+│   ├── inbound/              Inbound: lector IMAP de solo lectura, clasificador de bajas, reglas de triaje (rebotes, autorrespuestas), clasificador LLM de respuestas, lista de supresión, enlace con email_sends, cursor (inbound_state) y triaje (inbound_triage)
 │   ├── integrations/twenty/  TwentyClient REST tipado, mapeo de objetos de la App y MemoryTwenty (CRM en memoria para los experimentos del optimizador)
 │   ├── tools/                Interfaz Tool, registry, tool_policy, executor, tools de Twenty y web/ (fetch_url con texto de PDF, render_url y guarda SSRF)
 │   ├── db/                   Esquema Drizzle, cliente y migrador
@@ -1481,7 +1481,8 @@ Es idempotente:
 - **Agente `Prospector`**: si no existe, lo crea con la versión 1 `ACTIVE` (`model_provider = gemini`, `model = gemini-flash-latest`, `thinking_level = low`, la tool policy anterior y el prompt en español con los diferenciales de PubliEXPE: ofertas, trato cercano, taller propio y precio). Si existe y su versión activa es distinta, añade una versión nueva, la activa y pasa la anterior a `DEPRECATED`. Si es igual, no cambia nada.
 - **Tarea `daily-event-prospecting`**: `CRON 0 8 * * *` en `Europe/Madrid`, `timeout_ms = 900000`, sin reintentos, con `test/fixtures/feria-ejemplo.json` como `default_input`. Si cambia, se actualiza y se guarda una `TaskDefinitionVersion` nueva.
 - **Tarea `weekly-event-scouting`** (modo scout): `CRON 30 7 * * 1` (lunes 07:30) en `Europe/Madrid`, `timeout_ms = 1800000`, sin reintentos, `default_input = { "sector": "alimentación y bebidas", "region": "España", "horizon_months": 6 }`.
-- **Agente `BajasAgent` y tarea `process-unsubscribes`**: `CRON 0 */2 * * *` en `Europe/Madrid`, sin LLM (`model_provider = stub`), tool policy `get_note` + `update_note` (una escritura por ejecución). Consulta [Inbound de bajas](#inbound-de-bajas).
+- **Agente `BajasAgent` y tarea `process-unsubscribes`**: `CRON 0 */2 * * *` en `Europe/Madrid`, sin LLM (`model_provider = stub`), tool policy `get_note` + `update_note` (una escritura por ejecución). Desde la tanda 12 la tarea queda **desactivada** (`enabled = false`). Consulta [Inbound de bajas](#inbound-de-bajas).
+- **Agente `InboxAgent` y tarea `process-inbox`**: `CRON 0 */2 * * *` en `Europe/Madrid`, Gemini Flash solo para las respuestas que las reglas no deciden, tool policy `get_note` + `update_note` + `create_note` + `find_company`. Consulta [Triaje del buzón](#triaje-del-buzón).
 
 Las dos tareas usan la misma versión del agente. La versión del seed añade `fetch_url` a la tool policy, la configuración `scout` y la skill `event-source-discovery` v1, y sube la skill `prospector-event-exhibitors` a v2 (datos en bloques `DATOS_NO_CONFIABLES`): al ejecutar el seed sobre una BD existente se crea una versión nueva del agente.
 
@@ -1551,7 +1552,9 @@ pnpm vitest run test/integration/prospector-live.test.ts
 
 ## Inbound de bajas
 
-Primera pieza del Inbound Manager ([LLD v0.1, sección 10.2](../../docs/LLD-0.1-publiexpe-commercial-os.md#102-inbound-y-conversaciones)): procesa las peticiones de baja de forma automática, sin LLM y sin aprobación (cumplimiento). Todo lo que no es una baja se ignora; el triaje general del inbound llegará después.
+Primera pieza del Inbound Manager ([LLD v0.1, sección 10.2](../../docs/LLD-0.1-publiexpe-commercial-os.md#102-inbound-y-conversaciones)): procesa las peticiones de baja de forma automática, sin LLM y sin aprobación (cumplimiento).
+
+> **Nota:** desde la tanda 12 el buzón lo lee la tarea `process-inbox` (InboxAgent, consulta [Triaje del buzón](#triaje-del-buzón)), que procesa las bajas exactamente con estas reglas y además clasifica el resto del correo. El seed deja `process-unsubscribes` **desactivada** (no se archiva ni se borra; se puede lanzar a mano) para que el buzón tenga un solo lector. Esta sección describe el procesamiento de bajas, común a los dos agentes.
 
 > **Importante:** este componente solo **lee** correo y solo **añade** líneas a la lista de supresión. No envía, responde, reenvía, mueve ni borra mensajes, y el runtime no usa SMTP en ningún sitio.
 
@@ -1592,7 +1595,7 @@ Reglas comunes:
 
 - Las frases se comparan en minúsculas, sin tildes y con límites de palabra.
 - Del cuerpo se descarta el texto citado (líneas `>`, el bloque "El ... escribió:" y la cabecera "De: / Enviado:" de Outlook), nuestro pie de baja y la firma `-- `. Se analizan como máximo 4.000 caracteres.
-- Nunca es baja: el correo automático (`Auto-Submitted`, `List-Unsubscribe`, `List-Id`, `Precedence: bulk`, rebotes `multipart/report`, remitentes `mailer-daemon`, `no-reply`...), el de nuestros dominios (`publiexpe.info`, `publiexpe.com`) y el que no tiene un `From` válido.
+- Nunca es baja: el correo automático (`Auto-Submitted`, `List-Unsubscribe`, `List-Id`, `Precedence: bulk`, rebotes `multipart/report`, remitentes `mailer-daemon`, `no-reply`...), el de nuestros dominios (`publiexpe.info`, `publiexpe.com`) y el que no tiene un `From` válido. Las cabeceras `List-*` se buscan en las líneas originales: mailparser las agrupa en una sola entrada `list` (hasta la tanda 12 no se detectaban y solo contaba el remitente).
 
 ### Buzón: lo único que se modifica
 
@@ -1618,7 +1621,7 @@ Migración `0004_inbound`. Un cursor por `(tenant_id, consumer, mailbox)`; se ac
 | Columna | Tipo | Uso |
 |---|---|---|
 | `tenant_id` | `text` | Tenant |
-| `consumer` | `text` | Lector del buzón: `bajas` (el triaje general tendrá el suyo) |
+| `consumer` | `text` | Lector del buzón: `bajas` (BajasAgent) o `inbox` (InboxAgent, triaje general); cada uno con su cursor |
 | `mailbox` | `text` | `usuario@host/CARPETA` (sin contraseña) |
 | `uid_validity` | `bigint` | `UIDVALIDITY` de la carpeta cuando se guardó el cursor |
 | `last_uid` | `bigint` | Último UID procesado; nunca retrocede con el mismo `UIDVALIDITY` |
@@ -1636,6 +1639,116 @@ Migración `0004_inbound`. Un cursor por `(tenant_id, consumer, mailbox)`; se ac
 - `test/unit/inbound-bajas.test.ts`: clasificación con fixtures RFC 822 (incluidos citas, Outlook, HTML en base64, newsletters, rebotes, autorrespuestas e intentos de inyección), formato y deduplicación de la lista, cursor, degradación sin credenciales y el cliente imapflow real contra `FakeImapServer` (comprueba que solo se envían `EXAMINE`, `UID SEARCH` y `UID FETCH ... BODY.PEEK[]`).
 - `test/integration/inbound-bajas.test.ts` (PostgreSQL): seed, `process-unsubscribes` → `RunProcessor` → BajasAgent → servidor IMAP falso → nota en FakeTwenty → `inbound_state` y trace.
 - `test/integration/inbound-bajas-live.test.ts`: con `IONOS_IMAP_*` en el entorno o en `.env`, conecta al buzón real en solo lectura, lista y clasifica **sin escribir nada** (ni en el buzón ni en Twenty) e imprime lo que añadiría. Con `TWENTY_API_KEY`, prueba además `update_note` sobre una nota de prueba `[TEST] pxos-it ...` (nunca sobre la lista real). Sin credenciales se salta.
+
+## Triaje del buzón
+
+La tarea `process-inbox` (`CRON 0 */2 * * *`, `Europe/Madrid`, `max_concurrency = 1`, la cadencia de la antigua `process-unsubscribes`) ejecuta el **InboxAgent** (`implementation = "inbound_inbox"`). Clasifica cada correo entrante **una sola vez** y prepara al comercial lo que necesita. **Nunca envía ni responde**: el lector IMAP es el mismo de solo lectura (`EXAMINE` + `BODY.PEEK[]`) y no existe ninguna tool de correo.
+
+### Clases
+
+Primero van las reglas deterministas, sin LLM ([src/inbound/triage-rules.ts](src/inbound/triage-rules.ts)), en este orden:
+
+| Clase | Señales (`signals`) |
+|---|---|
+| `REBOTE` | `dsn_report` (`multipart/report; report-type=delivery-status` o parte `message/delivery-status`); `daemon_sender` (`MAILER-DAEMON`, `postmaster`...) + `bounce_subject` ("Undelivered Mail", "Mail delivery failed", "Delivery Status Notification", "Mensaje no entregado"...); o `Auto-Submitted` + asunto de rebote. `hard_bounce` si el DSN dice `Action: failed` con `Status: 5.x.x` (sin DSN: códigos 55x / 5.x.x o "user unknown", "no existe"...); `soft_or_unknown_bounce` si es 4.x.x, `delayed` o no se sabe. El destinatario fallido sale de `Final-Recipient`, de las cabeceras devueltas (`text/rfc822-headers`) o de la única dirección del texto; nunca de nuestros dominios |
+| `AUTO_REPLY` | `read_receipt` (MDN); `auto_submitted`, `x_autoreply`, `precedence_auto_reply`, `precedence_bulk`, `bulk_list` (`List-*`, `Feedback-ID`), `automated_sender` (`no-reply`, `newsletter`...); y, **después** del chequeo de baja, `auto_reply_subject` ("Respuesta automática:", "Automatic reply:", "Fuera de la oficina:", "Out of office"...) |
+| `OTRO` | `invalid_sender`, `own_domain`, `empty_text` (solo trae el mensaje citado) |
+| `BAJA` | Exactamente el clasificador de bajas ([Señales de baja](#señales-de-baja)) |
+
+El resto va al modelo ([src/inbound/reply-classifier.ts](src/inbound/reply-classifier.ts)): **una** llamada por mensaje, con el modelo de la versión (`gemini-flash-latest`, `thinking_level: low`, `max_output_tokens` 1024), el asunto y como máximo 2.000 caracteres del texto que escribió el remitente. El modelo devuelve `INTERESADO`, `PREGUNTA`, `NO_INTERESADO` u `OTRO` con su confianza. La decisión es conservadora:
+
+- Respuesta inválida o error del modelo: `OTRO` (`llm_invalid_output` / `llm_error`).
+- Confianza menor que `min_confidence` (0,6): `OTRO` (`low_confidence`).
+- `NO_INTERESADO` con confianza menor que `no_interest_min_confidence` (0,85): `OTRO` (`no_interest_unconfirmed`).
+- Un aplazamiento o una redirección es `OTRO`, nunca `NO_INTERESADO`.
+
+> **Importante:** el correo es dato no confiable. Entra en el prompt solo dentro del bloque `<<<DATOS_NO_CONFIABLES id=…>>>` (id aleatorio, marcadores neutralizados), en el mensaje de usuario. El prompt de sistema (sin contenido del correo) ordena ignorar cualquier instrucción del bloque. El modelo solo puede elegir una de cuatro etiquetas: nada de lo que diga el correo dispara otra acción.
+
+### Acciones
+
+| Clase | Acción |
+|---|---|
+| `BAJA` | Línea `email — AAAA-MM-DD — baja solicitada (asunto: "...")` en la lista de supresión (igual que el BajasAgent) |
+| `NO_INTERESADO` | Línea `email — AAAA-MM-DD — no interesado (respuesta) (asunto: "...")` en la lista de supresión **y** nota de respuesta |
+| `INTERESADO`, `PREGUNTA` | Nota `📬 Respuesta recibida — <Interesado/Pregunta> (AAAA-MM-DD HH:mm)` |
+| `REBOTE` duro | Nota `⚠️ Rebote: el email no existe (AAAA-MM-DD HH:mm)`; la lista de supresión no se toca |
+| `AUTO_REPLY`, rebote blando, `OTRO` | Solo registro |
+
+Las altas en la lista se escriben con **un** `get_note` + **un** `update_note` por ejecución (append-only, deduplicadas, mismo código que el BajasAgent: [src/inbound/suppression-writer.ts](src/inbound/suppression-writer.ts)).
+
+Las notas se crean con `create_note` sobre la empresa y la hipótesis del envío al que responden. El envío se busca en `email_sends` ([src/inbound/reply-links.ts](src/inbound/reply-links.ts)):
+
+1. Por la dirección del remitente (o, en un rebote, la del destinatario fallido): el último envío anterior a la recepción.
+1. Si no hay, por dominio, cuando todos los envíos a ese dominio son de **una** empresa. Nunca en dominios de correo gratuito (`gmail.com`, `hotmail.com`...).
+1. Sin envío, una respuesta se enlaza a la empresa de Twenty con ese dominio (`find_company`, solo si hay exactamente una). Sin empresa no hay nota (`no_company_match`, contador `unmatched`).
+
+El extracto de la nota es texto plano: sin el mensaje citado, sin enlaces (`[enlace]`), sin sintaxis markdown o HTML, máximo 500 caracteres. El título lleva la hora local de recepción: cada respuesta tiene su nota y `create_note` (idempotente por empresa + título) no la duplica al reintentar.
+
+La hipótesis **no se marca**. El único campo de estado de email (`emailStatus`: `DRAFT`, `READY`, `SENDING`, `SENT`) es el del flujo de envío y no tiene un valor de "respondido"; cambiarlo rompería el workflow de Twenty, y no se añaden campos a la Twenty App.
+
+Ejemplo de nota:
+
+```
+📬 Respuesta recibida — Interesado (2026-10-08 10:30)
+
+**Ha respondido carmen@cliente.example.** Clasificación automática: **Interesado** (modelo, confianza 0,93).
+
+- Recibido: 2026-10-08 10:30 (Europe/Madrid)
+- Asunto: Re: Material para vuestro stand
+- Responde a: envío del 2026-10-07 10:15 «Material para vuestro stand» (coincide la dirección)
+
+Extracto (texto plano, sin el mensaje citado):
+
+> ¡Hola Jesús! Sí, nos interesa. ¿Me pasas precios de bolsas tote para 500 uds?
+
+Qué hacer: Abre el correo en tu bandeja y respóndelo tú hoy: pide lo que falte (cantidades, fechas, logo) y prepara la propuesta.
+
+El Commercial OS no responde ni envía nada: la respuesta es tuya.
+```
+
+### Evento `email.reply_received`
+
+Se emite uno por mensaje triado (para n8n y los triggers `EVENT`), con `idempotencyKey` derivada del Message-ID. Campos de `data`: `class`, `confidence`, `method` (`RULES` | `LLM`), `signals`, `fromDomain`, `companyId`, `hypothesisId`, `sendId`, `matchBy` (`email` | `domain` | `company_domain`), `noteId`, `suppressionAdded`, `receivedAt` y, en los rebotes, `bouncedDomain` y `hardBounce`. Como los demás eventos `email.*`, lleva dominios, nunca direcciones. Para filtrar por clase, usa `filter: {"class": {"in": ["INTERESADO", "PREGUNTA"]}}`.
+
+### Idempotencia, cursor y presupuestos
+
+- Cada mensaje se triaja **una vez**: clave `mid:<Message-ID>` (o `sha256:` del fuente si no tiene) en `inbound_triage`. Una segunda ejecución, un cambio de `UIDVALIDITY` o una segunda copia del mismo mensaje no repiten LLM, notas, altas ni eventos.
+- El cursor es propio (`inbound_state`, consumer `inbox`). En la primera ejecución lee desde `initial_since` (`2026-10-06`); el triaje del histórico se reparte entre ejecuciones según los presupuestos.
+- `triage.max_llm_calls_per_run` (40) y `triage.max_notes_per_run` (40): al agotarse, la ejecución termina `SUCCESS` con `stopped` (`llm_budget` / `notes_budget`) y la siguiente continúa desde ese mensaje.
+- Si Twenty falla al crear una nota, la ejecución termina `FAILED` con el cursor en el último mensaje terminado, y la siguiente reintenta sin duplicar nada. Si falla la lista de supresión, el cursor no avanza.
+- `mark_seen: true` marca `\Seen` solo en las bajas, como el BajasAgent (por defecto, `false`).
+
+### Tabla `inbound_triage`
+
+Migración `0014_inbound_triage`. Es append-only: hay triggers que rechazan `UPDATE` y `DELETE`. La fila se escribe después de las acciones, así que registra lo que se hizo. No guarda el cuerpo del correo.
+
+| Columna | Uso |
+|---|---|
+| `message_key` | `mid:<Message-ID>` o `sha256:<hash>`; único por tenant |
+| `message_id`, `mailbox`, `uid_validity`, `uid`, `received_at` | Origen del mensaje |
+| `from_email`, `from_domain`, `subject` | Remitente y asunto saneado (120 caracteres) |
+| `class`, `confidence`, `method`, `signals` | Resultado del triaje |
+| `company_id`, `hypothesis_id`, `send_id`, `match_by` | Enlace con Twenty y `email_sends` |
+| `note_id`, `suppression_added`, `event_id` | Lo que se hizo |
+| `execution_id`, `cost_eur`, `created_at` | Ejecución, coste del LLM del mensaje y hora del triaje |
+
+### Configuración (`triage`)
+
+| Clave | Por defecto | Uso |
+|---|---|---|
+| `min_confidence` | `0.6` | Por debajo, `OTRO` |
+| `no_interest_min_confidence` | `0.85` | Por debajo, un `NO_INTERESADO` queda como `OTRO` (nunca menor que `min_confidence`) |
+| `max_llm_calls_per_run` / `max_notes_per_run` | `40` / `40` | Presupuestos por ejecución |
+| `llm_text_max` / `max_output_tokens` | `2000` / `1024` | Presupuesto por mensaje |
+| `lookup_company_by_domain` | `true` | `find_company` por dominio si no hay envío |
+| `emit_events` | `true` | Emite `email.reply_received` |
+
+El resto de claves (`suppression_note_id`, `own_domains`, `imap_mailbox`, `initial_since`, límites de mensajes, `mark_seen`, `timezone`) son las del BajasAgent. Tool policy: `get_note` y `update_note` (1 cada una), `create_note` y `find_company` (40 cada una), `LOW_WRITE`.
+
+### Tests del triaje
+
+- `test/unit/inbound-triage.test.ts`: reglas con cabeceras reales (fuera de oficina de Exchange y Gmail, autorrespondedores, boletines, rebotes de Exim/IONOS, Postfix y Gmail, acuses de lectura), parseo DSN, prompt con bloque no confiable e intento de inyección, confianza baja → `OTRO`, notas y extracto saneado, enlace con envíos, y el InboxAgent con buzón falso, FakeTwenty y StubProvider (lote mixto, idempotencia, presupuesto LLM, fallo de Twenty, error del modelo, remitentes sin empresa, `\Seen`).
+- `test/integration/inbound-triage.test.ts` (PostgreSQL): seed, `process-inbox` → `RunProcessor` → InboxAgent → servidor IMAP falso → StubProvider → notas y lista en FakeTwenty → filas de `inbound_triage`, eventos en `events`, cursor, idempotencia tras un cambio de `UIDVALIDITY` y triggers append-only.
 
 ## Docker
 

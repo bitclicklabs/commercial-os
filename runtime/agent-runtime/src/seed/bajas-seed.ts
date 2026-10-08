@@ -47,14 +47,20 @@ export function desiredBajasVersion(): AgentVersionSpec {
   };
 }
 
+/**
+ * Since the inbound triage (tanda 12) the task `process-inbox` (InboxAgent) reads the mailbox
+ * and processes the bajas exactly as this one did, so `process-unsubscribes` is kept DISABLED
+ * (one reader of the mailbox, no duplicated reads). It is not archived or deleted: its history
+ * stays, and it can still be run by hand (`POST /tasks/:id/run`) if the triage has to be stopped.
+ */
 export function desiredBajasTask(): TaskSpec {
   return {
     description:
-      'Cada 2 horas lee (solo lectura) el buzón jesus.abril@publiexpe.info, detecta las peticiones de baja (correo a baja@publiexpe.info o palabras clave claras) y añade cada dirección nueva al final de la nota de Twenty "Lista de supresión — NO contactar". No envía, responde, mueve ni borra ningún correo.',
+      'SUSTITUIDA por process-inbox (triaje general del buzón, que también procesa las bajas); desactivada para no leer el buzón dos veces. Si se ejecuta a mano: lee (solo lectura) el buzón jesus.abril@publiexpe.info, detecta las peticiones de baja (correo a baja@publiexpe.info o palabras clave claras) y añade cada dirección nueva al final de la nota de Twenty "Lista de supresión — NO contactar". No envía, responde, mueve ni borra ningún correo.',
     defaultInput: {},
     schedule: { type: 'CRON', expression: '0 */2 * * *' },
     timezone: 'Europe/Madrid',
-    enabled: true,
+    enabled: false,
     priority: 0,
     maxConcurrency: 1,
     retryPolicy: { max_attempts: 2, backoff_ms: 60_000 },

@@ -87,8 +87,13 @@ Todos los comandos `docker compose` de este runbook se ejecutan desde `deploymen
 | `TWENTY_API_KEY` | `${TWENTY_API_KEY:-}` | API key de Twenty para que el runtime escriba en el CRM. Debe tener el rol restringido «Agent runtime» ([Rol de la API key](#rol-de-la-api-key-de-twenty)) |
 | `IONOS_IMAP_HOST` / `IONOS_IMAP_USER` / `IONOS_IMAP_PASSWORD` | `${IONOS_IMAP_*:-}` | Buzón que lee el BajasAgent, **solo lectura**. Sin usuario o contraseña, la tarea `process-unsubscribes` termina `SKIPPED` y no lee nada |
 | `RENDERER_URL` | `http://pxos-renderer:3000` | Servicio de render de JavaScript del scout |
-| `TRACE_RETENTION_DAYS` | consulta el README del runtime | Antigüedad (en días) a partir de la cual `pnpm traces:archive` archiva los payloads pesados cuando no se indica `--older-than`. Solo manual: ningún proceso archiva por su cuenta. Consulta [Archivado de trazas](#archivado-de-trazas) |
-| `TRACE_ARCHIVE_DIR` | consulta el README del runtime | Directorio donde `pnpm traces:archive` escribe los JSONL comprimidos. Debe estar en un volumen persistente (consulta [Archivado de trazas](#archivado-de-trazas)) |
+| `TRACE_RETENTION_DAYS` | `${TRACE_RETENTION_DAYS:-90}` | Antigüedad (en días) a partir de la cual se archivan los payloads pesados, tanto en `pnpm traces:archive` (si no se indica `--older-than`) como en el archivado programado. Consulta [Archivado de trazas](#archivado-de-trazas) |
+| `TRACE_ARCHIVE_DIR` | `/data/trace-archive` | Directorio donde se escriben los JSONL comprimidos (volumen `pxos_trace_archive`). Debe estar en un volumen persistente (consulta [Archivado de trazas](#archivado-de-trazas)) |
+| `TRACE_ARCHIVE_ENABLED` | `false` por defecto | Activa el [archivado programado](#archivado-programado): un job interno del runtime. Solo `true` lo enciende. Tanda 13 |
+| `TRACE_ARCHIVE_INTERVAL_MS` | `86400000` (24 h) por defecto | Cada cuántos milisegundos corre el archivado programado. Solo tiene efecto con `TRACE_ARCHIVE_ENABLED=true`. Tanda 13 |
+| `MODEL_ROUTE_EXECUTOR_CHEAP`, `MODEL_ROUTE_EXECUTOR_REASONER`, `MODEL_ROUTE_JUDGE`, `MODEL_ROUTE_TRIAGE` | vacías | Override del modelo de un rol, con el formato `proveedor:modelo` (por ejemplo `gemini:gemini-2.5-flash`). Vacía o ausente: el modelo por defecto del rol. Consulta [Model routing](model-routing.md). Tanda 13 |
+
+> **Nota:** el bloque `environment` de `pxos-runtime` pasa hoy `TRACE_RETENTION_DAYS` y `TRACE_ARCHIVE_DIR`. Si tu `docker-compose.yml` todavía no pasa `TRACE_ARCHIVE_ENABLED`, `TRACE_ARCHIVE_INTERVAL_MS` o las `MODEL_ROUTE_*`, añádelas con la forma `${NOMBRE:-}` antes de usarlas: una variable que no llega al contenedor no tiene ningún efecto. Con `pxos-runtime` ya levantado, recréalo (`docker compose up -d pxos-runtime`) para que lea los valores nuevos.
 
 > **Nota:** el puente de eventos con n8n ([`docs/n8n-integracion.md`](n8n-integracion.md)) necesita `EXTERNAL_EVENTS_TOKEN` y, para destinos privados, `EXTERNAL_WEBHOOK_ALLOW_PRIVATE`. El `docker-compose.yml` actual no las pasa a `pxos-runtime`: sin ellas, `POST /events/external` responde `503`. Añádelas al bloque `environment` solo si vas a usar el puente.
 
@@ -408,16 +413,18 @@ Rota la clave si se filtra, caduca o el runtime recibe `401` de Twenty.
 
 Las trazas (`trace_steps`) guardan los payloads de cada paso: prompts, respuestas del modelo y resultados de herramientas. Con el tiempo son lo que más pesa en la base del Agent OS. La política de retención del [LLD v0.1, sección 22](LLD-0.1-publiexpe-commercial-os.md) se aplica **sin pérdida**: los payloads pesados se exportan a un fichero y el paso conserva un puntero, de modo que la traza sigue siendo legible.
 
-> **Importante:** por ahora el archivado es **solo manual**. Ninguna tarea programada lo ejecuta; lo lanzas tú cuando quieras liberar espacio.
+> **Importante:** el archivado es **manual por defecto**. Desde la tanda 13 existe además un [archivado programado](#archivado-programado), que está **apagado** hasta que lo actives con `TRACE_ARCHIVE_ENABLED=true`. Los dos hacen lo mismo y con las mismas garantías; solo cambia quién los lanza.
 
 ### Variables
 
 | Variable | Uso |
 |---|---|
-| `TRACE_RETENTION_DAYS` | Antigüedad por defecto, en días, de lo que se archiva. El argumento `--older-than` la sustituye |
+| `TRACE_RETENTION_DAYS` | Antigüedad por defecto, en días, de lo que se archiva (90 si no la defines). El argumento `--older-than` la sustituye en el comando manual |
 | `TRACE_ARCHIVE_DIR` | Directorio de destino de los ficheros JSONL comprimidos |
+| `TRACE_ARCHIVE_ENABLED` | `true` enciende el archivado programado. Por defecto, apagado |
+| `TRACE_ARCHIVE_INTERVAL_MS` | Intervalo del archivado programado, en milisegundos. Por defecto 24 h (`86400000`) |
 
-> **Precaución:** `TRACE_ARCHIVE_DIR` debe apuntar a un volumen que sobreviva al contenedor. Si el comando corre dentro de `pxos-runtime` y el directorio está en el sistema de ficheros efímero, perderás el archivo al recrear el contenedor y los punteros quedarán rotos. El `docker-compose.yml` actual puede no pasar estas variables ni montar un volumen: compruébalo antes de la primera vez. Incluye el directorio en tus copias de seguridad: [Backup](#backup) solo cubre las bases de datos.
+> **Precaución:** `TRACE_ARCHIVE_DIR` debe apuntar a un volumen que sobreviva al contenedor. Si el comando corre dentro de `pxos-runtime` y el directorio está en el sistema de ficheros efímero, perderás el archivo al recrear el contenedor y los punteros quedarán rotos. El `docker-compose.yml` actual fija `TRACE_ARCHIVE_DIR=/data/trace-archive` y lo monta en el volumen persistente `pxos_trace_archive`; no lo quites. Incluye el volumen en tus copias de seguridad: [Backup](#backup) solo cubre las bases de datos.
 
 ### Archivar
 
@@ -436,7 +443,47 @@ El comando, por cada traza más antigua que el umbral:
 
 Si la verificación falla, el paso no se toca y el comando lo indica. Nada se borra antes de comprobar que está a salvo en el archivo.
 
-> **Nota:** las trazas son inmutables por triggers de la base de datos. Si los triggers no permiten sustituir el payload por el puntero, el archivado deja los ficheros exportados y verificados y **no modifica** el paso. En ese caso se libera espacio con otra vía, que decide el responsable técnico con la evidencia en la mano. Consulta el README del runtime para saber qué modo aplica en tu versión.
+> **Nota:** las trazas son inmutables por triggers de la base de datos (migración `0015`), con una única excepción: un payload pesado solo puede pasar a su puntero exacto y verificado. Cualquier otro cambio sobre `trace_steps` falla, y no hay `DELETE` físico en `traces` ni en `trace_steps`. Consulta el [README del runtime](../runtime/agent-runtime/README.md#retención-de-trazas-sin-pérdida-pnpm-tracesarchive) para el detalle.
+
+### Archivado programado
+
+El archivado programado ejecuta por sí solo el mismo proceso que `pnpm traces:archive`, para que la base no crezca sin que nadie se acuerde de lanzarlo. Es un job interno del runtime; no hace falta una tarea en el scheduler ni un cron del sistema.
+
+| Aspecto | Comportamiento |
+|---|---|
+| **Activación** | Solo con `TRACE_ARCHIVE_ENABLED=true`. Por defecto está **apagado**: sin la variable, el runtime no archiva nada por su cuenta |
+| **Frecuencia** | Cada `TRACE_ARCHIVE_INTERVAL_MS` milisegundos; por defecto, cada 24 h |
+| **Qué archiva** | Lo mismo que el comando manual: los pasos de trazas más antiguas que `TRACE_RETENTION_DAYS` (90 por defecto), exportados a `TRACE_ARCHIVE_DIR`, verificados y sustituidos por un puntero |
+| **Garantías** | Las del archivado manual: nunca se borra una fila ni un fichero, y un paso solo se aligera tras verificar su copia |
+| **Auditoría** | Cuando una pasada aligera algo, deja una fila `traces.archive` en el `audit_log`. Si no había nada que archivar, no deja ninguna |
+
+Para activarlo:
+
+1. Comprueba que el volumen del archivo es persistente y que lo cubre tu copia de seguridad (consulta la precaución anterior).
+1. Añade la variable a `deployments/.env` (y al bloque `environment` de `pxos-runtime` si el compose no la pasa, consulta [Variables del runtime](#variables-del-runtime)):
+
+   ```bash
+   TRACE_ARCHIVE_ENABLED=true
+   # Opcional: cada 12 horas en lugar de cada 24
+   TRACE_ARCHIVE_INTERVAL_MS=43200000
+   ```
+
+1. Recrea el contenedor para que lea los valores:
+
+   ```bash
+   cd deployments
+   docker compose up -d pxos-runtime
+   ```
+
+Para comprobar que funciona, consulta el `audit_log` tras la primera pasada:
+
+```bash
+curl -s "http://127.0.0.1:4020/audit?action=traces.archive" -H 'x-tenant-id: publiexpe' | jq '.items[:3]'
+```
+
+Para pararlo, quita la variable o ponla en `false` y recrea `pxos-runtime`. Los ficheros ya escritos y los punteros siguen siendo válidos; el comando manual sigue disponible en cualquier momento.
+
+> **Nota:** el archivado programado puede aligerar trazas que aún quieras cosechar para un dataset. Si vas a ejecutar `pnpm dataset:build`, hazlo antes de activar el archivado o ajusta `TRACE_RETENTION_DAYS` a una antigüedad que cubra tu ventana de cosecha (consulta el aviso del [README del runtime](../runtime/agent-runtime/README.md#retención-de-trazas-sin-pérdida-pnpm-tracesarchive)).
 
 ### Comprobar y leer una traza archivada
 

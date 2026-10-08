@@ -48,6 +48,9 @@ export const AUDITED_ROUTES: Readonly<Record<string, AuditSpec>> = {
   'POST /harnesses/:id/versions': { action: 'harness.version_create', subjectType: 'harness', subjectVersion: responseVersion('version') },
   'POST /harnesses/:id/versions/:v/activate': { action: activation('harness'), subjectType: 'harness' },
   'POST /harnesses/:id/versions/:v/deprecate': { action: 'harness.deprecate', subjectType: 'harness' },
+  // Experiments (src/api/routes/experiments.ts)
+  'POST /experiments/:id/revalidate': { action: 'experiment.revalidate', subjectType: 'experiment', subjectVersion: (i) => num(res(i, 'experiment', 'candidate_version')) },
+
   // Skill Optimizer (src/api/routes/optimizer.ts)
   'POST /optimizer/skills/:name/run': { action: 'optimizer.run', subjectType: 'skill', subjectVersion: (i) => num(res(i, 'run', 'base_version')) },
   'POST /optimizer/runs/:id/close': { action: 'optimizer.close', subjectType: 'optimization_run', subjectVersion: (i) => num(res(i, 'run', 'candidate_version')) },

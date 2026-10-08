@@ -175,6 +175,16 @@ La versión activa anterior pasa a `DEPRECATED` en la misma transacción. Las ej
 
 > **Nota:** si el gate dio `PASS_FORM` o prefieres no pasar de 0 a 100 %, puedes poner la candidata en **canario** (`POST /skills/<skill>/versions/<v>/canary`) y decidir tras comparar con la activa. Consulta [Canario](skill-optimizer.md#canario-despliegue-gradual-tras-el-gate).
 
+### Revalida un PASS_FORM cuando lleguen etiquetas
+
+Un `PASS_FORM` queda pendiente de revalidar. No hace falta repetir el experimento: el experimento guardó lo que decidió cada versión en cada caso, y la revalidación mide la accuracy de las dos sobre esas decisiones con los veredictos que el comercial dé después en Twenty. No llama a ningún modelo (coste 0).
+
+1. Re-cosecha el dataset para que los veredictos nuevos entren como casos: `POST /datasets/<id>/build`.
+1. Mira qué experimentos se pueden revalidar: `GET /experiments/pending-revalidation` (o `pnpm experiment:revalidate --pending`). Solo salen los `PASS_FORM` cuya versión sigue `ACTIVE` o en canario, con cuántas etiquetas hay y cuántas son frescas.
+1. Revalida: `POST /experiments/EXP-NNN/revalidate` (o `pnpm experiment:revalidate --id EXP-NNN`).
+
+El resultado es `CONFIRMED` (la candidata iguala o supera a la baseline en accuracy), `REFUTED` o `INSUFFICIENT` (faltan etiquetas; por defecto se piden 5). Nunca cuentan los casos de diseño de la candidata (P5). Si sale `REFUTED` y la versión sigue activa o en canario, aparece en Twenty la nota «⚠️ Revalidación fallida» con los números y las opciones (rollback, canario o iterar): nada se desactiva solo, decides tú. Detalles en el [README del runtime](../runtime/agent-runtime/README.md#revalidación-de-los-pass_form).
+
 ## 7. Mide la aceptación por versión
 
 - `GET /metrics/agents` agrupa por versión de **agente**. Activar una versión de skill no crea una versión de agente, así que esa vista mezcla las dos versiones de la skill. Úsala para volumen y coste y separa por la hora de activación.

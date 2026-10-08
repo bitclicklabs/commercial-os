@@ -113,7 +113,7 @@ Lista de revisión:
 - [ ] Leí el diff de la candidata: cambia lo que dice el changelog y nada más.
 - [ ] Leí las razones por expositor del informe, no solo las métricas. Las métricas no lo ven todo (EXP-003 lo demostró).
 - [ ] La candidata no inventa datos ni eleva la confianza sin respaldo.
-- [ ] Si el gate fue `PASS_FORM`, acepto que falta revalidar con etiquetas o, mejor, uso el [canario](#canario-despliegue-gradual-tras-el-gate).
+- [ ] Si el gate fue `PASS_FORM`, acepto que falta revalidar con etiquetas o, mejor, uso el [canario](#canario-despliegue-gradual-tras-el-gate). Cuando haya veredictos nuevos, la revalidación es `POST /experiments/EXP-NNN/revalidate` ([ciclo](ciclo-mejora-skills.md#revalida-un-pass_form-cuando-lleguen-etiquetas)).
 - [ ] Sé cómo deshacerlo (rollback, más abajo).
 
 ### Decidir
@@ -151,7 +151,7 @@ Cómo funciona:
 
 Cuándo usarlo:
 
-- El gate fue `PASS_FORM` y no hay etiquetas con las que confirmar la accuracy.
+- El gate fue `PASS_FORM` y no hay etiquetas con las que confirmar la accuracy. Si mientras dura el canario llegan veredictos y la revalidación da `REFUTED`, verás la nota «⚠️ Revalidación fallida» en Twenty: el rollback es `POST /skills/:name/canary/rollback`.
 - El cambio toca la forma de los mensajes (tono, confianza, presentación) y quieres verlo con hipótesis reales antes de generalizarlo.
 - La skill tiene mucho volumen o un fallo costaría caro.
 

@@ -137,7 +137,7 @@ Lecciones de la tanda 11 aplicadas: cada agente usa BD de test propia (`agentos_
 
 | Pieza | Rama | Agente | Estado |
 |---|---|---|---|
-| Revalidación de PASS_FORM: accuracy sobre outputs guardados al llegar etiquetas frescas (coste 0), registro append-only, CONFIRMED/REFUTED/INSUFFICIENT; nota ⚠️ si REFUTED con versión activa/canaria — decide el humano | `feat/passform-revalidation` | Opus | 🔄 |
+| Revalidación de PASS_FORM: accuracy sobre outputs guardados al llegar etiquetas frescas (coste 0), registro append-only, CONFIRMED/REFUTED/INSUFFICIENT; nota ⚠️ si REFUTED con versión activa/canaria — decide el humano | `feat/passform-revalidation` | Opus | ✅ fusionado (hallazgo: los outputs por caso no estaban en BD, solo en informe.json → case_outputs en phaseMetrics para los nuevos; migración 0016 en BD propia; 749 tests; deuda anotada: el gate aún no considera un REFUTED) |
 | Triaje general del inbound: determinista (auto-reply/rebotes/bajas) + LLM (INTERESADO/PREGUNTA/NO_INTERESADO/OTRO); notas 📬 en Twenty, NO_INTERESADO → supresión, evento email.reply_received; IMAP sigue solo-lectura; nunca responde | `feat/inbound-triage` | Opus | 🔄 |
 | audit_log append-only de acciones mutantes (+force auditado), retención de trazas SIN pérdida (archivar→verificar→aligerar, LLD §22) y stall-guard de BullMQ (deuda tanda 11) | `feat/retention-audit` | Opus | 🔄 |
 | Docs: inbound-triaje.md, revalidación en skill-optimizer.md, runbook de archivado/audit, guía comercial, ROADMAP | `docs/tanda12` | Sonnet | ✅ entregado (pendiente de fusión; detectó runbook con migraciones hasta 0008, Research "vacía" en la guía y volumen de TRACE_ARCHIVE_DIR sin montar — reconcilia el PM) |

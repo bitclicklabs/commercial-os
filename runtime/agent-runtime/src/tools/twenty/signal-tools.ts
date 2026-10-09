@@ -1,0 +1,159 @@
+/**
+ * Event-level commercial signals (the fairs the commercial qualifies by hand in Twenty).
+ *
+ * - `list_event_signals` (READ): commercial signals WITHOUT company (event level: a fair, a
+ *   congress) in the given statuses. Per-exhibitor signals ("<feria> — <empresa>") always
+ *   carry a company and never come back from this tool.
+ * - `expire_signal` (LOW_WRITE): moves ONE signal to EXPIRED, and only when its event date
+ *   is already past and its status is still NEW / REVIEWING / QUALIFIED. It re-reads the
+ *   record right before the PATCH and writes nothing else: it can never qualify, discard or
+ *   reopen a signal, and never touches a date in the future.
+ */
+import { z } from 'zod';
+import { SIGNAL_STATUSES, TWENTY_OBJECTS, filterValue, type TwentyCommercialSignal } from '../../integrations/twenty/index.js';
+import { defineTool } from '../types.js';
+import { RecordId, withTwenty, type TwentyToolDeps } from './shared.js';
+
+/** Statuses a signal can be expired from (the open ones; DISCARDED / EXPIRED are final). */
+export const EXPIRABLE_SIGNAL_STATUSES = ['NEW', 'REVIEWING', 'QUALIFIED'] as const;
+
+/** Records per REST page and pages per status (a safety bound: 5 x 200 open fairs is far above reality). */
+const PAGE_SIZE = 200;
+const MAX_PAGES = 5;
+
+export const EventSignal = z.object({
+  id: z.string(),
+  name: z.string(),
+  status: z.string(),
+  signalType: z.string(),
+  eventDate: z.string().nullable(),
+  sourceUrl: z.string().nullable(),
+  sourceDomain: z.string().nullable(),
+  createdAt: z.string(),
+  updatedAt: z.string(),
+});
+export type EventSignal = z.infer<typeof EventSignal>;
+
+export const ListEventSignalsInput = z.object({
+  statuses: z.array(z.enum(SIGNAL_STATUSES)).min(1).max(SIGNAL_STATUSES.length),
+});
+
+export const ListEventSignalsOutput = z.object({
+  signals: z.array(EventSignal),
+  /** True when a status had more pages than the safety bound (the rest is read on a later run). */
+  truncated: z.boolean(),
+});
+export type ListEventSignalsOutput = z.infer<typeof ListEventSignalsOutput>;
+
+const text = (v: unknown): string | null => (typeof v === 'string' && v.trim().length > 0 ? v : null);
+
+export function toEventSignal(s: TwentyCommercialSignal): EventSignal {
+  return {
+    id: s.id,
+    name: s.name,
+    status: s.status,
+    signalType: s.signalType,
+    eventDate: text(s.eventDate)?.slice(0, 10) ?? null,
+    sourceUrl: text(s.sourceUrl?.primaryLinkUrl),
+    sourceDomain: text(s.sourceDomain),
+    createdAt: s.createdAt,
+    updatedAt: s.updatedAt,
+  };
+}
+
+export function createListEventSignalsTool(deps: TwentyToolDeps) {
+  return defineTool({
+    id: 'list_event_signals',
+    name: 'List event-level commercial signals',
+    version: '1.0.0',
+    description:
+      'List the commercial signals without company (event level: fairs, congresses) in the given statuses, with their event date and source URL. Per-company signals are not returned.',
+    inputSchema: ListEventSignalsInput,
+    outputSchema: ListEventSignalsOutput,
+    riskLevel: 'READ',
+    sideEffects: false,
+    approvalPolicy: { mode: 'NONE' },
+    permissions: ['twenty:signals:read'],
+    timeoutMs: 30_000,
+    outputTrust: 'trusted',
+    enabled: true,
+    execute: (input, ctx) =>
+      withTwenty(deps, async () => {
+        const signals: EventSignal[] = [];
+        let truncated = false;
+        // One query per status with [eq] (the filter subset every Twenty version understands).
+        for (const status of [...new Set(input.statuses)]) {
+          let after: string | undefined;
+          for (let page = 0; ; page++) {
+            if (page >= MAX_PAGES) {
+              truncated = true;
+              break;
+            }
+            const res = await deps.twenty.list<TwentyCommercialSignal>(TWENTY_OBJECTS.commercialSignal, {
+              filter: `and(status[eq]:${filterValue(status)},companyId[is]:NULL)`,
+              limit: PAGE_SIZE,
+              orderBy: 'createdAt',
+              ...(after ? { startingAfter: after } : {}),
+              signal: ctx.signal,
+            });
+            // Defensive: a server that ignores the filter must not leak per-company signals in.
+            signals.push(...res.records.filter((r) => !r.companyId && r.status === status).map(toEventSignal));
+            const next = res.pageInfo.hasNextPage === true ? (res.pageInfo.endCursor ?? undefined) : undefined;
+            if (!next) break;
+            after = next;
+          }
+        }
+        return { status: 'ok', output: { signals, truncated } };
+      }),
+  });
+}
+
+// ---------------------------------------------------------------------------
+// expire_signal (LOW_WRITE)
+// ---------------------------------------------------------------------------
+
+export const ExpireSignalInput = z.object({
+  signalId: RecordId,
+  /** The run's date (YYYY-MM-DD): the signal expires only if its event date is strictly before it. */
+  today: z.iso.date(),
+});
+
+export const ExpireSignalOutput = z.object({
+  expired: z.boolean(),
+  reason: z.enum(['expired', 'not_found', 'status_not_open', 'no_event_date', 'event_not_past']),
+  previousStatus: z.string().nullable(),
+  eventDate: z.string().nullable(),
+});
+export type ExpireSignalOutput = z.infer<typeof ExpireSignalOutput>;
+
+export function createExpireSignalTool(deps: TwentyToolDeps) {
+  return defineTool({
+    id: 'expire_signal',
+    name: 'Expire commercial signal',
+    version: '1.0.0',
+    description:
+      'Set a commercial signal to EXPIRED (only that field) when its event date is already past and it is still NEW, REVIEWING or QUALIFIED. Never changes any other status or field.',
+    inputSchema: ExpireSignalInput,
+    outputSchema: ExpireSignalOutput,
+    riskLevel: 'LOW_WRITE',
+    sideEffects: true,
+    approvalPolicy: { mode: 'NONE' },
+    permissions: ['twenty:signals:read', 'twenty:signals:write'],
+    timeoutMs: 15_000,
+    outputTrust: 'trusted',
+    enabled: true,
+    execute: (input, ctx) =>
+      withTwenty(deps, async () => {
+        const s = await deps.twenty.get<TwentyCommercialSignal>(TWENTY_OBJECTS.commercialSignal, input.signalId, { depth: 0, signal: ctx.signal });
+        if (!s) return { status: 'ok', output: { expired: false, reason: 'not_found', previousStatus: null, eventDate: null } };
+        const eventDate = text(s.eventDate)?.slice(0, 10) ?? null;
+        const base = { previousStatus: s.status ?? null, eventDate };
+        if (!(EXPIRABLE_SIGNAL_STATUSES as readonly string[]).includes(s.status)) return { status: 'ok', output: { expired: false, reason: 'status_not_open', ...base } };
+        if (!eventDate) return { status: 'ok', output: { expired: false, reason: 'no_event_date', ...base } };
+        if (!(eventDate < input.today)) return { status: 'ok', output: { expired: false, reason: 'event_not_past', ...base } };
+        await deps.twenty.update(TWENTY_OBJECTS.commercialSignal, input.signalId, { status: 'EXPIRED' }, { signal: ctx.signal });
+        ctx.logger.info('commercial signal expired', { signalId: input.signalId, eventDate, previousStatus: s.status });
+        return { status: 'ok', output: { expired: true, reason: 'expired', ...base } };
+      }),
+  });
+}

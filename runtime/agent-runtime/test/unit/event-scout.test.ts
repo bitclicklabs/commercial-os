@@ -421,6 +421,40 @@ describe('ProspectorAgent scout mode', () => {
     expect(fake.tables.agentRunSummaries[0]).toMatchObject({ outcome: 'FAILED', task: 'weekly-event-scouting' });
   });
 
+  it('discover_only (weekly v2): each verified fair becomes a NEW FAIR signal with URL and date; no exhibitor is read nor evaluated', async () => {
+    const web = new FakeWeb().page('https://www.gourmets.net/salon/expositores', EXHIBITORS_HTML);
+    const responses = () => [search([GOURMETS_EVENT], [GOURMETS_SOURCE])];
+    const { fake, provider, ctx, agent } = setup(responses(), { web, input: { ...SCOUT_DEFAULT_INPUT, discover_only: true } });
+    const out = (await agent.run(ctx)).output as unknown as Out;
+    expect(out).toMatchObject({ mode: 'scout', outcome: 'SUCCESS', partial_reasons: [] });
+    // Only the grounded search: no extraction, no evaluation.
+    expect(provider.requests).toHaveLength(1);
+    expect(web.requests.map((r) => r.url.toString())).toEqual(['https://www.gourmets.net/salon/expositores']);
+    expect(out.events[0]).toMatchObject({ status: 'event_signal', date: '2027-02-10', source_url: 'https://www.gourmets.net/salon/expositores', results: [] });
+    expect(out.counters).toMatchObject({ event_signals: 1, exhibitors_read: 0, evaluated: 0, extraction_calls: 0 });
+    expect(fake.tables.companies).toHaveLength(0);
+    expect(fake.tables.commercialHypotheses).toHaveLength(0);
+    expect(fake.tables.commercialSignals).toHaveLength(1);
+    const sig = fake.tables.commercialSignals[0]!;
+    expect(sig.companyId ?? null).toBeNull();
+    expect(sig).toMatchObject({ name: 'Salón de Gourmets 2027 (feria)', signalType: 'FAIR', status: 'NEW', eventDate: '2027-02-10', sourceUrl: { primaryLinkUrl: 'https://www.gourmets.net/salon/expositores' } });
+    expect(String(sig.description)).toContain('califica la señal');
+    expect(String(fake.tables.agentRunSummaries[0]!.resultSummary)).toContain('solo descubrimiento');
+
+    // A fair the commercial already qualified is found again next Monday: same signal, status untouched.
+    sig.status = 'QUALIFIED';
+    const again = setup(responses(), { web, input: { ...SCOUT_DEFAULT_INPUT, discover_only: true } });
+    const tools = new ToolExecutor(
+      createDefaultToolRegistry({ twenty: fake.client(), web: web.deps(), render: { endpoint: null } }),
+      parseToolPolicy(again.ctx.version.configuration),
+      { tenantId: 'publiexpe', executionId: 'exec-2', agentId: 'agent-1', stage: 'PROSPECTOR' },
+      new AbortController().signal,
+    );
+    await again.agent.run({ ...again.ctx, tools });
+    expect(fake.tables.commercialSignals).toHaveLength(1);
+    expect(fake.tables.commercialSignals[0]!.status).toBe('QUALIFIED');
+  });
+
   it('invalid scout input -> FAILED without model calls', async () => {
     const { provider, ctx, agent } = setup([], { input: { mode: 'scout', region: 'España' } });
     const out = (await agent.run(ctx)).output as unknown as Out;
@@ -430,14 +464,15 @@ describe('ProspectorAgent scout mode', () => {
 });
 
 describe('seed: weekly-event-scouting', () => {
-  it('adds the scout task (Monday 07:30 Madrid) and leaves the daily task as it was', () => {
+  it('adds the scout task (Monday 07:30 Madrid, discovery only since tanda 15) and the daily task in signals mode', () => {
     expect(desiredScoutTask()).toMatchObject({
-      defaultInput: { sector: 'alimentación y bebidas', region: 'España', horizon_months: 6 },
+      defaultInput: { sector: 'alimentación y bebidas', region: 'España', horizon_months: 6, discover_only: true },
       schedule: { type: 'CRON', expression: '30 7 * * 1' },
       timezone: 'Europe/Madrid',
       enabled: true,
     });
     expect(desiredTask({ a: 1 })).toMatchObject({ schedule: { type: 'CRON', expression: '0 8 * * *' }, timezone: 'Europe/Madrid', defaultInput: { a: 1 } });
+    expect(desiredTask()).toMatchObject({ defaultInput: { mode: 'signals' }, timeoutMs: 1_800_000 });
     const cfg = desiredProspectorVersion().configuration as { scout: Record<string, unknown>; tool_policy: { max_calls_per_tool: Record<string, number> } };
     expect(cfg.scout).toMatchObject({ task_name: 'weekly-event-scouting', max_events: 3 });
     expect(cfg.tool_policy.max_calls_per_tool).toEqual({
@@ -449,6 +484,9 @@ describe('seed: weekly-event-scouting', () => {
       catalog_estimate_customization: 20,
       catalog_list_families: 5,
       catalog_describe: 5,
+      // Signals mode (tanda 15): one listing + up to 50 expirations per run.
+      list_event_signals: 2,
+      expire_signal: 50,
     });
     expect(cfg.scout).toMatchObject({ max_fetches: 18, max_pages_per_event: 3, max_renders: 4, max_pdfs_per_event: 2, max_exhibitors_per_event: 100, max_catalog_pages: 10, max_profile_lookups: 100, time_budget_ms: 1_200_000, capture_json: true });
     expect(readConfig(cfg).scout).toMatchObject({ maxExhibitorsPerEvent: 100, maxCatalogPages: 10, maxProfileLookups: 100, timeBudgetMs: 1_200_000, captureJson: true, profileConcurrency: 2 });

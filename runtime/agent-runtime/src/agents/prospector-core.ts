@@ -194,7 +194,11 @@ export function parseExhibitorDecision(text: string): Parsed<ExhibitorDecision> 
 // Configuration
 // ---------------------------------------------------------------------------
 
-/** Tools the Prospector may use (both modes). `fetch_url` and `render_url` are READ and only used by the scout mode. */
+/**
+ * Tools the Prospector may use (all modes). `fetch_url` and `render_url` are READ and only used
+ * by the scout mode; `list_event_signals` (READ) and `expire_signal` (LOW_WRITE, only to EXPIRED)
+ * only by the signals mode.
+ */
 export const PROSPECTOR_TOOLS = [
   'find_company',
   'upsert_company',
@@ -204,6 +208,8 @@ export const PROSPECTOR_TOOLS = [
   'create_agent_run_summary',
   'fetch_url',
   'render_url',
+  'list_event_signals',
+  'expire_signal',
 ] as const;
 
 export interface ScoutConfig {

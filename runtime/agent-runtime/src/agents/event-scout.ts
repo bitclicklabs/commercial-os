@@ -111,6 +111,12 @@ export const ScoutInput = z
     horizon_months: z.number().int().min(1).max(24).default(6),
     event_url: z.url({ protocol: /^https?$/ }).max(2048).optional(),
     event_name: z.string().trim().min(1).max(255).optional(),
+    /**
+     * Known start date of the `event_url` fair (e.g. the eventDate of its commercial signal). The
+     * date read in the page wins; without one, this keeps an event-level signal on the same date
+     * (create_signal is idempotent by company, type, date and domain).
+     */
+    event_date: z.iso.date().optional(),
     /** Lower caps for one run (never above the agent configuration). */
     max_events: z.number().int().min(1).max(3).optional(),
     max_exhibitors: z.number().int().min(1).max(SCOUT_MAX_EXHIBITORS_CAP).optional(),
@@ -118,6 +124,12 @@ export const ScoutInput = z
     max_profile_lookups: z.number().int().min(0).max(SCOUT_PROFILE_LOOKUPS_CAP).optional(),
     /** Time budget of the run (ms); lowers `scout.time_budget_ms`, never raises it. */
     scout_time_budget_ms: z.number().int().min(10_000).max(SCOUT_TIME_BUDGET_CAP_MS).optional(),
+    /**
+     * Discovery only (weekly scouting since tanda 15): each verified fair is recorded as an
+     * event-level FAIR signal (NEW) with its URL and date; its exhibitor list is NOT read nor
+     * evaluated. The list is combed once a person qualifies the signal (daily run / trigger).
+     */
+    discover_only: z.boolean().optional(),
   })
   .refine((v) => v.sector !== undefined || v.event_url !== undefined, { message: 'sector or event_url is required' });
 export type ScoutInput = z.infer<typeof ScoutInput>;
@@ -510,7 +522,9 @@ export async function runScout(run: ProspectorRun, rawInput: Record<string, unkn
     input: { input_keys: Object.keys(rawInput), mode: 'scout' },
     output: parsed.success
       ? {
-          plan: parsed.data.event_url
+          plan: parsed.data.discover_only
+            ? 'locate upcoming fairs with grounded search, fetch one page of each to verify it, record each one as an event-level FAIR signal (no exhibitor list read), publish the run summary'
+            : parsed.data.event_url
             ? 'fetch the given event page, extract exhibitors from its text, evaluate each one, publish the run summary'
             : 'locate upcoming fairs with grounded search, fetch their exhibitor pages, extract exhibitors from the text, evaluate each one, publish the run summary',
           limits: cfg,
@@ -749,7 +763,7 @@ export async function runScout(run: ProspectorRun, rawInput: Record<string, unkn
 
   if (input.event_url) {
     // Operator-provided URL: fetched directly (still subject to the fetch_url SSRF guard).
-    candidates.push({ name: input.event_name ?? null, start_date: null, end_date: null, city: null, website_url: input.event_url, exhibitors_url: null, origin: 'input' });
+    candidates.push({ name: input.event_name ?? null, start_date: input.event_date ?? null, end_date: null, city: null, website_url: input.event_url, exhibitors_url: null, origin: 'input' });
   } else {
     const search = await run.completeJson({
       label: { step: 'scout_search', sector: input.sector, region: input.region },
@@ -1061,7 +1075,38 @@ export async function runScout(run: ProspectorRun, rawInput: Record<string, unkn
       return attempt;
     };
 
-    while (queue.length > 0 && pagesRead < cfg.maxPagesPerEvent && collected === 0 && !outOfTime('pages')) {
+    // Discovery only: one page of the fair (corroborated like any page) proves its URL; the
+    // exhibitor list is not read (no extraction, render of catalogs, pagination nor PDFs).
+    while (input.discover_only && queue.length > 0 && pagesRead < cfg.maxPagesPerEvent && !firstPage && !outOfTime('pages')) {
+      const url = queue.shift()!;
+      const fetched = await fetchPage(url);
+      if (!fetched.ok) {
+        ev.pages.push({ url, via: 'fetch', status: 'error', code: fetched.code });
+        continue;
+      }
+      let page: ScoutPage = fetched.page;
+      if (cand.origin === 'search_unsourced') {
+        let corroborated = pageCorroboratesEvent(cand.name ?? '', page);
+        if (!corroborated && page.js_app_likely) {
+          const r = await renderPage(url, { paginate: false });
+          if (r.ok && pageCorroboratesEvent(cand.name ?? '', r.page)) {
+            page = r.page;
+            corroborated = true;
+          }
+        }
+        if (!corroborated) {
+          ev.pages.push({ url, via: 'fetch', final_url: page.finalUrl, status: 'error', code: 'NOT_CORROBORATED', chars: page.text.length });
+          corroborationFailed = true;
+          break;
+        }
+      }
+      pagesRead += 1;
+      lastPage = page;
+      firstPage = page;
+      okAttempt(url, page.content_kind === 'rendered' ? 'render' : 'fetch', page);
+    }
+
+    while (!input.discover_only && queue.length > 0 && pagesRead < cfg.maxPagesPerEvent && collected === 0 && !outOfTime('pages')) {
       const url = queue.shift()!;
       const fetched = await fetchPage(url);
       if (!fetched.ok) {
@@ -1234,7 +1279,9 @@ export async function runScout(run: ProspectorRun, rawInput: Record<string, unkn
     const okPages = ev.pages.filter((p) => p.status === 'ok').length;
     // Assigned inside extractFrom (closure): TS narrows it to null otherwise.
     const notes = lastNotes as string | null;
-    const why = lastPage
+    const why = input.discover_only && lastPage
+      ? 'modo descubrimiento: la lista de expositores no se lee hasta que la señal se califica'
+      : lastPage
       ? `sin lista de expositores legible en ${okPages} página(s) leída(s)${notes ? ` (${notes.slice(0, 200)})` : ''}${
           renderBlocked === 'RENDER_EMPTY'
             ? '; la página renderizada llegó vacía (la aplicación JavaScript no cargó su contenido a tiempo)'
@@ -1244,7 +1291,8 @@ export async function runScout(run: ProspectorRun, rawInput: Record<string, unkn
         }`
       : `ninguna página de la feria se pudo descargar (${ev.pages.map((p) => p.code).join(', ') || 'sin URL'})`;
     ev.reason = scrubUnknownUrls(why, ledger);
-    partialReasons.push(`${ev.name}: ${ev.reason}`);
+    // Discovery only: a fair recorded without its list is the expected result, not a partial one.
+    if (!(input.discover_only && lastPage)) partialReasons.push(`${ev.name}: ${ev.reason}`);
     if (!lastPage) continue;
     const sourceUrl = (firstPage ?? lastPage).finalUrl;
     if (!ledger.isKnownSource(sourceUrl)) {
@@ -1261,9 +1309,11 @@ export async function runScout(run: ProspectorRun, rawInput: Record<string, unkn
           `Feria detectada por el Prospector (modo scout)${input.sector ? ` para el sector "${input.sector}"` : ''}${input.region ? ` en ${input.region}` : ''}.`,
           ev.date ? `Fecha: ${ev.date}${ev.end_date && ev.end_date !== ev.date ? ` a ${ev.end_date}` : ''}.` : 'Fecha no confirmada.',
           ev.location ? `Lugar: ${ev.location}.` : '',
-          `Sin expositores registrados: ${ev.reason}.`,
+          input.discover_only
+            ? 'Expositores sin peinar (descubrimiento semanal): califica la señal para que el Prospector peine su lista de expositores.'
+            : `Sin expositores registrados: ${ev.reason}.`,
           ev.verification === 'fetch_corroboration' ? 'Fuente verificada por descarga (la búsqueda no devolvió fuentes de grounding).' : '',
-          'Señal a nivel de evento: revisar manualmente la lista de expositores.',
+          input.discover_only ? '' : 'Señal a nivel de evento: revisar manualmente la lista de expositores.',
         ]
           .filter(Boolean)
           .join(' '),
@@ -1338,7 +1388,7 @@ export async function runScout(run: ProspectorRun, rawInput: Record<string, unkn
   const lines: string[] = [
     input.event_url
       ? `Modo scout sobre ${input.event_url}.`
-      : `Modo scout: sector "${input.sector}", ${input.region}, próximos ${input.horizon_months} meses (hasta ${until}).`,
+      : `Modo scout${input.discover_only ? ' (solo descubrimiento: las ferias se registran como señal NEW sin peinar expositores)' : ''}: sector "${input.sector}", ${input.region}, próximos ${input.horizon_months} meses (hasta ${until}).`,
     ...(searchFailed ? [`Búsqueda fallida: ${searchFailed.code}.`] : []),
     ...(searchInfo
       ? [`Búsqueda con Google (grounding): ${searchInfo.queries.length} consultas, ${searchInfo.sources} fuentes; ferias propuestas: ${searchInfo.proposed}, verificadas: ${events.length}, descartadas: ${discarded.length}.`]

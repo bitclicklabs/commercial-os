@@ -16,6 +16,15 @@ import {
 import { PROSPECTOR_SKILL_ID, PROSPECTOR_SYSTEM_PROMPT } from './prospector-prompt.js';
 import { useSkill } from '../skills/resolver.js';
 import { useKnowledge } from '../knowledge/resolver.js';
+import type { Db } from '../db/client.js';
+import { DrizzleSignalHistory, isSignalsInput, runSignals, type SignalHistory } from './signal-prospecting.js';
+
+export interface ProspectorAgentDeps {
+  /** Runtime database: round-robin memory of the signals mode (`agent_executions`). */
+  db?: Db;
+  /** Overrides the round-robin memory (tests). */
+  history?: SignalHistory;
+}
 
 export {
   DIFFERENTIATORS,
@@ -29,10 +38,13 @@ export {
 } from './prospector-core.js';
 
 /**
- * ProspectorAgent (`configuration.implementation = "prospector"`). Two modes, chosen by
+ * ProspectorAgent (`configuration.implementation = "prospector"`). Three modes, chosen by
  * the shape of the input:
  *
- * - **direct** (`{ event, exhibitors[] }`, task `daily-event-prospecting`): for each
+ * - **signals** (`{ mode: 'signals' }`, task `daily-event-prospecting` since v2): expires the
+ *   past event-level signals of Twenty, picks the least recently worked QUALIFIED fair and runs
+ *   the directed scout on it (see `signal-prospecting.ts`); nothing QUALIFIED: SKIPPED.
+ * - **direct** (`{ event, exhibitors[] }`, the fixture of the original daily task): for each
  *   exhibitor one LLM call returning structured JSON (validated with zod; one repair
  *   retry). Relevant exhibitors with `confidence >= min_confidence` are written to
  *   Twenty: `upsert_company` -> `create_signal` (status NEW) -> `create_hypothesis`
@@ -49,7 +61,26 @@ export {
 export class ProspectorAgent implements AgentImplementation {
   readonly kind = 'prospector';
 
-  constructor(private readonly clock: () => Date = () => new Date()) {}
+  constructor(
+    private readonly clock: () => Date = () => new Date(),
+    private readonly deps: ProspectorAgentDeps = {},
+  ) {}
+
+  /** Signals mode with nothing QUALIFIED: no model call, no CRM summary, cost 0. */
+  private finishSkipped(run: ProspectorRun, body: Record<string, unknown>): AgentResult {
+    const { ctx, cfg } = run;
+    const output: Record<string, unknown> = {
+      status: 'ok',
+      outcome: 'SKIPPED',
+      agent: ctx.agent.name,
+      agent_version: ctx.version.version,
+      ...body,
+      cost: { model: 0, currency: run.currency, eur: 0, usd_to_eur: cfg.usdToEur },
+      run_summary_id: null,
+    };
+    run.steps.push({ type: 'FINAL', timestamp: new Date(), output, latencyMs: this.clock().getTime() - run.startedAt.getTime() });
+    return { output, steps: run.steps, usage: run.usage, modelCost: 0, toolCost: run.toolCost };
+  }
 
   async run(ctx: AgentContext): Promise<AgentResult> {
     ctx.signal.throwIfAborted();
@@ -63,7 +94,12 @@ export class ProspectorAgent implements AgentImplementation {
     let body: Record<string, unknown>;
     let taskName: string;
 
-    if (isScoutInput(ctx.input)) {
+    if (isSignalsInput(ctx.input)) {
+      const signals = await runSignals(run, ctx.input, today, this.deps.history ?? (this.deps.db ? new DrizzleSignalHistory(this.deps.db) : null));
+      if (signals.outcome === 'SKIPPED') return this.finishSkipped(run, signals.output);
+      ({ outcome, lines, body } = { outcome: signals.outcome, lines: signals.lines, body: signals.output });
+      taskName = cfg.taskName;
+    } else if (isScoutInput(ctx.input)) {
       const scout = await runScout(run, ctx.input, today);
       ({ outcome, lines } = scout);
       body = scout.output;

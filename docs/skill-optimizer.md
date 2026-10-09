@@ -279,7 +279,7 @@ Con Gemini, los experimentos previos costaron entre 0,10 y 0,15 € (EXP-001 0,0
 
 ## Qué no hace (todavía)
 
-- No se ejecuta de forma programada: solo manual.
+- No decide nada por su cuenta. Puede ejecutarse de forma programada (`OPTIMIZER_SCHEDULE_ENABLED`, desactivado por defecto; consulta la sección «Programado» del README del runtime), pero el job solo encola el mismo run que el manual: la activación y el cierre siguen siendo humanos.
 - No optimiza harness ni router: solo skills. Las versiones de harness se protegen con el gate, pero no tienen optimizador propio.
 - No sustituye a la revisión humana ni a la medición posterior por versión.
 - Hoy solo hay *runner* de experimentos para `prospector-event-exhibitors`, así que es la única skill optimizable de punta a punta.

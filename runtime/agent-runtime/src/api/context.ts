@@ -1,6 +1,7 @@
 import type { Config } from '../config.js';
 import type { Db } from '../db/client.js';
 import type { EventPublisher } from '../events/event-bus.js';
+import type { CatalogService } from '../integrations/catalog/index.js';
 import type { TwentyClient } from '../integrations/twenty/index.js';
 import type { OptimizerQueue } from '../optimizer/queue.js';
 import type { OptimizerScheduleSettings } from '../optimizer/schedule-job.js';
@@ -25,4 +26,6 @@ export interface ApiContext {
   optimizerQueue?: OptimizerQueue;
   /** Optional: settings shown by `GET /optimizer/schedule` (default: OPTIMIZER_SCHEDULE_* of this process). */
   optimizerSchedule?: OptimizerScheduleSettings;
+  /** Optional: catalog service of GET /catalog/health; defaults to the process-wide one (CATALOG_* env). */
+  catalog?: CatalogService;
 }

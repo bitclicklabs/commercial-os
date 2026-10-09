@@ -13,6 +13,8 @@ import type { AgentContext, AgentStep } from './agent.js';
 import { buildExhibitorPrompt, buildRepairPrompt } from './prospector-prompt.js';
 import { buildExhibitorResearch, type ExhibitorResearchArgs } from './exhibitor-research.js';
 import { scrubUnknownUrls, type SourceLedger } from './source-ledger.js';
+import { priceHintText, recommendedProductLabel, type RecommendedProduct } from '../integrations/catalog/index.js';
+import { pickCatalogProducts, type CatalogPickSummary } from './prospector-catalog.js';
 
 // ---------------------------------------------------------------------------
 // Input (direct mode)
@@ -83,6 +85,8 @@ export const ExhibitorHypothesis = z.object({
   timing: z.enum(HYPOTHESIS_TIMINGS),
   differentiators: z.array(z.enum(DIFFERENTIATORS)).max(4).default([]),
 });
+
+export type ExhibitorHypothesisData = z.infer<typeof ExhibitorHypothesis>;
 
 export const ExhibitorDecision = z
   .object({
@@ -520,6 +524,14 @@ export interface ExhibitorResult {
   research_error?: { code: string; message: string };
   hypothesis_id?: string;
   hypothesis?: z.infer<typeof ExhibitorHypothesis>;
+  /**
+   * Real catalog products of the hypothesis `{ productId, sku, name, priceHint }` (only when the
+   * skill asks for the catalog and it was available; `hypothesis.recommended_products` keeps the
+   * generic families the model proposed). Written to Twenty `recommendedProducts` + evidence.
+   */
+  recommended_products?: RecommendedProduct[];
+  /** What the catalog step did (absent when the skill does not ask for the catalog). */
+  catalog?: CatalogPickSummary;
   error?: { code: string; message: string };
   /** Scout mode: lookup of the exhibitor profile (website) after a writable decision. */
   profile?: {
@@ -693,6 +705,29 @@ export async function writeExhibitor(
     const known = e.sourceUrl && (!ledger || ledger.isKnownSource(e.sourceUrl)) ? { sourceUrl: e.sourceUrl } : {};
     evidence.push({ claim: clean(e.claim).slice(0, 1000), ...known });
   }
+  // 5a. Real catalog products, only when the skill asks for them (CATALOG_SKILL_MARKER). Never fatal.
+  const pick = await pickCatalogProducts(run, event, exhibitor, h, { system: opts.system });
+  let recommendedProducts = h.recommended_products;
+  if (pick.status !== 'not_requested') {
+    if (pick.status === 'selected') {
+      const { products, ...rest } = pick;
+      result.catalog = rest;
+      result.recommended_products = products;
+      const stub = pick.provider === 'stub';
+      recommendedProducts = [...new Set([...products.map((p) => recommendedProductLabel(p, { stub })), ...h.recommended_products])].slice(0, 20);
+      for (const p of products) {
+        if (evidence.length >= 30) break;
+        const why = pick.reasons[p.productId];
+        evidence.push({
+          claim: clean(
+            `${stub ? 'Producto del catálogo de PRUEBA (stub, ficticio): ' : 'Producto del catálogo: '}${p.name} (ref. ${p.sku}, id ${p.productId}): ${priceHintText(p.priceHint)}. Orden de magnitud, no un precio: el presupuesto lo hace el CMS de publiexpe.${why ? ` Encaje: ${why}` : ''}`,
+          ).slice(0, 1000),
+        });
+      }
+    } else {
+      result.catalog = pick;
+    }
+  }
   const hyp = await run.callTool('create_hypothesis', {
     companyId,
     signalId,
@@ -703,7 +738,7 @@ export async function writeExhibitor(
     quantityMax: h.quantity_max,
     budgetMinEur: h.budget_min_eur,
     budgetMaxEur: h.budget_max_eur,
-    recommendedProducts: h.recommended_products,
+    recommendedProducts,
     timing: h.timing,
     confidence: decision.confidence,
     evidence,

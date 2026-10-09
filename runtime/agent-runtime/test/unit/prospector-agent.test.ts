@@ -1,4 +1,5 @@
 import { readFileSync } from 'node:fs';
+import { CATALOG_TOOL_IDS } from '../../src/tools/catalog/catalog-tools.js';
 import { describe, expect, it } from 'vitest';
 import { resolveAgentImplementation } from '../../src/agents/stub-agent.js';
 import { parseExhibitorDecision, ProspectorAgent, ProspectorInput, PROSPECTOR_TOOLS } from '../../src/agents/prospector-agent.js';
@@ -102,10 +103,10 @@ describe('ProspectorAgent', () => {
     expect(resolveAgentImplementation({ implementation: 'prospector' }).kind).toBe('prospector');
   });
 
-  it('seed tool policy: exactly the 8 Prospector tools (create_research, fetch_url and render_url included), LOW_WRITE ceiling', () => {
+  it('seed tool policy: exactly the 8 Prospector tools (create_research, fetch_url and render_url included) + the 5 catalog READ tools, LOW_WRITE ceiling', () => {
     const policy = parseToolPolicy(desiredProspectorVersion().configuration);
-    expect([...policy.allow].sort()).toEqual([...PROSPECTOR_TOOLS].sort());
-    expect(policy.allow).toHaveLength(8);
+    expect([...policy.allow].sort()).toEqual([...PROSPECTOR_TOOLS, ...CATALOG_TOOL_IDS].sort());
+    expect(policy.allow).toHaveLength(13);
     expect(policy.allow).toContain('create_research');
     expect(policy.allow).toContain('fetch_url');
     expect(policy.allow).toContain('render_url');

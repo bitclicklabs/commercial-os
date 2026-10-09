@@ -992,6 +992,8 @@ Todas son `READ` salvo las indicadas. `outputTrust = 'untrusted'` en las tools q
 
 `[PROPUESTA]` `find_company`, `get_company`, `upsert_company`, `create_signal`, `create_research`, `create_hypothesis` son nombres nuevos: el LLD v0.1 solo nombra `create_lead`, `create_activity`, `update_lead`. Se mantienen las clases de riesgo de la tabla del LLD v0.1 §15.
 
+> **SUPERSEDED (tanda 14, 2026-10-09).** Esta forma mínima del stub (`ProductRef`, `priceEur`, `offerActive`, tools `search_products` / `match_products` con salida `trusted`) queda sustituida por el [contrato del conector v1.1](catalog-connector-contrato.md) y su implementación en el runtime: `src/integrations/catalog/` (tipos zod v1.1, cliente REST, stub con fixtures en `fixtures/catalog/`, caché en memoria) y cinco tools `READ` con salida **`untrusted`** (`catalog_search_products`, `catalog_get_product`, `catalog_estimate_customization`, `catalog_list_families`, `catalog_describe`). El precio pasa de `priceEur` a `priceHint` (rango orientativo `fromEur`/`toEur`, `basis: "INDICATIVE"`) y `offerActive` a `priceHint.onOffer`. `match_products`, `build_bundle` y `get_active_offers` siguen sin implementar. Se conserva el texto original como histórico.
+
 Forma mínima de las tools del Catalog Service (el contrato completo del conector con el backend de publiexpe queda para v0.3; en MVP-0 el runtime usa un stub con la misma forma):
 
 ```ts

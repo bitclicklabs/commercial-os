@@ -70,7 +70,7 @@ describe('ToolRegistry', () => {
     expect(r.resolve(policy(['read_a', 'write_b'], { maxRiskLevel: 'READ' })).map((t) => t.id)).toEqual(['read_a']);
   });
 
-  it('default registry exposes the 13 Twenty tools, fetch_url, render_url and the 5 catalog tools with their risk classes', () => {
+  it('default registry exposes the 15 Twenty tools, fetch_url, render_url and the 5 catalog tools with their risk classes', () => {
     const r = createDefaultToolRegistry({ twenty: new FakeTwenty().client() });
     const byId = Object.fromEntries(r.list().map((t) => [t.id, t.riskLevel]));
     expect(byId).toEqual({
@@ -87,6 +87,8 @@ describe('ToolRegistry', () => {
       create_note: 'LOW_WRITE',
       get_note: 'READ',
       update_note: 'LOW_WRITE',
+      list_event_signals: 'READ',
+      expire_signal: 'LOW_WRITE',
       fetch_url: 'READ',
       render_url: 'READ',
       catalog_search_products: 'READ',

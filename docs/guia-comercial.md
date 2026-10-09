@@ -92,6 +92,8 @@ Abre una hipótesis desde **Commercial OS → Hypotheses** para ver todos sus ca
 | **Decision maker** | La persona de contacto recomendada. En esta versión el sistema **no la rellena**: la eliges tú. |
 | **Status** | En qué punto del proceso está. Ver [Estados](#estados-cuándo-usar-cada-uno). |
 
+> **Nota:** cuando el catálogo de PubliEXPE esté conectado ([Catalog Service](catalog-service.md)), las hipótesis nuevas llevarán en **Recommended products** productos reales con su **referencia (SKU)** y un **rango de precio orientativo** por unidad, sin IVA y sin personalización. Ese rango es solo un punto de partida: **el presupuesto se hace donde siempre**, en el CMS de PubliEXPE. Si un día el catálogo no está disponible, verás una nota ⚠️ en Twenty y las hipótesis de ese día volverán a llevar familias genéricas; no tienes que hacer nada.
+
 ### Valores de Timing
 
 | Valor | Significa |

@@ -6,11 +6,11 @@ Este documento es para quien decide (comercial y responsable técnico) y para qu
 
 > **Importante:** el optimizador **nunca activa nada**. Un agente puede proponer, experimentar y evaluarse; la promoción a producción es siempre una decisión humana y la activación vuelve a comprobar el gate ([LLD §19](LLD-0.1-publiexpe-commercial-os.md#19-regla-de-oro-del-sistema-evolutivo)). Lo más lejos que llega una optimización es una versión `DRAFT` con un experimento `PASS` y una nota en Twenty.
 
-> **Nota:** este documento describe la especificación de las tandas 11, 12 y 13 (la revalidación de `PASS_FORM` es de la tanda 12; el bloqueo del gate por una revalidación `REFUTED`, de la tanda 13). Los nombres exactos de fases, estados y campos son los del README del runtime; si alguno difiere, manda el README.
+> **Nota:** este documento describe la especificación de las tandas 11, 12, 13 y 14 (la revalidación de `PASS_FORM` es de la tanda 12; el bloqueo del gate por una revalidación `REFUTED`, de la tanda 13; la ejecución [programada](#programado), de la tanda 14). Los nombres exactos de fases, estados y campos son los del README del runtime; si alguno difiere, manda el README.
 
 ## Qué dispara una optimización
 
-Por ahora, **solo una persona**. No hay tarea programada: ninguna optimización arranca sola ni consume presupuesto sin que alguien la pida.
+Por defecto, **solo una persona**. Desde la tanda 14 existe una ejecución [programada](#programado), pero está **apagada**: mientras no la actives, ninguna optimización arranca sola ni consume presupuesto sin que alguien la pida.
 
 ```sh
 cd runtime/agent-runtime
@@ -69,6 +69,40 @@ El optimizador reutiliza las piezas ya existentes: las operaciones acotadas son 
 |---|---|
 | `GET /optimizer/runs` | Lista de optimizaciones con skill, estado, versión candidata, experimento y coste |
 | `GET /optimizer/runs/:id` | Una optimización: clusters, operaciones propuestas, experimento enlazado y motivo del estado final |
+| `GET /optimizer/schedule` | Estado de la ejecución [programada](#programado): habilitada o no, cron y zona horaria vigentes |
+
+## Programado
+
+El optimizador puede lanzarse solo, una vez por semana. La ejecución programada **no es un modo nuevo**: hace lo mismo que si alguien lanzara `pnpm optimize:run`. Solo **encola** la optimización de cada skill optimizable (hoy, `prospector-event-exhibitors`); el recorrido por las [fases](#fases-y-estados), el experimento y el gate son los de siempre.
+
+| Aspecto | Comportamiento |
+|---|---|
+| **Activación** | Solo con `OPTIMIZER_SCHEDULE_ENABLED=true`. Por defecto está **apagada** (`false`): sin la variable, el runtime no lanza ninguna optimización por su cuenta |
+| **Cuándo** | Por defecto, `0 9 * * 3` en la zona `Europe/Madrid`: los **miércoles a las 09:00**. Es dos días después del scout de los lunes (07:30), para que el equipo comercial haya tenido tiempo de revisar sus hipótesis y dejar veredictos frescos |
+| **Qué hace** | Solo encola. Equivale a `POST /optimizer/skills/<skill>/run`: el worker recoge el run y avanza por `HARVESTING`, con las mismas comprobaciones y los mismos guardarraíles. Si ya hay un run abierto de esa skill, no crea otro |
+| **Qué audita** | Cada disparo deja una fila `optimizer.scheduled_run` en el `audit_log` ([Consultar el audit log](runbook-local.md#consultar-el-audit-log)), con la skill y el run encolado |
+| **Qué no hace** | **No promueve nada solo.** Termina, como mucho, en `GATE_PASS` con una nota «Propuesta de promoción» en Twenty. No llama a `activate`, no pone nada en canario y no hace `promote`. La decisión sigue siendo humana |
+
+### Cuándo conviene encenderla
+
+- Hay ya un flujo estable de veredictos humanos (el equipo revisa las hipótesis de los scouts cada semana).
+- Aceptas el coste por vuelta completa ([Costes orientativos](#costes-orientativos)): entre 0,10 y 0,20 € como máximo, y casi nada si no hay datos.
+
+### `BLOCKED_NO_DATA` semanal es lo normal
+
+Con el volumen actual, la mayoría de las semanas no habrá suficientes veredictos frescos y sin quemar para validar. Entonces la ejecución programada termina en `BLOCKED_NO_DATA`: **es el comportamiento esperado, no un fallo**, y **es gratis**, porque se detiene antes de gastar presupuesto de experimento ([Cuando no hay datos](#cuando-no-hay-datos-blocked_no_data)). Verás una fila por semana en `GET /optimizer/runs` con ese estado y no tienes que hacer nada. Cuando se acumulen veredictos suficientes, la misma ejecución pasará sola a clusterizar y experimentar.
+
+### Consultar la programación
+
+```sh
+curl -s "http://127.0.0.1:4020/optimizer/schedule" -H 'x-tenant-id: publiexpe'
+```
+
+Devuelve el estado de la programación: si está habilitada y su configuración vigente (cron y zona horaria). Es una consulta de solo lectura; para cambiar algo se editan las variables del runtime ([runbook](runbook-local.md#variables-del-runtime)) y se recrea `pxos-runtime`.
+
+### Apagarla
+
+Pon `OPTIMIZER_SCHEDULE_ENABLED=false` (o quítala) y recrea `pxos-runtime`. Un run que ya esté en curso no se interrumpe; sigue su camino y termina en un estado normal. Para descartar su resultado, ciérralo con `POST /optimizer/runs/:id/close`.
 
 ## Guardarraíles
 
@@ -279,7 +313,7 @@ Con Gemini, los experimentos previos costaron entre 0,10 y 0,15 € (EXP-001 0,0
 
 ## Qué no hace (todavía)
 
-- No decide nada por su cuenta. Puede ejecutarse de forma programada (`OPTIMIZER_SCHEDULE_ENABLED`, desactivado por defecto; consulta la sección «Programado» del README del runtime), pero el job solo encola el mismo run que el manual: la activación y el cierre siguen siendo humanos.
+- No decide nada por su cuenta. Puede ejecutarse de forma programada si [activas el programado](#programado) (`OPTIMIZER_SCHEDULE_ENABLED`, apagado por defecto), pero el job solo encola el mismo run que el manual: la activación y el cierre siguen siendo humanos.
 - No optimiza harness ni router: solo skills. Las versiones de harness se protegen con el gate, pero no tienen optimizador propio.
 - No sustituye a la revisión humana ni a la medición posterior por versión.
 - Hoy solo hay *runner* de experimentos para `prospector-event-exhibitors`, así que es la única skill optimizable de punta a punta.

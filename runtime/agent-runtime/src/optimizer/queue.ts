@@ -10,7 +10,8 @@
  * - Concurrency 1 per worker process (experiments are sequential by design).
  * - On start, open runs without progress for `staleAfterMs` (a worker that died) go to ERROR.
  *
- * Manual only in this MVP: no scheduled task triggers the optimizer.
+ * Manual, or scheduled by the scheduler role when OPTIMIZER_SCHEDULE_ENABLED=true
+ * (src/optimizer/schedule-job.ts): both go through src/optimizer/launch.ts.
  */
 import { Queue, Worker, type ConnectionOptions } from 'bullmq';
 import type { Db } from '../db/client.js';

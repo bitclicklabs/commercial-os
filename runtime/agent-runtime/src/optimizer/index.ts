@@ -5,3 +5,5 @@ export * from './service.js';
 export * from './pipeline.js';
 export * from './promotion-note.js';
 export * from './queue.js';
+export * from './launch.js';
+export * from './schedule-job.js';

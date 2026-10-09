@@ -34,7 +34,7 @@ export function desiredProspectOnQualifiedTask(): TaskSpec {
     schedule: {
       type: 'EVENT',
       event_type: SIGNAL_QUALIFIED_EVENT,
-      input_from_event: { event_url: 'event_url', event_name: 'name', signal_id: 'signal_id' },
+      input_from_event: { event_url: 'event_url', event_name: 'name', event_date: 'event_date', signal_id: 'signal_id' },
       audit: { action: PROSPECT_ON_QUALIFIED_AUDIT_ACTION, subject_type: 'commercial_signal', subject_path: 'signal_id' },
     },
     timezone: 'Europe/Madrid',

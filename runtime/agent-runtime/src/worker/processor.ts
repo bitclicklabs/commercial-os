@@ -37,6 +37,7 @@ import { createDefaultToolRegistry, parseToolPolicy, ToolExecutor, type ToolRegi
 import { EntityLocks } from './entity-locks.js';
 import { recoverOrphanRun } from './recovery.js';
 import { policyRequiresTwenty, twentyGateFromEnv, type TwentyGate, type TwentyWaitState } from './twenty-gate.js';
+import { catalogGateFromEnv, policyRequiresCatalog, type CatalogGate, type CatalogGateResult } from './catalog-gate.js';
 
 export interface ProcessorLogger {
   info(obj: object, msg?: string): void;
@@ -162,6 +163,22 @@ function errorPayload(err: unknown): Record<string, unknown> {
   return { message: String(err) };
 }
 
+/** THINK step recording the catalog gate decision (first step of the trace, after the memory read). */
+function catalogGateStep(gate: Extract<CatalogGateResult, { checked: true }>, timestamp: Date): AgentResult['steps'][number] {
+  const a = gate.availability;
+  return {
+    type: 'THINK',
+    timestamp,
+    input: { catalog_gate: true },
+    output: {
+      catalog: a.available
+        ? { available: true, degraded: a.degraded, contract_version: a.health.contractVersion, checked_at: a.checkedAt }
+        : { available: false, reason: a.reason, code: a.code, checked_at: a.checkedAt, ...(gate.notice ? { notice: gate.notice } : {}) },
+    },
+    latencyMs: 0,
+  };
+}
+
 export class RunProcessor {
   readonly locks: EntityLocks;
   /** Domain events (task.*, agent.execution.*). Best-effort: emission never fails a run. */
@@ -182,6 +199,13 @@ export class RunProcessor {
    * it validated at boot; by default it is built from process.env on first use.
    */
   router: ModelRouter | null = null;
+  /**
+   * Catalog health gate (src/worker/catalog-gate.ts): before an execution whose policy can use
+   * the catalog it reads /health (cached 60 s) and, if the catalog is enabled but down, leaves
+   * the daily ⚠️ note + `catalog.unavailable` event. It never holds or fails the run. undefined =
+   * built from env on first use (CATALOG_*, Twenty from env); null disables it.
+   */
+  catalogGate: CatalogGate | null | undefined = undefined;
 
   constructor(
     private readonly db: Db,
@@ -558,6 +582,8 @@ export class RunProcessor {
           reject(new TimeoutError(timeoutMs));
         }, timeoutMs);
       });
+      // Catalog gate (degraded mode): never throws, never blocks; the tools answer CATALOG_UNAVAILABLE when down.
+      const catalogGate = await this.checkCatalog(execution, policies);
       // Per-execution executor: enforces the version's tool_policy allowlist (capped by the harness).
       const toolLogger = {
         info: (msg: string, meta?: object) => this.logger.info({ executionId: execution.id, ...meta }, msg),
@@ -598,6 +624,7 @@ export class RunProcessor {
         timeout,
       ]);
       // The knowledge read goes first in the trace (memory_reads, LLD 17.1): entry ids injected.
+      if (catalogGate.checked) result.steps.unshift(catalogGateStep(catalogGate, new Date(startedAt)));
       const memoryRead = knowledge.traceStep(new Date(startedAt));
       if (memoryRead) result.steps.unshift(memoryRead);
       return { status: 'COMPLETED', result, latencyMs: Date.now() - startedAt, ...(route ? { route } : {}) };
@@ -607,6 +634,26 @@ export class RunProcessor {
       return { status, error: errorPayload(err), latencyMs: Date.now() - startedAt, ...(route ? { route } : {}) };
     } finally {
       if (timer) clearTimeout(timer);
+    }
+  }
+
+  private async checkCatalog(execution: AgentExecution, policies: EffectivePolicies): Promise<CatalogGateResult> {
+    try {
+      if (this.catalogGate === undefined) {
+        this.catalogGate = catalogGateFromEnv({
+          events: () => this.events,
+          logger: { info: (o, m) => this.logger.info(o, m), warn: (o, m) => this.logger.warn(o, m), error: (o, m) => this.logger.error(o, m) },
+        });
+      }
+      if (!this.catalogGate) return { checked: false, reason: 'not_required' };
+      return await this.catalogGate.beforeRun({
+        tenantId: execution.tenantId,
+        executionId: execution.id,
+        requiresCatalog: policyRequiresCatalog(this.tools, policies.toolPolicy),
+      });
+    } catch (err) {
+      this.logger.error({ executionId: execution.id, err: errorPayload(err) }, 'catalog gate failed; running without it');
+      return { checked: false, reason: 'not_required' };
     }
   }
 

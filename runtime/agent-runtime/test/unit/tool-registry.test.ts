@@ -70,7 +70,7 @@ describe('ToolRegistry', () => {
     expect(r.resolve(policy(['read_a', 'write_b'], { maxRiskLevel: 'READ' })).map((t) => t.id)).toEqual(['read_a']);
   });
 
-  it('default registry exposes the 13 Twenty tools, fetch_url and render_url with their risk classes', () => {
+  it('default registry exposes the 13 Twenty tools, fetch_url, render_url and the 5 catalog tools with their risk classes', () => {
     const r = createDefaultToolRegistry({ twenty: new FakeTwenty().client() });
     const byId = Object.fromEntries(r.list().map((t) => [t.id, t.riskLevel]));
     expect(byId).toEqual({
@@ -89,6 +89,11 @@ describe('ToolRegistry', () => {
       update_note: 'LOW_WRITE',
       fetch_url: 'READ',
       render_url: 'READ',
+      catalog_search_products: 'READ',
+      catalog_get_product: 'READ',
+      catalog_estimate_customization: 'READ',
+      catalog_list_families: 'READ',
+      catalog_describe: 'READ',
     });
     // No tool can send anything to the outside world (email drafts are notes, never sent).
     expect(r.list().some((t) => t.riskLevel === 'EXTERNAL_SIDE_EFFECT' || /mail|send/.test(t.id))).toBe(false);

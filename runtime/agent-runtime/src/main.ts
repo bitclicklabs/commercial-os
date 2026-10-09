@@ -6,6 +6,7 @@ import { createDb } from './db/client.js';
 import { BullEventQueue, EventBus, eventsQueueName } from './events/event-bus.js';
 import { BullWebhookDeliveryQueue, WebhookDeliveryWorker, WebhookDispatcher, webhooksQueueName } from './events/webhook-delivery.js';
 import { countReadyRevalidations } from './experiments/revalidation-service.js';
+import { catalogConfigFromEnv, checkCatalogAtBoot } from './integrations/catalog/index.js';
 import { twentyClientFromEnv } from './integrations/twenty/index.js';
 import { TraceArchiveJob, traceArchiveSettingsFromEnv } from './maintenance/trace-archive-job.js';
 import { metricsSyncSettingsFromEnv, TwentyMetricsSync } from './metrics/twenty-sync.js';
@@ -25,6 +26,10 @@ async function main(): Promise<void> {
   // invalid one stops the process with a clear message instead of failing at the first call.
   const modelRouter = defaultModelRouter();
   for (const w of modelRouter.warnings()) console.warn(`[model-router] ${w}`);
+  // Catalog (contract v1.1): an enabled catalog with an invalid config stops the boot; an unresolvable host only warns.
+  const catalogBoot = await checkCatalogAtBoot(catalogConfigFromEnv());
+  for (const w of catalogBoot.warnings) console.warn(`[catalog] ${w}`);
+  if (!catalogBoot.ok) throw new Error(`invalid catalog configuration: ${catalogBoot.errors.join('; ')}`);
   const dbHandle = createDb(config.databaseUrl);
   const queue = new BullRunQueue(config.queueName, config.redisUrl);
   const has = (...roles: string[]) => config.role === 'all' || roles.includes(config.role);

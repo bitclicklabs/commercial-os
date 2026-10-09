@@ -43,6 +43,14 @@ export const EMAIL_EVENT_TYPES = [
 ] as const;
 export type EmailEventType = (typeof EMAIL_EVENT_TYPES)[number];
 
+/**
+ * Catalog Service events (src/worker/catalog-gate.ts): `catalog.unavailable`, at most once a day
+ * per tenant, when the catalog is enabled but its /health fails before a run (degraded mode).
+ * For n8n to route; the runtime never emails about it.
+ */
+export const CATALOG_EVENT_TYPES = ['catalog.unavailable'] as const;
+export type CatalogEventType = (typeof CATALOG_EVENT_TYPES)[number];
+
 export const EVENT_TYPE_RE = /^[a-z]+(\.[a-z_]+)+$/;
 /** `{type}.v{n}`; underscores allowed, as in EVENT_TYPE_RE (`email.blocked_suppressed.v1`). */
 const SCHEMA_VERSION_RE = /^[a-z._]+\.v[0-9]+$/;

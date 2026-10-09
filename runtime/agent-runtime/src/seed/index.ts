@@ -8,7 +8,8 @@
  * (ACTIVE, with evidence; existing domain/topic pairs are never touched), the DRAFT candidate of the
  * Prospector skill with real catalog products (never activated), then the Prospector
  * agent and its tasks `daily-event-prospecting` and
- * `weekly-event-scouting`, and the EmailDrafter agent with its task
+ * `weekly-event-scouting`, the EVENT task `prospect-on-qualified` (Prospector scout of a fair
+ * signal qualified in Twenty, `signal.qualified`), and the EmailDrafter agent with its task
  * `draft-email-on-validated`, the BajasAgent with its task `process-unsubscribes` (kept
  * DISABLED since the inbound triage) and the InboxAgent with its task `process-inbox` (CRON
  * every 2 hours; all idempotent).
@@ -27,6 +28,7 @@ import { seedEmailDrafter } from './email-drafter-seed.js';
 import { seedHarnesses } from './harness-seed.js';
 import { seedInbox } from './inbox-seed.js';
 import { seedKnowledge } from './knowledge-seed.js';
+import { seedProspectOnQualified } from './prospect-on-qualified-seed.js';
 import { seedProspector } from './prospector-seed.js';
 import { seedSkills } from './skills-seed.js';
 
@@ -56,6 +58,7 @@ if (isMain) {
     .then(async (acc) => ({ ...acc, catalogSkill: await seedCatalogSkillCandidate(handle.db, { tenantId, log }) }))
     .then(async (acc) => ({ ...acc, knowledge: await seedKnowledge(handle.db, { tenantId, log }) }))
     .then(async (r) => ({ ...r, prospector: await seedProspector(handle.db, { tenantId, defaultInput, log }) }))
+    .then(async (r) => ({ ...r, prospectOnQualified: await seedProspectOnQualified(handle.db, { tenantId, log }) }))
     .then(async (r) => ({ ...r, emailDrafter: await seedEmailDrafter(handle.db, { tenantId, log }) }))
     .then(async (r) => ({ ...r, bajas: await seedBajas(handle.db, { tenantId, log }) }))
     .then(async (r) => ({ ...r, inbox: await seedInbox(handle.db, { tenantId, log }) }))

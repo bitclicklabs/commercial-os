@@ -1,7 +1,8 @@
 /**
  * `pnpm register:webhook [--url <targetUrl>] [--operations a,b] [--pause] [--dry-run]`
  *
- * Creates or updates (idempotent) the Twenty webhook that feeds the HUMAN evaluator.
+ * Creates or updates (idempotent) the Twenty webhook that feeds the HUMAN evaluator, email-ops
+ * and the qualified-signal trigger (`commercialSignal.updated` and `.created`).
  * Uses the metadata REST API of Twenty 2.45 (`/rest/metadata/webhooks`). The webhook is
  * identified by its description marker, so re-running updates it in place.
  *
@@ -20,7 +21,12 @@ import { parseArgs } from 'node:util';
 
 export const WEBHOOK_MARKER = 'pxos-runtime:human-feedback';
 export const DEFAULT_WEBHOOK_URL = 'http://pxos-runtime:4020/webhooks/twenty';
-export const DEFAULT_OPERATIONS = ['commercialHypothesis.updated'];
+/**
+ * `commercialHypothesis.updated`: HUMAN evaluator and email-ops. `commercialSignal.updated` and
+ * `commercialSignal.created` (tanda 15): a fair signal moved to (or created as) QUALIFIED fires
+ * `signal.qualified` -> `prospect-on-qualified`.
+ */
+export const DEFAULT_OPERATIONS = ['commercialHypothesis.updated', 'commercialSignal.updated', 'commercialSignal.created'];
 
 export interface TwentyWebhook {
   id: string;

@@ -87,7 +87,8 @@ export const NOT_AUDITED: Readonly<Record<string, string>> = {
   'POST /executions': 'operativa: la ejecución es su propio registro (agent_executions + traces)',
   'POST /tasks/:id/run': 'operativa: el TaskRun (trigger MANUAL) es su propio registro',
   'POST /evaluations/human': 'el veredicto es su propio registro append-only (evaluations)',
-  'POST /webhooks/twenty': 'webhook firmado de Twenty: el veredicto queda en evaluations',
+  'POST /webhooks/twenty':
+    'webhook firmado de Twenty: el veredicto queda en evaluations; la señal calificada, como signal.qualified en events, y el run que encola, como prospect.on_qualified en audit_log (src/scheduler/event-triggers.ts)',
   'POST /events/external': 'ingesta autenticada por token: el evento queda en events (append-only)',
   'POST /agents/:id/evaluate': '501 sin implementar',
   'POST /agents/:id/promote': '501 sin implementar',

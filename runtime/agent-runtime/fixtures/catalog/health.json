@@ -1,0 +1,9 @@
+{
+  "status": "ok",
+  "contractVersion": "1.1.0",
+  "connectorVersion": "stub-1.1.0",
+  "catalog": {
+    "productCount": 12,
+    "lastUpdatedAt": "2026-10-02T09:10:00Z"
+  }
+}

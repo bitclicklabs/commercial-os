@@ -1,0 +1,84 @@
+{
+  "items": [
+    {
+      "familyId": "f-escritura",
+      "name": "Escritura",
+      "parentId": null
+    },
+    {
+      "familyId": "f-boligrafos",
+      "name": "Bolígrafos",
+      "parentId": "f-escritura"
+    },
+    {
+      "familyId": "f-textil",
+      "name": "Textil",
+      "parentId": null
+    },
+    {
+      "familyId": "f-bolsas",
+      "name": "Bolsas",
+      "parentId": "f-textil"
+    },
+    {
+      "familyId": "f-camisetas",
+      "name": "Camisetas",
+      "parentId": "f-textil"
+    },
+    {
+      "familyId": "f-oficina",
+      "name": "Oficina",
+      "parentId": null
+    },
+    {
+      "familyId": "f-libretas",
+      "name": "Libretas",
+      "parentId": "f-oficina"
+    },
+    {
+      "familyId": "f-tecnologia",
+      "name": "Tecnología",
+      "parentId": null
+    },
+    {
+      "familyId": "f-powerbanks",
+      "name": "Power banks",
+      "parentId": "f-tecnologia"
+    },
+    {
+      "familyId": "f-hogar",
+      "name": "Hogar y bebida",
+      "parentId": null
+    },
+    {
+      "familyId": "f-botellas",
+      "name": "Botellas y termos",
+      "parentId": "f-hogar"
+    },
+    {
+      "familyId": "f-tazas",
+      "name": "Tazas",
+      "parentId": "f-hogar"
+    },
+    {
+      "familyId": "f-eventos",
+      "name": "Ferias y eventos",
+      "parentId": null
+    },
+    {
+      "familyId": "f-lanyards",
+      "name": "Lanyards",
+      "parentId": "f-eventos"
+    },
+    {
+      "familyId": "f-ecologico",
+      "name": "Ecológico",
+      "parentId": null
+    },
+    {
+      "familyId": "f-regalos-eco",
+      "name": "Regalos ecológicos",
+      "parentId": "f-ecologico"
+    }
+  ]
+}

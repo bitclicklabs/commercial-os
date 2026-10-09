@@ -1,0 +1,1907 @@
+{
+  "items": [
+    {
+      "productId": "10482",
+      "sku": "12/BT-ALG-140",
+      "name": "Bolsa tote de algodón 140 g",
+      "family": {
+        "familyId": "f-bolsas",
+        "name": "Bolsas",
+        "path": [
+          "Textil",
+          "Bolsas"
+        ]
+      },
+      "secondaryFamilies": [
+        {
+          "familyId": "f-regalos-eco",
+          "name": "Regalos ecológicos",
+          "path": [
+            "Ecológico",
+            "Regalos ecológicos"
+          ]
+        }
+      ],
+      "description": "Bolsa de algodón natural de 140 g con asas largas de 70 cm. Apta para serigrafía a una o dos tintas en las dos caras. Un clásico de ferias y congresos: ligera, plegable y reutilizable.",
+      "descriptionTruncated": false,
+      "attributes": [
+        {
+          "name": "color",
+          "label": "Color",
+          "values": [
+            "beige",
+            "negro",
+            "azul"
+          ]
+        },
+        {
+          "name": "material",
+          "label": "Material",
+          "values": [
+            "algodón"
+          ]
+        },
+        {
+          "name": "brand",
+          "label": "Marca",
+          "values": [
+            "Pxe Basics"
+          ]
+        },
+        {
+          "name": "tag",
+          "label": "Etiquetas",
+          "values": [
+            "ecológico",
+            "bolsa",
+            "feria"
+          ]
+        }
+      ],
+      "dimensions": {
+        "widthCm": 38,
+        "heightCm": 42,
+        "depthCm": null,
+        "weightG": 95
+      },
+      "variants": [
+        {
+          "variantId": "20931",
+          "sku": "12/BT-ALG-140-NAT",
+          "name": "Bolsa tote de algodón 140 g natural",
+          "color": {
+            "name": "Natural",
+            "group": "beige"
+          },
+          "size": null,
+          "priceEur": 1.2,
+          "stock": 4200,
+          "availableFrom": null,
+          "imageUrl": "https://publiexpe.example/media/v/20931-800.webp"
+        },
+        {
+          "variantId": "20932",
+          "sku": "12/BT-ALG-140-NEG",
+          "name": "Bolsa tote de algodón 140 g negro",
+          "color": {
+            "name": "Negro",
+            "group": "negro"
+          },
+          "size": null,
+          "priceEur": 1.35,
+          "stock": 0,
+          "availableFrom": "2026-11-10T00:00:00Z",
+          "imageUrl": null
+        },
+        {
+          "variantId": "20933",
+          "sku": "12/BT-ALG-140-MAR",
+          "name": "Bolsa tote de algodón 140 g azul marino",
+          "color": {
+            "name": "Azul marino",
+            "group": "azul"
+          },
+          "size": null,
+          "priceEur": 1.35,
+          "stock": 1800,
+          "availableFrom": null,
+          "imageUrl": null
+        }
+      ],
+      "customization": {
+        "techniques": [
+          "Serigrafía",
+          "DTF"
+        ],
+        "areas": [
+          {
+            "name": "Frontal",
+            "maxColors": 2,
+            "widthMm": 300,
+            "heightMm": 300
+          },
+          {
+            "name": "Trasera",
+            "maxColors": 2,
+            "widthMm": 300,
+            "heightMm": 300
+          }
+        ],
+        "maxColors": 2,
+        "notes": null
+      },
+      "quantity": {
+        "min": 100,
+        "step": 50,
+        "breaks": []
+      },
+      "priceHint": {
+        "fromEur": 1.2,
+        "toEur": 1.35,
+        "basis": "INDICATIVE",
+        "forQuantity": null,
+        "perUnit": true,
+        "includesCustomization": false,
+        "onOffer": false
+      },
+      "leadTimeDays": {
+        "min": null,
+        "max": 15,
+        "source": "DEFAULT"
+      },
+      "images": [
+        {
+          "url": "https://publiexpe.example/media/p/10482-800.webp",
+          "kind": "MAIN",
+          "width": 800
+        },
+        {
+          "url": "https://publiexpe.example/media/p/10482-2-800.webp",
+          "kind": "GALLERY",
+          "width": 800
+        }
+      ],
+      "productUrl": "https://publiexpe.example/producto/bolsa-tote-algodon-140/",
+      "status": "ACTIVE",
+      "statusReason": null,
+      "updatedAt": "2026-09-30T08:12:44Z"
+    },
+    {
+      "productId": "10517",
+      "sku": "12/BT-ALG-220",
+      "name": "Bolsa tote de algodón 220 g reforzada",
+      "family": {
+        "familyId": "f-bolsas",
+        "name": "Bolsas",
+        "path": [
+          "Textil",
+          "Bolsas"
+        ]
+      },
+      "secondaryFamilies": [
+        {
+          "familyId": "f-regalos-eco",
+          "name": "Regalos ecológicos",
+          "path": [
+            "Ecológico",
+            "Regalos ecológicos"
+          ]
+        }
+      ],
+      "description": "Algodón grueso de 220 g con fondo reforzado y fuelle. Aguanta catálogos y muestras de producto: pensada para expositores que reparten material pesado en el stand.",
+      "descriptionTruncated": false,
+      "attributes": [
+        {
+          "name": "color",
+          "label": "Color",
+          "values": [
+            "beige"
+          ]
+        },
+        {
+          "name": "material",
+          "label": "Material",
+          "values": [
+            "algodón"
+          ]
+        },
+        {
+          "name": "brand",
+          "label": "Marca",
+          "values": [
+            "Pxe Premium"
+          ]
+        },
+        {
+          "name": "tag",
+          "label": "Etiquetas",
+          "values": [
+            "ecológico",
+            "bolsa",
+            "feria",
+            "resistente"
+          ]
+        }
+      ],
+      "dimensions": {
+        "widthCm": 40,
+        "heightCm": 40,
+        "depthCm": 10,
+        "weightG": 210
+      },
+      "variants": [
+        {
+          "variantId": "20977",
+          "sku": "12/BT-ALG-220-NAT",
+          "name": "Bolsa tote de algodón 220 g natural",
+          "color": {
+            "name": "Natural",
+            "group": "beige"
+          },
+          "size": null,
+          "priceEur": 1.9,
+          "stock": 0,
+          "availableFrom": "2026-10-28T00:00:00Z",
+          "imageUrl": null
+        }
+      ],
+      "customization": {
+        "techniques": [
+          "Serigrafía"
+        ],
+        "areas": [
+          {
+            "name": "Frontal",
+            "maxColors": 4,
+            "widthMm": 320,
+            "heightMm": 320
+          }
+        ],
+        "maxColors": 4,
+        "notes": null
+      },
+      "quantity": {
+        "min": 50,
+        "step": 50,
+        "breaks": []
+      },
+      "priceHint": {
+        "fromEur": 1.65,
+        "toEur": 1.65,
+        "basis": "INDICATIVE",
+        "forQuantity": null,
+        "perUnit": true,
+        "includesCustomization": false,
+        "onOffer": true
+      },
+      "leadTimeDays": {
+        "min": null,
+        "max": 15,
+        "source": "DEFAULT"
+      },
+      "images": [
+        {
+          "url": "https://publiexpe.example/media/p/10517-800.webp",
+          "kind": "MAIN",
+          "width": 800
+        }
+      ],
+      "productUrl": "https://publiexpe.example/producto/bolsa-tote-algodon-220/",
+      "status": "ACTIVE",
+      "statusReason": null,
+      "updatedAt": "2026-08-14T11:03:02Z"
+    },
+    {
+      "productId": "11020",
+      "sku": "7/BOL-PUL",
+      "name": "Bolígrafo de plástico con pulsador",
+      "family": {
+        "familyId": "f-boligrafos",
+        "name": "Bolígrafos",
+        "path": [
+          "Escritura",
+          "Bolígrafos"
+        ]
+      },
+      "secondaryFamilies": [],
+      "description": "Bolígrafo de plástico con pulsador, clip ancho y tinta azul. El regalo de volumen por excelencia: precio por unidad muy bajo y marcaje en clip o cuerpo.",
+      "descriptionTruncated": false,
+      "attributes": [
+        {
+          "name": "color",
+          "label": "Color",
+          "values": [
+            "azul",
+            "negro",
+            "blanco",
+            "rojo"
+          ]
+        },
+        {
+          "name": "material",
+          "label": "Material",
+          "values": [
+            "plástico ABS"
+          ]
+        },
+        {
+          "name": "brand",
+          "label": "Marca",
+          "values": [
+            "Pxe Basics"
+          ]
+        },
+        {
+          "name": "tag",
+          "label": "Etiquetas",
+          "values": [
+            "bolígrafo",
+            "feria",
+            "volumen"
+          ]
+        }
+      ],
+      "dimensions": {
+        "widthCm": 1.1,
+        "heightCm": 14,
+        "depthCm": null,
+        "weightG": 8
+      },
+      "variants": [
+        {
+          "variantId": "21101",
+          "sku": "7/BOL-PUL-AZ",
+          "name": "Bolígrafo pulsador azul",
+          "color": {
+            "name": "Azul",
+            "group": "azul"
+          },
+          "size": null,
+          "priceEur": 0.18,
+          "stock": 52000,
+          "availableFrom": null,
+          "imageUrl": null
+        },
+        {
+          "variantId": "21102",
+          "sku": "7/BOL-PUL-NE",
+          "name": "Bolígrafo pulsador negro",
+          "color": {
+            "name": "Negro",
+            "group": "negro"
+          },
+          "size": null,
+          "priceEur": 0.18,
+          "stock": 48000,
+          "availableFrom": null,
+          "imageUrl": null
+        },
+        {
+          "variantId": "21103",
+          "sku": "7/BOL-PUL-BL",
+          "name": "Bolígrafo pulsador blanco",
+          "color": {
+            "name": "Blanco",
+            "group": "blanco"
+          },
+          "size": null,
+          "priceEur": 0.18,
+          "stock": 61000,
+          "availableFrom": null,
+          "imageUrl": null
+        },
+        {
+          "variantId": "21104",
+          "sku": "7/BOL-PUL-RO",
+          "name": "Bolígrafo pulsador rojo",
+          "color": {
+            "name": "Rojo",
+            "group": "rojo"
+          },
+          "size": null,
+          "priceEur": 0.22,
+          "stock": 9000,
+          "availableFrom": null,
+          "imageUrl": null
+        }
+      ],
+      "customization": {
+        "techniques": [
+          "Tampografía"
+        ],
+        "areas": [
+          {
+            "name": "Clip",
+            "maxColors": 1,
+            "widthMm": 35,
+            "heightMm": 6
+          },
+          {
+            "name": "Cuerpo",
+            "maxColors": 2,
+            "widthMm": 45,
+            "heightMm": 8
+          }
+        ],
+        "maxColors": 2,
+        "notes": null
+      },
+      "quantity": {
+        "min": 500,
+        "step": 250,
+        "breaks": []
+      },
+      "priceHint": {
+        "fromEur": 0.18,
+        "toEur": 0.22,
+        "basis": "INDICATIVE",
+        "forQuantity": null,
+        "perUnit": true,
+        "includesCustomization": false,
+        "onOffer": false
+      },
+      "leadTimeDays": {
+        "min": null,
+        "max": 15,
+        "source": "DEFAULT"
+      },
+      "images": [
+        {
+          "url": "https://publiexpe.example/media/p/11020-800.webp",
+          "kind": "MAIN",
+          "width": 800
+        }
+      ],
+      "productUrl": "https://publiexpe.example/producto/boligrafo-plastico-pulsador/",
+      "status": "ACTIVE",
+      "statusReason": null,
+      "updatedAt": "2026-10-01T06:40:10Z"
+    },
+    {
+      "productId": "11021",
+      "sku": "7/BOL-MET",
+      "name": "Bolígrafo metálico con grabado láser",
+      "family": {
+        "familyId": "f-boligrafos",
+        "name": "Bolígrafos",
+        "path": [
+          "Escritura",
+          "Bolígrafos"
+        ]
+      },
+      "secondaryFamilies": [],
+      "description": "Bolígrafo de aluminio con acabado mate y mecanismo giratorio. El grabado láser deja el logotipo en el tono del metal, sin tintas: imagen sobria para clientes y distribuidores.",
+      "descriptionTruncated": false,
+      "attributes": [
+        {
+          "name": "color",
+          "label": "Color",
+          "values": [
+            "negro",
+            "azul",
+            "gris"
+          ]
+        },
+        {
+          "name": "material",
+          "label": "Material",
+          "values": [
+            "aluminio"
+          ]
+        },
+        {
+          "name": "brand",
+          "label": "Marca",
+          "values": [
+            "Pxe Premium"
+          ]
+        },
+        {
+          "name": "tag",
+          "label": "Etiquetas",
+          "values": [
+            "bolígrafo",
+            "ejecutivo"
+          ]
+        }
+      ],
+      "dimensions": {
+        "widthCm": 1,
+        "heightCm": 13.6,
+        "depthCm": null,
+        "weightG": 16
+      },
+      "variants": [
+        {
+          "variantId": "21151",
+          "sku": "7/BOL-MET-NE",
+          "name": "Bolígrafo metálico negro",
+          "color": {
+            "name": "Negro",
+            "group": "negro"
+          },
+          "size": null,
+          "priceEur": 0.85,
+          "stock": 7300,
+          "availableFrom": null,
+          "imageUrl": null
+        },
+        {
+          "variantId": "21152",
+          "sku": "7/BOL-MET-AZ",
+          "name": "Bolígrafo metálico azul",
+          "color": {
+            "name": "Azul",
+            "group": "azul"
+          },
+          "size": null,
+          "priceEur": 0.85,
+          "stock": 5100,
+          "availableFrom": null,
+          "imageUrl": null
+        },
+        {
+          "variantId": "21153",
+          "sku": "7/BOL-MET-PL",
+          "name": "Bolígrafo metálico plata",
+          "color": {
+            "name": "Plata",
+            "group": "gris"
+          },
+          "size": null,
+          "priceEur": 0.95,
+          "stock": 2600,
+          "availableFrom": null,
+          "imageUrl": null
+        }
+      ],
+      "customization": {
+        "techniques": [
+          "Láser"
+        ],
+        "areas": [
+          {
+            "name": "Cuerpo",
+            "maxColors": 1,
+            "widthMm": 40,
+            "heightMm": 7
+          }
+        ],
+        "maxColors": 1,
+        "notes": null
+      },
+      "quantity": {
+        "min": 100,
+        "step": 50,
+        "breaks": []
+      },
+      "priceHint": {
+        "fromEur": 0.85,
+        "toEur": 0.95,
+        "basis": "INDICATIVE",
+        "forQuantity": null,
+        "perUnit": true,
+        "includesCustomization": false,
+        "onOffer": false
+      },
+      "leadTimeDays": {
+        "min": null,
+        "max": 15,
+        "source": "DEFAULT"
+      },
+      "images": [
+        {
+          "url": "https://publiexpe.example/media/p/11021-800.webp",
+          "kind": "MAIN",
+          "width": 800
+        }
+      ],
+      "productUrl": "https://publiexpe.example/producto/boligrafo-metalico-laser/",
+      "status": "ACTIVE",
+      "statusReason": null,
+      "updatedAt": "2026-09-12T10:00:00Z"
+    },
+    {
+      "productId": "12210",
+      "sku": "3/LIB-A5-KRA",
+      "name": "Libreta A5 de tapa kraft con bolígrafo",
+      "family": {
+        "familyId": "f-libretas",
+        "name": "Libretas",
+        "path": [
+          "Oficina",
+          "Libretas"
+        ]
+      },
+      "secondaryFamilies": [
+        {
+          "familyId": "f-regalos-eco",
+          "name": "Regalos ecológicos",
+          "path": [
+            "Ecológico",
+            "Regalos ecológicos"
+          ]
+        }
+      ],
+      "description": "Libreta A5 de 80 hojas rayadas con tapa de cartón kraft reciclado y bolígrafo de cartón a juego. Muy usada en congresos como material del asistente.",
+      "descriptionTruncated": false,
+      "attributes": [
+        {
+          "name": "color",
+          "label": "Color",
+          "values": [
+            "marrón"
+          ]
+        },
+        {
+          "name": "material",
+          "label": "Material",
+          "values": [
+            "cartón reciclado"
+          ]
+        },
+        {
+          "name": "brand",
+          "label": "Marca",
+          "values": [
+            "Pxe Basics"
+          ]
+        },
+        {
+          "name": "tag",
+          "label": "Etiquetas",
+          "values": [
+            "libreta",
+            "congreso",
+            "reciclado"
+          ]
+        }
+      ],
+      "dimensions": {
+        "widthCm": 14.8,
+        "heightCm": 21,
+        "depthCm": 1.2,
+        "weightG": 190
+      },
+      "variants": [
+        {
+          "variantId": "22201",
+          "sku": "3/LIB-A5-KRA-NAT",
+          "name": "Libreta A5 kraft natural",
+          "color": {
+            "name": "Kraft",
+            "group": "marrón"
+          },
+          "size": null,
+          "priceEur": 1.45,
+          "stock": 3900,
+          "availableFrom": null,
+          "imageUrl": null
+        }
+      ],
+      "customization": {
+        "techniques": [
+          "Tampografía",
+          "Serigrafía"
+        ],
+        "areas": [
+          {
+            "name": "Tapa",
+            "maxColors": 2,
+            "widthMm": 90,
+            "heightMm": 60
+          }
+        ],
+        "maxColors": 2,
+        "notes": null
+      },
+      "quantity": {
+        "min": 100,
+        "step": 25,
+        "breaks": []
+      },
+      "priceHint": {
+        "fromEur": 1.45,
+        "toEur": 1.45,
+        "basis": "INDICATIVE",
+        "forQuantity": null,
+        "perUnit": true,
+        "includesCustomization": false,
+        "onOffer": false
+      },
+      "leadTimeDays": {
+        "min": null,
+        "max": 15,
+        "source": "DEFAULT"
+      },
+      "images": [
+        {
+          "url": "https://publiexpe.example/media/p/12210-800.webp",
+          "kind": "MAIN",
+          "width": 800
+        }
+      ],
+      "productUrl": "https://publiexpe.example/producto/libreta-a5-kraft/",
+      "status": "ACTIVE",
+      "statusReason": null,
+      "updatedAt": "2026-09-21T09:30:00Z"
+    },
+    {
+      "productId": "12233",
+      "sku": "3/LIB-A5-PU",
+      "name": "Libreta A5 de polipiel con goma",
+      "family": {
+        "familyId": "f-libretas",
+        "name": "Libretas",
+        "path": [
+          "Oficina",
+          "Libretas"
+        ]
+      },
+      "secondaryFamilies": [],
+      "description": "Libreta A5 de tapa blanda en polipiel, cierre con goma elástica, cinta marcapáginas y 96 hojas. Regalo de calidad para clientes y equipo comercial.",
+      "descriptionTruncated": false,
+      "attributes": [
+        {
+          "name": "color",
+          "label": "Color",
+          "values": [
+            "negro",
+            "azul",
+            "rojo"
+          ]
+        },
+        {
+          "name": "material",
+          "label": "Material",
+          "values": [
+            "poliuretano"
+          ]
+        },
+        {
+          "name": "brand",
+          "label": "Marca",
+          "values": [
+            "Pxe Premium"
+          ]
+        },
+        {
+          "name": "tag",
+          "label": "Etiquetas",
+          "values": [
+            "libreta",
+            "ejecutivo"
+          ]
+        }
+      ],
+      "dimensions": {
+        "widthCm": 14,
+        "heightCm": 21,
+        "depthCm": 1.5,
+        "weightG": 260
+      },
+      "variants": [
+        {
+          "variantId": "22331",
+          "sku": "3/LIB-A5-PU-NE",
+          "name": "Libreta A5 polipiel negra",
+          "color": {
+            "name": "Negro",
+            "group": "negro"
+          },
+          "size": null,
+          "priceEur": 3.1,
+          "stock": 2100,
+          "availableFrom": null,
+          "imageUrl": null
+        },
+        {
+          "variantId": "22332",
+          "sku": "3/LIB-A5-PU-AZ",
+          "name": "Libreta A5 polipiel azul marino",
+          "color": {
+            "name": "Azul marino",
+            "group": "azul"
+          },
+          "size": null,
+          "priceEur": 3.1,
+          "stock": 1500,
+          "availableFrom": null,
+          "imageUrl": null
+        },
+        {
+          "variantId": "22333",
+          "sku": "3/LIB-A5-PU-RO",
+          "name": "Libreta A5 polipiel roja",
+          "color": {
+            "name": "Rojo",
+            "group": "rojo"
+          },
+          "size": null,
+          "priceEur": 3.25,
+          "stock": 400,
+          "availableFrom": null,
+          "imageUrl": null
+        }
+      ],
+      "customization": {
+        "techniques": [
+          "Láser",
+          "Tampografía"
+        ],
+        "areas": [
+          {
+            "name": "Tapa",
+            "maxColors": 1,
+            "widthMm": 100,
+            "heightMm": 70
+          }
+        ],
+        "maxColors": 1,
+        "notes": null
+      },
+      "quantity": {
+        "min": 50,
+        "step": 10,
+        "breaks": []
+      },
+      "priceHint": {
+        "fromEur": 3.1,
+        "toEur": 3.25,
+        "basis": "INDICATIVE",
+        "forQuantity": null,
+        "perUnit": true,
+        "includesCustomization": false,
+        "onOffer": false
+      },
+      "leadTimeDays": {
+        "min": null,
+        "max": 15,
+        "source": "DEFAULT"
+      },
+      "images": [
+        {
+          "url": "https://publiexpe.example/media/p/12233-800.webp",
+          "kind": "MAIN",
+          "width": 800
+        }
+      ],
+      "productUrl": "https://publiexpe.example/producto/libreta-a5-polipiel/",
+      "status": "ACTIVE",
+      "statusReason": null,
+      "updatedAt": "2026-09-02T12:15:00Z"
+    },
+    {
+      "productId": "13050",
+      "sku": "5/PB-5000",
+      "name": "Power bank de 5.000 mAh",
+      "family": {
+        "familyId": "f-powerbanks",
+        "name": "Power banks",
+        "path": [
+          "Tecnología",
+          "Power banks"
+        ]
+      },
+      "secondaryFamilies": [],
+      "description": "Batería externa de 5.000 mAh con salida USB-A y entrada USB-C, cable incluido. Formato plano para marcaje en la cara frontal. Cumple la normativa de transporte de baterías en equipaje de mano.",
+      "descriptionTruncated": false,
+      "attributes": [
+        {
+          "name": "color",
+          "label": "Color",
+          "values": [
+            "blanco",
+            "negro",
+            "azul"
+          ]
+        },
+        {
+          "name": "material",
+          "label": "Material",
+          "values": [
+            "plástico ABS"
+          ]
+        },
+        {
+          "name": "brand",
+          "label": "Marca",
+          "values": [
+            "Pxe Tech"
+          ]
+        },
+        {
+          "name": "tag",
+          "label": "Etiquetas",
+          "values": [
+            "tecnología",
+            "power bank"
+          ]
+        }
+      ],
+      "dimensions": {
+        "widthCm": 6.5,
+        "heightCm": 10,
+        "depthCm": 1.3,
+        "weightG": 120
+      },
+      "variants": [
+        {
+          "variantId": "23051",
+          "sku": "5/PB-5000-BL",
+          "name": "Power bank 5.000 mAh blanco",
+          "color": {
+            "name": "Blanco",
+            "group": "blanco"
+          },
+          "size": null,
+          "priceEur": 6.9,
+          "stock": 1200,
+          "availableFrom": null,
+          "imageUrl": null
+        },
+        {
+          "variantId": "23052",
+          "sku": "5/PB-5000-NE",
+          "name": "Power bank 5.000 mAh negro",
+          "color": {
+            "name": "Negro",
+            "group": "negro"
+          },
+          "size": null,
+          "priceEur": 6.9,
+          "stock": 850,
+          "availableFrom": null,
+          "imageUrl": null
+        },
+        {
+          "variantId": "23053",
+          "sku": "5/PB-5000-AZ",
+          "name": "Power bank 5.000 mAh azul",
+          "color": {
+            "name": "Azul",
+            "group": "azul"
+          },
+          "size": null,
+          "priceEur": 7.2,
+          "stock": 0,
+          "availableFrom": null,
+          "imageUrl": null
+        }
+      ],
+      "customization": {
+        "techniques": [
+          "Tampografía",
+          "Láser"
+        ],
+        "areas": [
+          {
+            "name": "Frontal",
+            "maxColors": 4,
+            "widthMm": 45,
+            "heightMm": 25
+          }
+        ],
+        "maxColors": 4,
+        "notes": null
+      },
+      "quantity": {
+        "min": 50,
+        "step": 10,
+        "breaks": []
+      },
+      "priceHint": {
+        "fromEur": 6.9,
+        "toEur": 7.2,
+        "basis": "INDICATIVE",
+        "forQuantity": null,
+        "perUnit": true,
+        "includesCustomization": false,
+        "onOffer": false
+      },
+      "leadTimeDays": {
+        "min": null,
+        "max": 15,
+        "source": "DEFAULT"
+      },
+      "images": [
+        {
+          "url": "https://publiexpe.example/media/p/13050-800.webp",
+          "kind": "MAIN",
+          "width": 800
+        }
+      ],
+      "productUrl": "https://publiexpe.example/producto/power-bank-5000/",
+      "status": "ACTIVE",
+      "statusReason": null,
+      "updatedAt": "2026-09-25T07:00:00Z"
+    },
+    {
+      "productId": "13077",
+      "sku": "5/PB-10000-QI",
+      "name": "Power bank de 10.000 mAh con carga inalámbrica",
+      "family": {
+        "familyId": "f-powerbanks",
+        "name": "Power banks",
+        "path": [
+          "Tecnología",
+          "Power banks"
+        ]
+      },
+      "secondaryFamilies": [],
+      "description": "Batería de 10.000 mAh con carga inalámbrica Qi, USB-C de entrada y salida e indicador LED de nivel. Regalo de alto valor percibido para clientes clave.",
+      "descriptionTruncated": false,
+      "attributes": [
+        {
+          "name": "color",
+          "label": "Color",
+          "values": [
+            "gris"
+          ]
+        },
+        {
+          "name": "material",
+          "label": "Material",
+          "values": [
+            "aluminio"
+          ]
+        },
+        {
+          "name": "brand",
+          "label": "Marca",
+          "values": [
+            "Pxe Tech"
+          ]
+        },
+        {
+          "name": "tag",
+          "label": "Etiquetas",
+          "values": [
+            "tecnología",
+            "power bank",
+            "premium"
+          ]
+        }
+      ],
+      "dimensions": {
+        "widthCm": 7,
+        "heightCm": 14,
+        "depthCm": 1.6,
+        "weightG": 230
+      },
+      "variants": [
+        {
+          "variantId": "23771",
+          "sku": "5/PB-10000-QI-GR",
+          "name": "Power bank 10.000 mAh Qi gris",
+          "color": {
+            "name": "Gris espacial",
+            "group": "gris"
+          },
+          "size": null,
+          "priceEur": 14.5,
+          "stock": 340,
+          "availableFrom": null,
+          "imageUrl": null
+        }
+      ],
+      "customization": {
+        "techniques": [
+          "Láser",
+          "Tampografía"
+        ],
+        "areas": [
+          {
+            "name": "Frontal",
+            "maxColors": 1,
+            "widthMm": 50,
+            "heightMm": 30
+          }
+        ],
+        "maxColors": 1,
+        "notes": null
+      },
+      "quantity": {
+        "min": 25,
+        "step": 5,
+        "breaks": []
+      },
+      "priceHint": {
+        "fromEur": 14.5,
+        "toEur": 14.5,
+        "basis": "INDICATIVE",
+        "forQuantity": null,
+        "perUnit": true,
+        "includesCustomization": false,
+        "onOffer": false
+      },
+      "leadTimeDays": {
+        "min": null,
+        "max": 15,
+        "source": "DEFAULT"
+      },
+      "images": [
+        {
+          "url": "https://publiexpe.example/media/p/13077-800.webp",
+          "kind": "MAIN",
+          "width": 800
+        }
+      ],
+      "productUrl": "https://publiexpe.example/producto/power-bank-10000-inalambrico/",
+      "status": "ACTIVE",
+      "statusReason": null,
+      "updatedAt": "2026-09-28T16:20:00Z"
+    },
+    {
+      "productId": "14100",
+      "sku": "9/BOT-ACE-500",
+      "name": "Botella de acero inoxidable 500 ml",
+      "family": {
+        "familyId": "f-botellas",
+        "name": "Botellas y termos",
+        "path": [
+          "Hogar y bebida",
+          "Botellas y termos"
+        ]
+      },
+      "secondaryFamilies": [
+        {
+          "familyId": "f-regalos-eco",
+          "name": "Regalos ecológicos",
+          "path": [
+            "Ecológico",
+            "Regalos ecológicos"
+          ]
+        }
+      ],
+      "description": "Botella de doble pared de acero inoxidable, 500 ml, mantiene el frío 24 h y el calor 12 h. Tapón de bambú. Alternativa reutilizable a la botella de plástico en eventos.",
+      "descriptionTruncated": false,
+      "attributes": [
+        {
+          "name": "color",
+          "label": "Color",
+          "values": [
+            "blanco",
+            "negro",
+            "verde"
+          ]
+        },
+        {
+          "name": "material",
+          "label": "Material",
+          "values": [
+            "acero inoxidable"
+          ]
+        },
+        {
+          "name": "brand",
+          "label": "Marca",
+          "values": [
+            "Pxe Premium"
+          ]
+        },
+        {
+          "name": "tag",
+          "label": "Etiquetas",
+          "values": [
+            "botella",
+            "reutilizable",
+            "ecológico"
+          ]
+        }
+      ],
+      "dimensions": {
+        "widthCm": 7,
+        "heightCm": 26,
+        "depthCm": null,
+        "weightG": 340
+      },
+      "variants": [
+        {
+          "variantId": "24101",
+          "sku": "9/BOT-ACE-500-BL",
+          "name": "Botella acero 500 ml blanca",
+          "color": {
+            "name": "Blanco",
+            "group": "blanco"
+          },
+          "size": null,
+          "priceEur": 3.95,
+          "stock": 2600,
+          "availableFrom": null,
+          "imageUrl": null
+        },
+        {
+          "variantId": "24102",
+          "sku": "9/BOT-ACE-500-NE",
+          "name": "Botella acero 500 ml negra",
+          "color": {
+            "name": "Negro",
+            "group": "negro"
+          },
+          "size": null,
+          "priceEur": 3.95,
+          "stock": 3100,
+          "availableFrom": null,
+          "imageUrl": null
+        },
+        {
+          "variantId": "24103",
+          "sku": "9/BOT-ACE-500-VE",
+          "name": "Botella acero 500 ml verde",
+          "color": {
+            "name": "Verde",
+            "group": "verde"
+          },
+          "size": null,
+          "priceEur": 4.2,
+          "stock": 700,
+          "availableFrom": null,
+          "imageUrl": null
+        }
+      ],
+      "customization": {
+        "techniques": [
+          "Láser",
+          "Serigrafía"
+        ],
+        "areas": [
+          {
+            "name": "Cuerpo",
+            "maxColors": 2,
+            "widthMm": 60,
+            "heightMm": 80
+          }
+        ],
+        "maxColors": 2,
+        "notes": null
+      },
+      "quantity": {
+        "min": 50,
+        "step": 25,
+        "breaks": []
+      },
+      "priceHint": {
+        "fromEur": 3.95,
+        "toEur": 4.2,
+        "basis": "INDICATIVE",
+        "forQuantity": null,
+        "perUnit": true,
+        "includesCustomization": false,
+        "onOffer": false
+      },
+      "leadTimeDays": {
+        "min": null,
+        "max": 15,
+        "source": "DEFAULT"
+      },
+      "images": [
+        {
+          "url": "https://publiexpe.example/media/p/14100-800.webp",
+          "kind": "MAIN",
+          "width": 800
+        }
+      ],
+      "productUrl": "https://publiexpe.example/producto/botella-acero-500/",
+      "status": "ACTIVE",
+      "statusReason": null,
+      "updatedAt": "2026-09-18T11:45:00Z"
+    },
+    {
+      "productId": "14250",
+      "sku": "9/TAZ-CER-350",
+      "name": "Taza de cerámica 350 ml",
+      "family": {
+        "familyId": "f-tazas",
+        "name": "Tazas",
+        "path": [
+          "Hogar y bebida",
+          "Tazas"
+        ]
+      },
+      "secondaryFamilies": [],
+      "description": "Taza de cerámica blanca de 350 ml apta para lavavajillas, con caja individual. Marcaje en serigrafía o a todo color por sublimación.",
+      "descriptionTruncated": false,
+      "attributes": [
+        {
+          "name": "color",
+          "label": "Color",
+          "values": [
+            "blanco"
+          ]
+        },
+        {
+          "name": "material",
+          "label": "Material",
+          "values": [
+            "cerámica"
+          ]
+        },
+        {
+          "name": "brand",
+          "label": "Marca",
+          "values": [
+            "Pxe Basics"
+          ]
+        },
+        {
+          "name": "tag",
+          "label": "Etiquetas",
+          "values": [
+            "taza",
+            "oficina"
+          ]
+        }
+      ],
+      "dimensions": {
+        "widthCm": 8.2,
+        "heightCm": 9.6,
+        "depthCm": null,
+        "weightG": 310
+      },
+      "variants": [
+        {
+          "variantId": "24251",
+          "sku": "9/TAZ-CER-350-BL",
+          "name": "Taza cerámica 350 ml blanca",
+          "color": {
+            "name": "Blanco",
+            "group": "blanco"
+          },
+          "size": null,
+          "priceEur": 1.6,
+          "stock": 5400,
+          "availableFrom": null,
+          "imageUrl": null
+        }
+      ],
+      "customization": {
+        "techniques": [
+          "Serigrafía",
+          "Sublimación"
+        ],
+        "areas": [
+          {
+            "name": "Lateral",
+            "maxColors": 4,
+            "widthMm": 80,
+            "heightMm": 70
+          }
+        ],
+        "maxColors": 4,
+        "notes": null
+      },
+      "quantity": {
+        "min": 72,
+        "step": 36,
+        "breaks": []
+      },
+      "priceHint": {
+        "fromEur": 1.6,
+        "toEur": 1.6,
+        "basis": "INDICATIVE",
+        "forQuantity": null,
+        "perUnit": true,
+        "includesCustomization": false,
+        "onOffer": false
+      },
+      "leadTimeDays": {
+        "min": null,
+        "max": 15,
+        "source": "DEFAULT"
+      },
+      "images": [
+        {
+          "url": "https://publiexpe.example/media/p/14250-800.webp",
+          "kind": "MAIN",
+          "width": 800
+        }
+      ],
+      "productUrl": "https://publiexpe.example/producto/taza-ceramica-350/",
+      "status": "ACTIVE",
+      "statusReason": null,
+      "updatedAt": "2026-08-30T08:00:00Z"
+    },
+    {
+      "productId": "15010",
+      "sku": "4/LAN-POL-20",
+      "name": "Lanyard de poliéster de 20 mm con mosquetón",
+      "family": {
+        "familyId": "f-lanyards",
+        "name": "Lanyards",
+        "path": [
+          "Ferias y eventos",
+          "Lanyards"
+        ]
+      },
+      "secondaryFamilies": [],
+      "description": "Cinta para acreditación de poliéster de 20 mm con mosquetón metálico y cierre de seguridad. Imprescindible en ferias para personal de stand y visitantes.",
+      "descriptionTruncated": false,
+      "attributes": [
+        {
+          "name": "color",
+          "label": "Color",
+          "values": [
+            "azul",
+            "negro",
+            "rojo"
+          ]
+        },
+        {
+          "name": "material",
+          "label": "Material",
+          "values": [
+            "poliéster"
+          ]
+        },
+        {
+          "name": "brand",
+          "label": "Marca",
+          "values": [
+            "Pxe Basics"
+          ]
+        },
+        {
+          "name": "tag",
+          "label": "Etiquetas",
+          "values": [
+            "lanyard",
+            "feria",
+            "acreditación"
+          ]
+        }
+      ],
+      "dimensions": {
+        "widthCm": 2,
+        "heightCm": 90,
+        "depthCm": null,
+        "weightG": 18
+      },
+      "variants": [
+        {
+          "variantId": "25011",
+          "sku": "4/LAN-POL-20-AZ",
+          "name": "Lanyard 20 mm azul",
+          "color": {
+            "name": "Azul",
+            "group": "azul"
+          },
+          "size": null,
+          "priceEur": 0.55,
+          "stock": 15000,
+          "availableFrom": null,
+          "imageUrl": null
+        },
+        {
+          "variantId": "25012",
+          "sku": "4/LAN-POL-20-NE",
+          "name": "Lanyard 20 mm negro",
+          "color": {
+            "name": "Negro",
+            "group": "negro"
+          },
+          "size": null,
+          "priceEur": 0.55,
+          "stock": 12000,
+          "availableFrom": null,
+          "imageUrl": null
+        },
+        {
+          "variantId": "25013",
+          "sku": "4/LAN-POL-20-RO",
+          "name": "Lanyard 20 mm rojo",
+          "color": {
+            "name": "Rojo",
+            "group": "rojo"
+          },
+          "size": null,
+          "priceEur": 0.55,
+          "stock": 8000,
+          "availableFrom": null,
+          "imageUrl": null
+        }
+      ],
+      "customization": {
+        "techniques": [
+          "Serigrafía",
+          "Sublimación"
+        ],
+        "areas": [
+          {
+            "name": "Cinta",
+            "maxColors": 2,
+            "widthMm": 400,
+            "heightMm": 15
+          }
+        ],
+        "maxColors": 2,
+        "notes": null
+      },
+      "quantity": {
+        "min": 250,
+        "step": 50,
+        "breaks": []
+      },
+      "priceHint": {
+        "fromEur": 0.55,
+        "toEur": 0.55,
+        "basis": "INDICATIVE",
+        "forQuantity": null,
+        "perUnit": true,
+        "includesCustomization": false,
+        "onOffer": false
+      },
+      "leadTimeDays": {
+        "min": null,
+        "max": 15,
+        "source": "DEFAULT"
+      },
+      "images": [
+        {
+          "url": "https://publiexpe.example/media/p/15010-800.webp",
+          "kind": "MAIN",
+          "width": 800
+        }
+      ],
+      "productUrl": "https://publiexpe.example/producto/lanyard-poliester-20/",
+      "status": "ACTIVE",
+      "statusReason": null,
+      "updatedAt": "2026-09-10T13:00:00Z"
+    },
+    {
+      "productId": "16030",
+      "sku": "2/CAM-ALG-150",
+      "name": "Camiseta de algodón 150 g",
+      "family": {
+        "familyId": "f-camisetas",
+        "name": "Camisetas",
+        "path": [
+          "Textil",
+          "Camisetas"
+        ]
+      },
+      "secondaryFamilies": [],
+      "description": "Camiseta unisex de manga corta, 100 % algodón de 150 g. Para equipo de stand y voluntarios: marcaje en pecho y espalda en serigrafía, bordado o DTF.",
+      "descriptionTruncated": false,
+      "attributes": [
+        {
+          "name": "color",
+          "label": "Color",
+          "values": [
+            "blanco",
+            "negro"
+          ]
+        },
+        {
+          "name": "size",
+          "label": "Talla",
+          "values": [
+            "S",
+            "M",
+            "L",
+            "XL"
+          ]
+        },
+        {
+          "name": "material",
+          "label": "Material",
+          "values": [
+            "algodón"
+          ]
+        },
+        {
+          "name": "brand",
+          "label": "Marca",
+          "values": [
+            "Pxe Basics"
+          ]
+        },
+        {
+          "name": "tag",
+          "label": "Etiquetas",
+          "values": [
+            "camiseta",
+            "textil",
+            "equipo"
+          ]
+        }
+      ],
+      "dimensions": {
+        "widthCm": null,
+        "heightCm": null,
+        "depthCm": null,
+        "weightG": 150
+      },
+      "variants": [
+        {
+          "variantId": "26031",
+          "sku": "2/CAM-ALG-150-BL-S",
+          "name": "Camiseta algodón blanca S",
+          "color": {
+            "name": "Blanco",
+            "group": "blanco"
+          },
+          "size": "S",
+          "priceEur": 2.4,
+          "stock": 800,
+          "availableFrom": null,
+          "imageUrl": null
+        },
+        {
+          "variantId": "26032",
+          "sku": "2/CAM-ALG-150-BL-M",
+          "name": "Camiseta algodón blanca M",
+          "color": {
+            "name": "Blanco",
+            "group": "blanco"
+          },
+          "size": "M",
+          "priceEur": 2.4,
+          "stock": 1500,
+          "availableFrom": null,
+          "imageUrl": null
+        },
+        {
+          "variantId": "26033",
+          "sku": "2/CAM-ALG-150-BL-L",
+          "name": "Camiseta algodón blanca L",
+          "color": {
+            "name": "Blanco",
+            "group": "blanco"
+          },
+          "size": "L",
+          "priceEur": 2.4,
+          "stock": 1400,
+          "availableFrom": null,
+          "imageUrl": null
+        },
+        {
+          "variantId": "26034",
+          "sku": "2/CAM-ALG-150-BL-XL",
+          "name": "Camiseta algodón blanca XL",
+          "color": {
+            "name": "Blanco",
+            "group": "blanco"
+          },
+          "size": "XL",
+          "priceEur": 2.4,
+          "stock": 600,
+          "availableFrom": null,
+          "imageUrl": null
+        },
+        {
+          "variantId": "26035",
+          "sku": "2/CAM-ALG-150-NE-M",
+          "name": "Camiseta algodón negra M",
+          "color": {
+            "name": "Negro",
+            "group": "negro"
+          },
+          "size": "M",
+          "priceEur": 2.9,
+          "stock": 900,
+          "availableFrom": null,
+          "imageUrl": null
+        },
+        {
+          "variantId": "26036",
+          "sku": "2/CAM-ALG-150-NE-L",
+          "name": "Camiseta algodón negra L",
+          "color": {
+            "name": "Negro",
+            "group": "negro"
+          },
+          "size": "L",
+          "priceEur": 2.9,
+          "stock": 0,
+          "availableFrom": "2026-11-03T00:00:00Z",
+          "imageUrl": null
+        }
+      ],
+      "customization": {
+        "techniques": [
+          "Serigrafía",
+          "Bordado",
+          "DTF"
+        ],
+        "areas": [
+          {
+            "name": "Pecho",
+            "maxColors": 4,
+            "widthMm": 100,
+            "heightMm": 100
+          },
+          {
+            "name": "Espalda",
+            "maxColors": 4,
+            "widthMm": 300,
+            "heightMm": 350
+          }
+        ],
+        "maxColors": 4,
+        "notes": null
+      },
+      "quantity": {
+        "min": 50,
+        "step": 1,
+        "breaks": []
+      },
+      "priceHint": {
+        "fromEur": 2.4,
+        "toEur": 2.9,
+        "basis": "INDICATIVE",
+        "forQuantity": null,
+        "perUnit": true,
+        "includesCustomization": false,
+        "onOffer": false
+      },
+      "leadTimeDays": {
+        "min": null,
+        "max": 15,
+        "source": "DEFAULT"
+      },
+      "images": [
+        {
+          "url": "https://publiexpe.example/media/p/16030-800.webp",
+          "kind": "MAIN",
+          "width": 800
+        }
+      ],
+      "productUrl": "https://publiexpe.example/producto/camiseta-algodon-150/",
+      "status": "ACTIVE",
+      "statusReason": null,
+      "updatedAt": "2026-10-02T09:10:00Z"
+    },
+    {
+      "productId": "11005",
+      "sku": "7/BOL-BAM",
+      "name": "Bolígrafo de bambú",
+      "family": {
+        "familyId": "f-boligrafos",
+        "name": "Bolígrafos",
+        "path": [
+          "Escritura",
+          "Bolígrafos"
+        ]
+      },
+      "secondaryFamilies": [
+        {
+          "familyId": "f-regalos-eco",
+          "name": "Regalos ecológicos",
+          "path": [
+            "Ecológico",
+            "Regalos ecológicos"
+          ]
+        }
+      ],
+      "description": "Bolígrafo con cuerpo de bambú y clip metálico. Despublicado en la tienda: se sigue devolviendo para que las hipótesis antiguas no apunten a un 404.",
+      "descriptionTruncated": false,
+      "attributes": [
+        {
+          "name": "color",
+          "label": "Color",
+          "values": [
+            "beige"
+          ]
+        },
+        {
+          "name": "material",
+          "label": "Material",
+          "values": [
+            "bambú"
+          ]
+        },
+        {
+          "name": "brand",
+          "label": "Marca",
+          "values": [
+            "Pxe Basics"
+          ]
+        },
+        {
+          "name": "tag",
+          "label": "Etiquetas",
+          "values": [
+            "bolígrafo",
+            "ecológico"
+          ]
+        }
+      ],
+      "dimensions": {
+        "widthCm": 1,
+        "heightCm": 14,
+        "depthCm": null,
+        "weightG": 10
+      },
+      "variants": [
+        {
+          "variantId": "21051",
+          "sku": "7/BOL-BAM-NAT",
+          "name": "Bolígrafo de bambú natural",
+          "color": {
+            "name": "Natural",
+            "group": "beige"
+          },
+          "size": null,
+          "priceEur": 0.42,
+          "stock": 0,
+          "availableFrom": null,
+          "imageUrl": null
+        }
+      ],
+      "customization": {
+        "techniques": [
+          "Láser"
+        ],
+        "areas": [
+          {
+            "name": "Cuerpo",
+            "maxColors": 1,
+            "widthMm": 40,
+            "heightMm": 7
+          }
+        ],
+        "maxColors": 1,
+        "notes": null
+      },
+      "quantity": {
+        "min": 250,
+        "step": 50,
+        "breaks": []
+      },
+      "priceHint": {
+        "fromEur": 0.42,
+        "toEur": 0.42,
+        "basis": "INDICATIVE",
+        "forQuantity": null,
+        "perUnit": true,
+        "includesCustomization": false,
+        "onOffer": false
+      },
+      "leadTimeDays": {
+        "min": null,
+        "max": 15,
+        "source": "DEFAULT"
+      },
+      "images": [
+        {
+          "url": "https://publiexpe.example/media/p/11005-800.webp",
+          "kind": "MAIN",
+          "width": 800
+        }
+      ],
+      "productUrl": null,
+      "status": "DISCONTINUED",
+      "statusReason": "UNPUBLISHED",
+      "updatedAt": "2026-07-01T10:00:00Z"
+    },
+    {
+      "productId": "9871",
+      "sku": "12/BT-ALG-100",
+      "name": "Bolsa tote de algodón 100 g",
+      "family": {
+        "familyId": "f-bolsas",
+        "name": "Bolsas",
+        "path": [
+          "Textil",
+          "Bolsas"
+        ]
+      },
+      "secondaryFamilies": [],
+      "description": null,
+      "descriptionTruncated": null,
+      "attributes": [],
+      "dimensions": null,
+      "variants": [],
+      "customization": null,
+      "quantity": null,
+      "priceHint": null,
+      "leadTimeDays": null,
+      "images": [],
+      "productUrl": null,
+      "status": "DISCONTINUED",
+      "statusReason": "REMOVED",
+      "updatedAt": null
+    }
+  ]
+}

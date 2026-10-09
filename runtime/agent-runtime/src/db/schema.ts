@@ -193,6 +193,17 @@ export interface ScheduleSpec {
    * e.g. `{"status":"COMPLETED"}`) or `{"in": [v1, v2]}` (any of them). See src/events/triggers.ts.
    */
   filter?: Record<string, unknown>;
+  /**
+   * EVENT: top-level input keys of the fired run taken from the event `data`, as
+   * `{input_key: "dot.path"}` (e.g. `{"event_url": "event_url", "event_name": "name"}`). The
+   * envelope still goes under `input.event`. See src/events/triggers.ts.
+   */
+  input_from_event?: Record<string, string>;
+  /**
+   * EVENT: audit row written when the trigger creates a run (actor `system`, method `EVENT`),
+   * e.g. `{"action": "prospect.on_qualified", "subject_type": "commercial_signal", "subject_path": "signal_id"}`.
+   */
+  audit?: { action: string; subject_type: string; subject_path?: string };
 }
 
 export interface RetryPolicy {

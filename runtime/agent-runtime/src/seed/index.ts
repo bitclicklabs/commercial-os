@@ -12,8 +12,9 @@
  * `draft-email-on-validated`, the BajasAgent with its task `process-unsubscribes` (kept
  * DISABLED since the inbound triage) and the InboxAgent with its task `process-inbox` (CRON
  * every 2 hours; all idempotent).
- * The daily task default input is the demo fixture `test/fixtures/feria-ejemplo.json`
- * unless `--input` points to another file with the same shape.
+ * The daily task default input is `{ mode: 'signals' }` (tanda 15: the fairs QUALIFIED in Twenty);
+ * `--input` still accepts a direct-mode fixture (`{ event, exhibitors[] }`, e.g.
+ * `test/fixtures/feria-ejemplo.json`) for a demo tenant.
  */
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
@@ -49,13 +50,13 @@ if (isMain) {
   const input = arg('input');
   const handle = createDb(config.databaseUrl);
   const log = (m: string) => console.log(`[seed] ${m}`);
-  const defaultInput = loadSeedInput(input ? path.resolve(input) : DEFAULT_FIXTURE);
+  const defaultInput = input ? loadSeedInput(path.resolve(input)) : undefined;
   seedHarnesses(handle.db, { tenantId, log })
     .then(async (harness) => ({ harness, skills: await seedSkills(handle.db, { tenantId, log }) }))
     // Catalog (tanda 14): one DRAFT candidate of the Prospector skill with real products; never activated here.
     .then(async (acc) => ({ ...acc, catalogSkill: await seedCatalogSkillCandidate(handle.db, { tenantId, log }) }))
     .then(async (acc) => ({ ...acc, knowledge: await seedKnowledge(handle.db, { tenantId, log }) }))
-    .then(async (r) => ({ ...r, prospector: await seedProspector(handle.db, { tenantId, defaultInput, log }) }))
+    .then(async (r) => ({ ...r, prospector: await seedProspector(handle.db, { tenantId, ...(defaultInput ? { defaultInput } : {}), log }) }))
     .then(async (r) => ({ ...r, emailDrafter: await seedEmailDrafter(handle.db, { tenantId, log }) }))
     .then(async (r) => ({ ...r, bajas: await seedBajas(handle.db, { tenantId, log }) }))
     .then(async (r) => ({ ...r, inbox: await seedInbox(handle.db, { tenantId, log }) }))

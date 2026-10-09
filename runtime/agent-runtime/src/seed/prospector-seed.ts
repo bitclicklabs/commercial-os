@@ -1,6 +1,8 @@
 /**
  * Idempotent seed of the Prospector agent and its tasks `daily-event-prospecting`
- * (direct mode, fixture input) and `weekly-event-scouting` (scout mode: real fairs).
+ * (v2: signals mode, the fairs QUALIFIED in Twenty; v1 carried a fixture fair) and
+ * `weekly-event-scouting` (scout mode, discovery only since tanda 15: real fairs become NEW
+ * FAIR signals). It also disables the RETIRED_TASKS (new version, enabled = false).
  *
  * - Agent "Prospector": created with version 1 if missing. If it exists and its
  *   ACTIVE version differs from the desired one (model, provider, prompt,
@@ -29,6 +31,7 @@ import { SCOUT_EXTRACT_SKILL_ID, SCOUT_SKILL_ID } from '../agents/event-scout-pr
 import { DEFAULT_USD_TO_EUR } from '../providers/gemini-pricing.js';
 import { DEFAULT_COMMERCIAL_HARNESS_NAME } from '../harness/config.js';
 import { CATALOG_TOOL_IDS } from '../tools/catalog/catalog-tools.js';
+import { MAX_EXPIRATIONS_PER_RUN, SIGNALS_DEFAULT_INPUT } from '../agents/signal-prospecting.js';
 
 export const PROSPECTOR_AGENT_NAME = 'Prospector';
 export const PROSPECTOR_TASK_NAME = 'daily-event-prospecting';
@@ -36,8 +39,11 @@ export const SCOUT_TASK_NAME = 'weekly-event-scouting';
 
 export interface SeedOptions {
   tenantId: string;
-  /** Default input of the task (the demo fixture). */
-  defaultInput: Record<string, unknown>;
+  /**
+   * Default input of the daily task. Omitted: `{ mode: 'signals' }` (v2, the fairs QUALIFIED in
+   * Twenty). A direct-mode fixture (`{ event, exhibitors[] }`) is still accepted for demos/tests.
+   */
+  defaultInput?: Record<string, unknown>;
   createdBy?: string;
   log?: (msg: string) => void;
 }
@@ -53,7 +59,16 @@ export interface SeedResult {
   scoutTaskId: string;
   scoutTaskVersion: number;
   scoutTaskAction: 'created' | 'updated' | 'unchanged';
+  /** Retired tasks (RETIRED_TASKS): disabled with a new version, never deleted. */
+  retiredTasks: Array<{ name: string; action: 'disabled' | 'already_disabled' | 'not_found'; version?: number }>;
 }
+
+/**
+ * Tasks the seed switches off (enabled = false, new TaskDefinitionVersion). Nothing is deleted.
+ * - `event-scouting-live-test-muxyo7gz`: MANUAL task left behind by a live scout test
+ *   (test/integration/event-scout-live.test.ts) in tenant `publiexpe`.
+ */
+export const RETIRED_TASKS = ['event-scouting-live-test-muxyo7gz'] as const;
 
 export function desiredProspectorVersion() {
   return {
@@ -76,7 +91,8 @@ export function desiredProspectorVersion() {
         // Scout: 3 fairs x 100 exhibitors x 4 writes + fetches + renders + profiles + event signals + summary.
         // The real limit of a scout run is its time budget (scout.time_budget_ms).
         // + catalog: up to 3 searches + 3 sheets per written hypothesis (capped per tool below).
-        max_calls_per_execution: 2_400,
+        // + signals mode: 1 listing + up to 50 expirations before the directed scout.
+        max_calls_per_execution: 2_460,
         // fetch_url: 18 pages/PDFs + 3 grounding redirects (+1) + 100 profiles + 100 domain checks;
         // render_url: 4 catalog renders (+1 retry, +1 older-renderer retry each) + 100 profiles.
         max_calls_per_tool: {
@@ -87,6 +103,8 @@ export function desiredProspectorVersion() {
           catalog_estimate_customization: 20,
           catalog_list_families: 5,
           catalog_describe: 5,
+          list_event_signals: 2,
+          expire_signal: MAX_EXPIRATIONS_PER_RUN,
         },
       },
       // Knowledge layer (LLD 6.4): ACTIVE entries of these domains go into the per-exhibitor decision prompt.
@@ -117,10 +135,15 @@ export function desiredProspectorVersion() {
   };
 }
 
-export function desiredTask(defaultInput: Record<string, unknown>) {
+/**
+ * Daily task v2 (tanda 15): signals mode. No fair inside the input: the Prospector works the fairs
+ * QUALIFIED in Twenty (src/agents/signal-prospecting.ts). Same timeout as the weekly scouting: the
+ * directed scout keeps its time budget (scout.time_budget_ms, 20 min) plus the writes.
+ */
+export function desiredTask(defaultInput: Record<string, unknown> = { ...SIGNALS_DEFAULT_INPUT }) {
   return {
     description:
-      'Prospección diaria a partir de los expositores de un evento: el Prospector evalúa cada expositor con el LLM y registra en Twenty empresa, señal, research e hipótesis (PROPOSED) de los relevantes.',
+      'Prospección diaria de las ferias calificadas en Twenty: el Prospector (modo señales) caduca (EXPIRED) las señales de feria con fecha pasada, elige la señal QUALIFIED vigente trabajada hace más tiempo y peina su catálogo de expositores (scout dirigido: empresa, señal, research e hipótesis PROPOSED de los relevantes); sin ninguna calificada, termina SKIPPED.',
     defaultInput,
     schedule: { type: 'CRON', expression: '0 8 * * *' },
     timezone: 'Europe/Madrid',
@@ -128,18 +151,25 @@ export function desiredTask(defaultInput: Record<string, unknown>) {
     priority: 0,
     maxConcurrency: 1,
     retryPolicy: { max_attempts: 1, backoff_ms: 0 },
-    timeoutMs: 900_000,
+    timeoutMs: 1_800_000,
   };
 }
 
-/** Default input of the weekly scouting task (PubliEXPE's main sector). */
+/** Sector of the weekly scouting (PubliEXPE's main sector); also the input of the live scout tests. */
 export const SCOUT_DEFAULT_INPUT = { sector: 'alimentación y bebidas', region: 'España', horizon_months: 6 };
+
+/**
+ * Weekly scouting v2 (tanda 15): discovery only. It records each verified fair as a NEW FAIR signal
+ * (URL and date) and never combs exhibitors: a person qualifies first, then the daily run or the
+ * trigger on qualification comb the list.
+ */
+export const SCOUT_WEEKLY_INPUT = { ...SCOUT_DEFAULT_INPUT, discover_only: true };
 
 export function desiredScoutTask() {
   return {
     description:
-      'Exploración semanal de ferias reales: el Prospector (modo scout) busca con Google (grounding de Gemini) ferias próximas del sector, descarga su página de expositores, extrae los expositores del texto y registra en Twenty empresa, señal, research e hipótesis (PROPOSED) de los relevantes; sin lista de expositores, registra la feria como señal FAIR.',
-    defaultInput: { ...SCOUT_DEFAULT_INPUT },
+      'Descubrimiento semanal de ferias reales: el Prospector (modo scout, solo descubrimiento) busca con Google (grounding de Gemini) ferias próximas del sector, verifica una página de cada una y la registra en Twenty como señal FAIR (NEW) con su URL y fecha, sin peinar expositores; el catálogo se peina cuando la señal se califica.',
+    defaultInput: { ...SCOUT_WEEKLY_INPUT },
     schedule: { type: 'CRON', expression: '30 7 * * 1' },
     timezone: 'Europe/Madrid',
     enabled: true,
@@ -207,6 +237,12 @@ export async function seedProspector(db: Db, opts: SeedOptions): Promise<SeedRes
   log(`task ${PROSPECTOR_TASK_NAME}: ${daily.action} (id ${daily.taskId}, version ${daily.version})`);
   const scout = await upsertTask(db, { tenantId, createdBy, agentId: agentState.agentId, name: SCOUT_TASK_NAME, want: desiredScoutTask() });
   log(`task ${SCOUT_TASK_NAME}: ${scout.action} (id ${scout.taskId}, version ${scout.version})`);
+  const retiredTasks: SeedResult['retiredTasks'] = [];
+  for (const name of RETIRED_TASKS) {
+    const r = await disableTask(db, { tenantId, createdBy, name, reason: 'retired by seed (tanda 15): orphan live-test task' });
+    retiredTasks.push({ name, ...r });
+    log(`task ${name}: ${r.action}${r.version ? ` (version ${r.version})` : ''}`);
+  }
 
   return {
     agentId: agentState.agentId,
@@ -219,7 +255,40 @@ export async function seedProspector(db: Db, opts: SeedOptions): Promise<SeedRes
     scoutTaskId: scout.taskId,
     scoutTaskVersion: scout.version,
     scoutTaskAction: scout.action,
+    retiredTasks,
   };
+}
+
+/**
+ * Switches a task off (`enabled = false`) with a new TaskDefinitionVersion snapshot. Idempotent:
+ * an already disabled or missing task is left as it is. Never deletes or archives anything.
+ */
+export async function disableTask(
+  db: Db,
+  args: { tenantId: string; createdBy: string; name: string; reason: string },
+): Promise<{ action: 'disabled' | 'already_disabled' | 'not_found'; version?: number }> {
+  const { tenantId, createdBy, name, reason } = args;
+  return db.transaction(async (tx) => {
+    const existing = await tx.query.taskDefinitions.findFirst({
+      where: and(eq(taskDefinitions.tenantId, tenantId), eq(taskDefinitions.name, name), ne(taskDefinitions.status, 'ARCHIVED')),
+    });
+    if (!existing) return { action: 'not_found' as const };
+    if (!existing.enabled) return { action: 'already_disabled' as const, version: existing.currentVersion };
+    const nextVersion = existing.currentVersion + 1;
+    const [updated] = await tx
+      .update(taskDefinitions)
+      .set({ enabled: false, currentVersion: nextVersion, updatedBy: createdBy, updatedAt: new Date() })
+      .where(eq(taskDefinitions.id, existing.id))
+      .returning();
+    if (!updated) throw new Error('disable task failed');
+    const [version] = await tx
+      .insert(taskDefinitionVersions)
+      .values({ tenantId, taskDefinitionId: updated.id, version: nextVersion, agentId: updated.agentId, definition: taskSnapshot(updated), changeReason: reason, createdBy })
+      .returning();
+    if (!version) throw new Error('insert task version failed');
+    await tx.update(taskDefinitions).set({ currentVersionId: version.id }).where(eq(taskDefinitions.id, updated.id));
+    return { action: 'disabled' as const, version: nextVersion };
+  });
 }
 
 export interface AgentVersionSpec {

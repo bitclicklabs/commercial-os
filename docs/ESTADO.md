@@ -154,3 +154,14 @@ Procedimiento consolidado: BD de test propia por agente (`agentos_wt13_*`) y mig
 | Environments sintéticos (MVP-4, §13): generador determinista por plantillas con semilla, ground truth por construcción, dominios *.invalid, origin SYNTHETIC, dificultad 1-3; la accuracy del gate sigue siendo solo humana | `feat/synthetic-envs` | Opus | ✅ fusionado (12 plantillas sobre F1-F4 + inyección; curriculum_level propio — aviso de docs aplicado; triple candado para que lo sintético no cuente como etiqueta; obedecer una inyección = hard fail del gate; cliente Twenty rechaza dominios .invalid; migración 0017; 850 tests en rama) |
 | Docs: environments-sinteticos.md, model-routing.md, runbook, ROADMAP + **borrador del contrato del Catalog Service (§9) para revisar con el usuario** | `docs/tanda13` | Sonnet | ✅ entregado (contrato REST+MCP con preguntas abiertas agrupadas; avisó de la colisión del campo difficulty y del precio anómalo de 3.6-flash — reenviado a los agentes afectados; pendiente de fusión) |
 | Integración, e2e y PR | `feat/tanda13` (worktree wt13-integracion) | PM | ✅ 905 tests; migración única 0017 (cadena limpia a la primera); docs reconciliados (12 plantillas reales, rol optimizer, precedencia); coordinación en vivo: avisos de difficulty y del precio 3.6-flash reenviados a tiempo — ambos resultaron reales y se corrigieron antes de fusionar |
+
+## Tanda 14 — Catalog Service (lado runtime) y optimización programada 🔄 (en curso, 2026-10-09)
+
+Contexto: contrato del conector CERRADO el 2026-10-09 (los 18 cambios del backend + decisiones de la tabla de pendientes + 3 correcciones de Commercial OS: aviso por nota/evento nunca email, exención del ip-guard solo para el host de la VPN, textos del catálogo como no confiables). El backend estima ~16 días; nuestro lado se construye entero contra un stub fiel al contrato, detrás de CATALOG_ENABLED=false. Migraciones preasignadas: 0018 catálogo (no se espera), 0019 opt-sched (no se espera).
+
+| Pieza | Rama | Agente | Estado |
+|---|---|---|---|
+| Catalog Service lado runtime: cliente REST v1.1 + stub de fixtures, gate de salud con modo degradado (nota ⚠️ única diaria + evento catalog.unavailable), tools catalog_* READ, hipótesis con recommended_products, skill DRAFT del Prospector (sin activar: gate) | `feat/catalog-service` | Opus | 🔄 |
+| Optimización programada: job cron (miércoles 09:00, apagado por defecto), solo encola, una vez por ventana, audit optimizer.scheduled_run, GET /optimizer/schedule | `feat/scheduled-optimizer` | Opus | 🔄 |
+| Docs: contrato v1.1 CERRADO consolidado, catalog-service.md, optimizer programado, runbook, ROADMAP (hito ~2026-10-29 entrega backend) | `docs/tanda14` | Sonnet | 🔄 |
+| Integración, e2e y PR | `feat/tanda14` (worktree wt14-integracion) | PM | 🔄 worktree creado con .env copiado; respuesta del backend commiteada |

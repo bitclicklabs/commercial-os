@@ -12,6 +12,11 @@
  * calls `requestTaskRun` with `taskrun:{task_id}:event:{event_id}`: the same event delivered
  * twice never creates a second TaskRun.
  *
+ * Run options of the task schedule (src/events/triggers.ts, `parseEventRunOptions`):
+ * `input_from_event` copies event data to top-level input keys (the envelope still goes under
+ * `input.event`), and `audit` writes one audit_log row (actor `system`, method `EVENT`) per run
+ * the trigger creates, e.g. `prospect.on_qualified` of the task `prospect-on-qualified`.
+ *
  * Observers (`observers` option, e.g. the outbound WebhookDispatcher) run after the
  * triggers for every event of the queue. An observer that throws fails the job, so BullMQ
  * retries it: triggers (idempotency key per task and event) and observers must be
@@ -31,9 +36,14 @@ import {
   evaluateTrigger,
   eventTaskRunIdempotencyKey,
   eventTriggeredInput,
+  getPath,
+  mappedEventInput,
+  parseEventRunOptions,
+  type EventRunOptions,
   type EventTrigger,
   type TriggerDecision,
 } from '../events/triggers.js';
+import { recordAudit } from '../audit/service.js';
 import { redisConnectionFromUrl, type RunQueue } from '../queue/run-queue.js';
 import { QueueUnavailableError, requestTaskRun } from '../services/task-runs.js';
 import type { ProcessorLogger } from '../worker/processor.js';
@@ -179,19 +189,56 @@ export class EventTriggerConsumer {
       this.logger.warn({ taskId, eventId: envelope.id }, 'event trigger skipped: agent not ACTIVE or without active version');
       return { taskId, outcome: 'skipped_agent_inactive' };
     }
+    // Validated with the trigger (desiredEventTrigger returned non-null), so this does not throw.
+    const runOptions = parseEventRunOptions(task.schedule);
+    const input = { ...eventTriggeredInput(envelope), ...mappedEventInput(envelope, runOptions.inputFromEvent) };
     try {
       const result = await requestTaskRun(
         this.db,
         this.runQueue,
         task,
-        { idempotencyKey: eventTaskRunIdempotencyKey(task.id, envelope.id), input: eventTriggeredInput(envelope), trigger: 'EVENT' },
+        { idempotencyKey: eventTaskRunIdempotencyKey(task.id, envelope.id), input, trigger: 'EVENT' },
         { ...(this.opts.events ? { events: this.opts.events } : {}), producer: 'scheduler' },
       );
+      if (!result.deduplicated) await this.audit(task, envelope, runOptions, result.taskRun.id, 'created');
       return { taskId, outcome: result.deduplicated ? 'deduplicated' : 'created', taskRunId: result.taskRun.id };
     } catch (err) {
       // The TaskRun is persisted QUEUED; the orphan reconciler enqueues it.
-      if (err instanceof QueueUnavailableError) return { taskId, outcome: 'created_unqueued', taskRunId: err.taskRun.id };
+      if (err instanceof QueueUnavailableError) {
+        await this.audit(task, envelope, runOptions, err.taskRun.id, 'created_unqueued');
+        return { taskId, outcome: 'created_unqueued', taskRunId: err.taskRun.id };
+      }
       throw err;
+    }
+  }
+
+  /**
+   * `schedule.audit` of the task: one audit_log row per run the trigger creates (a duplicate
+   * delivery of the same event creates no run and no row). Best-effort: a failed insert is
+   * logged and never fails the event job (the run already exists).
+   */
+  private async audit(task: TaskDefinition, envelope: EventEnvelope, opts: EventRunOptions, taskRunId: string, outcome: string): Promise<void> {
+    if (!opts.audit) return;
+    const subject = opts.audit.subjectPath ? getPath(envelope.data, opts.audit.subjectPath) : undefined;
+    const subjectId = typeof subject === 'string' || typeof subject === 'number' ? String(subject) : envelope.id;
+    try {
+      await recordAudit(this.db, {
+        tenantId: task.tenantId,
+        actor: 'system',
+        actorLabel: `task:${task.name}`,
+        action: opts.audit.action,
+        subjectType: opts.audit.subjectType,
+        subjectId,
+        method: 'EVENT',
+        route: `event:${envelope.type}`,
+        requestId: envelope.id,
+        payload: { [opts.audit.subjectPath ?? 'subject_id']: subjectId, run_id: taskRunId, event_id: envelope.id, task_id: task.id },
+        result: 'ok',
+        statusCode: outcome === 'created' ? 201 : 202,
+        details: { outcome, task_name: task.name, event_type: envelope.type },
+      });
+    } catch (err) {
+      this.logger.warn({ taskId: task.id, eventId: envelope.id, taskRunId, err: (err as Error).message }, 'event trigger audit failed');
     }
   }
 

@@ -1,6 +1,7 @@
 /**
  * Evaluador HUMAN (LLD v0.2 section 6.4):
- * - POST /webhooks/twenty   - Twenty webhook (signed), maps hypothesis changes to verdicts.
+ * - POST /webhooks/twenty   - Twenty webhook (signed), maps hypothesis changes to verdicts and
+ *                             a fair-level commercialSignal moved to QUALIFIED to `signal.qualified`.
  * - POST /evaluations/human - manual verdict (also the contract of the Twenty App logic function).
  * - GET  /evaluations       - list verdicts (filters: subject_id, subject_type, feedback, since, agent_execution_id).
  */
@@ -13,6 +14,7 @@ import { linkDetails, resolveHypothesisOrigin } from '../../evaluations/link-res
 import { recordHumanEvaluation } from '../../evaluations/service.js';
 import { authenticateTwentyWebhook, isHypothesisPayload, processTwentyWebhook } from '../../evaluations/twenty-webhook.js';
 import { processEmailStatusChange, type EmailOpsOutcome } from '../../email-ops/service.js';
+import { isSignalPayload, processSignalQualification, type SignalQualificationOutcome } from '../../signals/qualified.js';
 import type { ApiContext } from '../context.js';
 import { HttpError, notFound, parse, serialize, tenantOf } from '../http.js';
 
@@ -145,9 +147,16 @@ export async function evaluationRoutes(app: FastifyInstance, ctx: ApiContext): P
         email = { status: 'error', message: (err as Error).message.slice(0, 300) };
       }
       const outcome = await processTwentyWebhook(db, req.body, { defaultTenantId: ctx.config.defaultTenantId, dedupeWindowMs, events: ctx.events });
-      req.log.info({ event: req.body.eventName, outcome, email, auth: auth.method }, 'twenty webhook processed');
-      const code = email?.status === 'error' ? 502 : outcome.status === 'recorded' ? 201 : 200;
-      return reply.status(code).send(email ? { ...outcome, email } : outcome);
+      // commercialSignal -> QUALIFIED (fair-level only): `signal.qualified`, once per signal per 24 h.
+      let signal: SignalQualificationOutcome | null = null;
+      if (isSignalPayload(req.body)) {
+        signal = await processSignalQualification(db, req.body, { defaultTenantId: ctx.config.defaultTenantId, events: ctx.events });
+        if (signal.status === 'ignored') req.log.info({ event: req.body.eventName, signal }, 'commercialSignal webhook ignored');
+        if (signal.status === 'error') req.log.error({ event: req.body.eventName, signal }, 'signal.qualified not published');
+      }
+      req.log.info({ event: req.body.eventName, outcome, email, signal, auth: auth.method }, 'twenty webhook processed');
+      const code = email?.status === 'error' || signal?.status === 'error' ? 502 : outcome.status === 'recorded' ? 201 : signal?.status === 'emitted' ? 202 : 200;
+      return reply.status(code).send({ ...outcome, ...(email ? { email } : {}), ...(signal ? { signal } : {}) });
     });
   });
 

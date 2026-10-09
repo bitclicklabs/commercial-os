@@ -51,6 +51,15 @@ export type EmailEventType = (typeof EMAIL_EVENT_TYPES)[number];
 export const CATALOG_EVENT_TYPES = ['catalog.unavailable'] as const;
 export type CatalogEventType = (typeof CATALOG_EVENT_TYPES)[number];
 
+/**
+ * Commercial-signal events (src/signals/qualified.ts): `signal.qualified` when a person moves a
+ * fair-level `commercialSignal` to QUALIFIED in Twenty (signed webhook), at most once per signal
+ * every 24 h. Data: `{signal_id, name, event_url, event_date, signal_type, chainDepth: 0}`. Fires
+ * the EVENT task `prospect-on-qualified` (targeted scout of that fair).
+ */
+export const SIGNAL_EVENT_TYPES = ['signal.qualified'] as const;
+export type SignalEventType = (typeof SIGNAL_EVENT_TYPES)[number];
+
 export const EVENT_TYPE_RE = /^[a-z]+(\.[a-z_]+)+$/;
 /** `{type}.v{n}`; underscores allowed, as in EVENT_TYPE_RE (`email.blocked_suppressed.v1`). */
 const SCHEMA_VERSION_RE = /^[a-z._]+\.v[0-9]+$/;

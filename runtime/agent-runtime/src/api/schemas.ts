@@ -76,6 +76,10 @@ export const ScheduleSchema = z.object({
   // ({path: literal} or {path: {"in": [values]}}); the filter is validated by parseEventTrigger.
   event_type: z.string().optional(),
   filter: JsonObject.optional(),
+  // EVENT run options (validated by parseEventRunOptions): input keys from the event data and
+  // the audit row written when the trigger creates a run.
+  input_from_event: z.record(z.string(), z.string()).optional(),
+  audit: z.object({ action: z.string(), subject_type: z.string(), subject_path: z.string().optional() }).strict().optional(),
 });
 
 export const RetryPolicySchema = z.object({

@@ -76,7 +76,66 @@ export function parseEventTrigger(spec: ScheduleSpec | null | undefined): EventT
     if (splitPath(key).length === 0) throw new EventTriggerValidationError(`invalid filter path "${key}"`);
     validateCondition(key, (filter as Record<string, unknown>)[key]);
   }
+  parseEventRunOptions(spec);
   return { eventType, filter };
+}
+
+// ---------------------------------------------------------------------------
+// Run options of an EVENT task (input mapping and audit), validated with the trigger
+// ---------------------------------------------------------------------------
+
+/**
+ * - `input_from_event`: `{input_key: "dot.path"}`; each value found in the event `data` becomes a
+ *   TOP-LEVEL key of the run input (absent paths are skipped). `event` is reserved (the envelope).
+ * - `audit`: when the trigger creates a run, an audit_log row with this action and subject type;
+ *   the subject id is the value at `subject_path` in the event data (else the event id).
+ */
+export interface EventRunOptions {
+  inputFromEvent: Record<string, string>;
+  audit: { action: string; subjectType: string; subjectPath: string | null } | null;
+}
+
+const INPUT_KEY_RE = /^[a-z_][a-z0-9_]{0,63}$/i;
+const AUDIT_ACTION_RE = /^[a-z_]+(\.[a-z_]+)+$/;
+const AUDIT_SUBJECT_RE = /^[a-z_]{1,60}$/;
+const MAX_INPUT_KEYS = 20;
+
+export function parseEventRunOptions(spec: Pick<ScheduleSpec, 'input_from_event' | 'audit'> | null | undefined): EventRunOptions {
+  const out: EventRunOptions = { inputFromEvent: {}, audit: null };
+  const map = spec?.input_from_event;
+  if (map !== undefined && map !== null) {
+    if (!isPlainObject(map)) throw new EventTriggerValidationError('input_from_event must be an object of {input_key: "dot.path"}');
+    const keys = Object.keys(map);
+    if (keys.length > MAX_INPUT_KEYS) throw new EventTriggerValidationError(`input_from_event allows at most ${MAX_INPUT_KEYS} keys`);
+    for (const key of keys) {
+      const path = (map as Record<string, unknown>)[key];
+      if (!INPUT_KEY_RE.test(key) || key === 'event') throw new EventTriggerValidationError(`input_from_event: invalid input key "${key}"`);
+      if (typeof path !== 'string' || splitPath(path).length === 0) throw new EventTriggerValidationError(`input_from_event: invalid path for "${key}"`);
+      out.inputFromEvent[key] = path;
+    }
+  }
+  const audit = spec?.audit;
+  if (audit !== undefined && audit !== null) {
+    if (!isPlainObject(audit)) throw new EventTriggerValidationError('audit must be an object {action, subject_type, subject_path?}');
+    const { action, subject_type: subjectType, subject_path: subjectPath } = audit as Record<string, unknown>;
+    if (typeof action !== 'string' || !AUDIT_ACTION_RE.test(action)) throw new EventTriggerValidationError('audit.action must look like "domain.action"');
+    if (typeof subjectType !== 'string' || !AUDIT_SUBJECT_RE.test(subjectType)) throw new EventTriggerValidationError('audit.subject_type must be snake_case');
+    if (subjectPath !== undefined && (typeof subjectPath !== 'string' || splitPath(subjectPath).length === 0)) {
+      throw new EventTriggerValidationError('audit.subject_path must be a dot path');
+    }
+    out.audit = { action, subjectType, subjectPath: typeof subjectPath === 'string' ? subjectPath : null };
+  }
+  return out;
+}
+
+/** Top-level input keys mapped from the event data (absent or null values are left out). */
+export function mappedEventInput(envelope: Pick<EventEnvelope, 'data'>, inputFromEvent: Record<string, string>): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const [key, path] of Object.entries(inputFromEvent)) {
+    const value = getPath(envelope.data, path);
+    if (value !== undefined && value !== null) out[key] = value;
+  }
+  return out;
 }
 
 /** The trigger that should be registered for a task right now, or null. */

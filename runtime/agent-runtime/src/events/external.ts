@@ -22,7 +22,7 @@
  */
 import { timingSafeEqual } from 'node:crypto';
 import { z } from 'zod';
-import { CATALOG_EVENT_TYPES, EMAIL_EVENT_TYPES, EVALUATION_EVENT_TYPES, EVENT_TYPE_RE, RUNTIME_EVENT_TYPES, type EventProducer } from './envelope.js';
+import { CATALOG_EVENT_TYPES, EMAIL_EVENT_TYPES, EVALUATION_EVENT_TYPES, EVENT_TYPE_RE, RUNTIME_EVENT_TYPES, SIGNAL_EVENT_TYPES, type EventProducer } from './envelope.js';
 import type { PublishEventInput } from './event-bus.js';
 
 export const DEFAULT_EXTERNAL_EVENT_TYPE_PREFIXES = ['ext.'] as const;
@@ -36,7 +36,7 @@ export type ExternalProducer = keyof typeof EXTERNAL_PRODUCERS;
 
 /** First segment of every type the runtime emits itself: an external prefix may not cover them. */
 export const RESERVED_EVENT_NAMESPACES: readonly string[] = [
-  ...new Set([...RUNTIME_EVENT_TYPES, ...EVALUATION_EVENT_TYPES, ...EMAIL_EVENT_TYPES, ...CATALOG_EVENT_TYPES].map((t) => `${t.split('.')[0]}.`)),
+  ...new Set([...RUNTIME_EVENT_TYPES, ...EVALUATION_EVENT_TYPES, ...EMAIL_EVENT_TYPES, ...CATALOG_EVENT_TYPES, ...SIGNAL_EVENT_TYPES].map((t) => `${t.split('.')[0]}.`)),
 ];
 
 const PREFIX_RE = /^[a-z]+(\.[a-z_]+)*\.$/;
@@ -50,7 +50,7 @@ export class ExternalConfigError extends Error {
 
 /**
  * `EXTERNAL_EVENT_TYPE_PREFIXES` (comma separated, each ending in "."). A prefix that would
- * let an external sender forge runtime events (`task.`, `agent.`, `evaluation.`, `email.`, or a
+ * let an external sender forge runtime events (`task.`, `agent.`, `evaluation.`, `email.`, `signal.`, or a
  * shorter prefix covering them) is refused at boot.
  */
 export function parseEventTypePrefixes(raw: string | undefined): string[] {

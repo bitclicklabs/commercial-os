@@ -163,5 +163,5 @@ Contexto: contrato del conector CERRADO el 2026-10-09 (los 18 cambios del backen
 |---|---|---|---|
 | Catalog Service lado runtime: cliente REST v1.1 + stub de fixtures, gate de salud con modo degradado (nota ⚠️ única diaria + evento catalog.unavailable), tools catalog_* READ, hipótesis con recommended_products, skill DRAFT del Prospector (sin activar: gate) | `feat/catalog-service` | Opus | 🔄 |
 | Optimización programada: job cron (miércoles 09:00, apagado por defecto), solo encola, una vez por ventana, audit optimizer.scheduled_run, GET /optimizer/schedule | `feat/scheduled-optimizer` | Opus | 🔄 |
-| Docs: contrato v1.1 CERRADO consolidado, catalog-service.md, optimizer programado, runbook, ROADMAP (hito ~2026-10-29 entrega backend) | `docs/tanda14` | Sonnet | 🔄 |
+| Docs: contrato v1.1 CERRADO consolidado, catalog-service.md, optimizer programado, runbook, ROADMAP (hito ~2026-10-29 entrega backend) | `docs/tanda14` | Sonnet | ✅ entregado (sus redacciones de detalle fijadas como decisiones de contrato y reenviadas al agente de catálogo en vuelo: BASE_URL=origen, 5 tools con nombres exactos, semántica del health, estimate, resumen de búsqueda, contractVersion 1.1.0) |
 | Integración, e2e y PR | `feat/tanda14` (worktree wt14-integracion) | PM | 🔄 worktree creado con .env copiado; respuesta del backend commiteada |

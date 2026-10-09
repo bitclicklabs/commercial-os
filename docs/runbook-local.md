@@ -368,14 +368,14 @@ Pasos:
 
 1. Abre Twenty y ve a **Settings → APIs & Webhooks → Webhooks → Create webhook**.
 1. En **URL**, escribe `http://pxos-runtime:4020/webhooks/twenty` (con el runtime en el host, `http://host.docker.internal:<puerto>/webhooks/twenty`).
-1. En **Operations**, añade solo `commercialSignal.updated`.
+1. En **Operations**, añade `commercialSignal.updated` y `commercialSignal.created`. La vía recomendada es `pnpm register:webhook` (con `--dry-run` primero), que actualiza el webhook existente con las tres suscripciones.
 1. En **Secret**, pega el valor de `TWENTY_WEBHOOK_SECRET`. No lo pongas en la URL.
 1. En **Description**, escribe `pxos-runtime:signal-qualified`.
 1. Guarda y comprueba el disparo con una señal de prueba: [Comprobar que funciona](prospeccion-por-senales.md#comprobar-que-funciona).
 
 Reglas:
 
-- **No toques el webhook de feedback** (`pxos-runtime:human-feedback`, el de `pnpm register:webhook`). Son independientes.
+- Es el **mismo webhook** del feedback (`pxos-runtime:human-feedback`): `register:webhook` lo amplía en el sitio; no crees uno duplicado salvo que lo prefieras separado.
 - Twenty no tiene estado "inactivo" para los webhooks: para pausar el disparo inmediato, vacía **Operations**. No borres el webhook.
 - Twenty no reintenta entregas fallidas. Un disparo perdido no se recupera, pero el run diario recoge la señal calificada.
 

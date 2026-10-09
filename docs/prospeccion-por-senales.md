@@ -108,7 +108,7 @@ Piezas:
 
 | Pieza | Qué es |
 |---|---|
-| Webhook de Twenty | Un `POST` por cada cambio de una señal (`commercialSignal.updated`), firmado con `TWENTY_WEBHOOK_SECRET`. Lo recibe el mismo endpoint `POST /webhooks/twenty` del feedback de hipótesis; el runtime enruta por el nombre del objeto. |
+| Webhook de Twenty | Un `POST` por cada cambio o alta de una señal (`commercialSignal.updated` y `commercialSignal.created`), firmado con `TWENTY_WEBHOOK_SECRET`. Lo recibe el mismo endpoint `POST /webhooks/twenty` del feedback de hipótesis; el runtime enruta por el nombre del objeto. |
 | Evento `signal.qualified` | Lo publica el runtime en el [event bus](n8n-integracion.md) cuando una señal de feria pasa a `QUALIFIED` y la ventana lo permite. Sus datos son `signal_id`, `name`, `event_url`, `event_date` y `signal_type`. También lo recibe n8n si hay suscripciones. |
 | Task `prospect-on-qualified` | Task de tipo `EVENT` que escucha `signal.qualified` y lanza un scout dirigido a esa feria (modo `event_url`, con la URL de la señal). |
 | Auditoría | Cada disparo queda en el `audit_log` como `prospect.on_qualified` (`GET /audit`). |
@@ -141,7 +141,7 @@ Cada run diario, antes de repartir (herramienta `expire_signal`), revisa las se�
 
 El trigger necesita que Twenty avise al runtime cuando cambia una señal. Twenty no lo hace por defecto: hay que dar de alta el webhook **una vez**, a mano. Es una acción de configuración del operador (no la hace el runtime).
 
-> **Importante:** este webhook es **independiente** del que captura el feedback de hipótesis (`pnpm register:webhook`, marca `pxos-runtime:human-feedback`). No lo modifiques ni lo sustituyas: el feedback de las hipótesis sigue funcionando por su lado.
+> **Importante:** es el **mismo webhook** del feedback de hipótesis (marca `pxos-runtime:human-feedback`): `pnpm register:webhook` lo actualiza en el sitio y suscribe por defecto `commercialHypothesis.updated`, `commercialSignal.updated` y `commercialSignal.created`. Prueba antes con `--dry-run`. El feedback de las hipótesis sigue funcionando por el mismo canal.
 
 Requisitos previos, que ya cumple el entorno si el webhook de feedback funciona:
 
@@ -152,7 +152,7 @@ Pasos:
 
 1. Abre Twenty y ve a **Settings → APIs & Webhooks → Webhooks → Create webhook** (en algunas versiones, el botón es **+ Create webhook**).
 1. En **URL**, escribe `http://pxos-runtime:4020/webhooks/twenty`. Si el runtime corre en tu máquina con `pnpm dev`, usa `http://host.docker.internal:<puerto>/webhooks/twenty`.
-1. En **Operations**, añade un evento: objeto **Signal** (`commercialSignal`) y operación **Updated** (`commercialSignal.updated`). No suscribas más objetos ni más operaciones.
+1. En **Operations**, añade dos eventos al webhook del runtime: objeto **Signal** (`commercialSignal`) con **Updated** y con **Created** (una señal creada ya calificada también dispara; la ventana de 24 h evita duplicados). No suscribas más objetos.
 1. En **Secret**, pega el valor de `TWENTY_WEBHOOK_SECRET`. No lo pongas en la URL (`?secret=`): Twenty escribe la URL completa en sus logs.
 1. En **Description**, escribe `pxos-runtime:signal-qualified`, para reconocerlo luego.
 1. Guarda.

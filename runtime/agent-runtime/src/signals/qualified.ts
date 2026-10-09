@@ -47,14 +47,15 @@ export const SIGNAL_REFIRE_WINDOW_MS = 24 * 3600_000;
 /** `created` covers a signal created by hand already QUALIFIED (PM decision, tanda 15). */
 export const SIGNAL_WEBHOOK_EVENTS = [`${SIGNAL_OBJECT}.updated`, `${SIGNAL_OBJECT}.upserted`, `${SIGNAL_OBJECT}.created`] as const;
 const HANDLED_EVENTS = new Set<string>(SIGNAL_WEBHOOK_EVENTS);
-/** Suffix the scout adds to the name of a fair-level signal (`"{fair} (feria)"`). */
-const FAIR_SUFFIX_RE = /\s*\((feria|fair)\)\s*$/i;
+/** Suffix the scout adds to the name of an event-level signal (`"{fair} (feria)"`, congreso, evento). */
+const FAIR_SUFFIX_RE = /\s*\((feria|fair|congreso|evento)\)\s*$/i;
 
 export interface SignalQualifiedData {
   signal_id: string;
   /** Name of the fair (the signal name without the " (feria)" suffix). */
   name: string;
   event_url: string;
+  /** `YYYY-MM-DD` (the date part of the signal's eventDate), or null. */
   event_date: string | null;
   signal_type: string;
   /** How the transition was established: `updated_fields` (status listed) or `status_only`. */
@@ -94,6 +95,15 @@ export function eventUrlOf(value: unknown): string | null {
   }
 }
 
+/** `YYYY-MM-DD` of a Twenty DATE / DATE_TIME value, or null (the scout input takes a plain date). */
+export function eventDateOf(value: unknown): string | null {
+  if (typeof value !== 'string') return null;
+  const m = /^(\d{4}-\d{2}-\d{2})(?:$|T)/.exec(value.trim());
+  if (!m) return null;
+  const d = new Date(`${m[1]}T00:00:00Z`);
+  return Number.isNaN(d.getTime()) || d.toISOString().slice(0, 10) !== m[1] ? null : m[1]!;
+}
+
 /** Fair name for the scout input: the signal name without the " (feria)" suffix (max 255). */
 export function eventNameOf(name: unknown): string | null {
   if (typeof name !== 'string') return null;
@@ -125,14 +135,14 @@ export function classifySignalQualification(payload: TwentyWebhookPayload): Sign
   if (!eventUrl) return { action: 'ignore', reason: 'fair signal without an http(s) sourceUrl' };
   const name = eventNameOf(record.name);
   if (!name) return { action: 'ignore', reason: 'signal has no name' };
-  const eventDate = str(record.eventDate);
+  const eventDate = eventDateOf(record.eventDate);
   return {
     action: 'emit',
     data: {
       signal_id: signalId,
       name,
       event_url: eventUrl,
-      event_date: eventDate ? eventDate.slice(0, 40) : null,
+      event_date: eventDate,
       signal_type: signalType,
       transition: updatedFields && updatedFields.length > 0 ? 'updated_fields' : 'status_only',
     },

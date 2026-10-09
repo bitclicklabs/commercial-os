@@ -119,7 +119,7 @@ describe.skipIf(!dbAvailable)('qualified signal: Twenty webhook -> signal.qualif
   it('seed: the task hangs from the Prospector and the seed without the agent is skipped', async () => {
     const task = await handle.db.query.taskDefinitions.findFirst({ where: (t, { eq: e }) => e(t.id, taskId) });
     expect(task).toMatchObject({ name: PROSPECT_ON_QUALIFIED_TASK_NAME, status: 'ACTIVE', enabled: true, defaultInput: { mode: 'scout', max_events: 1 } });
-    expect(task!.schedule).toMatchObject({ type: 'EVENT', event_type: 'signal.qualified', input_from_event: { event_url: 'event_url', event_name: 'name', signal_id: 'signal_id' } });
+    expect(task!.schedule).toMatchObject({ type: 'EVENT', event_type: 'signal.qualified', input_from_event: { event_url: 'event_url', event_name: 'name', event_date: 'event_date', signal_id: 'signal_id' } });
     expect((await seedProspectOnQualified(handle.db, { tenantId: `${tenant}-none` })).taskAction).toBe('skipped_no_agent');
   });
 
@@ -159,6 +159,7 @@ describe.skipIf(!dbAvailable)('qualified signal: Twenty webhook -> signal.qualif
       max_events: 1,
       event_url: 'https://expofoods.example/expositores',
       event_name: 'Expo Foods Madrid 2026',
+      event_date: '2026-11-24',
       signal_id: signalId,
       event: { id: envelope!.id, type: 'signal.qualified' },
     });

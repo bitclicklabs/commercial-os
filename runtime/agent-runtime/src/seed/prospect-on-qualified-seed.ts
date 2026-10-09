@@ -6,10 +6,13 @@
  * without waiting for the daily/weekly runs.
  *
  * Run input = default input + mapped event data + the envelope under `event`:
- *   { mode: "scout", max_events: 1, event_url, event_name, signal_id, event: {...} }
+ *   { mode: "scout", max_events: 1, event_url, event_name, event_date, signal_id, event: {...} }
  * `mode: "scout"` is required because the envelope key `event` would otherwise select the direct
- * mode (`isScoutInput`); `ScoutInput` ignores the extra keys (`signal_id`, `event`). The scout
- * input shape and `isScoutInput` are unchanged.
+ * mode (`isScoutInput`); `ScoutInput` ignores the keys it does not know (`signal_id`, `event`).
+ * `event_date` (YYYY-MM-DD, omitted when the signal has none) is the starting date of the
+ * candidate fair, so an event-level signal the scout writes reuses the qualified signal's
+ * idempotency key instead of duplicating it; `signal_id` marks the fair as worked for the daily
+ * round-robin. The scout input shape and `isScoutInput` are unchanged here.
  *
  * Every run it creates writes the audit row `prospect.on_qualified` (actor system, method EVENT,
  * subject the signal, payload with `signal_id` and `run_id`).
@@ -34,7 +37,7 @@ export function desiredProspectOnQualifiedTask(): TaskSpec {
     schedule: {
       type: 'EVENT',
       event_type: SIGNAL_QUALIFIED_EVENT,
-      input_from_event: { event_url: 'event_url', event_name: 'name', signal_id: 'signal_id' },
+      input_from_event: { event_url: 'event_url', event_name: 'name', event_date: 'event_date', signal_id: 'signal_id' },
       audit: { action: PROSPECT_ON_QUALIFIED_AUDIT_ACTION, subject_type: 'commercial_signal', subject_path: 'signal_id' },
     },
     timezone: 'Europe/Madrid',

@@ -27,6 +27,7 @@ import { parseSchedule } from '../../src/scheduler/schedule.js';
 import { desiredProspectOnQualifiedTask, PROSPECT_ON_QUALIFIED_AUDIT_ACTION } from '../../src/seed/prospect-on-qualified-seed.js';
 import {
   classifySignalQualification,
+  eventDateOf,
   eventNameOf,
   eventUrlOf,
   SIGNAL_REFIRE_WINDOW_MS,
@@ -123,10 +124,20 @@ describe('signal helpers', () => {
     expect(eventUrlOf(null)).toBeNull();
   });
 
-  it('eventNameOf drops the " (feria)" suffix', () => {
+  it('eventNameOf drops the " (feria)" / " (congreso)" / " (evento)" suffix', () => {
     expect(eventNameOf('Alimentaria 2026 (feria)')).toBe('Alimentaria 2026');
+    expect(eventNameOf('Congreso Retail (congreso)')).toBe('Congreso Retail');
+    expect(eventNameOf('Gala (Evento)')).toBe('Gala');
     expect(eventNameOf('Congreso X')).toBe('Congreso X');
     expect(eventNameOf('  ')).toBeNull();
+  });
+
+  it('eventDateOf keeps only a valid YYYY-MM-DD (DATE or DATE_TIME values)', () => {
+    expect(eventDateOf('2026-11-24')).toBe('2026-11-24');
+    expect(eventDateOf('2026-11-24T00:00:00.000Z')).toBe('2026-11-24');
+    expect(eventDateOf('2026-02-30')).toBeNull();
+    expect(eventDateOf('24/11/2026')).toBeNull();
+    expect(eventDateOf(null)).toBeNull();
   });
 
   it('24 h window per signal and chained idempotency key', () => {
@@ -202,7 +213,13 @@ describe('prospect-on-qualified: mapping to the targeted scout input', () => {
     expect(task.maxConcurrency).toBe(1);
   });
 
-  it('builds {event_url, event_name, max_events: 1, signal_id} and the Prospector takes the scout path', () => {
+  it('a signal without date leaves event_date out of the input', () => {
+    const data = (classifySignalQualification(signalPayload({ eventDate: null })) as unknown as { data: Record<string, unknown> }).data;
+    expect(data.event_date).toBeNull();
+    expect(mappedEventInput({ data }, parseEventRunOptions(task.schedule).inputFromEvent)).not.toHaveProperty('event_date');
+  });
+
+  it('builds {event_url, event_name, event_date, max_events: 1, signal_id} and the Prospector takes the scout path', () => {
     // As requestTaskRun builds it: default input, then the trigger input (envelope + mapped keys).
     const input = { ...task.defaultInput, ...eventTriggeredInput(envelope), ...mappedEventInput(envelope, parseEventRunOptions(task.schedule).inputFromEvent) };
     expect(input).toMatchObject({
@@ -210,6 +227,7 @@ describe('prospect-on-qualified: mapping to the targeted scout input', () => {
       max_events: 1,
       event_url: 'https://expofoods.example/expositores',
       event_name: 'Expo Foods Madrid 2026',
+      event_date: '2026-11-24',
       signal_id: SIGNAL_ID,
       event: { id: envelope.id },
     });

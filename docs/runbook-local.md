@@ -97,6 +97,8 @@ Todos los comandos `docker compose` de este runbook se ejecutan desde `deploymen
 | `CATALOG_BASE_URL` | vacía | Dirección del conector por la VPN. Obligatoria con `CATALOG_PROVIDER=http`. Es el único host exento del guard anti-SSRF. Tanda 14 |
 | `CATALOG_API_TOKEN` | vacía | Token Bearer de solo lectura del catálogo (`pxcat_…`), que da de alta el backend de publiexpe. Es un secreto: solo en `deployments/.env`. Tanda 14 |
 | `OPTIMIZER_SCHEDULE_ENABLED` | `false` por defecto | Activa la ejecución [programada](skill-optimizer.md#programado) del Skill Optimizer (por defecto, `0 9 * * 3` en `Europe/Madrid`). Solo `true` la enciende; solo encola y nunca promueve nada. Tanda 14 |
+| `OPTIMIZER_SCHEDULE_CRON` | `0 9 * * 3` (miércoles 09:00 Europe/Madrid) | Cadencia del optimizador programado. Solo con `OPTIMIZER_SCHEDULE_ENABLED=true` |
+| `OPTIMIZER_SCHEDULE_SKILLS` | `prospector-event-exhibitors` | Skills que encola el programado, separadas por comas |
 
 > **Nota:** el bloque `environment` de `pxos-runtime` pasa hoy `TRACE_RETENTION_DAYS` y `TRACE_ARCHIVE_DIR`. Si tu `docker-compose.yml` todavía no pasa `TRACE_ARCHIVE_ENABLED`, `TRACE_ARCHIVE_INTERVAL_MS`, las `MODEL_ROUTE_*`, las `CATALOG_*` o `OPTIMIZER_SCHEDULE_ENABLED`, añádelas con la forma `${NOMBRE:-}` antes de usarlas: una variable que no llega al contenedor no tiene ningún efecto. Con `pxos-runtime` ya levantado, recréalo (`docker compose up -d pxos-runtime`) para que lea los valores nuevos.
 

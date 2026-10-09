@@ -33,6 +33,8 @@ WORKDIR /app
 COPY --from=prod-deps /app/node_modules ./node_modules
 COPY --from=build /app/dist ./dist
 COPY drizzle ./drizzle
+# Fixtures del stub del catálogo: permiten CATALOG_PROVIDER=stub dentro del contenedor.
+COPY fixtures ./fixtures
 COPY package.json ./
 USER node
 EXPOSE 4020

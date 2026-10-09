@@ -17,6 +17,7 @@ Estado: MVP. Además de `StubAgent` (sin LLM) y `SmokeAgent` (tools reales contr
 ```
 runtime/agent-runtime/
 ├── drizzle/                  Migraciones SQL generadas por drizzle-kit
+├── fixtures/catalog/         Fixtures FICTICIOS del stub del catálogo (se sustituyen por los del backend con los mismos nombres)
 ├── src/
 │   ├── main.ts               Entrada: API, worker y/o scheduler según RUNTIME_ROLE o --role=
 │   ├── config.ts             Configuración desde variables de entorno
@@ -24,6 +25,7 @@ runtime/agent-runtime/
 │   ├── agents/               Interfaz de agente, StubAgent, SmokeAgent, ProspectorAgent (modos directo y scout, prompts, SourceLedger) EmailDrafterAgent (borradores, nunca envía), BajasAgent (inbound de bajas, sin LLM) e InboxAgent (triaje del buzón: reglas + LLM, nunca responde)
 │   ├── inbound/              Inbound: lector IMAP de solo lectura, clasificador de bajas, reglas de triaje (rebotes, autorrespuestas), clasificador LLM de respuestas, lista de supresión, enlace con email_sends, cursor (inbound_state) y triaje (inbound_triage)
 │   ├── integrations/twenty/  TwentyClient REST tipado, mapeo de objetos de la App y MemoryTwenty (CRM en memoria para los experimentos del optimizador)
+│   ├── integrations/catalog/ Catalog Service (contrato v1.1): tipos zod, cliente REST con exención SSRF de un solo origen, stub fiel, caché TTL en memoria y CatalogService
 │   ├── tools/                Interfaz Tool, registry, tool_policy, executor, tools de Twenty y web/ (fetch_url con texto de PDF, render_url y guarda SSRF)
 │   ├── db/                   Esquema Drizzle, cliente y migrador
 │   ├── events/               Event bus: sobre event.envelope.v1, EventBus, payloads, triggers EVENT y GET /events; puente externo (POST /events/external, event_subscriptions y webhooks firmados con guarda SSRF)
@@ -42,7 +44,7 @@ runtime/agent-runtime/
 │   ├── experiments/          Experiments y Release Gate (MVP-2): runner de pnpm experiment:run, criterios del gate (seesaw, PASS_FORM), tabla experiments, candado de la activación y revalidación de los PASS_FORM
 │   ├── optimizer/            Skill Optimizer (MVP-3): cosecha de fallos, clustering, candidata con edit-ops, P5, experimento, nota de promoción, tabla optimization_runs y cola {QUEUE_NAME}-optimizer
 │   ├── services/             Lanzamiento idempotente de TaskRuns
-│   └── worker/               RunProcessor, worker BullMQ, locks por entidad y reconciliador
+│   └── worker/               RunProcessor, worker BullMQ, locks por entidad, reconciliador y gates de salud (Twenty, catálogo)
 └── test/
     ├── unit/                 Corren siempre, sin BD ni Redis
     ├── integration/          API, worker, scheduler, locks y tools (PostgreSQL, Redis y Twenty); se saltan si falta el servicio
@@ -130,6 +132,12 @@ Requisitos: Node.js 22, pnpm, y los contenedores `pxos-postgres` (127.0.0.1:5440
 | `WEBHOOK_DELIVERY_BACKOFF_MS` | `5000` | Base del backoff exponencial entre los 3 intentos de entrega |
 | `WEBHOOK_DELIVERY_CONCURRENCY` | `4` | Entregas simultáneas del worker de webhooks (rol `scheduler`) |
 | `RENDERER_URL` | `http://pxos-renderer:3000` | Servicio de render JavaScript de `render_url`. En desarrollo, `http://127.0.0.1:4030` si el renderer está publicado ahí. Vacío u `off` = desactivado (`render_url` devuelve `RENDERER_NOT_CONFIGURED`) |
+| `CATALOG_ENABLED` | `false` | Catalog Service (contrato v1.1). Solo `true` lo enciende. Con `false` las tools `catalog_*` no se exponen y no hay gate de salud. Consulta [Catálogo](#catálogo-catalog-service) |
+| `CATALOG_PROVIDER` | `stub` | `stub` (fixtures de `fixtures/catalog/`, sin red) o `http` (conector de publiexpe por la VPN) |
+| `CATALOG_BASE_URL` | vacío | **Solo el origen** (`https://host[:puerto]`); el cliente añade `/api/catalog/v1`. Obligatoria con `http`. Único origen exento del guard anti-SSRF (host y puerto exactos, sin subdominios) |
+| `CATALOG_API_TOKEN` | vacío | Token Bearer de solo lectura (`pxcat_…`). Obligatorio con `http`. Nunca aparece en logs, errores ni trace |
+| `CATALOG_TIMEOUT_MS` | `10000` | Timeout por intento (el contrato corta a los 10 s) |
+| `CATALOG_STUB_FIXTURES_DIR` | `fixtures/catalog` | Directorio de fixtures del stub (para sustituirlos por los del backend sin tocar el código) |
 | `TRACE_RETENTION_DAYS` | `90` | Antigüedad (días) por defecto de `pnpm traces:archive`. Consulta [Retención de trazas](#retención-de-trazas-sin-pérdida-pnpm-tracesarchive) |
 | `TRACE_ARCHIVE_DIR` | `./data/trace-archive` | Directorio del archivo de trazas (`<tenant>/<YYYY-MM>.jsonl.gz`); en Docker, un volumen persistente |
 | `TRACE_ARCHIVE_ENABLED` | `false` | `true` activa el archivado programado de trazas en el rol `scheduler`. Consulta [Archivado programado](#archivado-programado) |
@@ -396,6 +404,7 @@ Todos los eventos viajan con este sobre. Los campos del sobre y de `data` usan `
 | `email.sent` | Email-ops, al registrar un `SENT` | `hypothesisId`, `companyId`, `toDomain`, `recipients`, `sendId`, `sentAt`. Nunca la dirección |
 | `email.sent_suppressed` | Email-ops, si lo enviado iba a una dirección suprimida (el chequeo de `READY` perdió la carrera) | `hypothesisId`, `companyId`, `matchedBy`, `toDomains`, `noteId` |
 | `email.warmup_target_exceeded` | Email-ops, cuando los envíos del día superan el objetivo del warm-up (una vez por día local) | `date`, `timezone`, `phase`, `restDay`, `target`, `sendsToday`, `countedSource` |
+| `catalog.unavailable` | Gate del catálogo, con `CATALOG_ENABLED=true` y `/health` fallando antes de una ejecución (como mucho una vez al día por tenant, `idempotencyKey` `evt:catalog.unavailable:{tenant}:{día}`) | `day`, `reason`, `code`, `message`, `provider`, `checkedAt`, `executionId` |
 | `experiment.revalidation_failed` | Revalidación de un `PASS_FORM` con veredicto `REFUTED` cuya versión sigue `ACTIVE` o en canario (una vez por revalidación nueva) | `revalidationId`, `experimentId`, `experimentName`, `subjectType`, `subjectName`, `baselineVersion`, `candidateVersion`, `verdict`, `baselineAccuracy`, `candidateAccuracy`, `labels`, `versionState` (`ACTIVE` o `CANARY`), `noteId` |
 
 Cada evento del runtime lleva una `idempotencyKey` (`evt:{type}:{task_run_id}`, `evt:task.started:{task_run_id}:{attempt}`, `evt:{type}:{execution_id}`, `evt:evaluation.recorded:{evaluation_id}`): publicar dos veces el mismo hecho devuelve la fila existente.
@@ -1337,6 +1346,11 @@ Las de Twenty usan `TWENTY_BASE_URL` y `TWENTY_API_KEY` y tienen `outputTrust = 
 | `revert_hypothesis_draft_status` | `LOW_WRITE` | Sí | Pone `emailStatus = DRAFT` solo si sigue en `READY` (relee antes de escribir) y el `PATCH` lleva solo ese campo. Solo puede hacer el envío menos probable. Ningún agente la tiene en su política: la usa email-ops |
 | `fetch_url` | `READ` | No | — (consulta [Seguridad del contenido web](#seguridad-del-contenido-web)) |
 | `render_url` | `READ` | No | — (consulta [Render de JavaScript](#render-de-javascript-render_url)) |
+| `catalog_search_products` | `READ` | No | — (consulta [Catálogo](#catálogo-catalog-service); salida `untrusted`) |
+| `catalog_get_product` | `READ` | No | — (ficha completa, lápidas incluidas) |
+| `catalog_estimate_customization` | `READ` | No | — (estimación orientativa del marcaje; los 4 parámetros obligatorios) |
+| `catalog_list_families` | `READ` | No | — |
+| `catalog_describe` | `READ` | No | — (vocabulario de filtros y límites) |
 
 `create_signal` acepta `companyId` opcional: sin él crea una **señal a nivel de evento** (una feria sin empresa asociada todavía), deduplicada entre las señales sin empresa por tipo + `eventDate` + `sourceDomain`.
 
@@ -1399,6 +1413,19 @@ Formas de campo verificadas contra Twenty 2.45:
 | `DATE` / `DATE_TIME` | `YYYY-MM-DD` / ISO 8601 |
 | `ARRAY` / `RAW_JSON` | `string[]` / JSON libre |
 | `RELATION` N:1 | Columna de unión: `companyId`, `commercialSignalId`, `decisionMakerId` |
+
+### Catálogo (Catalog Service)
+
+Lado Commercial OS del [contrato del conector v1.1](../../docs/catalog-connector-contrato.md) (operación: [catalog-service.md](../../docs/catalog-service.md)). Apagado por defecto (`CATALOG_ENABLED=false`).
+
+- `src/integrations/catalog/`: tipos zod del contrato (`types.ts`; todo importe es `basis: "INDICATIVE"` o la respuesta se rechaza), cliente REST (`client.ts`: Bearer `pxcat_`, timeout de 10 s, reintentos suaves, `429` con `Retry-After` hasta 3 veces, cursor, rechazo de un `MAJOR` de contrato distinto de 1), stub fiel (`stub.ts`, fixtures en `fixtures/catalog/`: seis operaciones, lápida `REMOVED` incluida), caché en memoria (`cache.ts`: familias y `describe` 1 h, ficha 10 min, búsqueda 5 min; la estimación no se cachea; nada en base de datos) y `CatalogService` (`service.ts`).
+- **Red:** el cliente queda exento del guard anti-SSRF **solo** para el origen exacto de `CATALOG_BASE_URL` (`egress.ts`); cualquier otro host, también tras una redirección, pasa el guard general, y el token nunca sale de ese origen. `fetch_url`, `render_url` y los webhooks no cambian.
+- **Confianza:** las tools son `outputTrust: untrusted`. Los textos de proveedor (nombres, descripciones, materiales) llegan al LLM solo dentro de un bloque `<<<DATOS_NO_CONFIABLES …>>>` (`catalogCandidatesPrompt` en `prompt.ts`); ids, SKU, importes y cantidades van fuera.
+- **Gate de salud y modo degradado** (`src/worker/catalog-gate.ts`): antes de una ejecución cuya política incluye tools de catálogo, el worker lee `/health` (caché de 60 s). Fallo = sin respuesta, error de red, `503`, `401`/`403` o `MAJOR` desconocido; `degraded` no es fallo. Si falla, la ejecución sigue **sin catálogo** (las tools responden `CATALOG_UNAVAILABLE`) y, como mucho una vez al día por tenant (día de Madrid), deja una nota ⚠️ «Catálogo no disponible» en Twenty y el evento `catalog.unavailable`. Nunca correo. El trace lleva un paso `THINK` con la decisión del gate.
+- **Hipótesis con productos reales** (`src/agents/prospector-catalog.ts`): solo si la skill resuelta lleva la marca `[[capacidad:catalogo]]`. El Prospector busca con `catalog_search_products` (una búsqueda por producto genérico, como mucho 3), una segunda llamada al LLM elige de 0 a 3 candidatos, el código descarta lo que no sea un candidato real (productId **y** sku) y confirma la ficha (`ACTIVE`). La salida lleva `results[].recommended_products` `[{ productId, sku, name, priceHint }]`; en Twenty van al campo existente `recommendedProducts` (`Nombre · ref. SKU · id productId`, antes que las familias genéricas) y a la evidencia con el precio como orden de magnitud («en torno a X-Y €/ud antes de personalización, orientativo, sin IVA»). Cualquier fallo deja la hipótesis como antes.
+- **Skill candidata:** `pnpm seed` crea una versión **DRAFT** de `prospector-event-exhibitors` con la sección «Productos reales del catálogo» (`src/seed/catalog-skill-seed.ts`). Nunca se activa sola: pasa por el Release Gate y una persona.
+- **API:** `GET /catalog/health[?fresh=true]` (solo lectura): lo que ve el gate; `200` disponible o apagado, `503` encendido y caído.
+- **Arranque:** con el catálogo encendido, una configuración inválida (proveedor, origen no http(s), falta de token) detiene el proceso; un host que no resuelve solo avisa (la VPN puede llegar después).
 
 ### Probar una tool real con SmokeAgent
 

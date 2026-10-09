@@ -37,7 +37,7 @@ runtime/agent-runtime/
 │   ├── providers/            ModelProvider, StubProvider, AnthropicProvider, GeminiProvider y tabla de precios
 │   ├── queue/                RunQueue (BullMQ y en memoria)
 │   ├── scheduler/            TaskScheduler sobre BullMQ, parseo de schedules y rutas
-│   ├── seed/                 Seed idempotente del harness default-commercial, las skills, el Prospector, el EmailDrafter, el BajasAgent y sus tareas (pnpm seed)
+│   ├── seed/                 Seed idempotente del harness default-commercial, las skills, el Prospector (con prospect-on-qualified), el EmailDrafter, el BajasAgent y sus tareas (pnpm seed)
 │   ├── skills/               Skills versionadas (MVP-1): render, resolución desde la BD con fallback a las constantes, ciclo de estados
 │   ├── harness/              Harness versionado (MVP-1): config v1 por dimensiones, precedencia, resolución desde la BD con fallback y ciclo de estados
 │   ├── datasets/             Datasets de evaluación (MVP-2): cosecha de trazas y veredictos, split determinista, registro de exclusiones de EXP-001/EXP-002 y control de contaminación (markUsed)
@@ -250,7 +250,7 @@ Cabecera opcional `x-tenant-id` en todas las rutas. Las respuestas usan `snake_c
 | `GET /executions`, `GET /executions/:id` | Lista o detalle con trace y pasos |
 | `POST /executions/:id/cancel` | `QUEUED` o `RUNNING` a `CANCELLED` |
 | `POST /executions/:id/{pause,resume}` | `501`, requiere harness con checkpoints |
-| `POST /webhooks/twenty` | Webhook de Twenty firmado. Convierte cambios de `commercialHypothesis` en evaluaciones HUMAN y, si cambia `emailStatus` a `READY` o `SENT`, ejecuta [email-ops](#email-ops-guardarraíles-del-envío-desde-twenty) (respuesta con `email`; `502` si email-ops falla) |
+| `POST /webhooks/twenty` | Webhook de Twenty firmado. Convierte cambios de `commercialHypothesis` en evaluaciones HUMAN y, si cambia `emailStatus` a `READY` o `SENT`, ejecuta [email-ops](#email-ops-guardarraíles-del-envío-desde-twenty) (respuesta con `email`; `502` si email-ops falla). Una señal de feria de `commercialSignal` que pasa a `QUALIFIED` emite `signal.qualified` ([prospección al calificar](#señal-calificada--prospección-dirigida-prospect-on-qualified); respuesta con `signal`, `202` si se emitió) |
 | `POST /evaluations/human` | Registra un veredicto manual: `201` nuevo, `200` duplicado |
 | `GET /evaluations` | Lista evaluaciones. Filtros: `subject_id`, `subject_type`, `feedback`, `agent_execution_id`, `since`, `limit` |
 | `GET /metrics/summary` | Runs por estado, tarea y outcome; coste, tokens, latencia, embudo comercial, feedback y bloque `email` (envíos y warm-up). Filtros `since`, `until` |
@@ -409,6 +409,7 @@ Todos los eventos viajan con este sobre. Los campos del sobre y de `data` usan `
 | `email.sent_suppressed` | Email-ops, si lo enviado iba a una dirección suprimida (el chequeo de `READY` perdió la carrera) | `hypothesisId`, `companyId`, `matchedBy`, `toDomains`, `noteId` |
 | `email.warmup_target_exceeded` | Email-ops, cuando los envíos del día superan el objetivo del warm-up (una vez por día local) | `date`, `timezone`, `phase`, `restDay`, `target`, `sendsToday`, `countedSource` |
 | `catalog.unavailable` | Gate del catálogo, con `CATALOG_ENABLED=true` y `/health` fallando antes de una ejecución (como mucho una vez al día por tenant, `idempotencyKey` `evt:catalog.unavailable:{tenant}:{día}`) | `day`, `reason`, `code`, `message`, `provider`, `checkedAt`, `executionId` |
+| `signal.qualified` | Webhook de Twenty, cuando una persona pasa una señal de feria (`commercialSignal` sin empresa, tipo `FAIR`, `CONGRESS` o `EVENT`, con URL) a `QUALIFIED`, o la crea ya calificada. Como mucho una vez por señal cada 24 h (`idempotencyKey` `evt:signal.qualified:{signal_id}:{evento_anterior\|first}`) | `signal_id`, `name` (sin el sufijo ` (feria)`), `event_url`, `event_date`, `signal_type`, `transition` (`updated_fields` o `status_only`), `twenty` (`webhook_id`, `workspace_id`, `event_date`), `chainDepth` 0 |
 | `experiment.revalidation_failed` | Revalidación de un `PASS_FORM` con veredicto `REFUTED` cuya versión sigue `ACTIVE` o en canario (una vez por revalidación nueva) | `revalidationId`, `experimentId`, `experimentName`, `subjectType`, `subjectName`, `baselineVersion`, `candidateVersion`, `verdict`, `baselineAccuracy`, `candidateAccuracy`, `labels`, `versionState` (`ACTIVE` o `CANARY`), `noteId` |
 
 Cada evento del runtime lleva una `idempotencyKey` (`evt:{type}:{task_run_id}`, `evt:task.started:{task_run_id}:{attempt}`, `evt:{type}:{execution_id}`, `evt:evaluation.recorded:{evaluation_id}`): publicar dos veces el mismo hecho devuelve la fila existente.
@@ -437,7 +438,9 @@ Tabla `events` (migración `0002_events`): `id`, `tenant_id`, `type`, `schema_ve
 - El registro sigue el mismo camino que `CRON`: la API sincroniza tras `POST /tasks`, `PATCH`, `pause`, `resume` y `archive`, y `syncAll` lo corrige periódicamente. Solo se registran tareas `ACTIVE`, `enabled` y con un `EVENT` válido, en el hash de Redis `pxos:{QUEUE_NAME}-events:triggers`. `GET /tasks/:id/schedule` devuelve `event_trigger` (deseado y registrado) y `GET /scheduler/status` lista los triggers con `kind = "event"`.
 - El consumidor (rol `scheduler` o `all`) recibe cada evento, busca los triggers del mismo tenant y tipo, vuelve a leer la tarea en PostgreSQL (un registro obsoleto se retira), aplica el filtro y la guardia anti-bucle y llama a `requestTaskRun` con la clave `taskrun:{task_id}:event:{event_id}`. El mismo evento entregado dos veces devuelve el `TaskRun` existente.
 - El `input` del run es `default_input` más el sobre completo bajo la clave `event` (`input.event.data` es el payload).
-- `POST /tasks` y `PATCH /tasks/:id` devuelven `400 invalid_schedule` si falta `event_type`, tiene un formato inválido o el filtro no es un objeto.
+- Opcional, `input_from_event`: `{"clave_del_input": "ruta.en.data"}` copia valores del evento a claves de primer nivel del `input` (máx. 20; `event` está reservada; las rutas ausentes o `null` se omiten). Ejemplo: `{"event_url": "event_url", "event_name": "name"}`.
+- Opcional, `audit`: `{"action": "dominio.accion", "subject_type": "snake_case", "subject_path": "ruta.en.data"}` escribe una fila en `audit_log` (actor `system`, método `EVENT`, ruta `event:{tipo}`, `payload` con el sujeto, `run_id`, `event_id` y `task_id`) por cada run que el trigger **crea**. Una entrega duplicada no crea run ni fila. Si la escritura falla, queda en el log y el run sigue.
+- `POST /tasks` y `PATCH /tasks/:id` devuelven `400 invalid_schedule` si falta `event_type`, tiene un formato inválido, el filtro no es un objeto o `input_from_event` / `audit` están mal formados.
 
 ### Guardia anti-bucle
 
@@ -2063,9 +2066,34 @@ pnpm register:webhook --dry-run
 
 - Desde los contenedores de Twenty, el runtime se alcanza como `http://pxos-runtime:4020` (misma red `pxos-net`). Es el destino por defecto.
 - Si el runtime corre en el host (`pnpm dev`), usa `http://host.docker.internal:<puerto>/webhooks/twenty` y escucha en `RUNTIME_HOST=0.0.0.0`.
-- El script es idempotente: identifica el webhook por la marca `pxos-runtime:human-feedback` en la descripción, lo crea si no existe y si no lo actualiza. Suscribe solo `commercialHypothesis.updated`. Guarda `TWENTY_WEBHOOK_SECRET` como `secret` del webhook (Twenty firma con él) y nunca lo pone en la URL.
+- El script es idempotente: identifica el webhook por la marca `pxos-runtime:human-feedback` en la descripción, lo crea si no existe y si no lo actualiza. Suscribe `commercialHypothesis.updated` (evaluador HUMAN y email-ops), `commercialSignal.updated` y `commercialSignal.created` ([prospección al calificar](#señal-calificada--prospección-dirigida-prospect-on-qualified)). Guarda `TWENTY_WEBHOOK_SECRET` como `secret` del webhook (Twenty firma con él) y nunca lo pone en la URL.
 - Twenty no tiene un estado "inactivo" para los webhooks: `--pause` deja `operations` vacío. El script nunca borra webhooks.
 - El runtime que recibe el webhook necesita el mismo `TWENTY_WEBHOOK_SECRET` en su entorno.
+
+### Señal calificada → prospección dirigida (`prospect-on-qualified`)
+
+Cuando un comercial califica en Twenty una señal de feria (`commercialSignal.status` → `QUALIFIED`), el Prospector explora esa feria en el momento, sin esperar al run diario ni al semanal.
+
+1. Twenty envía `commercialSignal.updated` (o `commercialSignal.created` si la señal se crea ya calificada) al mismo `POST /webhooks/twenty`, con la misma firma HMAC. La ruta enruta por objeto (`objectMetadata.nameSingular`): las hipótesis siguen al evaluador HUMAN y a email-ops; las señales, a `src/signals/qualified.ts`.
+1. Solo cuentan las **señales de feria**: sin `companyId`, `signalType` `FAIR`, `CONGRESS` o `EVENT`, y una URL http(s) en `sourceUrl` (un dominio sin esquema se completa con `https://`). Las señales por expositor (las que el Prospector cuelga de una empresa), las de otro tipo y las que no tienen URL se ignoran; la respuesta lleva `signal.status = "ignored"` y el motivo, que también queda en el log.
+1. Transición: si llega `updatedFields`, debe incluir `status` (editar otro campo de una señal ya calificada no la recalifica). Sin `updatedFields` (por ejemplo, en `created`) basta con `status = QUALIFIED`, y la ventana de 24 h hace de guarda.
+1. Una vez por señal: si la señal ya emitió `signal.qualified` en las últimas 24 h, no se emite nada (`signal.status = "within_window"`). Calificar → descalificar → recalificar, o un reenvío del webhook, no relanza la prospección. Pasadas 24 h, una recalificación sí la relanza. La clave del evento se encadena con el evento anterior de la señal (`evt:signal.qualified:{signal_id}:{id_anterior|first}`), así que dos entregas simultáneas producen un solo evento.
+1. La tarea `EVENT` `prospect-on-qualified` (seed, agente Prospector, `max_concurrency` 1) se dispara con `signal.qualified` y encola un `TaskRun` (clave `taskrun:{task_id}:event:{event_id}`) con el input del scout dirigido: `{"mode": "scout", "max_events": 1, "event_url": "...", "event_name": "...", "signal_id": "...", "event": {...}}`. `mode: "scout"` es necesario porque la clave `event` elegiría el modo directo. El scout ignora `signal_id` y `event`.
+1. Cada run encolado deja la fila de auditoría `prospect.on_qualified` (actor `system`, método `EVENT`, sujeto `commercial_signal` = id de la señal, `payload` con `signal_id` y `run_id`). Consulta: `GET /audit?action=prospect.on_qualified`.
+
+Respuesta del webhook: `202` si se emitió el evento, `200` si se ignoró o cayó dentro de la ventana, y `502` si el bus de eventos no pudo publicarlo.
+
+#### Paso manual en Twenty (una vez por entorno)
+
+El runtime no crea este webhook solo. Elige una de las dos opciones:
+
+- **Con el script** (recomendado): `pnpm register:webhook` actualiza el webhook existente (marca `pxos-runtime:human-feedback`) para que suscriba también `commercialSignal.updated` y `commercialSignal.created`. Prueba antes con `--dry-run`.
+- **A mano en Twenty**: en *Settings → APIs & Webhooks → Webhooks*, abre el webhook del runtime (el que apunta a `/webhooks/twenty`) y añade a sus operaciones el objeto *Commercial Signal* con las operaciones **Updated** y **Created**. Si prefieres un webhook aparte, créalo con:
+  - URL: la misma del webhook de las hipótesis, `http://pxos-runtime:4020/webhooks/twenty` (o `http://host.docker.internal:<puerto>/webhooks/twenty` si el runtime corre en el host).
+  - Operaciones: `commercialSignal.updated` y `commercialSignal.created`.
+  - Secret: el valor de `TWENTY_WEBHOOK_SECRET` del runtime (el mismo de siempre; nunca en la URL).
+
+Después, ejecuta `pnpm seed` en el runtime para crear la tarea `prospect-on-qualified`, y comprueba con `GET /tasks/:id/schedule` que el trigger `EVENT` está registrado (`in_sync: true`).
 
 ### Vínculo con la ejecución de origen
 

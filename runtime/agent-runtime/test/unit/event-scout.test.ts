@@ -440,7 +440,16 @@ describe('seed: weekly-event-scouting', () => {
     expect(desiredTask({ a: 1 })).toMatchObject({ schedule: { type: 'CRON', expression: '0 8 * * *' }, timezone: 'Europe/Madrid', defaultInput: { a: 1 } });
     const cfg = desiredProspectorVersion().configuration as { scout: Record<string, unknown>; tool_policy: { max_calls_per_tool: Record<string, number> } };
     expect(cfg.scout).toMatchObject({ task_name: 'weekly-event-scouting', max_events: 3 });
-    expect(cfg.tool_policy.max_calls_per_tool).toEqual({ fetch_url: 230, render_url: 115 });
+    expect(cfg.tool_policy.max_calls_per_tool).toEqual({
+      fetch_url: 230,
+      render_url: 115,
+      // Catalog tools (tanda 14): only used when the skill asks for real products.
+      catalog_search_products: 300,
+      catalog_get_product: 300,
+      catalog_estimate_customization: 20,
+      catalog_list_families: 5,
+      catalog_describe: 5,
+    });
     expect(cfg.scout).toMatchObject({ max_fetches: 18, max_pages_per_event: 3, max_renders: 4, max_pdfs_per_event: 2, max_exhibitors_per_event: 100, max_catalog_pages: 10, max_profile_lookups: 100, time_budget_ms: 1_200_000, capture_json: true });
     expect(readConfig(cfg).scout).toMatchObject({ maxExhibitorsPerEvent: 100, maxCatalogPages: 10, maxProfileLookups: 100, timeBudgetMs: 1_200_000, captureJson: true, profileConcurrency: 2 });
     expect(readConfig({}).scout).toMatchObject({ maxExhibitorsPerEvent: 100, maxCatalogPages: 10, maxProfileLookups: 100, timeBudgetMs: 1_200_000, captureJson: true });

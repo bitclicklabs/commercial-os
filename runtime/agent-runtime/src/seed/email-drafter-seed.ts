@@ -19,6 +19,7 @@ import { EMAIL_DRAFTER_SKILL_ID } from '../agents/email-drafter-prompt.js';
 import { DEFAULT_COMPANY_DESCRIPTOR, DEFAULT_SENDER, WORD_RANGE } from '../agents/email-draft.js';
 import { DEFAULT_USD_TO_EUR } from '../providers/gemini-pricing.js';
 import type { SkillRef } from '../db/schema.js';
+import { CATALOG_TOOL_IDS } from '../tools/catalog/catalog-tools.js';
 import { upsertAgent, upsertTask, type AgentVersionSpec, type TaskSpec } from './prospector-seed.js';
 
 export const EMAIL_DRAFTER_AGENT_NAME = 'EmailDrafter';
@@ -34,10 +35,20 @@ export function desiredEmailDrafterVersion(): AgentVersionSpec {
       implementation: 'email_drafter',
       stage: 'EMAIL_DRAFTER',
       tool_policy: {
-        allow: [...EMAIL_DRAFTER_TOOLS],
+        // Catalog tools (READ): allowed so a future skill version can look products up; the drafter
+        // code does not call them and its copy (confirmed by the user) does not change.
+        allow: [...EMAIL_DRAFTER_TOOLS, ...CATALOG_TOOL_IDS],
         max_risk_level: 'LOW_WRITE',
-        max_calls_per_execution: 6,
-        max_calls_per_tool: { create_note: 1, set_hypothesis_draft: 1 },
+        max_calls_per_execution: 12,
+        max_calls_per_tool: {
+          create_note: 1,
+          set_hypothesis_draft: 1,
+          catalog_search_products: 2,
+          catalog_get_product: 3,
+          catalog_estimate_customization: 2,
+          catalog_list_families: 1,
+          catalog_describe: 1,
+        },
       },
       // Send from Twenty (docs/twenty-envio-email.md): OFF until the Twenty App fields
       // emailTo / emailSubject / emailBody / emailStatus are synced. Turning it on only adds

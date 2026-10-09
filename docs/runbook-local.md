@@ -214,7 +214,7 @@ Las contraseñas de Postgres solo se aplican al crear el volumen por primera vez
 
 6. Instala la Twenty App con los objetos comerciales. Consulta [Sincronizar la Twenty App](#sincronizar-la-twenty-app).
 
-7. Registra el agente Prospector y la tarea `daily-event-prospecting` con el seed. Ejecútalo desde `runtime/agent-runtime/`, con las migraciones aplicadas y `DATABASE_URL` apuntando a `127.0.0.1:5440` (valor por defecto de `.env.example`):
+7. Registra el agente Prospector y las tareas de prospección con el seed. Ejecútalo desde `runtime/agent-runtime/`, con las migraciones aplicadas y `DATABASE_URL` apuntando a `127.0.0.1:5440` (valor por defecto de `.env.example`):
 
    ```bash
    cd runtime/agent-runtime
@@ -225,7 +225,9 @@ Las contraseñas de Postgres solo se aplican al crear el volumen por primera vez
    El seed es idempotente: puedes repetirlo sin duplicar nada. Desde la tanda 7 también siembra el `EmailDrafter`, el `BajasAgent` y las 4 skills como v1 `ACTIVE` (consulta [Skills](#skills-comprobar-que-están-activas)).
 
    - Crea el agente `Prospector` (versión 1 `ACTIVE`, proveedor `gemini`). Si ya existe y su versión activa difiere, añade una versión nueva y depreca la anterior.
-   - Crea o actualiza la tarea `daily-event-prospecting`: `CRON 0 8 * * *` en `Europe/Madrid`, con `test/fixtures/feria-ejemplo.json` (tres expositores ficticios) como entrada por defecto.
+   - Crea o actualiza la tarea `daily-event-prospecting`: `CRON 0 8 * * *` en `Europe/Madrid`. Desde la tanda 15 (versión 2) trabaja en [modo señales](prospeccion-por-senales.md#prospectar-a-diario-en-modo-señales): reparte su presupuesto entre las señales de feria `QUALIFIED` y ya **no lleva la feria de ejemplo** (`feria-ejemplo.json`) como entrada. En una BD existente, `pnpm seed` añade una versión nueva de la tarea; la anterior no se borra.
+   - Crea la tarea `EVENT` `prospect-on-qualified`, que prospecta una feria en cuanto el comercial la califica (requiere el [webhook de `commercialSignal`](#webhook-de-commercialsignal-en-twenty)).
+   - Deja desactivada la tarea de test huérfana que quedó de pruebas anteriores. Desactivar no borra: el registro y sus ejecuciones se conservan.
 
    Opciones: `pnpm seed -- --tenant=otro --input=evento.json`. Detalles en el [README del runtime](../runtime/agent-runtime/README.md#seed).
 
@@ -299,20 +301,21 @@ Si el paso 4 devuelve `QUEUED` de forma sostenida, el worker no está procesando
 
 ## Operación diaria
 
-Una vez desplegado el stack y hecho el seed, la operación del día a día es automática: el scheduler lanza la tarea `daily-event-prospecting` cada día a las 08:00 (Europe/Madrid) y deja señales, hipótesis y un resumen de ejecución en Twenty. El equipo comercial trabaja con ese resultado según la [guía del equipo comercial](guia-comercial.md).
+Una vez desplegado el stack y hecho el seed, la operación del día a día es automática: el scheduler lanza la tarea `daily-event-prospecting` cada día a las 08:00 (Europe/Madrid) y, además, el scout de los lunes (07:30) alimenta la cola de señales de feria. Desde la tanda 15 el trabajo lo guían las señales que califica el comercial ([ciclo completo](prospeccion-por-senales.md)): la tarea de las 08:00 reparte su presupuesto entre las señales `QUALIFIED` vigentes y deja señales de expositor, hipótesis y un resumen de ejecución en Twenty; calificar una señal dispara además la prospección de esa feria al momento. El equipo comercial trabaja con ese resultado según la [guía del equipo comercial](guia-comercial.md).
 
 Tu parte como operador es comprobar que la ejecución ha ocurrido:
 
-1. Abre Twenty y revisa **Commercial OS → Agent runs**. Debe haber una ejecución de hoy con `Outcome` `Success`.
+1. Abre Twenty y revisa **Commercial OS → Agent runs**. Debe haber una ejecución de hoy: con `Outcome` `Success` si hay señales `QUALIFIED` vigentes, o `Skipped` (coste 0) si no hay ninguna. Un `Skipped` por falta de señales calificadas es normal, no un fallo.
 1. Si no la hay o es `Failed` o `Partial`, consulta la run con `curl "http://127.0.0.1:4020/tasks/<TASK_ID>/runs" -H 'x-tenant-id: publiexpe'` y los [logs](#dónde-mirar-los-logs) del runtime. Causas habituales: falta `GEMINI_API_KEY` o `TWENTY_API_KEY`, o el proceso `scheduler` no está en marcha. Consulta [Problemas frecuentes](#problemas-frecuentes).
-1. El coste de cada ejecución aparece en el campo **Cost** del resumen. El valor esperado con la entrada de ejemplo es de unos 0,006 €.
+1. El coste de cada ejecución aparece en el campo **Cost** del resumen. Ahora depende del número de ferias calificadas y de sus expositores; con el run `Skipped`, es 0.
+1. Tras calificar una señal, comprueba que el disparo inmediato ha quedado auditado como `prospect.on_qualified` en `GET /audit` ([comprobación](prospeccion-por-senales.md#comprobar-que-funciona)). Si no aparece, revisa el [webhook de `commercialSignal`](#webhook-de-commercialsignal-en-twenty).
 
 1. El canal de email de prospección en frío (`publiexpe.info`) tiene su propia operación diaria y semanal: checklists, vigilancia de informes DMARC y Postmaster Tools, y el calendario de warm-up. Sigue el [plan de warm-up del canal de email](email-warmup.md). El sistema solo deja borradores en Twenty; los envíos los hace una persona, con un clic desde Twenty ([Enviar los borradores desde Twenty](twenty-envio-email.md)) o a mano desde el webmail.
 
 1. Comprueba que la tarea `process-unsubscribes` (cada 2 horas) se ejecuta: `curl "http://127.0.0.1:4020/tasks/<TASK_ID>/runs" -H 'x-tenant-id: publiexpe'`. Un `outcome` `SKIPPED` con el motivo `IMAP no configurado` indica que faltan `IONOS_IMAP_USER` o `IONOS_IMAP_PASSWORD`. Desde la tanda 12 la tarea no solo procesa bajas: clasifica todo el buzón (respuestas, rebotes y automáticos). Consulta [Triaje del inbound](inbound-triaje.md#operación).
 1. Si el comercial avisa de que una hipótesis se queda en `Email status` = `Sending`, abre **Workflows → Runs** en Twenty y revisa la ejecución de **Enviar borrador de email**. No relances el envío hasta saber si el correo salió.
 
-> **Nota:** la tarea usa por defecto la entrada de ejemplo del seed (expositores ficticios con dominio `.example`). Los registros que genera son de demostración. El scouting semanal de ferias reales (lunes 07:30) y la captura del feedback del comercial están activos.
+> **Nota:** desde la tanda 15 la tarea diaria ya no usa la entrada de ejemplo del seed. Los registros con dominio `.example` que haya en Twenty son anteriores, de demostración. El scouting semanal de ferias (lunes 07:30) y la captura del feedback del comercial están activos.
 
 ## Skills: comprobar que están activas
 
@@ -349,6 +352,34 @@ curl -s http://localhost:3020/mcp \
 > **Importante:** si el resultado es mayor que `0`, la API key tiene permisos de más. Reasígnale el rol **Agent runtime** en **Settings → APIs & Webhooks** antes de seguir enviando desde Twenty.
 
 El procedimiento completo para crear el rol está en [Enviar los borradores desde Twenty](twenty-envio-email.md#paso-1-restringir-la-api-key-del-runtime). `scripts/sync-twenty-app.ps1` y `pnpm twenty:send-workflow` necesitan una API key con permisos de administración: ejecútalos con una key temporal de rol Admin y revócala después.
+
+## Webhook de `commercialSignal` en Twenty
+
+Desde la tanda 15, calificar una señal de feria dispara la prospección de esa feria al momento. Para que Twenty avise al runtime hay que dar de alta **una vez** un webhook del objeto `commercialSignal`. Es un paso manual del operador: ni el seed ni el runtime lo crean.
+
+> **Nota:** si no lo das de alta, el sistema sigue funcionando: la señal calificada recibe trabajo en el run de las 08:00 del día siguiente. Lo que se pierde es el disparo inmediato.
+
+Requisitos:
+
+- `TWENTY_WEBHOOK_SECRET` (16 caracteres o más) definido en `pxos-runtime`. Es el mismo que usa el webhook de feedback de hipótesis; no hay variable nueva.
+- `OUTBOUND_HTTP_ALLOWED_INTERNAL_HOSTS=pxos-runtime,host.docker.internal` en el servidor y el worker de Twenty. Sin ella, Twenty descarta el envío sin registrar ningún error.
+
+Pasos:
+
+1. Abre Twenty y ve a **Settings → APIs & Webhooks → Webhooks → Create webhook**.
+1. En **URL**, escribe `http://pxos-runtime:4020/webhooks/twenty` (con el runtime en el host, `http://host.docker.internal:<puerto>/webhooks/twenty`).
+1. En **Operations**, añade solo `commercialSignal.updated`.
+1. En **Secret**, pega el valor de `TWENTY_WEBHOOK_SECRET`. No lo pongas en la URL.
+1. En **Description**, escribe `pxos-runtime:signal-qualified`.
+1. Guarda y comprueba el disparo con una señal de prueba: [Comprobar que funciona](prospeccion-por-senales.md#comprobar-que-funciona).
+
+Reglas:
+
+- **No toques el webhook de feedback** (`pxos-runtime:human-feedback`, el de `pnpm register:webhook`). Son independientes.
+- Twenty no tiene estado "inactivo" para los webhooks: para pausar el disparo inmediato, vacía **Operations**. No borres el webhook.
+- Twenty no reintenta entregas fallidas. Un disparo perdido no se recupera, pero el run diario recoge la señal calificada.
+
+Detalle del ciclo, de la idempotencia y de las limitaciones: [Prospección guiada por señales](prospeccion-por-senales.md).
 
 ## Sincronizar la Twenty App
 
@@ -639,6 +670,8 @@ ORDER BY created_at DESC;
 | `sync-twenty-app.ps1` dice que no existe la red `pxos-net` | El stack no está levantado | `docker compose up -d` en `deployments/`. |
 | Una ejecución se queda en `RUNNING` | Llamada colgada o límite de tiempo no aplicado | Cancela con `POST /executions/:id/cancel` y revisa el trace. |
 | La tarea de las 08:00 no se ejecutó | No se ha hecho el seed, la tarea no está `ACTIVE`/`enabled`, el agente no está `ACTIVE` o el proceso con rol `scheduler` (o `all`) no está en marcha | Haz `pnpm seed`, revisa `GET /tasks` y los logs del runtime, y lanza una run manual con `POST /tasks/:id/run` si necesitas el resultado ya. |
+| La tarea de las 08:00 termina `SKIPPED` | No hay señales de feria `QUALIFIED` vigentes (caso normal desde la tanda 15) | Nada que arreglar. Si el comercial dice que ha calificado una feria, comprueba que la señal es de feria (no una señal histórica por expositor), que su fecha no ha pasado y que no está ya `EXPIRED`. |
+| Calificar una señal no dispara nada en el momento | Falta el [webhook de `commercialSignal`](#webhook-de-commercialsignal-en-twenty), falla la firma (`401`), falta `TWENTY_WEBHOOK_SECRET` (`503`), a Twenty le falta `OUTBOUND_HTTP_ALLOWED_INTERNAL_HOSTS`, o cae dentro de la ventana de 24 h de una calificación anterior | Revisa el webhook en **Settings → APIs & Webhooks**, los [logs](#dónde-mirar-los-logs) y `GET /audit` (`prospect.on_qualified`). Mientras tanto, el run de las 08:00 la recoge. |
 | `GET /skills` devuelve una lista vacía, o los logs avisan de `falling back to the code constant` | No se ha hecho el seed tras aplicar la `0005_skills`, o la BD falló al resolver | `pnpm seed` y vuelve a consultar `GET /skills`. El agente sigue funcionando con el prompt de código. |
 | El runtime arranca pero falta una tabla (`event_subscriptions`, `skills`...) | Una migración no se aplicó (por ejemplo, fechas del journal en desorden) | Revisa las migraciones aplicadas y el journal: [Arranque, paso 4](#arranque). No edites tablas a mano. |
 | `POST /events/external` devuelve `503` | `EXTERNAL_EVENTS_TOKEN` no está definido en el runtime (el compose actual no lo pasa) | Añádelo al `environment` de `pxos-runtime` y recrea el servicio. |

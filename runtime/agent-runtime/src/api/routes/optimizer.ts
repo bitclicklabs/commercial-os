@@ -6,13 +6,17 @@
  * - `GET /optimizer/runs?skill=&status=&limit=` and `GET /optimizer/runs/:id`.
  * - `POST /optimizer/runs/:id/close`: the human close (PROMOTED after activating the
  *   candidate through the Release Gate, or DISCARDED). The optimizer never activates.
+ * - `GET /optimizer/schedule`: the scheduled optimizer (src/optimizer/schedule-job.ts), read
+ *   only: enabled, cron, timezone, skills, last and next fire.
  */
 import { z } from 'zod';
 import type { FastifyInstance } from 'fastify';
 import { OPTIMIZATION_RUN_STATUSES, type OptimizationRun } from '../../db/schema.js';
-import { OPTIMIZABLE_SKILLS, optimizerConfig, type OptimizerConfig } from '../../optimizer/core.js';
-import { closeRun, createRun, findRun, listRuns, OptimizerServiceError, transitionRun } from '../../optimizer/service.js';
-import { findSkill, listVersions, SKILL_NAME_RE } from '../../skills/service.js';
+import type { OptimizerConfig } from '../../optimizer/core.js';
+import { launchOptimizationRun, OptimizerLaunchError } from '../../optimizer/launch.js';
+import { optimizerScheduleSettingsFromEnv, optimizerScheduleStatus } from '../../optimizer/schedule-job.js';
+import { closeRun, findRun, listRuns, OptimizerServiceError } from '../../optimizer/service.js';
+import { SKILL_NAME_RE } from '../../skills/service.js';
 import { DATASET_NAME_RE } from '../../datasets/service.js';
 import type { ApiContext } from '../context.js';
 import { HttpError, IdParams, notFound, parse, serialize, tenantOf } from '../http.js';
@@ -54,6 +58,27 @@ function toHttp(err: unknown): never {
   throw err;
 }
 
+/** Same answers as before the shared launch path (src/optimizer/launch.ts). */
+function launchToHttp(err: unknown): never {
+  if (err instanceof OptimizerLaunchError) {
+    switch (err.code) {
+      case 'skill_not_found':
+        throw notFound('skill');
+      case 'unsupported_skill':
+        throw new HttpError(422, 'unsupported_skill', err.message);
+      case 'no_active_version':
+        throw new HttpError(409, 'conflict', err.message);
+      case 'invalid_config':
+        throw new HttpError(400, 'invalid', err.message);
+      case 'no_queue':
+        throw new HttpError(503, 'optimizer_unavailable', err.message);
+      case 'queue_unavailable':
+        throw new HttpError(503, 'queue_unavailable', err.message, err.run ? { run: view(err.run, false) } : undefined);
+    }
+  }
+  return toHttp(err);
+}
+
 /** The run as served: snake_case; the list leaves out the bulky `details.failures`. */
 function view(run: OptimizationRun, full: boolean): Record<string, unknown> {
   const { failures: _f, ...light } = run.details as { failures?: unknown };
@@ -67,37 +92,24 @@ export async function optimizerRoutes(app: FastifyInstance, ctx: ApiContext): Pr
     const tenantId = tenantOf(req, ctx.config.defaultTenantId);
     const { name } = parse(SkillParams, req.params);
     const body = parse(OptimizerRunBody, req.body ?? {});
-    const skill = await findSkill(db, tenantId, name);
-    if (!skill) throw notFound('skill');
-    if (!OPTIMIZABLE_SKILLS[skill.name]) {
-      throw new HttpError(422, 'unsupported_skill', `no hay optimizador para la skill "${skill.name}": necesita un runner de experimentos (soportadas: ${Object.keys(OPTIMIZABLE_SKILLS).join(', ')})`);
-    }
-    const active = (await listVersions(db, skill.id)).find((v) => v.status === 'ACTIVE');
-    if (!active) throw new HttpError(409, 'conflict', `la skill ${skill.name} no tiene versión ACTIVE (la base del optimizador)`);
-    let config: OptimizerConfig;
-    try {
-      config = optimizerConfig(skill.name, {
-        ...(body.datasetName ?? body.dataset_name ? { datasetName: (body.datasetName ?? body.dataset_name)! } : {}),
-        ...(body.budget_eur !== undefined ? { experimentBudgetEur: body.budget_eur } : {}),
-        ...(body.llm_budget_eur !== undefined ? { llmBudgetEur: body.llm_budget_eur } : {}),
-        ...(body.repeat !== undefined ? { repeat: body.repeat } : {}),
-        ...(body.min_labeled_validation !== undefined ? { minLabeledValidation: body.min_labeled_validation } : {}),
-        ...(body.min_failures !== undefined ? { minFailures: body.min_failures } : {}),
-        ...(body.today !== undefined ? { today: body.today } : {}),
-        // model: role `optimizer` of the model router (MODEL_ROUTE_OPTIMIZER > GEMINI_MODEL > code table).
-      });
-    } catch (err) {
-      throw new HttpError(400, 'invalid', err instanceof Error ? err.message : String(err));
-    }
-    if (!ctx.optimizerQueue) throw new HttpError(503, 'optimizer_unavailable', 'el optimizador no tiene cola en este proceso (rol api sin Redis)');
-    const run = await createRun(db, { tenantId, skillName: skill.name, baseVersion: active.version, config: config as unknown as Record<string, unknown>, createdBy: body.created_by ?? null }).catch(toHttp);
-    try {
-      await ctx.optimizerQueue.enqueue({ tenantId, runId: run.id });
-    } catch (err) {
-      const closed = await transitionRun(db, run.id, 'ERROR', { error: `no se pudo encolar: ${err instanceof Error ? err.message : String(err)}` }, 'PENDING');
-      throw new HttpError(503, 'queue_unavailable', 'no se pudo encolar el run (¿Redis?): queda en ERROR; repite la petición', { run: view(closed, false) });
-    }
+    const overrides: Partial<OptimizerConfig> = {
+      ...(body.datasetName ?? body.dataset_name ? { datasetName: (body.datasetName ?? body.dataset_name)! } : {}),
+      ...(body.budget_eur !== undefined ? { experimentBudgetEur: body.budget_eur } : {}),
+      ...(body.llm_budget_eur !== undefined ? { llmBudgetEur: body.llm_budget_eur } : {}),
+      ...(body.repeat !== undefined ? { repeat: body.repeat } : {}),
+      ...(body.min_labeled_validation !== undefined ? { minLabeledValidation: body.min_labeled_validation } : {}),
+      ...(body.min_failures !== undefined ? { minFailures: body.min_failures } : {}),
+      ...(body.today !== undefined ? { today: body.today } : {}),
+    };
+    // Same path as the scheduled job (src/optimizer/launch.ts).
+    const run = await launchOptimizationRun(db, ctx.optimizerQueue, { tenantId, skill: name, overrides, createdBy: body.created_by ?? null }).catch(launchToHttp);
     return reply.status(202).send({ run: view(run, false) });
+  });
+
+  app.get('/optimizer/schedule', async (req) => {
+    const tenantId = tenantOf(req, ctx.config.defaultTenantId);
+    const settings = ctx.optimizerSchedule ?? optimizerScheduleSettingsFromEnv();
+    return { schedule: await optimizerScheduleStatus(db, tenantId, settings) };
   });
 
   app.get('/optimizer/runs', async (req) => {

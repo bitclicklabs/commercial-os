@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { CATALOG_TOOL_IDS } from '../../src/tools/catalog/catalog-tools.js';
 import { describe, expect, it } from 'vitest';
 import type { AgentContext } from '../../src/agents/agent.js';
 import {
@@ -386,7 +387,8 @@ describe('EmailDrafterAgent', () => {
   it('is resolved from configuration.implementation = "email_drafter"; seed policy has no mail tool', () => {
     expect(resolveAgentImplementation({ implementation: 'email_drafter' }).kind).toBe('email_drafter');
     const policy = parseToolPolicy(desiredEmailDrafterVersion().configuration);
-    expect([...policy.allow].sort()).toEqual(['create_note', 'find_company', 'get_company', 'get_hypothesis', 'set_hypothesis_draft']);
+    // + the five catalog tools (READ, tanda 14): allowed for a future skill, never called by the drafter code.
+    expect([...policy.allow].sort()).toEqual([...CATALOG_TOOL_IDS, 'create_note', 'find_company', 'get_company', 'get_hypothesis', 'set_hypothesis_draft'].sort());
     expect(policy.maxRiskLevel).toBe('LOW_WRITE');
     expect(policy.allow.some((t) => /mail|send/.test(t))).toBe(false);
   });

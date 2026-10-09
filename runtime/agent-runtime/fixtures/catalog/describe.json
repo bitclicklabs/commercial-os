@@ -1,0 +1,57 @@
+{
+  "contractVersion": "1.1.0",
+  "filters": {
+    "attributes": [
+      "color",
+      "size",
+      "material",
+      "brand",
+      "tag"
+    ],
+    "color": {
+      "groups": [
+        "azul",
+        "beige",
+        "blanco",
+        "gris",
+        "marrón",
+        "negro",
+        "rojo",
+        "verde"
+      ]
+    },
+    "size": {
+      "values": [
+        "XS",
+        "S",
+        "M",
+        "L",
+        "XL",
+        "XXL"
+      ]
+    }
+  },
+  "customization": {
+    "techniques": [
+      "Serigrafía",
+      "Tampografía",
+      "Láser",
+      "Bordado",
+      "DTF",
+      "Sublimación"
+    ]
+  },
+  "sort": [
+    "relevance",
+    "name",
+    "updatedAt"
+  ],
+  "limits": {
+    "defaultLimit": 20,
+    "maxLimit": 100,
+    "maxQueryLength": 200,
+    "maxDescriptionLength": 4000,
+    "requestsPerMinute": 600,
+    "cursorTtlSeconds": 600
+  }
+}

@@ -17,6 +17,7 @@ Estado: MVP. Además de `StubAgent` (sin LLM) y `SmokeAgent` (tools reales contr
 ```
 runtime/agent-runtime/
 ├── drizzle/                  Migraciones SQL generadas por drizzle-kit
+├── fixtures/catalog/         Fixtures FICTICIOS del stub del catálogo (se sustituyen por los del backend con los mismos nombres)
 ├── src/
 │   ├── main.ts               Entrada: API, worker y/o scheduler según RUNTIME_ROLE o --role=
 │   ├── config.ts             Configuración desde variables de entorno
@@ -24,6 +25,7 @@ runtime/agent-runtime/
 │   ├── agents/               Interfaz de agente, StubAgent, SmokeAgent, ProspectorAgent (modos directo y scout, prompts, SourceLedger) EmailDrafterAgent (borradores, nunca envía), BajasAgent (inbound de bajas, sin LLM) e InboxAgent (triaje del buzón: reglas + LLM, nunca responde)
 │   ├── inbound/              Inbound: lector IMAP de solo lectura, clasificador de bajas, reglas de triaje (rebotes, autorrespuestas), clasificador LLM de respuestas, lista de supresión, enlace con email_sends, cursor (inbound_state) y triaje (inbound_triage)
 │   ├── integrations/twenty/  TwentyClient REST tipado, mapeo de objetos de la App y MemoryTwenty (CRM en memoria para los experimentos del optimizador)
+│   ├── integrations/catalog/ Catalog Service (contrato v1.1): tipos zod, cliente REST con exención SSRF de un solo origen, stub fiel, caché TTL en memoria y CatalogService
 │   ├── tools/                Interfaz Tool, registry, tool_policy, executor, tools de Twenty y web/ (fetch_url con texto de PDF, render_url y guarda SSRF)
 │   ├── db/                   Esquema Drizzle, cliente y migrador
 │   ├── events/               Event bus: sobre event.envelope.v1, EventBus, payloads, triggers EVENT y GET /events; puente externo (POST /events/external, event_subscriptions y webhooks firmados con guarda SSRF)
@@ -42,7 +44,7 @@ runtime/agent-runtime/
 │   ├── experiments/          Experiments y Release Gate (MVP-2): runner de pnpm experiment:run, criterios del gate (seesaw, PASS_FORM), tabla experiments, candado de la activación y revalidación de los PASS_FORM
 │   ├── optimizer/            Skill Optimizer (MVP-3): cosecha de fallos, clustering, candidata con edit-ops, P5, experimento, nota de promoción, tabla optimization_runs y cola {QUEUE_NAME}-optimizer
 │   ├── services/             Lanzamiento idempotente de TaskRuns
-│   └── worker/               RunProcessor, worker BullMQ, locks por entidad y reconciliador
+│   └── worker/               RunProcessor, worker BullMQ, locks por entidad, reconciliador y gates de salud (Twenty, catálogo)
 └── test/
     ├── unit/                 Corren siempre, sin BD ni Redis
     ├── integration/          API, worker, scheduler, locks y tools (PostgreSQL, Redis y Twenty); se saltan si falta el servicio
@@ -130,10 +132,19 @@ Requisitos: Node.js 22, pnpm, y los contenedores `pxos-postgres` (127.0.0.1:5440
 | `WEBHOOK_DELIVERY_BACKOFF_MS` | `5000` | Base del backoff exponencial entre los 3 intentos de entrega |
 | `WEBHOOK_DELIVERY_CONCURRENCY` | `4` | Entregas simultáneas del worker de webhooks (rol `scheduler`) |
 | `RENDERER_URL` | `http://pxos-renderer:3000` | Servicio de render JavaScript de `render_url`. En desarrollo, `http://127.0.0.1:4030` si el renderer está publicado ahí. Vacío u `off` = desactivado (`render_url` devuelve `RENDERER_NOT_CONFIGURED`) |
+| `CATALOG_ENABLED` | `false` | Catalog Service (contrato v1.1). Solo `true` lo enciende. Con `false` las tools `catalog_*` no se exponen y no hay gate de salud. Consulta [Catálogo](#catálogo-catalog-service) |
+| `CATALOG_PROVIDER` | `stub` | `stub` (fixtures de `fixtures/catalog/`, sin red) o `http` (conector de publiexpe por la VPN) |
+| `CATALOG_BASE_URL` | vacío | **Solo el origen** (`https://host[:puerto]`); el cliente añade `/api/catalog/v1`. Obligatoria con `http`. Único origen exento del guard anti-SSRF (host y puerto exactos, sin subdominios) |
+| `CATALOG_API_TOKEN` | vacío | Token Bearer de solo lectura (`pxcat_…`). Obligatorio con `http`. Nunca aparece en logs, errores ni trace |
+| `CATALOG_TIMEOUT_MS` | `10000` | Timeout por intento (el contrato corta a los 10 s) |
+| `CATALOG_STUB_FIXTURES_DIR` | `fixtures/catalog` | Directorio de fixtures del stub (para sustituirlos por los del backend sin tocar el código) |
 | `TRACE_RETENTION_DAYS` | `90` | Antigüedad (días) por defecto de `pnpm traces:archive`. Consulta [Retención de trazas](#retención-de-trazas-sin-pérdida-pnpm-tracesarchive) |
 | `TRACE_ARCHIVE_DIR` | `./data/trace-archive` | Directorio del archivo de trazas (`<tenant>/<YYYY-MM>.jsonl.gz`); en Docker, un volumen persistente |
 | `TRACE_ARCHIVE_ENABLED` | `false` | `true` activa el archivado programado de trazas en el rol `scheduler`. Consulta [Archivado programado](#archivado-programado) |
 | `TRACE_ARCHIVE_INTERVAL_MS` | `86400000` (24 h) | Frecuencia del archivado programado (mínimo 60 000) |
+| `OPTIMIZER_SCHEDULE_ENABLED` | `false` | `true` activa el Skill Optimizer programado en el rol `scheduler`. Consulta [Programado](#programado) |
+| `OPTIMIZER_SCHEDULE_CRON` | `0 9 * * 3` | Cuándo se encola el run programado (CRON de 5 campos, hora de `Europe/Madrid`): miércoles a las 09:00 |
+| `OPTIMIZER_SCHEDULE_SKILLS` | `prospector-event-exhibitors` | Skills que optimiza el run programado, separadas por comas. Solo las que tienen runner de experimentos |
 
 ## Migraciones
 
@@ -263,6 +274,7 @@ Cabecera opcional `x-tenant-id` en todas las rutas. Las respuestas usan `snake_c
 | `POST /optimizer/skills/:name/run` | Lanza un run del [Skill Optimizer](#skill-optimizer) sobre la versión `ACTIVE` (`202`, lo procesa el worker). `409` si la skill ya tiene un run abierto, `422` si no hay runner para la skill |
 | `GET /optimizer/runs`, `GET /optimizer/runs/:id` | Runs del optimizador (filtros `skill`, `status`, `limit`); el detalle incluye los fallos cosechados |
 | `POST /optimizer/runs/:id/close` | Cierre humano: `PROMOTED` (solo si la candidata ya es la `ACTIVE`) o `DISCARDED`. No hay `DELETE` |
+| `GET /optimizer/schedule` | Estado del optimizador [programado](#programado), solo lectura: activado, CRON, zona horaria, skills, último y próximo disparo |
 
 ### Idempotencia
 
@@ -396,6 +408,7 @@ Todos los eventos viajan con este sobre. Los campos del sobre y de `data` usan `
 | `email.sent` | Email-ops, al registrar un `SENT` | `hypothesisId`, `companyId`, `toDomain`, `recipients`, `sendId`, `sentAt`. Nunca la dirección |
 | `email.sent_suppressed` | Email-ops, si lo enviado iba a una dirección suprimida (el chequeo de `READY` perdió la carrera) | `hypothesisId`, `companyId`, `matchedBy`, `toDomains`, `noteId` |
 | `email.warmup_target_exceeded` | Email-ops, cuando los envíos del día superan el objetivo del warm-up (una vez por día local) | `date`, `timezone`, `phase`, `restDay`, `target`, `sendsToday`, `countedSource` |
+| `catalog.unavailable` | Gate del catálogo, con `CATALOG_ENABLED=true` y `/health` fallando antes de una ejecución (como mucho una vez al día por tenant, `idempotencyKey` `evt:catalog.unavailable:{tenant}:{día}`) | `day`, `reason`, `code`, `message`, `provider`, `checkedAt`, `executionId` |
 | `experiment.revalidation_failed` | Revalidación de un `PASS_FORM` con veredicto `REFUTED` cuya versión sigue `ACTIVE` o en canario (una vez por revalidación nueva) | `revalidationId`, `experimentId`, `experimentName`, `subjectType`, `subjectName`, `baselineVersion`, `candidateVersion`, `verdict`, `baselineAccuracy`, `candidateAccuracy`, `labels`, `versionState` (`ACTIVE` o `CANARY`), `noteId` |
 
 Cada evento del runtime lleva una `idempotencyKey` (`evt:{type}:{task_run_id}`, `evt:task.started:{task_run_id}:{attempt}`, `evt:{type}:{execution_id}`, `evt:evaluation.recorded:{evaluation_id}`): publicar dos veces el mismo hecho devuelve la fila existente.
@@ -1267,12 +1280,35 @@ El cuerpo de `POST /optimizer/skills/:name/run` es opcional: `datasetName` (o `d
 
 - Sin cola (rol `api` sin Redis), la API responde `503`. Si Redis falla al encolar, el run pasa a `ERROR` y la API responde `503`: repite la petición.
 - Al arrancar, el worker cierra como `ERROR` los runs abiertos sin progreso desde hace 6 horas (un worker que murió), para que la skill se pueda optimizar de nuevo.
-- Solo manual en este MVP: ninguna tarea programada lanza el optimizador. El scheduler programa `TaskDefinition` de agentes y el optimizador no es un agente, así que no se registra como tipo de tarea.
+- Manual o [programado](#programado). El optimizador no es un agente, así que no se registra como `TaskDefinition`: el run programado lo encola un temporizador del rol `scheduler`, por el mismo camino que la API.
 - Coste: el clustering y la propuesta son de dos a cuatro llamadas a Gemini Flash (céntimos, con techo `llm_budget_eur`); el experimento gasta como mucho su presupuesto (`budget_eur`). Un run bloqueado no gasta nada.
 
 > **Importante:** con los datos del 2026-10-07 (`publiexpe`), un run de `prospector-event-exhibitors` termina en `BLOCKED_NO_DATA` sin coste: la v3 activa no tiene fallos registrados y `prospeccion-v1` no tiene casos etiquetados de `VALIDATION` sin quemar (los 10 casos etiquetados ya están quemados por experimentos anteriores). Hacen falta veredictos humanos nuevos en Twenty. Compruébalo con `pnpm optimize:run --skill prospector-event-exhibitors --dry-run`.
 
+### Programado
+
+Con `OPTIMIZER_SCHEDULE_ENABLED=true`, el rol `scheduler` (también `RUNTIME_ROLE=all`) encola un run por cada skill de `OPTIMIZER_SCHEDULE_SKILLS` según `OPTIMIZER_SCHEDULE_CRON`, en hora de `Europe/Madrid`. Por defecto, los miércoles a las 09:00: después del scout del lunes y de que el comercial etiquete el martes. Está desactivado por defecto: actívalo en el compose. El código está en `src/optimizer/schedule-job.ts` y sigue el patrón del [archivado programado](#archivado-programado): un temporizador dentro del proceso.
+
+- **El mismo run que el manual.** La API y el job pasan por `launchOptimizationRun` (`src/optimizer/launch.ts`): mismas comprobaciones, presupuestos por defecto (0,30 € de experimento, 0,05 € del optimizador) y cola `{QUEUE_NAME}-optimizer`. El run lleva `created_by: optimizer-schedule`.
+- **Una vez por ventana, también tras reiniciar.** La ventana de un instante va del último disparo del CRON hasta el siguiente. Cada minuto, el job calcula la ventana sin tocar la BD. En el primer tick de cada ventana pregunta a `optimization_runs` si la skill tiene un run abierto o creado dentro de la ventana, por quien sea (el job, una persona u otra réplica). Si lo tiene, la ventana cuenta como disparada; si no, lanza uno. Después recuerda la respuesta en memoria hasta la ventana siguiente. No guarda nada más: el propio run es el registro del disparo.
+- **Recuperación limitada.** Si el proceso estaba parado a la hora del disparo, dispara al arrancar si no han pasado más de 12 horas. Pasado ese margen, espera a la ventana siguiente: activar el job un viernes no dispara la ventana del miércoles anterior.
+- **Run abierto:** se salta con un log `INFO`, sin `ERROR` ni auditoría. Si dos réplicas compiten, el índice único de run abierto deja pasar una y la otra lo registra como saltado.
+- **Auditoría:** cada encolado real deja una fila en `audit_log` con `action: optimizer.scheduled_run`, `actor: system`, `method: JOB`, `route: job:optimizer-schedule` y en `payload` la skill, el id del run, la versión base, el CRON y el inicio de la ventana. Un tick que no dispara no audita.
+- **`BLOCKED_NO_DATA` es lo normal muchas semanas** (sin fallos nuevos o sin `VALIDATION` sin quemar): el worker cierra el run antes de llamar a ningún modelo, sin coste, con un log `INFO`. No escribe nada en Twenty: la nota «Propuesta de promoción» solo aparece con `GATE_PASS`.
+- **Nada se promueve solo.** El job solo encola. La activación por el Release Gate y el cierre del run siguen siendo humanos.
+- Con un CRON o una skill no válidos, el job no arranca y el log dice por qué (`GET /optimizer/schedule` lo muestra en `errors`).
+
+```sh
+curl -s localhost:4020/optimizer/schedule -H 'x-tenant-id: publiexpe'
+# {"schedule":{"enabled":true,"cron":"0 9 * * 3","timezone":"Europe/Madrid","skills":["prospector-event-exhibitors"],
+#   "next_fire":"2026-10-14T07:00:00.000Z","last_fire":{"run_id":"…","status":"BLOCKED_NO_DATA","fired_at":"…","cost_eur":0},…}}
+```
+
+> **Nota:** `GET /optimizer/schedule` muestra la configuración del proceso que responde (rol `api`) y el último disparo leído de `optimization_runs`. El job corre en el rol `scheduler`: comparte las variables `OPTIMIZER_SCHEDULE_*` entre los dos servicios.
+
 ### Tests
+
+`test/unit/optimizer-schedule.test.ts` (sin BD) fija la configuración, la ventana del CRON en `Europe/Madrid` con los dos cambios de hora, un disparo por ventana con reinicio simulado, el margen de recuperación, el salto con run abierto y la auditoría. `test/integration/optimizer-schedule.test.ts` (PostgreSQL) dispara de verdad: encola, el run termina en `BLOCKED_NO_DATA` sin coste, deja una fila `optimizer.scheduled_run` y un segundo tick no duplica.
 
 `test/unit/optimizer.test.ts` (sin red ni BD) fija las transiciones, la configuración, la validación del clustering y de la propuesta, los topes rechazados → reintento conservador → error, la comprobación de datos P5, el `change_reason` y la nota (idempotente, sin activar). `test/integration/optimizer.test.ts` (PostgreSQL, proveedores guionizados y CRM en memoria) recorre un run completo hasta `GATE_PASS` con nota, marcas P5 de diseño y activación humana por el Release Gate (`PROMOTED`); `GATE_FAIL`; `BLOCKED_NO_DATA` por `VALIDATION` quemada y por falta de fallos; `ERROR` por los topes; la API y la recuperación de runs huérfanos:
 
@@ -1337,6 +1373,11 @@ Las de Twenty usan `TWENTY_BASE_URL` y `TWENTY_API_KEY` y tienen `outputTrust = 
 | `revert_hypothesis_draft_status` | `LOW_WRITE` | Sí | Pone `emailStatus = DRAFT` solo si sigue en `READY` (relee antes de escribir) y el `PATCH` lleva solo ese campo. Solo puede hacer el envío menos probable. Ningún agente la tiene en su política: la usa email-ops |
 | `fetch_url` | `READ` | No | — (consulta [Seguridad del contenido web](#seguridad-del-contenido-web)) |
 | `render_url` | `READ` | No | — (consulta [Render de JavaScript](#render-de-javascript-render_url)) |
+| `catalog_search_products` | `READ` | No | — (consulta [Catálogo](#catálogo-catalog-service); salida `untrusted`) |
+| `catalog_get_product` | `READ` | No | — (ficha completa, lápidas incluidas) |
+| `catalog_estimate_customization` | `READ` | No | — (estimación orientativa del marcaje; los 4 parámetros obligatorios) |
+| `catalog_list_families` | `READ` | No | — |
+| `catalog_describe` | `READ` | No | — (vocabulario de filtros y límites) |
 
 `create_signal` acepta `companyId` opcional: sin él crea una **señal a nivel de evento** (una feria sin empresa asociada todavía), deduplicada entre las señales sin empresa por tipo + `eventDate` + `sourceDomain`.
 
@@ -1399,6 +1440,19 @@ Formas de campo verificadas contra Twenty 2.45:
 | `DATE` / `DATE_TIME` | `YYYY-MM-DD` / ISO 8601 |
 | `ARRAY` / `RAW_JSON` | `string[]` / JSON libre |
 | `RELATION` N:1 | Columna de unión: `companyId`, `commercialSignalId`, `decisionMakerId` |
+
+### Catálogo (Catalog Service)
+
+Lado Commercial OS del [contrato del conector v1.1](../../docs/catalog-connector-contrato.md) (operación: [catalog-service.md](../../docs/catalog-service.md)). Apagado por defecto (`CATALOG_ENABLED=false`).
+
+- `src/integrations/catalog/`: tipos zod del contrato (`types.ts`; todo importe es `basis: "INDICATIVE"` o la respuesta se rechaza), cliente REST (`client.ts`: Bearer `pxcat_`, timeout de 10 s, reintentos suaves, `429` con `Retry-After` hasta 3 veces, cursor, rechazo de un `MAJOR` de contrato distinto de 1), stub fiel (`stub.ts`, fixtures en `fixtures/catalog/`: seis operaciones, lápida `REMOVED` incluida), caché en memoria (`cache.ts`: familias y `describe` 1 h, ficha 10 min, búsqueda 5 min; la estimación no se cachea; nada en base de datos) y `CatalogService` (`service.ts`).
+- **Red:** el cliente queda exento del guard anti-SSRF **solo** para el origen exacto de `CATALOG_BASE_URL` (`egress.ts`); cualquier otro host, también tras una redirección, pasa el guard general, y el token nunca sale de ese origen. `fetch_url`, `render_url` y los webhooks no cambian.
+- **Confianza:** las tools son `outputTrust: untrusted`. Los textos de proveedor (nombres, descripciones, materiales) llegan al LLM solo dentro de un bloque `<<<DATOS_NO_CONFIABLES …>>>` (`catalogCandidatesPrompt` en `prompt.ts`); ids, SKU, importes y cantidades van fuera.
+- **Gate de salud y modo degradado** (`src/worker/catalog-gate.ts`): antes de una ejecución cuya política incluye tools de catálogo, el worker lee `/health` (caché de 60 s). Fallo = sin respuesta, error de red, `503`, `401`/`403` o `MAJOR` desconocido; `degraded` no es fallo. Si falla, la ejecución sigue **sin catálogo** (las tools responden `CATALOG_UNAVAILABLE`) y, como mucho una vez al día por tenant (día de Madrid), deja una nota ⚠️ «Catálogo no disponible» en Twenty y el evento `catalog.unavailable`. Nunca correo. El trace lleva un paso `THINK` con la decisión del gate.
+- **Hipótesis con productos reales** (`src/agents/prospector-catalog.ts`): solo si la skill resuelta lleva la marca `[[capacidad:catalogo]]`. El Prospector busca con `catalog_search_products` (una búsqueda por producto genérico, como mucho 3), una segunda llamada al LLM elige de 0 a 3 candidatos, el código descarta lo que no sea un candidato real (productId **y** sku) y confirma la ficha (`ACTIVE`). La salida lleva `results[].recommended_products` `[{ productId, sku, name, priceHint }]`; en Twenty van al campo existente `recommendedProducts` (`Nombre · ref. SKU · id productId`, antes que las familias genéricas) y a la evidencia con el precio como orden de magnitud («en torno a X-Y €/ud antes de personalización, orientativo, sin IVA»). Cualquier fallo deja la hipótesis como antes.
+- **Skill candidata:** `pnpm seed` crea una versión **DRAFT** de `prospector-event-exhibitors` con la sección «Productos reales del catálogo» (`src/seed/catalog-skill-seed.ts`). Nunca se activa sola: pasa por el Release Gate y una persona.
+- **API:** `GET /catalog/health[?fresh=true]` (solo lectura): lo que ve el gate; `200` disponible o apagado, `503` encendido y caído.
+- **Arranque:** con el catálogo encendido, una configuración inválida (proveedor, origen no http(s), falta de token) detiene el proceso; un host que no resuelve solo avisa (la VPN puede llegar después).
 
 ### Probar una tool real con SmokeAgent
 

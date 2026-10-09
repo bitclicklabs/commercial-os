@@ -229,7 +229,7 @@ El rollback no pasa por el Release Gate: deprecar la activa, o activar una versi
 
 ## Modo automático: Skill Optimizer
 
-`pnpm optimize:run --skill <nombre>` (o `POST /optimizer/skills/:name/run`) encadena los pasos 2 a 4 sin intervención y se detiene antes de la decisión. Es solo manual: nada lo programa. El detalle, los estados y la revisión de la propuesta están en [Skill Optimizer](skill-optimizer.md).
+`pnpm optimize:run --skill <nombre>` (o `POST /optimizer/skills/:name/run`) encadena los pasos 2 a 4 sin intervención y se detiene antes de la decisión. Se lanza a mano o, si activas `OPTIMIZER_SCHEDULE_ENABLED`, lo encola el rol `scheduler` cada semana (miércoles 09:00 por defecto); en los dos casos se detiene antes de la decisión. El detalle, los estados y la revisión de la propuesta están en [Skill Optimizer](skill-optimizer.md).
 
 | Paso manual | Qué hace el optimizador |
 |---|---|

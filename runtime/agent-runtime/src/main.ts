@@ -6,10 +6,12 @@ import { createDb } from './db/client.js';
 import { BullEventQueue, EventBus, eventsQueueName } from './events/event-bus.js';
 import { BullWebhookDeliveryQueue, WebhookDeliveryWorker, WebhookDispatcher, webhooksQueueName } from './events/webhook-delivery.js';
 import { countReadyRevalidations } from './experiments/revalidation-service.js';
+import { catalogConfigFromEnv, checkCatalogAtBoot } from './integrations/catalog/index.js';
 import { twentyClientFromEnv } from './integrations/twenty/index.js';
 import { TraceArchiveJob, traceArchiveSettingsFromEnv } from './maintenance/trace-archive-job.js';
 import { metricsSyncSettingsFromEnv, TwentyMetricsSync } from './metrics/twenty-sync.js';
 import { BullOptimizerQueue, OptimizerWorker, optimizerQueueName } from './optimizer/queue.js';
+import { dbScheduleStore, OptimizerScheduleJob, optimizerScheduleSettingsFromEnv } from './optimizer/schedule-job.js';
 import { createProviderRegistry, defaultModelRouter, experimentRoutes } from './providers/index.js';
 import { BullRunQueue } from './queue/run-queue.js';
 import { desiredProspectorVersion } from './seed/prospector-seed.js';
@@ -25,6 +27,10 @@ async function main(): Promise<void> {
   // invalid one stops the process with a clear message instead of failing at the first call.
   const modelRouter = defaultModelRouter();
   for (const w of modelRouter.warnings()) console.warn(`[model-router] ${w}`);
+  // Catalog (contract v1.1): an enabled catalog with an invalid config stops the boot; an unresolvable host only warns.
+  const catalogBoot = await checkCatalogAtBoot(catalogConfigFromEnv());
+  for (const w of catalogBoot.warnings) console.warn(`[catalog] ${w}`);
+  if (!catalogBoot.ok) throw new Error(`invalid catalog configuration: ${catalogBoot.errors.join('; ')}`);
   const dbHandle = createDb(config.databaseUrl);
   const queue = new BullRunQueue(config.queueName, config.redisUrl);
   const has = (...roles: string[]) => config.role === 'all' || roles.includes(config.role);
@@ -57,9 +63,11 @@ async function main(): Promise<void> {
   let traceArchiveJob: TraceArchiveJob | undefined;
   let webhookQueue: BullWebhookDeliveryQueue | undefined;
   let webhookWorker: WebhookDeliveryWorker | undefined;
-  // Skill Optimizer (MVP-3): the API enqueues runs, the worker role processes them. Manual only.
+  // Skill Optimizer (MVP-3): the API (or the scheduled job of the scheduler role) enqueues runs, the worker role processes them.
   const optimizerQueue = has('api') ? new BullOptimizerQueue(optimizerQueueName(config.queueName), config.redisUrl) : undefined;
   let optimizerWorker: OptimizerWorker | undefined;
+  let optimizerScheduleJob: OptimizerScheduleJob | undefined;
+  let scheduleOptimizerQueue: BullOptimizerQueue | undefined;
 
   if (has('api')) {
     app = await buildServer(
@@ -183,13 +191,23 @@ async function main(): Promise<void> {
       traceArchiveJob.start(archiveSettings.intervalMs);
       logger.info({ intervalMs: archiveSettings.intervalMs, olderThanDays: config.traceRetentionDays, archiveDir: config.traceArchiveDir }, 'scheduled trace archive started');
     }
+    // Scheduled Skill Optimizer, off by default: only enqueues (same path as the manual run), never promotes.
+    const optimizerSchedule = optimizerScheduleSettingsFromEnv();
+    if (optimizerSchedule.enabled && optimizerSchedule.errors.length > 0) {
+      logger.error({ errors: optimizerSchedule.errors }, 'scheduled optimizer NOT started: invalid OPTIMIZER_SCHEDULE_* configuration');
+    } else if (optimizerSchedule.enabled) {
+      const queueForSchedule = optimizerQueue ?? (scheduleOptimizerQueue = new BullOptimizerQueue(optimizerQueueName(config.queueName), config.redisUrl));
+      optimizerScheduleJob = new OptimizerScheduleJob({ settings: optimizerSchedule, tenantId: config.defaultTenantId, store: dbScheduleStore(dbHandle.db, queueForSchedule), logger });
+      optimizerScheduleJob.start();
+      logger.info({ cron: optimizerSchedule.cron, timezone: optimizerSchedule.timezone, skills: optimizerSchedule.skills }, 'scheduled optimizer started');
+    }
   }
 
   const shutdown = async (signal: string) => {
     console.log(`received ${signal}, shutting down`);
     reconciler?.stop();
-    await Promise.allSettled([app?.close(), worker?.close(), eventConsumer?.close(), webhookWorker?.close(), metricsSync?.stop(), optimizerWorker?.close(), traceArchiveJob?.stop()]);
-    await Promise.allSettled([scheduler?.close(), eventBus.close(), queue.close(), webhookQueue?.close(), optimizerQueue?.close()]);
+    await Promise.allSettled([app?.close(), worker?.close(), eventConsumer?.close(), webhookWorker?.close(), metricsSync?.stop(), optimizerWorker?.close(), traceArchiveJob?.stop(), optimizerScheduleJob?.stop()]);
+    await Promise.allSettled([scheduler?.close(), eventBus.close(), queue.close(), webhookQueue?.close(), optimizerQueue?.close(), scheduleOptimizerQueue?.close()]);
     await dbHandle.close();
     process.exit(0);
   };

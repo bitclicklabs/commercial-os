@@ -1,4 +1,6 @@
+import { defaultCatalogService, type CatalogService } from '../integrations/catalog/index.js';
 import { twentyClientFromEnv, type TwentyClient } from '../integrations/twenty/index.js';
+import { createCatalogTools } from './catalog/catalog-tools.js';
 import { ToolRegistry } from './registry.js';
 import { createFindCompanyTool, createGetCompanyTool, createUpsertCompanyTool } from './twenty/company-tools.js';
 import { createGetHypothesisTool, createRevertHypothesisDraftStatusTool, createSetHypothesisDraftTool } from './twenty/hypothesis-tools.js';
@@ -25,6 +27,7 @@ export * from './web/ip-guard.js';
 export * from './web/html-text.js';
 export * from './web/pdf-text.js';
 export * from './web/render-url.js';
+export * from './catalog/catalog-tools.js';
 
 /** Registers the Twenty-backed MVP-0 tools on `registry`. */
 export function registerTwentyTools(registry: ToolRegistry, twenty: TwentyClient): ToolRegistry {
@@ -56,11 +59,22 @@ export function registerWebTools(registry: ToolRegistry, deps: FetchUrlDeps = {}
 }
 
 /**
+ * Registers the five catalog tools (READ, contract v1.1). They are registered always but carry
+ * `enabled = CATALOG_ENABLED`: with the catalog off the registry never resolves them for an agent.
+ */
+export function registerCatalogTools(registry: ToolRegistry, catalog: CatalogService): ToolRegistry {
+  for (const tool of createCatalogTools({ catalog })) registry.register(tool);
+  return registry;
+}
+
+/**
  * Registry with every MVP-0 tool implemented so far. The Twenty client is read from
  * TWENTY_BASE_URL / TWENTY_API_KEY; without a key the tools are still registered
  * and answer `TWENTY_NOT_CONFIGURED`. Agents only get the tools their `tool_policy`
- * allows (fetch_url / render_url are in no policy unless listed explicitly).
+ * allows (fetch_url / render_url are in no policy unless listed explicitly). The catalog
+ * tools use the process-wide CatalogService (CATALOG_* env) unless one is injected.
  */
-export function createDefaultToolRegistry(opts: { twenty?: TwentyClient; web?: FetchUrlDeps; render?: RenderUrlDeps } = {}): ToolRegistry {
-  return registerWebTools(registerTwentyTools(new ToolRegistry(), opts.twenty ?? twentyClientFromEnv()), opts.web, opts.render);
+export function createDefaultToolRegistry(opts: { twenty?: TwentyClient; web?: FetchUrlDeps; render?: RenderUrlDeps; catalog?: CatalogService } = {}): ToolRegistry {
+  const registry = registerWebTools(registerTwentyTools(new ToolRegistry(), opts.twenty ?? twentyClientFromEnv()), opts.web, opts.render);
+  return registerCatalogTools(registry, opts.catalog ?? defaultCatalogService());
 }

@@ -1,0 +1,49 @@
+{
+  "_comment": "Solo del stub: tarifas ficticias para estimate_customization. El conector real calcula con TechniquePrice y el margen de publiexpe, que nunca salen.",
+  "tiers": [
+    {
+      "minQuantity": 1000,
+      "factor": 0.75
+    },
+    {
+      "minQuantity": 500,
+      "factor": 0.85
+    },
+    {
+      "minQuantity": 1,
+      "factor": 1
+    }
+  ],
+  "techniques": {
+    "Serigrafía": {
+      "unitBaseEur": 0.12,
+      "unitPerColorEur": 0.11,
+      "setupPerColorEur": 22.5
+    },
+    "Tampografía": {
+      "unitBaseEur": 0.06,
+      "unitPerColorEur": 0.05,
+      "setupPerColorEur": 18
+    },
+    "Láser": {
+      "unitBaseEur": 0.25,
+      "unitPerColorEur": 0,
+      "setupFlatEur": 15
+    },
+    "Bordado": {
+      "unitBaseEur": 0.9,
+      "unitPerColorEur": 0.12,
+      "setupFlatEur": 35
+    },
+    "DTF": {
+      "unitBaseEur": 0.7,
+      "unitPerColorEur": 0,
+      "setupFlatEur": 0
+    },
+    "Sublimación": {
+      "unitBaseEur": 0.45,
+      "unitPerColorEur": 0,
+      "setupFlatEur": 20
+    }
+  }
+}

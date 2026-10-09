@@ -28,6 +28,7 @@ import { PROSPECTOR_SKILL_ID } from '../agents/prospector-prompt.js';
 import { SCOUT_EXTRACT_SKILL_ID, SCOUT_SKILL_ID } from '../agents/event-scout-prompt.js';
 import { DEFAULT_USD_TO_EUR } from '../providers/gemini-pricing.js';
 import { DEFAULT_COMMERCIAL_HARNESS_NAME } from '../harness/config.js';
+import { CATALOG_TOOL_IDS } from '../tools/catalog/catalog-tools.js';
 
 export const PROSPECTOR_AGENT_NAME = 'Prospector';
 export const PROSPECTOR_TASK_NAME = 'daily-event-prospecting';
@@ -66,15 +67,27 @@ export function desiredProspectorVersion() {
       stage: 'PROSPECTOR',
       task_name: PROSPECTOR_TASK_NAME,
       tool_policy: {
-        allow: [...PROSPECTOR_TOOLS],
+        // Catalog tools (READ, contract v1.1): exposed only with CATALOG_ENABLED=true and used only
+        // when the resolved skill asks for real products (src/agents/prospector-catalog.ts); the
+        // ACTIVE skill does not, so behaviour is unchanged until a catalog skill is activated.
+        allow: [...PROSPECTOR_TOOLS, ...CATALOG_TOOL_IDS],
         max_risk_level: 'LOW_WRITE',
         // Direct: 50 exhibitors x (upsert + signal + research + hypothesis, or find) + summary.
         // Scout: 3 fairs x 100 exhibitors x 4 writes + fetches + renders + profiles + event signals + summary.
         // The real limit of a scout run is its time budget (scout.time_budget_ms).
-        max_calls_per_execution: 1_800,
+        // + catalog: up to 3 searches + 3 sheets per written hypothesis (capped per tool below).
+        max_calls_per_execution: 2_400,
         // fetch_url: 18 pages/PDFs + 3 grounding redirects (+1) + 100 profiles + 100 domain checks;
         // render_url: 4 catalog renders (+1 retry, +1 older-renderer retry each) + 100 profiles.
-        max_calls_per_tool: { fetch_url: 230, render_url: 115 },
+        max_calls_per_tool: {
+          fetch_url: 230,
+          render_url: 115,
+          catalog_search_products: 300,
+          catalog_get_product: 300,
+          catalog_estimate_customization: 20,
+          catalog_list_families: 5,
+          catalog_describe: 5,
+        },
       },
       // Knowledge layer (LLD 6.4): ACTIVE entries of these domains go into the per-exhibitor decision prompt.
       knowledge_domains: ['prospeccion'],

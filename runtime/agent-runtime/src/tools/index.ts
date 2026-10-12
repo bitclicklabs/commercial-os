@@ -92,16 +92,10 @@ export function registerContactTools(registry: ToolRegistry, twenty: TwentyClien
  * allows (fetch_url / render_url are in no policy unless listed explicitly). The catalog
  * tools use the process-wide CatalogService (CATALOG_* env) unless one is injected.
  */
-export function createDefaultToolRegistry(
-  opts: { twenty?: TwentyClient; web?: FetchUrlDeps; render?: RenderUrlDeps; catalog?: CatalogService; contacts?: ContactFinderDeps } = {},
-): ToolRegistry {
-  const twenty = opts.twenty ?? twentyClientFromEnv();
-  const registry = registerWebTools(registerTwentyTools(new ToolRegistry(), twenty), opts.web, opts.render);
-  registerContactTools(registry, twenty, {
-    ...(opts.web ? { web: opts.web } : {}),
-    ...(opts.render ? { render: opts.render } : {}),
-    enrich: defaultEnrichService(),
-    ...(opts.contacts ?? {}),
-  });
+export function createDefaultToolRegistry(opts: { twenty?: TwentyClient; web?: FetchUrlDeps; render?: RenderUrlDeps; catalog?: CatalogService; contacts?: ContactFinderDeps } = {}): ToolRegistry {
+  const registry = registerWebTools(registerTwentyTools(new ToolRegistry(), opts.twenty ?? twentyClientFromEnv()), opts.web, opts.render);
+  // ContactFinder (tanda 17): same Twenty config and egress deps; enrichment = process-wide service.
+  const contactDeps: ContactFinderDeps = { ...(opts.web ? { web: opts.web } : {}), ...(opts.render ? { render: opts.render } : {}), enrich: defaultEnrichService(), ...(opts.contacts ?? {}) };
+  registerContactTools(registry, opts.twenty ?? twentyClientFromEnv(), contactDeps);
   return registerCatalogTools(registry, opts.catalog ?? defaultCatalogService());
 }

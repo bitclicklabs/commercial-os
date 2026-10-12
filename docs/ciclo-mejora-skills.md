@@ -242,6 +242,27 @@ El rollback no pasa por el Release Gate: deprecar la activa, o activar una versi
 
 El optimizador no sustituye al criterio humano: la lectura cualitativa del paso 5 sigue siendo imprescindible (EXP-003 lo demostró).
 
+## Caso canónico: el rechazo de los 6 borradores del 2026-10-12
+
+El mejor ejemplo de feedback humano convertido en regla no es un experimento, sino un rechazo. El 2026-10-12 el comercial revisó los seis primeros borradores listos para enviar (expositores de una feria que se celebraba el 26 de octubre) y los rechazó todos con una regla de negocio que el sistema no podía deducir de sus datos: *la feria es la semana que viene, no se puede vender ni producir un pedido; deben ser las ferias del próximo trimestre*. Los borradores, además, presumían del ángulo equivocado (adaptarse a plazos cortos).
+
+La tanda 18 convirtió ese juicio en tres piezas, cada una en su capa y con el humano como puerta:
+
+| Pieza | Capa | Qué codifica |
+|---|---|---|
+| [Ventana de lead time](prospeccion-por-senales.md#ventana-de-lead-time) | Código (determinista) | Solo se prospectan ferias a 45-210 días; fuera de ventana, nota ⏳; las hipótesis `PROPOSED` demasiado próximas caducan sin contaminar las métricas |
+| Candidatas `DRAFT` del Prospector y del EmailDrafter | Skills | El Prospector evalúa el lead time y descarta lo «fuera de ventana comercial»; el EmailDrafter cambia al ángulo «tiempo para producir con calma». Nunca se activan solas: pasan por el Release Gate y las activa una persona |
+| Entrada de conocimiento (`KnowledgeEntry`) | Memoria | La regla comercial, con el rechazo del 2026-10-12 como evidencia |
+
+Lo que enseña el caso:
+
+- **Una regla de negocio dura va al código, no a un prompt.** La ventana filtra de forma determinista; la skill solo añade criterio donde el código no llega. Así la regla se cumple aunque la skill candidata no esté activada.
+- **No hizo falta volumen para actuar.** Un rechazo con motivo es el tipo de señal que alimenta el [Skill Optimizer](skill-optimizer.md); aquí se actuó sin esperar a acumular casos, porque la causa era evidente y de negocio.
+- **Lo automático no se confunde con lo humano.** La auto-expiración de hipótesis se hace por vía de sistema y no crea evaluaciones `HUMAN`: si lo hiciera, el sistema se aprendería a sí mismo y la aceptación por versión dejaría de medir al comercial (P5).
+- **La candidata no se evalúa con el caso que la originó.** Los seis borradores rechazados son diseño, no validación.
+
+Detalle técnico de la regla: [Prospección guiada por señales](prospeccion-por-senales.md#ventana-de-lead-time).
+
 ## Lista de comprobación
 
 - [ ] Reparto *train* / *validation* fijado por escrito antes del análisis.

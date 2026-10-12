@@ -103,8 +103,12 @@ Todos los comandos `docker compose` de este runbook se ejecutan desde `deploymen
 | `CATCHUP_MAX_SLOTS` | `1` por defecto | Máximo de slots perdidos que el scheduler recupera por task tras una parada ([Después de una parada larga](#después-de-una-parada-larga)). Tanda 16 |
 | `CATCHUP_MAX_AGE_MS` | `172800000` (48 h) por defecto | Antigüedad máxima, en milisegundos, de un slot perdido para recuperarlo. Los más viejos se omiten. Tanda 16 |
 | `ALLOW_SHARED_TEST_DB` | sin definir | Solo para los tests de integración, no para el runtime. `1` permite ejecutarlos contra la base llamada `agentos`, que por defecto el guard rechaza ([Tests de integración](#tests-de-integración-base-aislada)). No lo definas en `deployments/.env`. Tanda 16 |
+| `ENRICH_PROVIDER` | vacía (apagado) | Proveedor de la **fase 2** de la [búsqueda de contactos](contactos.md#fase-2-enriquecimiento-externo): `stub` (datos ficticios, sin red) o `hunter`. Vacía: la fase 2 no hace nada. La fase 1 (web de la propia empresa) no depende de esta variable. Tanda 17 |
+| `ENRICH_API_KEY` | vacía | Clave del proveedor. Obligatoria con `ENRICH_PROVIDER=hunter`. Es un secreto: solo en `deployments/.env`. Tanda 17 |
+| `ENRICH_MAX_LOOKUPS_PER_DAY` | `25` | Tope diario de consultas al proveedor. Al agotarse, las hipótesis sin email esperan al día siguiente. Tanda 17 |
 
-> **Nota:** el bloque `environment` de `pxos-runtime` pasa hoy `TRACE_RETENTION_DAYS` y `TRACE_ARCHIVE_DIR`. Si tu `docker-compose.yml` todavía no pasa `TRACE_ARCHIVE_ENABLED`, `TRACE_ARCHIVE_INTERVAL_MS`, las `MODEL_ROUTE_*`, las `CATALOG_*` o `OPTIMIZER_SCHEDULE_ENABLED`, añádelas con la forma `${NOMBRE:-}` antes de usarlas: una variable que no llega al contenedor no tiene ningún efecto. Lo mismo vale para `SCHEDULER_TENANTS`, `CATCHUP_MAX_SLOTS` y `CATCHUP_MAX_AGE_MS`: si no las pasas, rigen los valores por defecto (solo `publiexpe`, 1 slot, 48 h), que son los seguros. Con `pxos-runtime` ya levantado, recréalo (`docker compose up -d pxos-runtime`) para que lea los valores nuevos.
+> **Nota:** el bloque `environment` de `pxos-runtime` pasa hoy `TRACE_RETENTION_DAYS` y `TRACE_ARCHIVE_DIR`. Si tu `docker-compose.yml` todavía no pasa `TRACE_ARCHIVE_ENABLED`, `TRACE_ARCHIVE_INTERVAL_MS`, las `MODEL_ROUTE_*`, las `CATALOG_*`, `OPTIMIZER_SCHEDULE_ENABLED` o las `ENRICH_*`, añádelas con la forma `${NOMBRE:-}` antes de usarlas: una variable que no llega al contenedor no tiene ningún efecto. Lo mismo vale para `SCHEDULER_TENANTS`, `CATCHUP_MAX_SLOTS` y `CATCHUP_MAX_AGE_MS`: si no las pasas, rigen los valores por defecto (solo `publiexpe`, 1 slot, 48 h), que son los seguros. Con `pxos-runtime` ya levantado, recréalo (`docker compose up -d pxos-runtime`) para que lea los valores nuevos.
+
 
 
 > **Nota:** el puente de eventos con n8n ([`docs/n8n-integracion.md`](n8n-integracion.md)) necesita `EXTERNAL_EVENTS_TOKEN` y, para destinos privados, `EXTERNAL_WEBHOOK_ALLOW_PRIVATE`. El `docker-compose.yml` actual no las pasa a `pxos-runtime`: sin ellas, `POST /events/external` responde `503`. Añádelas al bloque `environment` solo si vas a usar el puente.
@@ -384,6 +388,39 @@ Reglas:
 - Twenty no reintenta entregas fallidas. Un disparo perdido no se recupera, pero el run diario recoge la señal calificada.
 
 Detalle del ciclo, de la idempotencia y de las limitaciones: [Prospección guiada por señales](prospeccion-por-senales.md).
+
+## Backfill de contactos
+
+Desde la tanda 17, al validar una hipótesis el sistema [busca el contacto](contactos.md) y rellena **Email to**. Las hipótesis validadas **antes** de esa tanda no pasaron por ese flujo y siguen sin destinatario. El backfill las recorre y les aplica el mismo proceso (fase 1 y, si `ENRICH_PROVIDER` está configurado, fase 2).
+
+Cuándo ejecutarlo:
+
+- **Una vez**, tras desplegar la tanda 17, para sacar del bloqueo las hipótesis validadas existentes.
+- **Después**, solo si quieres reprocesar hipótesis validadas que quedaron sin contacto (por ejemplo, tras activar la fase 2 o tras corregir un fallo de red durante una pasada).
+
+Cómo:
+
+```bash
+# Desde runtime/agent-runtime/, con DATABASE_URL apuntando a 127.0.0.1:5440
+cd runtime/agent-runtime
+pnpm contacts:backfill
+
+# Equivalente por API
+curl -s -X POST http://127.0.0.1:4020/contacts/backfill -H 'x-tenant-id: publiexpe'
+```
+
+Qué garantiza:
+
+- Solo toca hipótesis `VALIDATED` con **Email to** vacío. **Nunca pisa** una dirección ya escrita.
+- Es idempotente: repetirlo no duplica Research ni cambia destinatarios.
+- No envía nada y no cambia el **Email status** de ningún borrador.
+- La fase 2 respeta `ENRICH_MAX_LOOKUPS_PER_DAY`: si hay más huecos que cupo, el resto espera al día siguiente.
+
+Para comprobar el resultado, abre **Commercial OS → Research** y filtra por «Contacto» (candidatos con su fuente) y «Sin contacto público» (las que no han dado nada). En **Hypotheses**, las validadas con **Email to** relleno ya pueden pasar por la revisión del comercial.
+
+> **Precaución:** el backfill visita las webs de las empresas (hasta unas 6 páginas por empresa). Con muchas hipótesis, tarda; no lo lances en paralelo ni lo repitas sin necesidad.
+
+> **Nota:** que el backfill rellene destinatarios no significa que salgan los correos. El volumen real lo limita el [calendario de warm-up](email-warmup.md#cuánto-enviar-cuando-hay-destinatarios).
 
 ## Sincronizar la Twenty App
 
@@ -742,9 +779,13 @@ ORDER BY created_at DESC;
 | Una hipótesis se queda en `Email status` = `Sending` | El envío falló o sigue en curso | Revisa **Workflows → Runs**. No pulses de nuevo hasta saber si el correo salió: si salió, pon `Sent` a mano; si falló, corrige la causa y vuelve a poner `Reviewed`. |
 | `process-unsubscribes` termina `SKIPPED` | Faltan `IONOS_IMAP_USER` o `IONOS_IMAP_PASSWORD` en el runtime | Añádelas a `deployments/.env` y recrea `pxos-runtime`. |
 | Un intento sano muere con un error de `stalled` de BullMQ tras una re-entrega | Camino de stall de la cola (deuda documentada de la tanda 11) | Desde la tanda 12, una re-entrega con latido fresco ya no mata el intento en curso. Si lo ves en una versión anterior, actualiza el runtime. |
+<<<<<<< HEAD
 | Tras arrancar hay muchas ejecuciones de tasks que no reconoces, o el gasto de LLM se dispara | El scheduler registró tasks de tenants de test (`it-*`, `e2e-*`…): `SCHEDULER_TENANTS=*` o un runtime anterior a la tanda 16 | Archiva las tasks de test por patrón de tenant (con `--dry-run` primero: [Limpiar tenants de test](#limpiar-tenants-de-test-con---dry-run)), comprueba `SCHEDULER_TENANTS` y marca como descartado lo que haya llegado a Twenty (no lo borres). Detalle en el [postmortem del 2026-10-12](incidentes/2026-10-12-catchup-tenants-test.md) |
 | `pnpm test:integration` se niega a ejecutarse y menciona la base compartida | El guard de la tanda 16: `DATABASE_URL` apunta a la base `agentos` | Usa una base aislada ([Tests de integración](#tests-de-integración-base-aislada)). `ALLOW_SHARED_TEST_DB=1` solo si ningún scheduler lee esa base |
 | Un cambio de webhook hecho por SQL en Twenty no tiene efecto | El servidor de Twenty cachea la lista de webhooks | `docker compose restart pxos-twenty`. Prefiere la interfaz o `pnpm register:webhook` |
+=======
+| Una hipótesis `Validated` no tiene **Email to** | La web de la empresa no publica ningún email del dominio (Research «Sin contacto público»); la hipótesis se validó antes de la tanda 17 y no se ha pasado el backfill; la fase 2 está apagada (`ENRICH_PROVIDER` vacío), sin cupo (`ENRICH_MAX_LOOKUPS_PER_DAY`) o devolvió confianza menor de 0,7 | Abre el Research «Contacto — empresa» o «Sin contacto público» de esa empresa para ver qué pasó. Si es anterior a la tanda 17, ejecuta el [backfill](#backfill-de-contactos). Si no hay nada publicado, que el comercial escriba la dirección a mano o activa la fase 2 ([variables](#variables-del-runtime)). |
+>>>>>>> docs/tanda17
 | Hipótesis duplicadas en Twenty | Fallo de idempotencia | Conserva los datos, anota las `idempotencyKey` afectadas y abre una incidencia. No borres registros sin revisión. |
 
 ## Backup
@@ -785,5 +826,6 @@ Guarda los volcados **fuera** del repositorio. `[POR COMPLETAR]` Ubicación y ro
 - [Enviar los borradores desde Twenty](twenty-envio-email.md)
 - [Integración de eventos con n8n](n8n-integracion.md)
 - [Triaje del inbound](inbound-triaje.md)
+- [Búsqueda de contactos](contactos.md)
 - [LLD v0.3: estado real y ADR](LLD-0.3-estado-real.md)
 - [Incidente 2026-10-12: catch-up sobre tenants de test](incidentes/2026-10-12-catchup-tenants-test.md)

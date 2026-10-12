@@ -111,6 +111,10 @@ Los correos que envías con **Enviar borrador de email** en Twenty salen por el 
 
 Los pasos para enviar están en la [guía del equipo comercial](guia-comercial.md#enviar-desde-twenty-con-un-clic) y los detalles técnicos en [Enviar los borradores desde Twenty](twenty-envio-email.md).
 
+### Cuánto enviar cuando hay destinatarios
+
+Desde la tanda 17 el sistema [busca el contacto](contactos.md) de cada hipótesis validada y rellena **Email to**. Con el backfill de las hipótesis existentes, el warm-up tendrá por fin volumen real de borradores con destinatario. Eso no cambia el ritmo: **manda el límite diario del calendario, no el número de borradores listos**. Si hay más borradores que cupo hoy, los que sobran esperan al día siguiente.
+
 ### Busca respuestas
 
 Las respuestas son la señal más fuerte de reputación positiva. Para conseguirlas:

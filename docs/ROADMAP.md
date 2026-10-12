@@ -1,6 +1,7 @@
 # Roadmap — LLD 0.1 frente a lo construido
 
-Actualizado: 2026-10-12 (tanda 16). Contrasta la visión completa del [LLD v0.1](LLD-0.1-publiexpe-commercial-os.md) con el estado real. El detalle fino por decisión está en el [LLD v0.3 (estado real)](LLD-0.3-estado-real.md) y la bitácora por tandas en [ESTADO.md](ESTADO.md).
+Actualizado: 2026-10-12 (tandas 16-17). Contrasta la visión completa del [LLD v0.1](LLD-0.1-publiexpe-commercial-os.md) con el estado real. El detalle fino por decisión está en el [LLD v0.3 (estado real)](LLD-0.3-estado-real.md) y la bitácora por tandas en [ESTADO.md](ESTADO.md).
+
 
 **Leyenda:** ✅ hecho · 🟡 parcial · 🔄 en curso (tanda 16) · ⬜ pendiente · ⛔ bloqueado por decisión externa
 
@@ -32,6 +33,7 @@ Actualizado: 2026-10-12 (tanda 16). Contrasta la visión completa del [LLD v0.1]
 | Research | ✅ el Prospector escribe Research con hechos observados y fuentes (tanda 9) | README runtime, sección Research |
 | Canal de email (dominio, DNS, warm-up) | ✅ (warm-up en curso, iniciado el 2026-10-06) | [email-warmup.md](email-warmup.md) |
 | Borradores HITL + envío con un clic desde Twenty | ✅ (estrenado 2026-10-07) | [twenty-envio-email.md](twenty-envio-email.md) |
+| Búsqueda de contactos (destinatario del email) | 🔄 tanda 17: ContactFinder en dos fases (web de la propia empresa gratis, enriquecimiento externo apagado por defecto), `Email to` solo si estaba vacío, Research «Contacto — empresa» con la URL de origen y backfill de las hipótesis ya validadas | [contactos.md](contactos.md), [guia-comercial.md](guia-comercial.md#cuando-validas-el-sistema-busca-el-contacto) |
 | Inbound: bajas automáticas | ✅ · triaje general de respuestas ✅ tanda 12 (clasifica todo el buzón; nunca responde; evento `email.reply_received`) | [inbound-triaje.md](inbound-triaje.md) |
 | Supresión automática en el flujo de envío | ✅ (tanda 8: chequeo al marcar READY y en SENT) | README runtime |
 | Tools con riesgo/allowlist/human gates | ✅ · faltan `create_activity`; las del catálogo (`catalog_*`, READ) ✅ tanda 14 contra stub | README runtime, sección Tools |
@@ -112,6 +114,11 @@ Actualizado: 2026-10-12 (tanda 16). Contrasta la visión completa del [LLD v0.1]
    - Harness Optimizer y Router Optimizer, cuando haya datos y confianza en el gate.
    - Export JSON Schema (§21) y triggers DEPENDENCY/CONDITION.
    - Búsqueda semántica y emparejamiento (`match_products`, `build_bundle`) sobre el catálogo conectado.
+9. **Tanda 17 — búsqueda de contactos** 🔄 (en paralelo a la 16). Bloqueo comercial detectado el 2026-10-12: ninguna hipótesis validada tenía `Email to`. El sistema encontraba empresas y redactaba borradores, pero nadie buscaba el destinatario, así que no salía ningún email. La tanda lo resuelve y **desbloquea el canal de email de verdad**, que hasta ahora no tenía volumen real ([detalle](contactos.md)):
+   - **Fase 1 — la web de la propia empresa** 🔄: al validar una hipótesis, el ContactFinder lee la web (hasta ~6 páginas), extrae los emails publicados del dominio de la empresa, los prioriza (persona con cargo, buzón de función, genérico), verifica sintaxis y MX, y escribe `Email to` solo si estaba vacío. Deja un Research «Contacto — empresa» con cada candidato y su URL de origen, o «Sin contacto público». Es gratis y la base legal más sólida. Se engancha al flujo draft-on-validated: primero contacto, después borrador.
+   - **Backfill** 🔄: `pnpm contacts:backfill` y `POST /contacts/backfill` para las hipótesis validadas existentes ([runbook](runbook-local.md#backfill-de-contactos)).
+   - **Fase 2 — enriquecimiento externo** 🔄: solo huecos de hipótesis validadas, apagado por defecto (`ENRICH_PROVIDER=stub|hunter`, `ENRICH_API_KEY`, `ENRICH_MAX_LOOKUPS_PER_DAY`). Hunter.io primero; Apollo, posible proveedor futuro ([decisión](contactos.md#apollo-y-otras-bases-de-datos)). Confianza menor de 0,7: no rellena, queda como candidato.
+   - Fuera de alcance: el sistema sigue sin enviar nada; el clic es del comercial. Sin sondeo SMTP en v1.
 
 ## Hitos de calendario (no perder)
 

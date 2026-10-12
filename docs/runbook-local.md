@@ -99,8 +99,12 @@ Todos los comandos `docker compose` de este runbook se ejecutan desde `deploymen
 | `OPTIMIZER_SCHEDULE_ENABLED` | `false` por defecto | Activa la ejecución [programada](skill-optimizer.md#programado) del Skill Optimizer (por defecto, `0 9 * * 3` en `Europe/Madrid`). Solo `true` la enciende; solo encola y nunca promueve nada. Tanda 14 |
 | `OPTIMIZER_SCHEDULE_CRON` | `0 9 * * 3` (miércoles 09:00 Europe/Madrid) | Cadencia del optimizador programado. Solo con `OPTIMIZER_SCHEDULE_ENABLED=true` |
 | `OPTIMIZER_SCHEDULE_SKILLS` | `prospector-event-exhibitors` | Skills que encola el programado, separadas por comas |
+| `SCHEDULER_TENANTS` | `publiexpe` por defecto | Allowlist de tenants cuyas tasks registra y recupera el scheduler, separados por comas. `*` admite todos y **solo** es para entornos de test: con una base compartida, ejecutaría las tasks de test. Tanda 16, tras el [incidente del 2026-10-12](incidentes/2026-10-12-catchup-tenants-test.md) |
+| `CATCHUP_MAX_SLOTS` | `1` por defecto | Máximo de slots perdidos que el scheduler recupera por task tras una parada ([Después de una parada larga](#después-de-una-parada-larga)). Tanda 16 |
+| `CATCHUP_MAX_AGE_MS` | `172800000` (48 h) por defecto | Antigüedad máxima, en milisegundos, de un slot perdido para recuperarlo. Los más viejos se omiten. Tanda 16 |
+| `ALLOW_SHARED_TEST_DB` | sin definir | Solo para los tests de integración, no para el runtime. `1` permite ejecutarlos contra la base llamada `agentos`, que por defecto el guard rechaza ([Tests de integración](#tests-de-integración-base-aislada)). No lo definas en `deployments/.env`. Tanda 16 |
 
-> **Nota:** el bloque `environment` de `pxos-runtime` pasa hoy `TRACE_RETENTION_DAYS` y `TRACE_ARCHIVE_DIR`. Si tu `docker-compose.yml` todavía no pasa `TRACE_ARCHIVE_ENABLED`, `TRACE_ARCHIVE_INTERVAL_MS`, las `MODEL_ROUTE_*`, las `CATALOG_*` o `OPTIMIZER_SCHEDULE_ENABLED`, añádelas con la forma `${NOMBRE:-}` antes de usarlas: una variable que no llega al contenedor no tiene ningún efecto. Con `pxos-runtime` ya levantado, recréalo (`docker compose up -d pxos-runtime`) para que lea los valores nuevos.
+> **Nota:** el bloque `environment` de `pxos-runtime` pasa hoy `TRACE_RETENTION_DAYS` y `TRACE_ARCHIVE_DIR`. Si tu `docker-compose.yml` todavía no pasa `TRACE_ARCHIVE_ENABLED`, `TRACE_ARCHIVE_INTERVAL_MS`, las `MODEL_ROUTE_*`, las `CATALOG_*` o `OPTIMIZER_SCHEDULE_ENABLED`, añádelas con la forma `${NOMBRE:-}` antes de usarlas: una variable que no llega al contenedor no tiene ningún efecto. Lo mismo vale para `SCHEDULER_TENANTS`, `CATCHUP_MAX_SLOTS` y `CATCHUP_MAX_AGE_MS`: si no las pasas, rigen los valores por defecto (solo `publiexpe`, 1 slot, 48 h), que son los seguros. Con `pxos-runtime` ya levantado, recréalo (`docker compose up -d pxos-runtime`) para que lea los valores nuevos.
 
 
 > **Nota:** el puente de eventos con n8n ([`docs/n8n-integracion.md`](n8n-integracion.md)) necesita `EXTERNAL_EVENTS_TOKEN` y, para destinos privados, `EXTERNAL_WEBHOOK_ALLOW_PRIVATE`. El `docker-compose.yml` actual no las pasa a `pxos-runtime`: sin ellas, `POST /events/external` responde `503`. Añádelas al bloque `environment` solo si vas a usar el puente.
@@ -598,6 +602,66 @@ docker compose restart pxos-twenty
 
 Si cambias `SERVER_URL`, reinicia `pxos-twenty` y `pxos-twenty-worker`. Debe coincidir con la URL del navegador.
 
+> **Nota:** si cambias un webhook de Twenty directamente por SQL, reinicia `pxos-twenty`: el servidor cachea la lista de webhooks y no la relee de la base ([apéndice del postmortem del 2026-10-12](incidentes/2026-10-12-catchup-tenants-test.md#apéndice-el-webhook-cacheado-de-twenty)).
+
+## Después de una parada larga
+
+Cuando el host o el runtime han estado parados (un fin de semana, una avería), el scheduler hace *catch-up* al arrancar: recupera slots perdidos de las tasks. Desde la tanda 16 esa recuperación está acotada y limitada a los tenants permitidos. El motivo es el [incidente del 2026-10-12](incidentes/2026-10-12-catchup-tenants-test.md), en el que un catch-up sin allowlist ejecutó 485 runs de tasks de test.
+
+Qué esperar con los valores por defecto:
+
+| Aspecto | Comportamiento |
+|---|---|
+| **Qué tenants** | Solo los de `SCHEDULER_TENANTS` (`publiexpe`). Las tasks de otros tenants no se registran ni se recuperan, aunque sigan `ACTIVE` en la base |
+| **Cuántos slots por task** | Como máximo `CATCHUP_MAX_SLOTS` (1). Una task diaria que perdió tres días ejecuta un solo run, no tres |
+| **Hasta qué antigüedad** | Los slots perdidos hace más de `CATCHUP_MAX_AGE_MS` (48 h) se omiten. Tras una parada de más de dos días, los slots viejos no se recuperan |
+| **`scheduled_at`** | El del slot original, aunque el run empiece tarde |
+| **Espera a Twenty** | Igual que antes: el run espera a que `pxos-twenty` esté sano ([Espera a Twenty al arrancar](../runtime/agent-runtime/README.md#espera-a-twenty-al-arrancar)) |
+
+Después de arrancar, comprueba:
+
+1. **Qué se ha ejecutado.** Revisa las task runs recientes (consulta SQL de [diagnóstico](#consultas-sql-de-diagnóstico)) o `GET /tasks/<TASK_ID>/runs`. Deben ser solo tasks de `publiexpe`, con un run por task como mucho.
+1. **Qué se ha omitido.** Un slot omitido por antigüedad no genera run. Si necesitas el resultado, lánzalo a mano con `POST /tasks/<TASK_ID>/run`. El caso típico es el scout semanal (lunes 07:30): tras una parada de más de dos días, su slot se pierde y hay que lanzarlo a mano o esperar al lunes siguiente.
+1. **Que no hay gasto anómalo.** Más runs que tasks activas de `publiexpe` es una señal de alarma: revisa `SCHEDULER_TENANTS` y [Tests de integración](#tests-de-integración-base-aislada).
+
+> **Precaución:** no pongas `SCHEDULER_TENANTS=*` en una base que contenga tenants de test. El valor `*` existe para entornos de test aislados.
+
+## Tests de integración: base aislada
+
+> **Importante:** ejecuta los tests de integración **siempre contra una base aislada**, nunca contra `agentos`. Cada ejecución crea tenants de test (`it-*`, `e2e-*`, `ev-*`, `ar-*`) con tasks que, si el scheduler de esa base está en marcha, se ejecutan con credenciales reales. Así se originó el [incidente del 2026-10-12](incidentes/2026-10-12-catchup-tenants-test.md).
+
+Un guard lo impide por código: los tests de integración se niegan a empezar si `DATABASE_URL` apunta a la base llamada `agentos`. `ALLOW_SHARED_TEST_DB=1` salta el guard; úsalo solo si sabes que ningún scheduler lee esa base.
+
+Para crear una base de test en el mismo servidor, aplicar las migraciones y ejecutar los tests:
+
+```bash
+docker exec pxos-postgres psql -U agentos -d agentos -c "CREATE DATABASE agentos_test"
+
+cd runtime/agent-runtime
+export DATABASE_URL=postgres://agentos:agentos_dev@127.0.0.1:5440/agentos_test
+pnpm db:migrate
+pnpm test:integration
+```
+
+Reglas:
+
+- El nombre de la base no puede ser `agentos`. Los nombres con sufijo (`agentos_test`, `agentos_wt16_scheduler`) son los habituales en el repositorio.
+- Si defines `DATABASE_URL` en `runtime/agent-runtime/.env`, comprueba que apunta a la base aislada: `test/setup-env.ts` carga ese `.env`.
+- El scheduler del entorno local lee `agentos`, así que las tasks de una base aislada nunca se ejecutan.
+- Los tests que usan Twenty (`twenty-tools.test.ts`) siguen escribiendo registros `[TEST]` en el Twenty real si hay `TWENTY_API_KEY` en el `.env`: la base aislada no protege el CRM.
+
+### Limpiar tenants de test con `--dry-run`
+
+Si una base ya tiene tasks de tenants de test activas, archívalas por patrón de tenant. El cleanup **archiva, nunca borra**, y con `--dry-run` informa de lo que cambiaría sin escribir nada. Ejecútalo siempre primero con `--dry-run`:
+
+```bash
+cd runtime/agent-runtime
+pnpm cleanup:archive-test-tenants --dry-run                          # [NO VERIFICADO] nombre exacto del script
+pnpm cleanup:archive-test-tenants --pattern='it-*,e2e-*,ev-*,ar-*'   # [NO VERIFICADO] nombre y opciones
+```
+
+Es idempotente y nunca toca `publiexpe`. El nombre y las opciones exactos están en el [README del runtime](../runtime/agent-runtime/README.md). Para los agentes `[TEST]` sigue vigente `pnpm cleanup:archive-test-agents`.
+
 ## Dónde mirar los logs
 
 | Qué buscas | Dónde |
@@ -678,6 +742,9 @@ ORDER BY created_at DESC;
 | Una hipótesis se queda en `Email status` = `Sending` | El envío falló o sigue en curso | Revisa **Workflows → Runs**. No pulses de nuevo hasta saber si el correo salió: si salió, pon `Sent` a mano; si falló, corrige la causa y vuelve a poner `Reviewed`. |
 | `process-unsubscribes` termina `SKIPPED` | Faltan `IONOS_IMAP_USER` o `IONOS_IMAP_PASSWORD` en el runtime | Añádelas a `deployments/.env` y recrea `pxos-runtime`. |
 | Un intento sano muere con un error de `stalled` de BullMQ tras una re-entrega | Camino de stall de la cola (deuda documentada de la tanda 11) | Desde la tanda 12, una re-entrega con latido fresco ya no mata el intento en curso. Si lo ves en una versión anterior, actualiza el runtime. |
+| Tras arrancar hay muchas ejecuciones de tasks que no reconoces, o el gasto de LLM se dispara | El scheduler registró tasks de tenants de test (`it-*`, `e2e-*`…): `SCHEDULER_TENANTS=*` o un runtime anterior a la tanda 16 | Archiva las tasks de test por patrón de tenant (con `--dry-run` primero: [Limpiar tenants de test](#limpiar-tenants-de-test-con---dry-run)), comprueba `SCHEDULER_TENANTS` y marca como descartado lo que haya llegado a Twenty (no lo borres). Detalle en el [postmortem del 2026-10-12](incidentes/2026-10-12-catchup-tenants-test.md) |
+| `pnpm test:integration` se niega a ejecutarse y menciona la base compartida | El guard de la tanda 16: `DATABASE_URL` apunta a la base `agentos` | Usa una base aislada ([Tests de integración](#tests-de-integración-base-aislada)). `ALLOW_SHARED_TEST_DB=1` solo si ningún scheduler lee esa base |
+| Un cambio de webhook hecho por SQL en Twenty no tiene efecto | El servidor de Twenty cachea la lista de webhooks | `docker compose restart pxos-twenty`. Prefiere la interfaz o `pnpm register:webhook` |
 | Hipótesis duplicadas en Twenty | Fallo de idempotencia | Conserva los datos, anota las `idempotencyKey` afectadas y abre una incidencia. No borres registros sin revisión. |
 
 ## Backup
@@ -719,3 +786,4 @@ Guarda los volcados **fuera** del repositorio. `[POR COMPLETAR]` Ubicación y ro
 - [Integración de eventos con n8n](n8n-integracion.md)
 - [Triaje del inbound](inbound-triaje.md)
 - [LLD v0.3: estado real y ADR](LLD-0.3-estado-real.md)
+- [Incidente 2026-10-12: catch-up sobre tenants de test](incidentes/2026-10-12-catchup-tenants-test.md)

@@ -185,16 +185,17 @@ describe.skipIf(!dbAvailable)('ContactFinder: drafter contact step and backfill 
     expect(String(research.summary)).toContain('Contacto elegido: maria.gomez@conservas-cantabrico.es (María Gómez Ruiz, Directora de Marketing)');
     expect(String(research.summary)).toContain('Fuente: https://conservas-cantabrico.es/nuestro-equipo/ (protección Cloudflare)');
     expect(research.sources).toContain('https://conservas-cantabrico.es/nuestro-equipo/');
-    // The note tells the commercial where the address comes from.
-    const note = fake.tables.notes.find((n) => String(n.title).startsWith('Borrador email'))!;
-    expect((note.bodyV2 as { markdown: string }).markdown).toContain('<maria.gomez@conservas-cantabrico.es> (encontrado por el sistema en https://conservas-cantabrico.es/nuestro-equipo/');
+    // Tanda 19: the draft lives in the hypothesis fields (no duplicate «Borrador email» note); the
+    // Research above tells the commercial where the address comes from.
+    expect(fake.tables.notes.find((n) => String(n.title).startsWith('Borrador email'))).toBeUndefined();
+    expect(done!.output).toMatchObject({ note_created: false, note_skipped: 'draft_in_hypothesis_fields' });
     // Order in the trace: contact first, draft after.
     const exec = await handle.db.query.agentExecutions.findFirst({ where: eq(agentExecutions.id, done!.executionId!) });
     const trace = await handle.db.query.traces.findFirst({ where: eq(traces.executionId, exec!.id) });
     const tools = (await handle.db.query.traceSteps.findMany({ where: eq(traceSteps.traceId, trace!.id), orderBy: asc(traceSteps.sequence) }))
       .filter((s) => s.type === 'TOOL')
       .map((s) => s.tool);
-    expect(tools).toEqual(['get_hypothesis', 'find_contact', 'set_hypothesis_recipient', 'create_research', 'set_hypothesis_draft', 'create_note']);
+    expect(tools).toEqual(['get_hypothesis', 'find_contact', 'set_hypothesis_recipient', 'create_research', 'set_hypothesis_draft']);
     expect(stub.calls).toEqual([]); // the web had the answer: no enrichment
   });
 

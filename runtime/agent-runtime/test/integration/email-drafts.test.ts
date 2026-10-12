@@ -124,7 +124,7 @@ describe.skipIf(!dbAvailable)('email drafts: evaluation.recorded -> EmailDrafter
     expect(all).toHaveLength(1);
   });
 
-  it('the event fires draft-email-on-validated and the run leaves the draft as a note', async () => {
+  it('the event fires draft-email-on-validated and the run leaves the draft in the hypothesis fields (no duplicate note)', async () => {
     const seeded = await seedEmailDrafter(handle.db, { tenantId: tenant });
     expect((await seedEmailDrafter(handle.db, { tenantId: tenant })).taskAction).toBe('unchanged');
     const task = await handle.db.query.taskDefinitions.findFirst({ where: and(eq(taskDefinitions.tenantId, tenant), eq(taskDefinitions.name, EMAIL_DRAFT_TASK_NAME)) });
@@ -146,11 +146,12 @@ describe.skipIf(!dbAvailable)('email drafts: evaluation.recorded -> EmailDrafter
 
     const done = await handle.db.query.taskRuns.findFirst({ where: eq(taskRuns.id, taskRun.id) });
     expect(done).toMatchObject({ status: 'COMPLETED' });
-    expect(done!.output).toMatchObject({ outcome: 'SUCCESS', note_created: true, sends_email: false, company_id: company.id });
-    expect(fake.tables.notes).toHaveLength(1);
-    const md = (fake.tables.notes[0] as { bodyV2: { markdown: string } }).bodyV2.markdown;
-    expect(md).toMatch(/^> \*\*BORRADOR — revísalo y envíalo desde tu correo; el sistema no envía nada\.\*\*/);
-    expect(md).toContain('Si no quieres recibir más mensajes, respóndeme o escribe a baja@publiexpe.info');
-    expect(fake.tables.noteTargets.map((t) => t.targetCompanyId ?? t.targetCommercialHypothesisId)).toEqual([company.id, hypothesis.id]);
+    // Tanda 19: the seeded version writes the draft into the hypothesis fields (send from Twenty),
+    // which are the draft of record: no duplicate note.
+    expect(done!.output).toMatchObject({ outcome: 'SUCCESS', note_created: false, note_skipped: 'draft_in_hypothesis_fields', sends_email: false, company_id: company.id });
+    expect(fake.tables.notes).toHaveLength(0);
+    const h = fake.tables.commercialHypotheses.find((x) => x.id === hypothesis.id) as { emailStatus: string; emailBody: string };
+    expect(h.emailStatus).toBe('DRAFT');
+    expect(h.emailBody).toContain('Si no quieres recibir más mensajes, respóndeme o escribe a baja@publiexpe.info');
   });
 });

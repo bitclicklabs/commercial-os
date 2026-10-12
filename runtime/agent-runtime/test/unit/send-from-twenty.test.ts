@@ -157,17 +157,18 @@ describe('EmailDrafter: send_from_twenty flag', () => {
     expect((fake.tables.notes[0] as { bodyV2: { markdown: string } }).bodyV2.markdown).not.toContain('campos Email');
   });
 
-  it('ON: the final draft (signature + unsubscribe line) goes to the fields, To = decision maker email; the note says so', async () => {
+  it('ON: the final draft (signature + unsubscribe line) goes to the fields, To = decision maker email; no duplicate note (tanda 19)', async () => {
     const { fake, hyp } = world({ email: 'ana@acme.example' });
     const { output, steps } = await new EmailDrafterAgent().run(ctxFor(fake.client(), { hypothesis_id: hyp.id }, new StubProvider({ responses: [JSON.stringify(ANSWER)] }), true));
     expect(output).toMatchObject({ outcome: 'SUCCESS', sends_email: false, hypothesis_draft: { written: true, emailStatus: 'DRAFT' } });
-    expect(steps.filter((s) => s.type === 'TOOL').map((s) => s.tool)).toEqual(['get_hypothesis', 'set_hypothesis_draft', 'create_note']);
+    expect(steps.filter((s) => s.type === 'TOOL').map((s) => s.tool)).toEqual(['get_hypothesis', 'set_hypothesis_draft']);
+    expect(output).toMatchObject({ note_id: null, note_created: false, note_skipped: 'draft_in_hypothesis_fields' });
     const draft = output.draft as { subject: string; body: string };
     expect(hyp).toMatchObject({ emailTo: 'ana@acme.example', emailSubject: draft.subject, emailBody: draft.body, emailStatus: 'DRAFT' });
     expect(String(hyp.emailBody).endsWith(unsubscribeLine(DEFAULT_SENDER))).toBe(true);
     expect(String(hyp.emailBody)).toContain(DEFAULT_SENDER.name);
-    const md = (fake.tables.notes[0] as { bodyV2: { markdown: string } }).bodyV2.markdown;
-    expect(md).toContain('campos Email de la hipótesis');
+    // The fields are the draft of record: the send workflow reads only them (docs/twenty-envio-email.md).
+    expect(fake.tables.notes).toHaveLength(0);
     expect(DRAFT_IN_FIELDS_HINT).toContain('lo envías tú');
   });
 
@@ -183,7 +184,8 @@ describe('EmailDrafter: send_from_twenty flag', () => {
     await agent.run(ctxFor(fake.client(), { hypothesis_id: hyp.id }, new StubProvider({ responses: [JSON.stringify(ANSWER)] }), true));
     Object.assign(hyp, { emailStatus: 'READY', emailBody: 'texto revisado por el comercial' });
     const again = await agent.run(ctxFor(fake.client(), { hypothesis_id: hyp.id }, new StubProvider({ responses: [JSON.stringify(ANSWER)] }), true));
-    expect(again.output).toMatchObject({ outcome: 'SUCCESS', note_created: false, hypothesis_draft: { written: false, reason: 'human_owned' } });
+    expect(again.output).toMatchObject({ outcome: 'SUCCESS', note_created: false, note_skipped: 'hypothesis_fields_human_owned', hypothesis_draft: { written: false, reason: 'human_owned' } });
+    expect(fake.tables.notes).toHaveLength(0);
     expect(hyp.emailBody).toBe('texto revisado por el comercial');
     expect(fake.count('PATCH', 'commercialHypotheses')).toBe(1);
   });

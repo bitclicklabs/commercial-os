@@ -19,14 +19,16 @@
  * ONE Gemini call returning
  * `{asunto, cuerpo}` -> `finalizeDraft` (signature and unsubscribe line by code) ->
  * [set_hypothesis_draft, only with `configuration.send_from_twenty.enabled`] ->
- * create_note (idempotent per company + title).
+ * create_note (idempotent per company + title) ONLY when the hypothesis fields are not the
+ * draft of record (flag off, or set_hypothesis_draft failed). Tanda 19: with the fields
+ * available the note was a duplicate; the send-from-Twenty workflow reads only the fields.
  *
  * Send from Twenty (`send_from_twenty.enabled`, off by default): the same final draft is
  * also written into the hypothesis fields emailTo / emailSubject / emailBody with
  * emailStatus = DRAFT. A PERSON then edits it in place, marks it READY and clicks the manual
  * Twenty workflow "Commercial OS · Enviar borrador de email", which sends it through the
  * mailbox that person connected. The runtime still sends nothing: the tool only PATCHes
- * fields, and a failure there never fails the run (the note is always written).
+ * fields, and a failure there never fails the run (the note is written instead).
  */
 import { z } from 'zod';
 import { HYPOTHESIS_STATUSES } from '../integrations/twenty/index.js';
@@ -208,7 +210,7 @@ export class EmailDrafterAgent implements AgentImplementation {
       timestamp: new Date(),
       input: { input_keys: Object.keys(ctx.input) },
       output: read.ok
-        ? { plan: 'read hypothesis, signal and company; one LLM call for {asunto, cuerpo}; save the draft as a Twenty note (never sent)', request: read.request }
+        ? { plan: 'read hypothesis, signal and company; one LLM call for {asunto, cuerpo}; save the draft in the hypothesis fields or, if that is off or fails, as a Twenty note (never sent)', request: read.request }
         : { skip: read.skip, reason: read.reason },
       latencyMs: 0,
     });
@@ -301,7 +303,7 @@ export class EmailDrafterAgent implements AgentImplementation {
     });
 
     // 4. Optional: the draft in the hypothesis fields, for the send-from-Twenty workflow.
-    //    Never fatal: the note below is the draft of record.
+    //    Never fatal: if the fields are not written, the note below is the draft of record.
     let hypothesisDraft: Record<string, unknown> | null = null;
     if (cfg.sendFromTwenty) {
       const set = await run.callTool('set_hypothesis_draft', {
@@ -318,7 +320,31 @@ export class EmailDrafterAgent implements AgentImplementation {
       }
     }
 
-    // 5. Note on the company (+ hypothesis). Idempotent per company + title.
+    const result = {
+      hypothesis_id: h.id,
+      hypothesis_name: h.name,
+      company_id: companyId,
+      company_name: company.name,
+      evaluation_id: req.evaluationId,
+      event_id: req.eventId,
+      draft: { subject: draft.subject, body: draft.body, word_count: draft.wordCount, fixes: draft.fixes, warnings: draft.warnings },
+      ...(hypothesisDraft ? { hypothesis_draft: hypothesisDraft } : {}),
+      ...(contactStep ? { contact: contactStep } : {}),
+      ...(notes.length > 0 ? { notes } : {}),
+    };
+
+    // 5. Tanda 19: with send-from-Twenty on and its fields available, the hypothesis fields are the
+    //    draft of record (the send workflow reads only them; docs/twenty-envio-email.md) and the
+    //    note was a duplicate: it is not created. That covers a draft just written AND a draft or a
+    //    person's edits already there (`draft_exists` / `human_owned`: the fields win, as before;
+    //    this run's text stays in its output). Only with the flag off or when the fields could not
+    //    be written (App not synced, Twenty error) is the note still the copy of record.
+    if (hypothesisDraft && hypothesisDraft.error === undefined) {
+      const reason = hypothesisDraft.written === true ? 'draft_in_hypothesis_fields' : `hypothesis_fields_${String(hypothesisDraft.reason)}`;
+      return { outcome: 'SUCCESS', ...result, note_id: null, note_created: false, note_skipped: reason };
+    }
+
+    // 5b. Note on the company (+ hypothesis). Idempotent per company + title.
     const title = draftNoteTitle(h.name);
     const note = await run.callTool('create_note', {
       companyId,
@@ -332,22 +358,10 @@ export class EmailDrafterAgent implements AgentImplementation {
         feedback: req.feedback,
         evaluatedAt: req.evaluatedAt,
         executionId: ctx.executionId,
-        inHypothesisFields: hypothesisDraft?.written === true,
+        inHypothesisFields: false,
         foundContact,
       }),
     });
-    const result = {
-      hypothesis_id: h.id,
-      hypothesis_name: h.name,
-      company_id: companyId,
-      company_name: company.name,
-      evaluation_id: req.evaluationId,
-      event_id: req.eventId,
-      draft: { subject: draft.subject, body: draft.body, word_count: draft.wordCount, fixes: draft.fixes, warnings: draft.warnings },
-      ...(hypothesisDraft ? { hypothesis_draft: hypothesisDraft } : {}),
-      ...(contactStep ? { contact: contactStep } : {}),
-      ...(notes.length > 0 ? { notes } : {}),
-    };
     if (note.result.status !== 'ok') return { outcome: 'FAILED', ...result, error: toolError(note) };
     const n = note.result.output as { created: boolean; adopted: boolean; record: { id: string; title: string } };
     return { outcome: 'SUCCESS', ...result, note_id: n.record.id, note_title: n.record.title, note_created: n.created, note_adopted: n.adopted };

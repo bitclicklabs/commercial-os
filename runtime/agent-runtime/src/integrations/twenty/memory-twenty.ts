@@ -24,6 +24,8 @@ const SINGULAR: Record<string, string> = {
   people: 'Person',
   notes: 'Note',
   noteTargets: 'NoteTarget',
+  tasks: 'Task',
+  taskTargets: 'TaskTarget',
 };
 const SELECTS: Record<string, Record<string, string[]>> = {
   commercialSignals: {
@@ -32,6 +34,7 @@ const SELECTS: Record<string, Record<string, string[]>> = {
   },
   commercialHypotheses: { status: ['PROPOSED', 'VALIDATED', 'REJECTED', 'EXPIRED'] },
   agentRunSummaries: { outcome: ['SUCCESS', 'PARTIAL', 'FAILED', 'CANCELLED'] },
+  tasks: { status: ['TODO', 'IN_PROGRESS', 'DONE'] },
 };
 
 function splitTopLevel(s: string): string[] {
@@ -150,20 +153,24 @@ export class MemoryTwenty {
           }
         }
       }
-      if (plural === 'notes' && body.bodyV2) body.bodyV2 = richText(body.bodyV2 as Rec);
+      if ((plural === 'notes' || plural === 'tasks') && body.bodyV2) body.bodyV2 = richText(body.bodyV2 as Rec);
       const defaults: Rec =
         plural === 'noteTargets'
           ? { noteId: null, targetCompanyId: null, targetPersonId: null, targetOpportunityId: null, targetCommercialHypothesisId: null }
-          : plural === 'notes' || plural === 'people'
-            ? {}
-            : { companyId: null, commercialSignalId: null };
+          : plural === 'taskTargets'
+            ? { taskId: null, targetCompanyId: null, targetPersonId: null, targetOpportunityId: null, targetCommercialHypothesisId: null, targetCommercialSignalId: null }
+            : plural === 'tasks'
+              ? { status: 'TODO', dueAt: null, assigneeId: null }
+              : plural === 'notes' || plural === 'people'
+                ? {}
+                : { companyId: null, commercialSignalId: null };
       const rec = this.insert(plural, { ...defaults, ...body });
       return json(201, { data: { [`create${SINGULAR[plural]}`]: rec } });
     }
     if (method === 'PATCH' && id && body) {
       const rec = table.find((r) => r.id === id);
       if (!rec) return json(404, { statusCode: 404, error: 'NotFoundException', messages: ['Record not found'] });
-      if (plural === 'notes' && body.bodyV2) body.bodyV2 = richText(body.bodyV2 as Rec);
+      if ((plural === 'notes' || plural === 'tasks') && body.bodyV2) body.bodyV2 = richText(body.bodyV2 as Rec);
       Object.assign(rec, body, { updatedAt: new Date().toISOString() });
       return json(200, { data: { [`update${SINGULAR[plural]}`]: rec } });
     }

@@ -19,6 +19,8 @@ const SINGULAR: Record<string, string> = {
   people: 'Person',
   notes: 'Note',
   noteTargets: 'NoteTarget',
+  tasks: 'Task',
+  taskTargets: 'TaskTarget',
 };
 const SELECTS: Record<string, Record<string, string[]>> = {
   commercialSignals: {
@@ -27,6 +29,7 @@ const SELECTS: Record<string, Record<string, string[]>> = {
   },
   commercialHypotheses: { status: ['PROPOSED', 'VALIDATED', 'REJECTED', 'EXPIRED'] },
   agentRunSummaries: { outcome: ['SUCCESS', 'PARTIAL', 'FAILED', 'CANCELLED'] },
+  tasks: { status: ['TODO', 'IN_PROGRESS', 'DONE'] },
 };
 
 function splitTopLevel(s: string): string[] {
@@ -71,7 +74,7 @@ function json(status: number, body: unknown): Response {
 
 export class FakeTwenty {
   readonly tables: Record<
-    'companies' | 'commercialSignals' | 'researches' | 'commercialHypotheses' | 'agentRunSummaries' | 'people' | 'notes' | 'noteTargets',
+    'companies' | 'commercialSignals' | 'researches' | 'commercialHypotheses' | 'agentRunSummaries' | 'people' | 'notes' | 'noteTargets' | 'tasks' | 'taskTargets',
     Rec[]
   > &
     Record<string, Rec[] | undefined> = {
@@ -83,6 +86,8 @@ export class FakeTwenty {
     people: [],
     notes: [],
     noteTargets: [],
+    tasks: [],
+    taskTargets: [],
   };
   /** Makes the next POST to `plural` fail with a non-retryable 400 (once). */
   failNextCreate: string | null = null;
@@ -164,7 +169,7 @@ export class FakeTwenty {
           }
         }
       }
-      if (plural === 'notes') {
+      if (plural === 'notes' || plural === 'tasks') {
         const v2 = body.bodyV2 as Rec | undefined;
         // Twenty derives blocknote from markdown (transformRichTextValue).
         if (v2) body.bodyV2 = { markdown: v2.markdown ?? null, blocknote: v2.blocknote ?? (v2.markdown ? '[blocknote]' : null) };
@@ -172,16 +177,20 @@ export class FakeTwenty {
       const defaults: Rec =
         plural === 'noteTargets'
           ? { noteId: null, targetCompanyId: null, targetPersonId: null, targetOpportunityId: null, targetCommercialHypothesisId: null }
-          : plural === 'notes' || plural === 'people'
-            ? {}
-            : { companyId: null, commercialSignalId: null };
+          : plural === 'taskTargets'
+            ? { taskId: null, targetCompanyId: null, targetPersonId: null, targetOpportunityId: null, targetCommercialHypothesisId: null, targetCommercialSignalId: null }
+            : plural === 'tasks'
+              ? { status: 'TODO', dueAt: null, assigneeId: null }
+              : plural === 'notes' || plural === 'people'
+                ? {}
+                : { companyId: null, commercialSignalId: null };
       const rec = this.seed(plural, { ...defaults, ...body });
       return json(201, { data: { [`create${SINGULAR[plural]}`]: rec } });
     }
     if (method === 'PATCH' && id && body) {
       const rec = table.find((r) => r.id === id);
       if (!rec) return json(404, { statusCode: 404, error: 'NotFoundException', messages: ['Record not found'] });
-      if (plural === 'notes' && body.bodyV2) {
+      if ((plural === 'notes' || plural === 'tasks') && body.bodyV2) {
         const v2 = body.bodyV2 as Rec;
         body.bodyV2 = { markdown: v2.markdown ?? null, blocknote: v2.blocknote ?? (v2.markdown ? '[blocknote]' : null) };
       }

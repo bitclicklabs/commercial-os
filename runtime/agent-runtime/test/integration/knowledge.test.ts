@@ -21,7 +21,7 @@ import { knowledgeEntries, taskDefinitions, taskRuns, traces, traceSteps } from 
 import { KNOWLEDGE_BLOCK_TITLE } from '../../src/knowledge/resolver.js';
 import { StubProvider } from '../../src/providers/index.js';
 import { MemoryRunQueue } from '../../src/queue/run-queue.js';
-import { KNOWLEDGE_SEED, seedKnowledge } from '../../src/seed/knowledge-seed.js';
+import { KNOWLEDGE_SEED, LEAD_TIME_KNOWLEDGE_STATEMENT, seedKnowledge } from '../../src/seed/knowledge-seed.js';
 import { PROSPECTOR_TASK_NAME, seedProspector } from '../../src/seed/prospector-seed.js';
 import { requestTaskRun } from '../../src/services/task-runs.js';
 import { createDefaultToolRegistry } from '../../src/tools/index.js';
@@ -198,8 +198,11 @@ describe.skipIf(!dbAvailable)('knowledge layer and research (PostgreSQL)', () =>
       .select()
       .from(knowledgeEntries)
       .where(and(eq(knowledgeEntries.tenantId, t), eq(knowledgeEntries.domain, 'prospeccion'), eq(knowledgeEntries.status, 'ACTIVE')));
-    expect(active).toHaveLength(2);
+    // Seed entries of the domain: cantidades-y-presupuesto, suposiciones-por-nombre and (tanda 18) lead-time-comercial.
+    expect(active).toHaveLength(3);
+    expect(active.map((a) => a.topic)).toContain('lead-time-comercial');
     for (const s of r.systems) {
+      expect(s).toContain(LEAD_TIME_KNOWLEDGE_STATEMENT);
       expect(s).toContain(`${KNOWLEDGE_BLOCK_TITLE}\n`);
       for (const a of active) expect(s).toContain(a.statement);
       expect(s).not.toContain('No es del Prospector.');

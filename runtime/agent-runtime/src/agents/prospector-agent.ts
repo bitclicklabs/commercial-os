@@ -17,13 +17,16 @@ import { PROSPECTOR_SKILL_ID, PROSPECTOR_SYSTEM_PROMPT } from './prospector-prom
 import { useSkill } from '../skills/resolver.js';
 import { useKnowledge } from '../knowledge/resolver.js';
 import type { Db } from '../db/client.js';
-import { DrizzleSignalHistory, isSignalsInput, runSignals, type SignalHistory } from './signal-prospecting.js';
+import { DrizzleSignalHistory, isQualifiedTriggerInput, isSignalsInput, qualifiedLeadTimeGate, runSignals, type SignalHistory } from './signal-prospecting.js';
+import { leadTimeWindowFromEnv, type LeadTimeWindow } from '../signals/lead-time.js';
 
 export interface ProspectorAgentDeps {
   /** Runtime database: round-robin memory of the signals mode (`agent_executions`). */
   db?: Db;
   /** Overrides the round-robin memory (tests). */
   history?: SignalHistory;
+  /** Lead-time window (tanda 18); default LEADTIME_MIN_DAYS / LEADTIME_MAX_DAYS (45 / 210). */
+  leadTime?: LeadTimeWindow;
 }
 
 export {
@@ -66,7 +69,7 @@ export class ProspectorAgent implements AgentImplementation {
     private readonly deps: ProspectorAgentDeps = {},
   ) {}
 
-  /** Signals mode with nothing QUALIFIED: no model call, no CRM summary, cost 0. */
+  /** Signals mode with nothing QUALIFIED in the window, or a qualification outside it: no model call, no CRM summary, cost 0. */
   private finishSkipped(run: ProspectorRun, body: Record<string, unknown>): AgentResult {
     const { ctx, cfg } = run;
     const output: Record<string, unknown> = {
@@ -94,15 +97,20 @@ export class ProspectorAgent implements AgentImplementation {
     let body: Record<string, unknown>;
     let taskName: string;
 
+    const leadTime = this.deps.leadTime ?? leadTimeWindowFromEnv();
     if (isSignalsInput(ctx.input)) {
-      const signals = await runSignals(run, ctx.input, today, this.deps.history ?? (this.deps.db ? new DrizzleSignalHistory(this.deps.db) : null));
+      const signals = await runSignals(run, ctx.input, today, this.deps.history ?? (this.deps.db ? new DrizzleSignalHistory(this.deps.db) : null), { window: leadTime });
       if (signals.outcome === 'SKIPPED') return this.finishSkipped(run, signals.output);
       ({ outcome, lines, body } = { outcome: signals.outcome, lines: signals.lines, body: signals.output });
       taskName = cfg.taskName;
     } else if (isScoutInput(ctx.input)) {
-      const scout = await runScout(run, ctx.input, today);
+      // Trigger on qualification: outside the lead-time window the run stops SKIPPED with a note on the signal.
+      const gate = isQualifiedTriggerInput(ctx.input) ? await qualifiedLeadTimeGate(run, ctx.input, { window: leadTime }) : null;
+      if (gate?.skip) return this.finishSkipped(run, gate.output);
+      const scout = await runScout(run, ctx.input, today, { leadTime });
       ({ outcome, lines } = scout);
-      body = scout.output;
+      lines = [...(gate?.lines ?? []), ...lines];
+      body = gate ? { ...scout.output, lead_time: gate.leadTime } : scout.output;
       taskName = cfg.scout.taskName;
     } else {
       ({ outcome, lines, body } = await this.runDirect(run, today));

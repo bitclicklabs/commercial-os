@@ -31,7 +31,7 @@ import { SCOUT_EXTRACT_SKILL_ID, SCOUT_SKILL_ID } from '../agents/event-scout-pr
 import { DEFAULT_USD_TO_EUR } from '../providers/gemini-pricing.js';
 import { DEFAULT_COMMERCIAL_HARNESS_NAME } from '../harness/config.js';
 import { CATALOG_TOOL_IDS } from '../tools/catalog/catalog-tools.js';
-import { MAX_EXPIRATIONS_PER_RUN, SIGNALS_DEFAULT_INPUT } from '../agents/signal-prospecting.js';
+import { MAX_EXPIRATIONS_PER_RUN, MAX_HYPOTHESIS_EXPIRATIONS_PER_RUN, SIGNALS_DEFAULT_INPUT } from '../agents/signal-prospecting.js';
 
 export const PROSPECTOR_AGENT_NAME = 'Prospector';
 export const PROSPECTOR_TASK_NAME = 'daily-event-prospecting';
@@ -92,7 +92,8 @@ export function desiredProspectorVersion() {
         // The real limit of a scout run is its time budget (scout.time_budget_ms).
         // + catalog: up to 3 searches + 3 sheets per written hypothesis (capped per tool below).
         // + signals mode: 1 listing + up to 50 expirations before the directed scout.
-        max_calls_per_execution: 2_460,
+        // + lead time (tanda 18): 1 hypothesis listing + up to 50 hypothesis expirations + 1 signal note.
+        max_calls_per_execution: 2_512,
         // fetch_url: 18 pages/PDFs + 3 grounding redirects (+1) + 100 profiles + 100 domain checks;
         // render_url: 4 catalog renders (+1 retry, +1 older-renderer retry each) + 100 profiles.
         max_calls_per_tool: {
@@ -105,6 +106,9 @@ export function desiredProspectorVersion() {
           catalog_describe: 5,
           list_event_signals: 2,
           expire_signal: MAX_EXPIRATIONS_PER_RUN,
+          list_hypotheses_for_expiry: 2,
+          expire_hypothesis: MAX_HYPOTHESIS_EXPIRATIONS_PER_RUN,
+          create_signal_note: 2,
         },
       },
       // Knowledge layer (LLD 6.4): ACTIVE entries of these domains go into the per-exhibitor decision prompt.
@@ -143,7 +147,7 @@ export function desiredProspectorVersion() {
 export function desiredTask(defaultInput: Record<string, unknown> = { ...SIGNALS_DEFAULT_INPUT }) {
   return {
     description:
-      'Prospección diaria de las ferias calificadas en Twenty: el Prospector (modo señales) caduca (EXPIRED) las señales de feria con fecha pasada, elige la señal QUALIFIED vigente trabajada hace más tiempo y peina su catálogo de expositores (scout dirigido: empresa, señal, research e hipótesis PROPOSED de los relevantes); sin ninguna calificada, termina SKIPPED.',
+      'Prospección diaria de las ferias calificadas en Twenty: el Prospector (modo señales) caduca (EXPIRED) las señales de feria con fecha pasada y las hipótesis PROPOSED de ferias a menos de LEADTIME_MIN_DAYS días, elige la señal QUALIFIED dentro de la ventana de lead time (45–210 días por defecto) trabajada hace más tiempo y peina su catálogo de expositores (scout dirigido: empresa, señal, research e hipótesis PROPOSED de los relevantes); sin ninguna calificada, termina SKIPPED.',
     defaultInput,
     schedule: { type: 'CRON', expression: '0 8 * * *' },
     timezone: 'Europe/Madrid',

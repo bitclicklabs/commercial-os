@@ -1,6 +1,6 @@
 /**
  * pnpm synth:build --dataset <nombre> --seed <n> [--difficulty 1,2,3] [--templates a,b]
- *                  [--per-template 2] [--with-harvest] [--domain prospeccion] [--tenant publiexpe]
+ *                  [--per-template 2] [--with-harvest] [--lead-time] [--domain prospeccion] [--tenant publiexpe]
  *                  [--description "..."] [--created-by "..."] [--dry-run] [--out <casos.json>] [--list]
  *
  * Synthetic environments (MVP-4, LLD v0.1 section 13): generates Prospector cases from the
@@ -18,6 +18,9 @@
  *   fixed per dataset name: a harvested dataset never receives synthetic cases.
  * - Exhibitors are invented and every domain is `.invalid`: they cannot be fetched and the
  *   Twenty client refuses to write them to a real CRM.
+ * - `--lead-time` (tanda 18): adds the opt-in lead-time templates (fair at 7-20 days -> discard,
+ *   fair at 75-120 days -> relevant without a short-lead-time angle). Each of their cases carries
+ *   its own fictitious fair and `ground_truth.as_of`, the "today" the experiment runner uses for it.
  * - Writes ONLY `evaluation_datasets` / `evaluation_cases` in DATABASE_URL (migration 0017).
  */
 import { mkdirSync, writeFileSync } from 'node:fs';
@@ -26,11 +29,12 @@ import { parseArgs } from 'node:util';
 import { createDb } from '../src/db/client.js';
 import { buildDataset, DatasetServiceError } from '../src/datasets/service.js';
 import { DEFAULT_PER_TEMPLATE, MAX_PER_TEMPLATE } from '../src/synthetic/generate.js';
+import { optInTemplateCatalog } from '../src/synthetic/lead-time-templates.js';
 import { templateCatalog } from '../src/synthetic/templates.js';
 import type { CurriculumLevel } from '../src/synthetic/truth.js';
 
 const USAGE =
-  'uso: pnpm synth:build --dataset <nombre> --seed <n> [--difficulty 1,2,3] [--templates a,b] [--per-template 2] [--with-harvest] [--domain prospeccion] [--tenant publiexpe] [--dry-run] [--out <casos.json>] [--list]';
+  'uso: pnpm synth:build --dataset <nombre> --seed <n> [--difficulty 1,2,3] [--templates a,b] [--per-template 2] [--with-harvest] [--lead-time] [--domain prospeccion] [--tenant publiexpe] [--dry-run] [--out <casos.json>] [--list]';
 
 function fail(msg: string): never {
   console.error(msg);
@@ -48,6 +52,7 @@ async function main(): Promise<void> {
       templates: { type: 'string' },
       'per-template': { type: 'string' },
       'with-harvest': { type: 'boolean', default: false },
+      'lead-time': { type: 'boolean', default: false },
       domain: { type: 'string', default: 'prospeccion' },
       tenant: { type: 'string', default: process.env.DEFAULT_TENANT_ID ?? 'publiexpe' },
       description: { type: 'string' },
@@ -64,6 +69,7 @@ async function main(): Promise<void> {
   }
   if (values.list) {
     for (const t of templateCatalog()) console.log(`nivel ${t.curriculum_level} · ${t.id.padEnd(26)} ${t.patterns.join(', ').padEnd(18)} ${t.expectation}`);
+    for (const t of optInTemplateCatalog()) console.log(`nivel ${t.curriculum_level} · ${t.id.padEnd(26)} ${t.patterns.join(', ').padEnd(18)} ${t.expectation} (opt-in: --lead-time)`);
     return;
   }
   if (!values.dataset) fail('falta --dataset');
@@ -90,7 +96,7 @@ async function main(): Promise<void> {
       description: values.description ?? `Casos sintéticos (seed ${seed}${levels ? `, niveles ${levels.join(',')}` : ''})`,
       createdBy: values['created-by'] ?? null,
       dryRun: values['dry-run'],
-      synthetic: { seed, perTemplate, ...(levels ? { levels } : {}), ...(templates ? { templates } : {}), withHarvest: values['with-harvest'] },
+      synthetic: { seed, perTemplate, ...(levels ? { levels } : {}), ...(templates ? { templates } : {}), ...(values['lead-time'] ? { leadTime: true } : {}), withHarvest: values['with-harvest'] },
     });
     const g = r.synthetic!;
     const line = (label: string, rec: Record<string, number>) => console.log(`${label.padEnd(24)} ${Object.entries(rec).map(([k, v]) => `${k} ${v}`).join(' · ')}`);

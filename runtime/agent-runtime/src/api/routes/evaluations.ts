@@ -147,11 +147,15 @@ export async function evaluationRoutes(app: FastifyInstance, ctx: ApiContext): P
         email = { status: 'error', message: (err as Error).message.slice(0, 300) };
       }
       const outcome = await processTwentyWebhook(db, req.body, { defaultTenantId: ctx.config.defaultTenantId, dedupeWindowMs, events: ctx.events });
+      if (outcome.status === 'ignored' && outcome.foreign_tenant) {
+        req.log.warn({ event: req.body.eventName, recordId: req.body.record.id, tenant: outcome.foreign_tenant }, 'twenty webhook: record of another tenant ignored');
+      }
       // commercialSignal -> QUALIFIED (fair-level only): `signal.qualified`, once per signal per 24 h.
       let signal: SignalQualificationOutcome | null = null;
       if (isSignalPayload(req.body)) {
         signal = await processSignalQualification(db, req.body, { defaultTenantId: ctx.config.defaultTenantId, events: ctx.events });
-        if (signal.status === 'ignored') req.log.info({ event: req.body.eventName, signal }, 'commercialSignal webhook ignored');
+        if (signal.status === 'ignored' && signal.foreign_tenant) req.log.warn({ event: req.body.eventName, signal }, 'commercialSignal webhook of another tenant ignored');
+        else if (signal.status === 'ignored') req.log.info({ event: req.body.eventName, signal }, 'commercialSignal webhook ignored');
         if (signal.status === 'error') req.log.error({ event: req.body.eventName, signal }, 'signal.qualified not published');
       }
       req.log.info({ event: req.body.eventName, outcome, email, signal, auth: auth.method }, 'twenty webhook processed');

@@ -34,7 +34,7 @@ import type { Db } from '../db/client.js';
 import { events } from '../db/schema.js';
 import type { EventPublisher } from '../events/event-bus.js';
 import type { TwentyWebhookPayload } from '../evaluations/human-feedback.js';
-import { tenantOfRecord } from '../evaluations/twenty-webhook.js';
+import { foreignTenantOf, foreignTenantReason } from '../evaluations/twenty-webhook.js';
 
 export const SIGNAL_QUALIFIED_EVENT = 'signal.qualified';
 export const SIGNAL_OBJECT = 'commercialSignal';
@@ -150,7 +150,7 @@ export function signalQualifiedIdempotencyKey(signalId: string, previousEventId:
 }
 
 export type SignalQualificationOutcome =
-  | { status: 'ignored'; reason: string; signal_id?: string }
+  | { status: 'ignored'; reason: string; signal_id?: string; foreign_tenant?: string }
   | { status: 'within_window'; signal_id: string; last_event_id: string; last_fired_at: string }
   | { status: 'emitted' | 'deduplicated'; signal_id: string; event_id: string; dispatched: boolean }
   | { status: 'error'; signal_id: string; message: string };
@@ -179,11 +179,17 @@ export async function processSignalQualification(
   payload: TwentyWebhookPayload,
   opts: SignalQualificationOptions,
 ): Promise<SignalQualificationOutcome> {
-  const decision = classifySignalQualification(payload);
   const recordId = str(payload.record?.id);
+  // Tenancy first: a signal of another tenant (test tenants share the workspace) never fires a run.
+  const foreign = foreignTenantOf(payload.record ?? {}, opts.defaultTenantId);
+  if (foreign !== null) {
+    return { status: 'ignored', reason: foreignTenantReason(foreign, opts.defaultTenantId), foreign_tenant: foreign, ...(recordId ? { signal_id: recordId } : {}) };
+  }
+  const decision = classifySignalQualification(payload);
   if (decision.action === 'ignore') return { status: 'ignored', reason: decision.reason, ...(recordId ? { signal_id: recordId } : {}) };
   const { data } = decision;
-  const tenantId = tenantOfRecord(payload.record) ?? opts.defaultTenantId;
+  // Not foreign: the record carries this runtime's tenant or none (hand-made in the Twenty UI).
+  const tenantId = opts.defaultTenantId;
   const now = opts.now ?? new Date();
   const last = await lastSignalQualified(db, tenantId, data.signal_id);
   if (last && withinRefireWindow(last.createdAt, now, opts.windowMs)) {

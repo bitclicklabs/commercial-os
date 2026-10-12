@@ -779,13 +779,11 @@ ORDER BY created_at DESC;
 | Una hipótesis se queda en `Email status` = `Sending` | El envío falló o sigue en curso | Revisa **Workflows → Runs**. No pulses de nuevo hasta saber si el correo salió: si salió, pon `Sent` a mano; si falló, corrige la causa y vuelve a poner `Reviewed`. |
 | `process-unsubscribes` termina `SKIPPED` | Faltan `IONOS_IMAP_USER` o `IONOS_IMAP_PASSWORD` en el runtime | Añádelas a `deployments/.env` y recrea `pxos-runtime`. |
 | Un intento sano muere con un error de `stalled` de BullMQ tras una re-entrega | Camino de stall de la cola (deuda documentada de la tanda 11) | Desde la tanda 12, una re-entrega con latido fresco ya no mata el intento en curso. Si lo ves en una versión anterior, actualiza el runtime. |
-<<<<<<< HEAD
 | Tras arrancar hay muchas ejecuciones de tasks que no reconoces, o el gasto de LLM se dispara | El scheduler registró tasks de tenants de test (`it-*`, `e2e-*`…): `SCHEDULER_TENANTS=*` o un runtime anterior a la tanda 16 | Archiva las tasks de test por patrón de tenant (con `--dry-run` primero: [Limpiar tenants de test](#limpiar-tenants-de-test-con---dry-run)), comprueba `SCHEDULER_TENANTS` y marca como descartado lo que haya llegado a Twenty (no lo borres). Detalle en el [postmortem del 2026-10-12](incidentes/2026-10-12-catchup-tenants-test.md) |
 | `pnpm test:integration` se niega a ejecutarse y menciona la base compartida | El guard de la tanda 16: `DATABASE_URL` apunta a la base `agentos` | Usa una base aislada ([Tests de integración](#tests-de-integración-base-aislada)). `ALLOW_SHARED_TEST_DB=1` solo si ningún scheduler lee esa base |
 | Un cambio de webhook hecho por SQL en Twenty no tiene efecto | El servidor de Twenty cachea la lista de webhooks | `docker compose restart pxos-twenty`. Prefiere la interfaz o `pnpm register:webhook` |
-=======
 | Una hipótesis `Validated` no tiene **Email to** | La web de la empresa no publica ningún email del dominio (Research «Sin contacto público»); la hipótesis se validó antes de la tanda 17 y no se ha pasado el backfill; la fase 2 está apagada (`ENRICH_PROVIDER` vacío), sin cupo (`ENRICH_MAX_LOOKUPS_PER_DAY`) o devolvió confianza menor de 0,7 | Abre el Research «Contacto — empresa» o «Sin contacto público» de esa empresa para ver qué pasó. Si es anterior a la tanda 17, ejecuta el [backfill](#backfill-de-contactos). Si no hay nada publicado, que el comercial escriba la dirección a mano o activa la fase 2 ([variables](#variables-del-runtime)). |
->>>>>>> docs/tanda17
+
 | Hipótesis duplicadas en Twenty | Fallo de idempotencia | Conserva los datos, anota las `idempotencyKey` afectadas y abre una incidencia. No borres registros sin revisión. |
 
 ## Backup

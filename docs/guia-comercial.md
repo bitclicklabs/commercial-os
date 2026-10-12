@@ -11,6 +11,7 @@ El sistema propone; tú decides. El sistema nunca contacta con nadie por su cuen
 1. [Dónde mirar en Twenty](#dónde-mirar-en-twenty)
 1. [Cómo leer una hipótesis](#cómo-leer-una-hipótesis)
 1. [Tu rutina diaria de 10 minutos](#tu-rutina-diaria-de-10-minutos)
+1. [Cuando validas, el sistema busca el contacto](#cuando-validas-el-sistema-busca-el-contacto)
 1. [Borradores de email](#borradores-de-email)
 1. [Respuestas de los clientes](#respuestas-de-los-clientes)
 1. [Estados: cuándo usar cada uno](#estados-cuándo-usar-cada-uno)
@@ -53,12 +54,12 @@ La tarea diaria reparte su presupuesto entre **todas las ferias que tienes en `Q
 ### Lo que el sistema no hace
 
 - **No envía emails ni mensajes por su cuenta.** Un correo solo sale cuando tú revisas el borrador y pulsas el envío.
-- **No contacta con decisores.** Elegir a quién escribir y cuándo es cosa tuya.
+- **No contacta con decisores.** Busca una dirección de contacto publicada por la empresa y te la deja en **Email to**, pero elegir a quién escribir y cuándo es cosa tuya.
 - **No cambia etapas de oportunidad ni crea presupuestos.**
 - **No califica ni descarta ferias por ti.** Solo las pasa a `EXPIRED` cuando su fecha ya ha pasado.
 - **No borra nada.**
 
-El sistema sí prepara **borradores de email** cuando validas una hipótesis, pero nunca los envía: los revisas y los envías tú, con un clic desde Twenty o a mano desde tu correo. Consulta [Borradores de email](#borradores-de-email). También clasifica las respuestas que llegan al buzón y te deja una nota con las que piden tu atención, sin responder nunca por ti. Consulta [Respuestas de los clientes](#respuestas-de-los-clientes).
+Cuando validas una hipótesis, el sistema [busca el contacto](#cuando-validas-el-sistema-busca-el-contacto) de la empresa y prepara un **borrador de email**, pero nunca lo envía: los revisas y los envías tú, con un clic desde Twenty o a mano desde tu correo. Consulta [Borradores de email](#borradores-de-email). También clasifica las respuestas que llegan al buzón y te deja una nota con las que piden tu atención, sin responder nunca por ti. Consulta [Respuestas de los clientes](#respuestas-de-los-clientes).
 
 ## Señales de feria: tu cola de decisión
 
@@ -184,7 +185,7 @@ Dos ejemplos:
 
    Puedes cambiar el estado abriendo la hipótesis y editando el campo **Status**, o arrastrando la tarjeta a otra columna del tablero **By status**.
 
-1. Para cada hipótesis validada, decide tú el siguiente paso: a quién escribir, por qué canal y con qué mensaje. Busca o crea el contacto en Twenty y enlázalo en **Decision maker**.
+1. Para cada hipótesis validada, espera a que el sistema deje el contacto y el borrador, y **revisa el destinatario y su fuente antes del clic**: abre **Email to** y el Research «Contacto — empresa» ([cómo](#cuando-validas-el-sistema-busca-el-contacto)). Después decide tú el siguiente paso: por qué canal y con qué mensaje. Si quieres a una persona concreta, búscala o créala en Twenty y enlázala en **Decision maker**.
 1. Si una feria calificada ya no te da más (has sacado de ella lo que querías), descártala para que el sistema deje de dedicarle presupuesto (consulta [Estados de señal](#señales)).
 
 > **Importante:** validar una hipótesis **no envía ningún email** ni avisa a nadie. Solo significa "esta hipótesis es buena y la voy a trabajar yo". El contacto con el cliente lo decides y lo ejecutas tú. Esto es así por diseño: en el sistema, toda acción con efecto hacia fuera (enviar un email, contactar con un decisor) exige una persona.
@@ -193,12 +194,45 @@ Dos ejemplos:
 
 | Acción | Qué ocurre en Twenty | Qué ocurre además |
 |---|---|---|
-| **Validar** | La hipótesis pasa a `Validated`. | Cuenta como una hipótesis **aceptada** para el sistema (consulta [Por qué tu feedback importa](#por-qué-tu-feedback-importa)). El sistema prepara un [borrador de email](#borradores-de-email). No se envía nada. |
-| **Editar y validar** | Se guardan tus cambios y la hipótesis pasa a `Validated`. | Cuenta como **editada**: el sistema aprende de lo que corriges. El sistema prepara un [borrador de email](#borradores-de-email) con tus datos corregidos. No se envía nada. |
+| **Validar** | La hipótesis pasa a `Validated`. | Cuenta como una hipótesis **aceptada** para el sistema (consulta [Por qué tu feedback importa](#por-qué-tu-feedback-importa)). El sistema [busca el contacto](#cuando-validas-el-sistema-busca-el-contacto) y prepara un [borrador de email](#borradores-de-email). No se envía nada. |
+| **Editar y validar** | Se guardan tus cambios y la hipótesis pasa a `Validated`. | Cuenta como **editada**: el sistema aprende de lo que corriges. El sistema busca el contacto y prepara un [borrador de email](#borradores-de-email) con tus datos corregidos. No se envía nada. |
 | **Rechazar** | La hipótesis pasa a `Rejected` y sale de tu cola. | Cuenta como **descartada**. No se borra ni se avisa a nadie. |
 | **No hacer nada** | La hipótesis sigue en `Proposed`. | El sistema no aprende nada de ella. |
 
 > **Precaución:** no borres registros de hipótesis, señales ni empresas, ni siquiera los que te parezcan erróneos. Rechaza la hipótesis o descarta la señal. Borrar un registro elimina la información que el sistema necesita para mejorar.
+
+## Cuando validas, el sistema busca el contacto
+
+Un borrador sin destinatario no se puede enviar. Por eso, al validar una hipótesis, el sistema busca primero **a quién escribir** y después redacta el borrador.
+
+Qué hace, en este orden:
+
+1. **Mira la web de la propia empresa** (portada, contacto, aviso legal, equipo) y recoge los emails que la empresa publica, solo del dominio de la empresa. Prefiere una persona con cargo relevante; si no hay, un buzón de función (`comercial@`, `ventas@`, `marketing@`, `export@`); y si tampoco, uno genérico (`info@`, `contacto@`). Nunca propone `noreply`, protección de datos, bajas ni nada de la lista de supresión.
+1. **Escribe el mejor candidato en Email to**, pero **solo si estaba vacío**. Si ya habías puesto una dirección tú, no la toca.
+1. **Deja un Research «Contacto — empresa»** en **Commercial OS → Research** con todos los candidatos y la **URL exacta** de la página donde aparece cada uno.
+1. **Si la web no publica ningún email**, deja un Research **«Sin contacto público»**. Si el enriquecimiento externo está activado, lo intentará después; si no, queda para ti.
+
+> **Nota:** el sistema nunca inventa una dirección (no adivina `nombre.apellido@`). Todo lo que ves en **Email to** viene de una página pública o, si está activado, de un proveedor externo, y consta con su fuente.
+
+### Tu paso nuevo: revisar destinatario y fuente antes del clic
+
+Antes de poner `Reviewed` en un borrador:
+
+1. Abre la hipótesis y mira **Email to**.
+1. Abre el Research **«Contacto — empresa»** de esa empresa y haz clic en la **URL de origen**: comprueba que la dirección está ahí y que tiene sentido para esta oferta.
+1. Si hay varios candidatos y prefieres otro (por ejemplo, la persona de marketing en lugar de `info@`), sustituye **Email to** por ese. Tu valor manda: el sistema no lo vuelve a cambiar.
+1. Sigue con la revisión del borrador y la [lista de supresión](#lista-de-supresión-qué-haces-antes-de-enviar) como siempre.
+
+### Si pone «Sin contacto público»
+
+La empresa no publica un email en su web. Tienes dos opciones:
+
+| Opción | Cuándo |
+|---|---|
+| **Buscar a mano** | La cuenta te importa o tienes otra vía (una llamada, LinkedIn, un contacto conocido). Escribe la dirección en **Email to**. |
+| **Esperar al enriquecimiento** | Si el enriquecimiento externo está activado, el sistema consulta un proveedor para esas hipótesis (con un tope diario). Solo rellena **Email to** si la confianza es alta; si no, deja el candidato en el Research para que decidas tú. |
+
+> **Importante:** que el sistema encuentre un contacto no significa que el correo salga. El envío sigue siendo tuyo: `Reviewed` y el botón. Los criterios legales y qué hace cada fase están en [Búsqueda de contactos](contactos.md).
 
 ## Borradores de email
 
@@ -229,7 +263,7 @@ El borrador aparece en dos sitios:
 En cada hipótesis validada:
 
 1. Abre la hipótesis y lee **Email subject** y **Email body**. Corrige lo que haga falta **en la hipótesis**, no en la nota. No quites la línea de baja ni la firma.
-1. Comprueba **Email to**. Si está vacío, escribe la dirección del destinatario (una dirección de rol, como `compras@`, si no hay un decisor identificado).
+1. Comprueba **Email to** y su fuente: el sistema lo rellena al validar y deja el Research «Contacto — empresa» con la URL de origen ([cómo](#tu-paso-nuevo-revisar-destinatario-y-fuente-antes-del-clic)). Si está vacío ("Sin contacto público"), escribe tú la dirección del destinatario (una dirección de rol, como `compras@`, si no hay un decisor identificado).
 1. Comprueba que ni la dirección ni el dominio del destinatario están en la nota `Lista de supresión — NO contactar` (consulta [Lista de supresión](#lista-de-supresión-qué-haces-antes-de-enviar)). El sistema además lo comprueba y devuelve el borrador a `Draft` si la dirección está en la lista.
 1. Comprueba que no superas el ritmo del día del [plan de warm-up](email-warmup.md). Los envíos desde Twenty cuentan igual que los del webmail.
 1. Cambia **Email status** a `Reviewed`. Significa «lo he leído y se puede enviar».
@@ -362,7 +396,7 @@ No. Validar solo cambia el estado de la hipótesis. El sistema no envía emails 
 
 ### El sistema se equivocó de contacto
 
-En esta versión, el sistema no elige contacto: el campo **Decision maker** viene vacío. Busca a la persona adecuada en **People** (o créala), y selecciónala en **Decision maker**. Si el campo ya tiene a alguien que no es, sustitúyelo. Cuando la captura de feedback esté activa, ese cambio contará como una edición.
+El sistema elige la **dirección de email** (**Email to**) a partir de lo que la empresa publica, pero no elige a la persona: el campo **Decision maker** viene vacío. Si **Email to** no es la dirección adecuada, cámbiala (el sistema no la volverá a tocar) y, si quieres, busca a la persona en **People** (o créala) y selecciónala en **Decision maker**. Si el campo ya tiene a alguien que no es, sustitúyelo. Ese cambio cuenta como una edición.
 
 ### La empresa ya es cliente
 

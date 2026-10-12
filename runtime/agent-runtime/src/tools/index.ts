@@ -14,6 +14,9 @@ import {
 } from './twenty/record-tools.js';
 import { createFetchUrlTool, type FetchUrlDeps } from './web/fetch-url.js';
 import { createRenderUrlTool, type RenderUrlDeps } from './web/render-url.js';
+import { createFindContactTool, createSetHypothesisRecipientTool } from '../contact-finder/tools.js';
+import { defaultEnrichService } from '../contact-finder/enrich/index.js';
+import type { ContactFinderDeps } from '../contact-finder/finder.js';
 
 export * from './types.js';
 export * from './registry.js';
@@ -72,13 +75,27 @@ export function registerCatalogTools(registry: ToolRegistry, catalog: CatalogSer
 }
 
 /**
+ * Registers the ContactFinder tools (`find_contact` READ, `set_hypothesis_recipient`
+ * LOW_WRITE). The finder reuses the egress deps of `fetch_url` / `render_url`; the
+ * enrichment service defaults to the process-wide one (ENRICH_* env, stub by default).
+ */
+export function registerContactTools(registry: ToolRegistry, twenty: TwentyClient, finder: ContactFinderDeps = {}): ToolRegistry {
+  registry.register(createFindContactTool({ twenty, finder }));
+  registry.register(createSetHypothesisRecipientTool({ twenty }));
+  return registry;
+}
+
+/**
  * Registry with every MVP-0 tool implemented so far. The Twenty client is read from
  * TWENTY_BASE_URL / TWENTY_API_KEY; without a key the tools are still registered
  * and answer `TWENTY_NOT_CONFIGURED`. Agents only get the tools their `tool_policy`
  * allows (fetch_url / render_url are in no policy unless listed explicitly). The catalog
  * tools use the process-wide CatalogService (CATALOG_* env) unless one is injected.
  */
-export function createDefaultToolRegistry(opts: { twenty?: TwentyClient; web?: FetchUrlDeps; render?: RenderUrlDeps; catalog?: CatalogService } = {}): ToolRegistry {
+export function createDefaultToolRegistry(opts: { twenty?: TwentyClient; web?: FetchUrlDeps; render?: RenderUrlDeps; catalog?: CatalogService; contacts?: ContactFinderDeps } = {}): ToolRegistry {
   const registry = registerWebTools(registerTwentyTools(new ToolRegistry(), opts.twenty ?? twentyClientFromEnv()), opts.web, opts.render);
+  // ContactFinder (tanda 17): same Twenty config and egress deps; enrichment = process-wide service.
+  const contactDeps: ContactFinderDeps = { ...(opts.web ? { web: opts.web } : {}), ...(opts.render ? { render: opts.render } : {}), enrich: defaultEnrichService(), ...(opts.contacts ?? {}) };
+  registerContactTools(registry, opts.twenty ?? twentyClientFromEnv(), contactDeps);
   return registerCatalogTools(registry, opts.catalog ?? defaultCatalogService());
 }

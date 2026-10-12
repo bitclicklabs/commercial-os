@@ -80,6 +80,12 @@ export const AUDITED_ROUTES: Readonly<Record<string, AuditSpec>> = {
   // Outbound webhooks (src/events/external-routes.ts)
   'POST /event-subscriptions': { action: 'event_subscription.create', subjectType: 'event_subscription', subjectId: (i) => str(res(i, 'subscription', 'id')) ?? str(i.body.name) },
   'PATCH /event-subscriptions/:id': { action: 'event_subscription.update', subjectType: 'event_subscription' },
+  // ContactFinder backfill (src/api/routes/contacts.ts): queues runs that write empty emailTo fields in Twenty.
+  'POST /contacts/backfill': {
+    action: (i) => (i.body.dry_run === true ? 'contact.backfill_dry_run' : 'contact.backfill'),
+    subjectType: 'tenant',
+    subjectId: (i) => str(res(i, 'backfill', 'tenant_id')),
+  },
 };
 
 /** Mutating routes deliberately left out, with the reason (they have their own record). */

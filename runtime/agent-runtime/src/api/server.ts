@@ -19,6 +19,7 @@ import { optimizerRoutes } from './routes/optimizer.js';
 import { auditRoutes } from './routes/audit.js';
 import { traceRoutes } from './routes/traces.js';
 import { catalogRoutes } from './routes/catalog.js';
+import { contactRoutes } from './routes/contacts.js';
 import { installAuditHook } from '../audit/hook.js';
 
 export async function buildServer(
@@ -56,5 +57,6 @@ export async function buildServer(
   await auditRoutes(app, ctx);
   await traceRoutes(app, ctx);
   await catalogRoutes(app, ctx);
+  await contactRoutes(app, ctx);
   return app;
 }

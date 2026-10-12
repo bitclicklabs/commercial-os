@@ -55,7 +55,21 @@ export interface SummarySlice {
   cost: { total_eur: number | null };
   funnel: { hypotheses_created: number };
   human_feedback: { subjects_reviewed: number; accepted: number; acceptance_rate: number | null };
-  email: { sends: { in_window: number | null } } | null | undefined;
+  email: { sends: { in_window: number | null; today?: number } } | null | undefined;
+}
+
+/**
+ * Sends of ONE local day (tanda 19 fix). `in_window` is the per-day count from `email_sends` over
+ * [local midnight, next local midnight): right for every day of the backfill. It is null when the
+ * summary had no window (GET /metrics/summary without since/until, which is what showed
+ * `in_window: null` next to `today: 1`); then only the current local day has a per-day number,
+ * `sends.today` (relative to `now`), and an older day is unknown -> 0.
+ */
+export function emailSendsOfDay(day: SummarySlice, date: string, today: string): number {
+  const sends = day.email?.sends;
+  if (!sends) return 0;
+  if (typeof sends.in_window === 'number') return sends.in_window;
+  return date === today ? (sends.today ?? 0) : 0;
 }
 
 export type SummaryFn = (w: { tenantId: string; since?: Date; until?: Date }) => Promise<SummarySlice>;
@@ -126,7 +140,7 @@ export async function computeDailyMetric(
     runsFailed: (status.FAILED ?? 0) + (status.TIMED_OUT ?? 0),
     cost: { amountMicros: Math.round((day.cost.total_eur ?? 0) * 1_000_000), currencyCode: 'EUR' },
     hypothesesCreated: day.funnel.hypotheses_created,
-    emailSends: day.email?.sends.in_window ?? 0,
+    emailSends: emailSendsOfDay(day, o.date, localDate(o.now ?? new Date(), timezone)),
     warmupTarget: warm.target,
     warmupStage: STAGE[warm.stage],
     warmupPhase: warm.phase?.label ?? null,

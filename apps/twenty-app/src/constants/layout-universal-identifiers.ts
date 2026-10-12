@@ -75,6 +75,23 @@ export const HYPOTHESES_BY_STATUS_VIEW_IDS = {
   groupExpired: '5ee2ca58-128f-40da-9c76-e3e86334753e',
 } as const;
 
+// Tanda 19: «Señales · Cola», kanban de señales por estado (Twenty no trae kanban para objetos de la App).
+export const SIGNALS_QUEUE_VIEW_IDS = {
+  view: 'de110691-6006-49d0-a6cc-104d8a78f885',
+  fieldName: '3591a48c-ad69-4ba1-bff6-6bb3eefb2b0e',
+  fieldCompany: '77482261-6bd1-4662-90a4-553dc23e6bf9',
+  fieldSignalType: '0f2fe21c-38da-4f6e-b64c-6b22a731de7e',
+  fieldEventDate: '0fa7927e-c6af-4876-b5de-3c4d46a4fe3c',
+  fieldConfidence: 'dfe7a265-6da5-40eb-ac8f-2e45d16367c1',
+  fieldDetectedAt: '483cf9dc-910a-4a94-adc0-049f41f78b9d',
+  fieldStatus: '1cb14e0d-e8c2-45d8-a73c-b80ade669ee5',
+  groupNew: '285ee4c5-9635-499b-8fd1-574793dac39d',
+  groupReviewing: '3bcf14fd-ef5d-46d6-81d5-b9d655aa0b0d',
+  groupQualified: 'a6a737cc-9ce2-4253-ae46-93ce6db66df7',
+  groupDiscarded: '89f280e0-2767-4df0-914e-858d527b8152',
+  groupExpired: '1401b913-6016-4688-a506-e3f312a489d3',
+} as const;
+
 export const RECENT_SIGNALS_VIEW_IDS = {
   view: 'b026c96d-248a-45d5-95f8-3bd39a31ffdb',
   fieldName: '0b092e61-8529-47d4-a7c8-d7b80404aef5',

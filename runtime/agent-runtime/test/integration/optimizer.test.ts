@@ -3,7 +3,7 @@
  * and an in-memory CRM (nothing reaches Twenty): synthetic production traces and human
  * verdicts -> failure harvest -> clustering -> bounded candidate (DRAFT, never activated) ->
  * new dataset version with the failure entities burned as design (P5) -> experiment -> gate.
- * GATE_PASS (note in the CRM, human activation through the Release Gate, PROMOTED), the burned
+ * GATE_PASS (task in the CRM, human activation through the Release Gate, PROMOTED), the burned
  * VALIDATION blocks the next run (BLOCKED_NO_DATA), GATE_FAIL, no failures, ceilings rejected
  * twice (ERROR) and the API (202/409/422/503, list, detail, close, no DELETE).
  * Fresh tenants per scenario, nothing is deleted.
@@ -197,7 +197,7 @@ describe.skipIf(!dbAvailable)('skill optimizer (PostgreSQL)', () => {
     await handle?.close();
   });
 
-  it('GATE_PASS: failures -> clusters -> DRAFT candidate -> P5 design marks -> experiment PASS -> note; never activated; then the human promotes it', async () => {
+  it('GATE_PASS: failures -> clusters -> DRAFT candidate -> P5 design marks -> experiment PASS -> task; never activated; then the human promotes it', async () => {
     const tenant = `it-opt-a-${suffix}`;
     const { baseText } = await setupTenant(tenant);
     const llm = new StubProvider({ responses: [CLUSTERS, proposal(baseText)] });
@@ -261,11 +261,14 @@ describe.skipIf(!dbAvailable)('skill optimizer (PostgreSQL)', () => {
     expect(details.experiment).toMatchObject({ name: exp!.name, decision: 'PASS', mode: 'labeled' });
     expect(details.experiment.composite[0].delta).toBeGreaterThanOrEqual(0.02);
 
-    // The note for the human, in the (in-memory) CRM. Nothing else was written to it.
-    expect(details.note).toMatchObject({ created: true, title: `Propuesta de promoción — ${PROSPECTOR_SKILL_ID} v2` });
-    expect(crm.tables.notes).toHaveLength(1);
+    // The TASK for the human (tanda 19; before, a note), in the (in-memory) CRM. Nothing else was written to it.
+    expect(details.task).toMatchObject({ created: true, title: `Propuesta de promoción — ${PROSPECTOR_SKILL_ID} v2`, due_at: expect.any(String) });
+    expect(crm.tables.notes).toHaveLength(0);
+    expect(crm.tables.tasks).toHaveLength(1);
+    expect(crm.tables.tasks![0]).toMatchObject({ status: 'TODO' });
+    expect(Date.parse(String(crm.tables.tasks![0]!.dueAt)) - Date.now()).toBeGreaterThan(2 * 86_400_000);
     expect(crm.writes()).toBe(1);
-    const md = (crm.tables.notes![0]!.bodyV2 as { markdown: string }).markdown;
+    const md = (crm.tables.tasks![0]!.bodyV2 as { markdown: string }).markdown;
     expect(md).toContain(`/skills/${PROSPECTOR_SKILL_ID}/versions/2/activate`);
     expect(md).toMatch(/No se ha activado nada/);
 

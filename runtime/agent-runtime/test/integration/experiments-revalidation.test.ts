@@ -306,7 +306,7 @@ describe.skipIf(!dbAvailable)('re-validation of PASS_FORM experiments (PostgreSQ
     expect((list.json() as { items: Array<{ verdict: string }> }).items.map((i) => i.verdict)).toEqual(['CONFIRMED', 'INSUFFICIENT']);
   });
 
-  it('REFUTED: no note while the version is not in use; once it is in canary, a note in Twenty and the event, and nothing is changed', async () => {
+  it('REFUTED: no alert while the version is not in use; once it is in canary, a Twenty TASK (not a note) and the event, and nothing is changed', async () => {
     const B = ['IOTA PAN', 'KAPPA CAFES', 'LAMBDA VINOS', 'MU QUESOS', 'NU ACEITES', 'XI DULCES'];
     await makeDataset('it-reval-b', 1, B.map((name) => ({ split: 'VALIDATION' as const, name })));
     // Candidate v3: better form, but a confidence under the agent threshold: nothing writable.
@@ -321,6 +321,7 @@ describe.skipIf(!dbAvailable)('re-validation of PASS_FORM experiments (PostgreSQ
     expect(b1.summary).toMatch(/REFUTED/);
     expect(b1.revalidation!.consequence).toEqual({});
     expect(crm.tables.notes).toHaveLength(0);
+    expect(crm.tables.tasks).toHaveLength(0);
 
     // Since tanda 13 the Release Gate reads the most recent re-validation: the REFUTED blocks a canary of v3.
     const canary = await app.inject({ method: 'POST', url: `/skills/${PROSPECTOR_SKILL_ID}/versions/3/canary`, headers, payload: { percent: 10, by: 'PM' } });
@@ -342,10 +343,15 @@ describe.skipIf(!dbAvailable)('re-validation of PASS_FORM experiments (PostgreSQ
     expect(r2.statusCode).toBe(201);
     const b2 = r2.json() as RevalBody;
     expect(b2).toMatchObject({ verdict: 'REFUTED', labels: { used: 6 }, version_state: { state: 'CANARY', relevant: true } });
-    const cons = b2.revalidation!.consequence as { note: { id: string; title: string; created: boolean }; event: { id: string; type: string } };
-    expect(cons.note).toMatchObject({ created: true, title: `⚠️ Revalidación fallida — ${PROSPECTOR_SKILL_ID} v3` });
-    expect(crm.tables.notes).toHaveLength(1);
-    const md = (crm.tables.notes![0]!.bodyV2 as { markdown: string }).markdown;
+    const cons = b2.revalidation!.consequence as { task: { id: string; title: string; created: boolean; due_at: string }; event: { id: string; type: string } };
+    // Tanda 19: a Task (TODO, due the next day, no CRM target: the subject is a skill version), not a note.
+    expect(cons.task).toMatchObject({ created: true, title: `⚠️ Revalidación fallida — ${PROSPECTOR_SKILL_ID} v3` });
+    expect(crm.tables.notes).toHaveLength(0);
+    expect(crm.tables.tasks).toHaveLength(1);
+    expect(crm.tables.taskTargets).toHaveLength(0);
+    expect(crm.tables.tasks![0]).toMatchObject({ status: 'TODO', dueAt: cons.task.due_at });
+    expect(Date.parse(cons.task.due_at)).toBeGreaterThan(Date.now());
+    const md = (crm.tables.tasks![0]!.bodyV2 as { markdown: string }).markdown;
     expect(md).toMatch(/EXP-004/);
     expect(md).toMatch(/canary\/rollback/);
     expect(md).toMatch(/0,000 \| 0\/6/);
@@ -353,7 +359,7 @@ describe.skipIf(!dbAvailable)('re-validation of PASS_FORM experiments (PostgreSQ
     // The internal event, for n8n.
     expect(cons.event).toMatchObject({ type: 'experiment.revalidation_failed' });
     const [ev] = await handle.db.select().from(events).where(and(eq(events.tenantId, tenant), eq(events.type, 'experiment.revalidation_failed')));
-    expect(ev!.payload).toMatchObject({ experimentName: 'EXP-004', candidateVersion: 3, verdict: 'REFUTED', baselineAccuracy: 1, candidateAccuracy: 0, versionState: 'CANARY', noteId: cons.note.id });
+    expect(ev!.payload).toMatchObject({ experimentName: 'EXP-004', candidateVersion: 3, verdict: 'REFUTED', baselineAccuracy: 1, candidateAccuracy: 0, versionState: 'CANARY', taskId: cons.task.id, noteId: null });
     expect(eventQueue.jobs.size).toBeGreaterThan(0);
 
     // Nothing was deactivated or rolled back: v2 ACTIVE, v3 DRAFT with its canary still ACTIVE.
@@ -363,10 +369,10 @@ describe.skipIf(!dbAvailable)('re-validation of PASS_FORM experiments (PostgreSQ
     const can = await app.inject({ method: 'GET', url: `/skills/${PROSPECTOR_SKILL_ID}/canary`, headers });
     expect(JSON.stringify(can.json())).toMatch(/"status":"ACTIVE"/);
 
-    // Repeating the same request returns the same row: no second note.
+    // Repeating the same request returns the same row: no second task.
     const r3 = await revalidate('EXP-004');
     expect(r3.statusCode).toBe(200);
-    expect(crm.tables.notes).toHaveLength(1);
+    expect(crm.tables.tasks).toHaveLength(1);
 
     // Append-only: no DELETE, no edit of the verdict, consequence written once.
     const id = b2.revalidation!.id;
@@ -409,7 +415,7 @@ describe.skipIf(!dbAvailable)('re-validation of PASS_FORM experiments (PostgreSQ
     expect(r.created).toBe(true);
     expect(r.computation.outputs.source).toBe('artifact');
     expect(r.revalidation).toMatchObject({ verdict: 'REFUTED', outputsSource: 'artifact', baselineAccuracy: 1, candidateAccuracy: 0, source: 'cli' });
-    // v3 is in canary: the consequence is recorded, the note was switched off.
-    expect(r.revalidation!.consequence).toMatchObject({ note: { skipped: 'disabled' } });
+    // v3 is in canary: the consequence is recorded, the alert (a task since tanda 19) was switched off.
+    expect(r.revalidation!.consequence).toMatchObject({ task: { skipped: 'disabled' } });
   });
 });

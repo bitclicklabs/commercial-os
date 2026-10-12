@@ -12,16 +12,17 @@
  *   product families) and, at most once a day per tenant (Europe/Madrid day):
  *     1. the event `catalog.unavailable` on the event bus (idempotency key per tenant and day,
  *        so a second worker or a restart does not publish it twice), for n8n to route;
- *     2. one ⚠️ note in Twenty "Catálogo no disponible — <día> (<tenant>)" (title-idempotent:
- *        an existing note with that title is reused, never duplicated or edited).
+ *     2. one ⚠️ Twenty TASK (tanda 19; before, a note) "Catálogo no disponible — <día> (<tenant>)",
+ *        status TODO, due today (idempotent by title + day: an existing task is reused, never
+ *        duplicated or edited).
  *   Never an email: the runtime does not send mail by principle.
  */
-import { filterValue, TWENTY_OBJECTS, type TwentyClient, type TwentyNote } from '../integrations/twenty/index.js';
+import type { TwentyClient } from '../integrations/twenty/index.js';
+import { createCrmTask, crmTaskTitle } from '../integrations/twenty/tasks.js';
 import { defaultCatalogService, type CatalogAvailability, type CatalogService } from '../integrations/catalog/index.js';
 import { twentyClientFromEnv } from '../integrations/twenty/index.js';
 import { NOOP_EVENT_PUBLISHER, type EventPublisher } from '../events/event-bus.js';
 import type { CatalogEventType } from '../events/envelope.js';
-import { noteTitle } from '../tools/twenty/note-tools.js';
 import type { AgentToolPolicy, ToolRegistry } from '../tools/index.js';
 
 export const CATALOG_UNAVAILABLE_EVENT: CatalogEventType = 'catalog.unavailable';
@@ -47,12 +48,12 @@ export type CatalogGateResult =
       available: boolean;
       availability: CatalogAvailability;
       /** Only when unavailable: what was done about it today. */
-      notice?: { day: string; alreadyNotified: boolean; eventPublished: boolean; noteId: string | null; noteCreated: boolean; noteError?: string };
+      notice?: { day: string; alreadyNotified: boolean; eventPublished: boolean; taskId: string | null; taskCreated: boolean; taskError?: string };
     };
 
 export interface CatalogGateOptions {
   catalog: CatalogService;
-  /** Twenty for the ⚠️ note; null or unconfigured = event only. */
+  /** Twenty for the ⚠️ task; null or unconfigured = event only. */
   twenty: TwentyClient | null;
   /** Read at call time (the processor's `events` is set after construction). */
   events?: () => EventPublisher;
@@ -67,7 +68,7 @@ export function localDay(date: Date, timeZone = CATALOG_GATE_TIMEZONE): string {
 }
 
 export function catalogUnavailableNoteTitle(day: string, tenantId: string): string {
-  return noteTitle(`⚠️ Catálogo no disponible — ${day} (${tenantId})`);
+  return crmTaskTitle(`⚠️ Catálogo no disponible — ${day} (${tenantId})`);
 }
 
 export function catalogUnavailableNoteMarkdown(a: { day: string; tenantId: string; availability: Extract<CatalogAvailability, { available: false }>; provider: string | null }): string {
@@ -124,12 +125,12 @@ export class CatalogGate {
     const day = localDay(this.now(), this.timeZone);
     const key = `${args.tenantId}:${day}`;
     if (this.notified.has(key)) {
-      return { checked: true, available: false, availability, notice: { day, alreadyNotified: true, eventPublished: false, noteId: null, noteCreated: false } };
+      return { checked: true, available: false, availability, notice: { day, alreadyNotified: true, eventPublished: false, taskId: null, taskCreated: false } };
     }
     const running = this.pending.get(key);
     if (running) {
       await running.catch(() => undefined);
-      return { checked: true, available: false, availability, notice: { day, alreadyNotified: true, eventPublished: false, noteId: null, noteCreated: false } };
+      return { checked: true, available: false, availability, notice: { day, alreadyNotified: true, eventPublished: false, taskId: null, taskCreated: false } };
     }
     const work = this.notify(args, availability, day, key);
     this.pending.set(key, work);
@@ -165,31 +166,34 @@ export class CatalogGate {
     if (published?.created) this.ownEvents.add(key);
     // Another process already published today's event: it also owns today's note.
     const alreadyByOther = published !== null && !published.created && !this.ownEvents.has(key);
-    let noteId: string | null = null;
-    let noteCreated = false;
-    let noteError: string | undefined;
+    let taskId: string | null = null;
+    let taskCreated = false;
+    let taskError: string | undefined;
     if (!alreadyByOther && this.twenty?.isConfigured()) {
       try {
-        const title = catalogUnavailableNoteTitle(day, args.tenantId);
-        const { records } = await this.twenty.list<TwentyNote>(TWENTY_OBJECTS.note, { filter: `title[eq]:${filterValue(title)}`, limit: 5 });
-        const existing = records.find((n) => noteTitle(n.title ?? '') === title);
-        if (existing) noteId = existing.id;
-        else {
-          const note = await this.twenty.create<TwentyNote>(TWENTY_OBJECTS.note, {
-            title,
-            bodyV2: { markdown: catalogUnavailableNoteMarkdown({ day, tenantId: args.tenantId, availability, provider: this.catalog.api?.kind ?? null }) },
-          });
-          noteId = note.id;
-          noteCreated = true;
-        }
+        // A Twenty Task due today (tanda 19; before, a note). The title already carries the day
+        // and the tenant, so it is matched by title alone (`scope: 'ever'`): one per tenant and day,
+        // whatever the clock of the Twenty server says about its creation day.
+        const task = await createCrmTask(
+          this.twenty,
+          {
+            title: catalogUnavailableNoteTitle(day, args.tenantId),
+            body: catalogUnavailableNoteMarkdown({ day, tenantId: args.tenantId, availability, provider: this.catalog.api?.kind ?? null }),
+            dueAt: day,
+            scope: 'ever',
+          },
+          { now: this.now(), timeZone: this.timeZone },
+        );
+        taskId = task.taskId;
+        taskCreated = task.created;
       } catch (err) {
-        noteError = err instanceof Error ? err.message : String(err);
-        this.logger.error({ executionId: args.executionId, err: noteError }, 'could not leave the catalog-unavailable note in Twenty');
+        taskError = err instanceof Error ? err.message : String(err);
+        this.logger.error({ executionId: args.executionId, err: taskError }, 'could not leave the catalog-unavailable task in Twenty');
       }
     }
-    // A failed note is retried by the next run of the day (the event is deduplicated by its key).
-    if (noteError === undefined) this.notified.add(key);
-    return { day, alreadyNotified: alreadyByOther, eventPublished: published?.created === true, noteId, noteCreated, ...(noteError ? { noteError } : {}) };
+    // A failed task is retried by the next run of the day (the event is deduplicated by its key).
+    if (taskError === undefined) this.notified.add(key);
+    return { day, alreadyNotified: alreadyByOther, eventPublished: published?.created === true, taskId, taskCreated, ...(taskError ? { taskError } : {}) };
   }
 }
 

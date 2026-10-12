@@ -199,7 +199,8 @@ export function parseExhibitorDecision(text: string): Parsed<ExhibitorDecision> 
  * by the scout mode; `list_event_signals` (READ) and `expire_signal` (LOW_WRITE, only to EXPIRED)
  * only by the signals mode. Lead-time window (tanda 18): `list_hypotheses_for_expiry` (READ) and
  * `expire_hypothesis` (LOW_WRITE, only PROPOSED -> EXPIRED) in the signals mode;
- * `create_signal_note` (LOW_WRITE) when a qualification falls outside the window.
+ * when a qualification falls outside the window, `create_crm_task` (LOW_WRITE, tanda 19: a Twenty
+ * Task on the signal; it replaces `create_signal_note`, still registered for older versions).
  */
 export const PROSPECTOR_TOOLS = [
   'find_company',
@@ -214,7 +215,7 @@ export const PROSPECTOR_TOOLS = [
   'expire_signal',
   'list_hypotheses_for_expiry',
   'expire_hypothesis',
-  'create_signal_note',
+  'create_crm_task',
 ] as const;
 
 export interface ScoutConfig {

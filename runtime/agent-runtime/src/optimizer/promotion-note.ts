@@ -1,12 +1,13 @@
 /**
- * The note a GATE_PASS run leaves in Twenty: "Propuesta de promoción — <skill> v<N>". It is a
- * proposal for a human, never an activation: it says what the candidate attacks, what the
- * experiment measured and how to activate it (the activation endpoint re-checks the Release
- * Gate). Written with the runtime's TwentyClient (not the agents' tool executor). Idempotent:
- * a note with the same title is reused, never duplicated or edited. Nothing is deleted.
+ * The alert a GATE_PASS run leaves in Twenty: "Propuesta de promoción — <skill> v<N>". Since
+ * tanda 19 it is a native Task (TODO, due in 3 days) instead of a note. It is a proposal for a
+ * human, never an activation: it says what the candidate attacks, what the experiment measured
+ * and how to activate it (the activation endpoint re-checks the Release Gate). Written with the
+ * runtime's TwentyClient (not the agents' tool executor). Idempotent: a task with the same title
+ * is reused, never duplicated or edited. Nothing is deleted.
  */
-import { filterValue, TWENTY_OBJECTS, type TwentyClient, type TwentyNote } from '../integrations/twenty/index.js';
-import { noteTitle } from '../tools/twenty/note-tools.js';
+import type { TwentyClient } from '../integrations/twenty/index.js';
+import { createCrmTask, crmTaskTitle, dueInDays } from '../integrations/twenty/tasks.js';
 import type { FailureCluster } from './core.js';
 
 export interface PromotionNoteInput {
@@ -31,7 +32,7 @@ export interface PromotionNoteInput {
 }
 
 export function promotionNoteTitle(skillName: string, version: number): string {
-  return noteTitle(`Propuesta de promoción — ${skillName} v${version}`);
+  return crmTaskTitle(`Propuesta de promoción — ${skillName} v${version}`);
 }
 
 const eur = (n: number) => `${n.toFixed(4).replace('.', ',')} €`;
@@ -67,13 +68,25 @@ export function promotionNoteMarkdown(i: PromotionNoteInput): string {
   return lines.join('\n');
 }
 
-/** Creates the note, or returns the existing one with the same title. */
-export async function upsertPromotionNote(twenty: TwentyClient, input: PromotionNoteInput, opts: { signal?: AbortSignal } = {}): Promise<{ noteId: string; created: boolean; title: string }> {
-  const signal = opts.signal ? { signal: opts.signal } : {};
+/** Due date of the promotion proposal task: three days after the GATE_PASS. */
+export const PROMOTION_TASK_DUE_DAYS = 3;
+
+/**
+ * Creates the promotion proposal as a Twenty TASK (tanda 19; before, a note): status TODO, due in
+ * 3 days, no CRM target (the subject is a skill version). Idempotent per title for ever (one task
+ * per candidate version, as the note was): an existing task with that title is returned as is.
+ */
+export async function upsertPromotionTask(
+  twenty: TwentyClient,
+  input: PromotionNoteInput,
+  opts: { signal?: AbortSignal; now?: Date } = {},
+): Promise<{ taskId: string; created: boolean; title: string; dueAt: string | null }> {
+  const now = opts.now ?? new Date();
   const title = promotionNoteTitle(input.skillName, input.candidateVersion);
-  const { records } = await twenty.list<TwentyNote>(TWENTY_OBJECTS.note, { filter: `title[eq]:${filterValue(title)}`, limit: 5, ...signal });
-  const existing = records.find((n) => noteTitle(n.title ?? '') === title);
-  if (existing) return { noteId: existing.id, created: false, title };
-  const note = await twenty.create<TwentyNote>(TWENTY_OBJECTS.note, { title, bodyV2: { markdown: promotionNoteMarkdown(input) } }, signal);
-  return { noteId: note.id, created: true, title };
+  const t = await createCrmTask(
+    twenty,
+    { title, body: promotionNoteMarkdown(input), dueAt: dueInDays(now, PROMOTION_TASK_DUE_DAYS), scope: 'ever' },
+    { now, ...(opts.signal ? { signal: opts.signal } : {}) },
+  );
+  return { taskId: t.taskId, created: t.created, title: t.title, dueAt: t.dueAt };
 }

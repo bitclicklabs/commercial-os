@@ -109,7 +109,9 @@ describe('ProspectorAgent', () => {
     expect(policy.allow).toHaveLength(18);
     expect(policy.allow).toContain('list_hypotheses_for_expiry');
     expect(policy.allow).toContain('expire_hypothesis');
-    expect(policy.allow).toContain('create_signal_note');
+    // Tanda 19: the out-of-window alert is a Twenty Task; the note tool stays only for older versions.
+    expect(policy.allow).toContain('create_crm_task');
+    expect(policy.allow).not.toContain('create_signal_note');
     expect(policy.allow).toContain('list_event_signals');
     expect(policy.allow).toContain('expire_signal');
     expect(policy.allow).toContain('create_research');

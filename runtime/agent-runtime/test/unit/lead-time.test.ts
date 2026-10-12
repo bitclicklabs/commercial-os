@@ -12,6 +12,7 @@ import {
   MAX_HYPOTHESIS_EXPIRATIONS_PER_RUN,
   MemorySignalHistory,
   outOfWindowNote,
+  outOfWindowTaskDue,
   partitionByLeadTime,
   planHypothesisExpiry,
 } from '../../src/agents/signal-prospecting.js';
@@ -47,11 +48,12 @@ function fair(fake: FakeTwenty, name: string, status: string, eventDate: string 
   });
 }
 
-function setup(responses: Array<string | StubResponse>, opts: { input?: Record<string, unknown>; web?: FakeWeb; fake?: FakeTwenty; now?: Date } = {}) {
+function setup(responses: Array<string | StubResponse>, opts: { input?: Record<string, unknown>; web?: FakeWeb; fake?: FakeTwenty; now?: Date; configuration?: Record<string, unknown> } = {}) {
   const fake = opts.fake ?? new FakeTwenty();
   const web = opts.web ?? new FakeWeb();
   const provider = new StubProvider({ responses, usage: { inputTokens: 1000, outputTokens: 200, cachedTokens: 0 }, costPerCall: 0.001 });
-  const version = desiredProspectorVersion();
+  const desired = desiredProspectorVersion();
+  const version = opts.configuration ? { ...desired, configuration: opts.configuration } : desired;
   const tools = new ToolExecutor(
     createDefaultToolRegistry({ twenty: fake.client(), web: web.deps(), render: { endpoint: null } }),
     parseToolPolicy(version.configuration),
@@ -178,6 +180,14 @@ describe('lead-time window: pure rules', () => {
     expect(far.body).toContain(`a partir del ${addDays(90)}`);
     const nodate = outOfWindowNote({ signalName: 'Feria X', status: 'no_date', days: null, eventDate: null, today: TODAY, window: W });
     expect(nodate.body).toContain('⏳ Sin fecha de feria: añade la fecha a la señal para que entre al reparto');
+  });
+
+  it('task due date (tanda 19): too far = the day it enters the window; undated = +7 days; too close or past = today', () => {
+    expect(outOfWindowTaskDue({ status: 'too_far', eventDate: addDays(300), today: TODAY, window: W })).toBe(addDays(90));
+    expect(outOfWindowTaskDue({ status: 'too_far', eventDate: addDays(211), today: TODAY, window: W })).toBe(addDays(1));
+    expect(outOfWindowTaskDue({ status: 'no_date', eventDate: null, today: TODAY, window: W })).toBe(addDays(7));
+    expect(outOfWindowTaskDue({ status: 'too_close', eventDate: addDays(7), today: TODAY, window: W })).toBe(TODAY);
+    expect(outOfWindowTaskDue({ status: 'past', eventDate: addDays(-3), today: TODAY, window: W })).toBe(TODAY);
   });
 
   it('the gate applies to a scout input that names a signal_id (the trigger on qualification)', () => {
@@ -319,11 +329,11 @@ describe('trigger on qualification (prospect-on-qualified) with the lead-time wi
     event: { type: 'signal.qualified' },
   });
 
-  it('fair next week -> SKIPPED, no prospecting, a note on the signal; the signal keeps QUALIFIED; idempotent per day', async () => {
+  it('fair next week -> SKIPPED, no prospecting, a TASK on the signal (no note); the signal keeps QUALIFIED; idempotent per day', async () => {
     const fake = new FakeTwenty();
     const s = fair(fake, 'Gastrónoma 2026 (feria)', 'QUALIFIED', addDays(7), 'https://www.gastronoma.net/');
     const { provider, web, ctx, agent } = setup([], { fake, input: triggerInput(s, addDays(7)) });
-    const out = (await agent.run(ctx)).output as Record<string, unknown> & { lead_time: { status: string; days: number }; note: { created: boolean; noteId: string } };
+    const out = (await agent.run(ctx)).output as Record<string, unknown> & { lead_time: { status: string; days: number }; task: { created: boolean; taskId: string; dueAt: string } };
     expect(out).toMatchObject({ outcome: 'SKIPPED', status: 'ok', signal_id: s.id, run_summary_id: null, cost: { model: 0 } });
     expect(String(out.reason)).toContain('demasiado cercana (a 7 días; mínimo 45)');
     expect(out.lead_time).toMatchObject({ status: 'too_close', days: 7, event_date: addDays(7) });
@@ -331,21 +341,25 @@ describe('trigger on qualification (prospect-on-qualified) with the lead-time wi
     expect(web.requests).toHaveLength(0);
     expect(fake.tables.commercialSignals[0]!.status).toBe('QUALIFIED');
     expect(fake.requests.filter((r) => r.method === 'PATCH')).toHaveLength(0);
-    expect(fake.tables.notes).toHaveLength(1);
-    expect(fake.tables.notes[0]).toMatchObject({ title: '⏳ Fuera de ventana (2026-10-12): Gastrónoma 2026' });
-    expect(String((fake.tables.notes[0]!.bodyV2 as { markdown: string }).markdown)).toContain('⏳ Fuera de ventana: la feria es en 7 días');
-    expect(fake.tables.noteTargets).toEqual([expect.objectContaining({ noteId: out.note.noteId, targetCommercialSignalId: s.id })]);
-    expect(out.note.created).toBe(true);
+    // Tanda 19: a Twenty Task (TODO) linked to the signal; the note is no longer created.
+    expect(fake.tables.notes).toHaveLength(0);
+    expect(fake.tables.noteTargets).toHaveLength(0);
+    expect(fake.tables.tasks).toHaveLength(1);
+    // Too close never enters the window: due today (09:00 Madrid).
+    expect(fake.tables.tasks[0]).toMatchObject({ title: '⏳ Fuera de ventana (2026-10-12): Gastrónoma 2026', status: 'TODO', dueAt: '2026-10-12T07:00:00.000Z' });
+    expect(String((fake.tables.tasks[0]!.bodyV2 as { markdown: string }).markdown)).toContain('⏳ Fuera de ventana: la feria es en 7 días');
+    expect(fake.tables.taskTargets).toEqual([expect.objectContaining({ taskId: out.task.taskId, targetCommercialSignalId: s.id })]);
+    expect(out.task.created).toBe(true);
 
-    // A replay the same day: same note, nothing new.
+    // A replay the same day: same task, nothing new.
     const again = setup([], { fake, input: triggerInput(s, addDays(7)) });
     const out2 = (await again.agent.run(again.ctx)).output as typeof out;
-    expect(out2.note).toMatchObject({ created: false, noteId: out.note.noteId });
-    expect(fake.tables.notes).toHaveLength(1);
-    expect(fake.tables.noteTargets).toHaveLength(1);
+    expect(out2.task).toMatchObject({ created: false, taskId: out.task.taskId });
+    expect(fake.tables.tasks).toHaveLength(1);
+    expect(fake.tables.taskTargets).toHaveLength(1);
   });
 
-  it('fair too far -> SKIPPED with a "demasiado lejana" note; undated fair -> SKIPPED with the "Sin fecha" note', async () => {
+  it('fair too far -> task due the day it ENTERS the window; undated fair -> "Sin fecha" task due in 7 days', async () => {
     const fake = new FakeTwenty();
     const far = fair(fake, 'Feria Lejana 2027 (feria)', 'QUALIFIED', addDays(300), 'https://www.feria-lejana.com/');
     const nodate = fair(fake, 'Feria Sin Fecha (feria)', 'QUALIFIED', null, 'https://www.feria-sin-fecha.com/');
@@ -355,12 +369,30 @@ describe('trigger on qualification (prospect-on-qualified) with the lead-time wi
     const b = setup([], { fake, input: triggerInput(nodate, null) });
     const outNoDate = (await b.agent.run(b.ctx)).output as Record<string, unknown>;
     expect(outNoDate).toMatchObject({ outcome: 'SKIPPED', lead_time: { status: 'no_date', days: null } });
-    const bodies = fake.tables.notes.map((n) => String((n.bodyV2 as { markdown: string }).markdown));
+    expect(fake.tables.notes).toHaveLength(0);
+    const bodies = fake.tables.tasks.map((n) => String((n.bodyV2 as { markdown: string }).markdown));
     expect(bodies[0]).toContain('demasiado lejana');
     expect(bodies[1]).toContain('⏳ Sin fecha de feria: añade la fecha a la señal para que entre al reparto');
+    // 300 days - 210 = enters the window on day 90 (2027-01-10, CET: 09:00 Madrid = 08:00 UTC).
+    expect(addDays(90)).toBe('2027-01-10');
+    expect(fake.tables.tasks[0]).toMatchObject({ status: 'TODO', dueAt: '2027-01-10T08:00:00.000Z' });
+    expect(fake.tables.tasks[1]).toMatchObject({ status: 'TODO', dueAt: '2026-10-19T07:00:00.000Z' });
+    expect(fake.tables.taskTargets.map((t) => t.targetCommercialSignalId)).toEqual([far.id, nodate.id]);
     expect(fake.tables.commercialSignals.map((s) => s.status)).toEqual(['QUALIFIED', 'QUALIFIED']);
   });
 
+  it('a Prospector version seeded before tanda 19 (no create_crm_task allowed) keeps the old note, so the alert is not lost', async () => {
+    const fake = new FakeTwenty();
+    const s = fair(fake, 'Gastrónoma 2026 (feria)', 'QUALIFIED', addDays(7), 'https://www.gastronoma.net/');
+    const cfg = desiredProspectorVersion().configuration as { tool_policy: { allow: string[] } };
+    const oldConfig = { ...cfg, tool_policy: { ...cfg.tool_policy, allow: cfg.tool_policy.allow.map((t) => (t === 'create_crm_task' ? 'create_signal_note' : t)) } };
+    const { ctx, agent } = setup([], { fake, input: triggerInput(s, addDays(7)), configuration: oldConfig });
+    const out = (await agent.run(ctx)).output as Record<string, unknown>;
+    expect(out).toMatchObject({ outcome: 'SKIPPED', task_error: { code: 'TOOL_NOT_ALLOWED' }, note: { created: true } });
+    expect(fake.tables.tasks).toHaveLength(0);
+    expect(fake.tables.notes).toHaveLength(1);
+    expect(fake.tables.noteTargets).toEqual([expect.objectContaining({ targetCommercialSignalId: s.id })]);
+  });
   it('fair in the window -> the directed scout runs as before, with the lead-time block in the output', async () => {
     const fake = new FakeTwenty();
     const url = 'https://www.feria-en-ventana.com/expositores';

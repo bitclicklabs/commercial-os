@@ -8,10 +8,11 @@
  * `experiment_revalidations` (migration 0016). The same label set returns the existing row.
  *
  * Consequence (only for a NEW row with verdict REFUTED whose version is still ACTIVE or in an
- * ACTIVE canary): a note in Twenty "⚠️ Revalidación fallida — <subject> v<N>" with the numbers
- * and the options (rollback / canary / iterate), and the internal event
- * `experiment.revalidation_failed` (n8n may subscribe). Nothing is deactivated or rolled back:
- * the human decides. The note id and the event id are written once into `consequence`.
+ * ACTIVE canary): a Twenty TASK (tanda 19; before, a note) "⚠️ Revalidación fallida — <subject>
+ * v<N>", status TODO, due the next day, with the numbers and the options (rollback / canary /
+ * iterate), and the internal event `experiment.revalidation_failed` (n8n may subscribe). Nothing
+ * is deactivated or rolled back: the human decides. The task id and the event id are written once
+ * into `consequence` (`consequence.task`; rows from before tanda 19 keep `consequence.note`).
  *
  * `pendingRevalidations` lists the PASS_FORM experiments whose winning version is still ACTIVE
  * or in canary, with the usable labels available and how many are fresh (not used by the last
@@ -25,10 +26,10 @@ import type { Db } from '../db/client.js';
 import { evaluationCases, evaluationDatasets, experimentRevalidations, optimizationRuns, type Experiment, type ExperimentRevalidation } from '../db/schema.js';
 import type { EventPublisher } from '../events/event-bus.js';
 import { findHarness, listHarnessVersions } from '../harness/service.js';
-import { TWENTY_OBJECTS, type TwentyClient, type TwentyNote } from '../integrations/twenty/index.js';
+import type { TwentyClient } from '../integrations/twenty/index.js';
+import { createCrmTask, crmTaskTitle, dueInDays } from '../integrations/twenty/tasks.js';
 import { runLabel } from '../optimizer/core.js';
 import { activeCanaryOf, findSkill, listVersions } from '../skills/service.js';
-import { noteTitle } from '../tools/twenty/note-tools.js';
 import type { AccuracyMetric } from './gate.js';
 import type { CaseOutput } from './metrics.js';
 import {
@@ -69,7 +70,7 @@ export class RevalidationError extends Error {
 
 export interface RevalidationDeps {
   db: Db;
-  /** Twenty client for the note (null/unconfigured: no note, recorded as skipped). */
+  /** Twenty client for the task (null/unconfigured: no task, recorded as skipped). */
   twenty?: TwentyClient | null | undefined;
   events?: EventPublisher | null | undefined;
   /** Where relative artifact paths resolve (default the repository root). */
@@ -87,9 +88,9 @@ export interface RevalidateOptions {
   source?: 'api' | 'cli';
   /** CLI only: an `informe.json` to read the outputs from (experiments older than `case_outputs`). */
   reportPath?: string | undefined;
-  /** Compute and return, write nothing (no row, no note, no event). */
+  /** Compute and return, write nothing (no row, no task, no event). */
   dryRun?: boolean;
-  /** Leave the Twenty note out (default: write it on a REFUTED of a version in use). */
+  /** Leave the Twenty alert (a task since tanda 19) out (default: write it on a REFUTED of a version in use). */
   note?: boolean;
 }
 
@@ -338,13 +339,20 @@ export async function revalidateExperiment(deps: RevalidationDeps, opts: Revalid
   return { computation: c, revalidation: row, created: true };
 }
 
-/** Note in Twenty + internal event for a REFUTED version still in use. Never throws; written once. */
+/** Due date of the "re-validation failed" task: the next day (09:00 Europe/Madrid). */
+export const REVALIDATION_TASK_DUE_DAYS = 1;
+
+/**
+ * Task in Twenty (tanda 19: a TODO with due date +1 day, no longer a note) + internal event for
+ * a REFUTED version still in use. Never throws; written once. The task has no CRM target: the
+ * subject is a skill/harness version, which is not a CRM record (the body carries the links).
+ */
 async function recordConsequence(deps: RevalidationDeps, opts: RevalidateOptions, c: RevalidationComputation, row: ExperimentRevalidation): Promise<ExperimentRevalidation> {
   const exp = c.experiment;
-  const title = noteTitle(revalidationNoteTitle(exp.subjectName, exp.candidateVersion));
-  let note: Record<string, unknown>;
-  if (opts.note === false) note = { skipped: 'disabled' };
-  else if (!deps.twenty || !deps.twenty.isConfigured()) note = { skipped: 'twenty_not_configured', title };
+  const title = crmTaskTitle(revalidationNoteTitle(exp.subjectName, exp.candidateVersion));
+  let task: Record<string, unknown>;
+  if (opts.note === false) task = { skipped: 'disabled' };
+  else if (!deps.twenty || !deps.twenty.isConfigured()) task = { skipped: 'twenty_not_configured', title };
   else {
     try {
       const markdown = revalidationNoteMarkdown({
@@ -364,10 +372,11 @@ async function recordConsequence(deps: RevalidationDeps, opts: RevalidateOptions
         versionState: c.versionState,
         ...(deps.apiUrl ? { apiUrl: deps.apiUrl } : {}),
       });
-      const created = await deps.twenty.create<TwentyNote>(TWENTY_OBJECTS.note, { title, bodyV2: { markdown } });
-      note = { id: created.id, title, created: true };
+      const now = new Date();
+      const created = await createCrmTask(deps.twenty, { title, body: markdown, dueAt: dueInDays(now, REVALIDATION_TASK_DUE_DAYS) }, { now });
+      task = { id: created.taskId, title, created: created.created, due_at: created.dueAt };
     } catch (err) {
-      note = { error: err instanceof Error ? err.message.slice(0, 500) : String(err), title };
+      task = { error: err instanceof Error ? err.message.slice(0, 500) : String(err), title };
     }
   }
   let event: Record<string, unknown>;
@@ -391,12 +400,14 @@ async function recordConsequence(deps: RevalidationDeps, opts: RevalidateOptions
         candidateAccuracy: c.accuracy.candidate.value,
         labels: c.selection.labels.length,
         versionState: c.versionState.state,
-        noteId: typeof note.id === 'string' ? note.id : null,
+        taskId: typeof task.id === 'string' ? task.id : null,
+        // Kept for subscribers of the pre-tanda-19 payload: the note is no longer written.
+        noteId: null,
       },
     });
     event = published ? { id: published.event.id, type: REVALIDATION_FAILED_EVENT, dispatched: published.dispatched } : { error: 'no se pudo publicar (ver log)', type: REVALIDATION_FAILED_EVENT };
   }
-  const consequence = { note, event, at: new Date().toISOString() };
+  const consequence = { task, event, at: new Date().toISOString() };
   const [updated] = await deps.db
     .update(experimentRevalidations)
     .set({ consequence })

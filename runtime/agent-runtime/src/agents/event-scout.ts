@@ -98,6 +98,7 @@ import { PROSPECTOR_SKILL_ID, PROSPECTOR_SYSTEM_PROMPT } from './prospector-prom
 import { useSkill } from '../skills/resolver.js';
 import { useKnowledge } from '../knowledge/resolver.js';
 import { hostOf, normalizeUrl, scrubUnknownUrls, SourceLedger } from './source-ledger.js';
+import { classifyLeadTime, leadTimeWindowFromEnv, madridToday, windowInfo, type LeadTimeWindow } from '../signals/lead-time.js';
 
 // ---------------------------------------------------------------------------
 // Input
@@ -513,8 +514,20 @@ export interface ScoutRunOutput {
 
 const PAGE_TEXT_FOR_EXTRACTION = 40_000;
 
-export async function runScout(run: ProspectorRun, rawInput: Record<string, unknown>, today: string): Promise<ScoutRunOutput> {
+export interface ScoutRunOptions {
+  /**
+   * Lead-time window (tanda 18). In discovery mode (`discover_only`) a proposed fair outside it
+   * creates no signal (`counters.discarded_out_of_window`); an undated one is still recorded.
+   * Default: LEADTIME_MIN_DAYS / LEADTIME_MAX_DAYS.
+   */
+  leadTime?: LeadTimeWindow;
+}
+
+export async function runScout(run: ProspectorRun, rawInput: Record<string, unknown>, today: string, opts: ScoutRunOptions = {}): Promise<ScoutRunOutput> {
   const cfg = run.cfg.scout;
+  const leadTime = opts.leadTime ?? leadTimeWindowFromEnv();
+  const leadTimeToday = madridToday(run.startedAt);
+  let discardedOutOfWindow = 0;
   const parsed = ScoutInput.safeParse(rawInput);
   run.steps.push({
     type: 'THINK',
@@ -757,7 +770,7 @@ export async function runScout(run: ProspectorRun, rawInput: Record<string, unkn
 
   // ------------------------------------------------------------- a) candidates
   const candidates: Candidate[] = [];
-  const discarded: Array<{ name: string; reason: string; url?: string | null }> = [];
+  const discarded: Array<{ name: string; reason: string; url?: string | null; days?: number | null }> = [];
   let searchInfo: { queries: string[]; sources: number; proposed: number; verification: 'grounding_sources' | 'fetch_corroboration' | 'none' } | null = null;
   let searchFailed: { code: string; message: string } | null = null;
 
@@ -802,6 +815,15 @@ export async function runScout(run: ProspectorRun, rawInput: Record<string, unkn
           if ((end && end < today) || (start && start > until)) {
             discarded.push({ name: e.name, reason: 'fuera_del_horizonte', url: e.website_url });
             continue;
+          }
+          // Discovery: a fair outside the lead-time window never becomes a signal (undated: recorded, cannot be judged).
+          if (input.discover_only && start) {
+            const v = classifyLeadTime(start, leadTimeToday, leadTime);
+            if (v.status !== 'in_window') {
+              discardedOutOfWindow += 1;
+              discarded.push({ name: e.name, reason: v.status === 'too_far' ? 'fuera_de_ventana_lead_time_lejana' : 'fuera_de_ventana_lead_time_cercana', url: e.website_url, days: v.days });
+              continue;
+            }
           }
           candidates.push({
             name: e.name,
@@ -1307,7 +1329,11 @@ export async function runScout(run: ProspectorRun, rawInput: Record<string, unkn
       description: scrubUnknownUrls(
         [
           `Feria detectada por el Prospector (modo scout)${input.sector ? ` para el sector "${input.sector}"` : ''}${input.region ? ` en ${input.region}` : ''}.`,
-          ev.date ? `Fecha: ${ev.date}${ev.end_date && ev.end_date !== ev.date ? ` a ${ev.end_date}` : ''}.` : 'Fecha no confirmada.',
+          ev.date
+            ? `Fecha: ${ev.date}${ev.end_date && ev.end_date !== ev.date ? ` a ${ev.end_date}` : ''}.`
+            : input.discover_only
+              ? 'Fecha no confirmada: no se puede juzgar la ventana de lead time; añade la fecha para que entre al reparto diario.'
+              : 'Fecha no confirmada.',
           ev.location ? `Lugar: ${ev.location}.` : '',
           input.discover_only
             ? 'Expositores sin peinar (descubrimiento semanal): califica la señal para que el Prospector peine su lista de expositores.'
@@ -1343,6 +1369,7 @@ export async function runScout(run: ProspectorRun, rawInput: Record<string, unkn
     events_with_exhibitors: events.filter((e) => e.status === 'exhibitors_processed').length,
     event_signals: events.filter((e) => e.status === 'event_signal').length,
     events_discarded: discarded.length,
+    discarded_out_of_window: discardedOutOfWindow,
     events_skipped_time_budget: eventsSkippedForTime + events.filter((e) => e.status === 'time_budget_exhausted').length,
     fetches,
     renders,
@@ -1374,7 +1401,13 @@ export async function runScout(run: ProspectorRun, rawInput: Record<string, unkn
   }
   const eventErrors = events.filter((e) => e.status === 'event_signal_error').length;
   const errors = counters.errors + eventErrors;
-  if (events.length === 0 && !searchFailed && !cut) partialReasons.push('no se encontró ninguna feria verificable dentro del horizonte');
+  if (events.length === 0 && !searchFailed && !cut) {
+    partialReasons.push(
+      discardedOutOfWindow > 0 && discardedOutOfWindow === discarded.length
+        ? `todas las ferias propuestas (${discardedOutOfWindow}) están fuera de la ventana de lead time (${leadTime.minDays}–${leadTime.maxDays} días)`
+        : 'no se encontró ninguna feria verificable dentro del horizonte',
+    );
+  }
   let outcome: RunOutcome;
   if (searchFailed) outcome = 'FAILED';
   else if (results.length > 0 && counters.errors === results.length && counters.event_signals === 0) outcome = 'FAILED';
@@ -1392,6 +1425,9 @@ export async function runScout(run: ProspectorRun, rawInput: Record<string, unkn
     ...(searchFailed ? [`Búsqueda fallida: ${searchFailed.code}.`] : []),
     ...(searchInfo
       ? [`Búsqueda con Google (grounding): ${searchInfo.queries.length} consultas, ${searchInfo.sources} fuentes; ferias propuestas: ${searchInfo.proposed}, verificadas: ${events.length}, descartadas: ${discarded.length}.`]
+      : []),
+    ...(input.discover_only
+      ? [`Ventana de lead time: ${leadTime.minDays}–${leadTime.maxDays} días (hoy ${leadTimeToday}, Europe/Madrid); ferias propuestas fuera de ventana (sin señal): ${discardedOutOfWindow}.`]
       : []),
     `Páginas de catálogo leídas: ${counters.catalog_pages}${jsonListsUsed > 0 ? ` (lista tomada de la API JSON del catálogo en ${jsonListsUsed} feria(s))` : ''}; expositores leídos: ${counters.exhibitors_read}, evaluados: ${counters.evaluated}${exhibitorsNotEvaluated > 0 ? `, sin evaluar por tiempo: ${exhibitorsNotEvaluated}` : ''}; fichas de expositor abiertas: ${profileLookups} (de ${maxProfileLookups} posibles${profilesSkippedForTime > 0 ? `, ${profilesSkippedForTime} sin abrir por tiempo` : ''}), dominios obtenidos de la ficha: ${domainsResolved}.`,
     `Totales: relevantes ${counters.relevant}, hipótesis nuevas ${counters.hypotheses_created}, ya existentes ${counters.hypotheses_existing}, research ${counters.research_created}${counters.research_errors > 0 ? ` (${counters.research_errors} sin registrar)` : ''}, descartados ${counters.discarded_irrelevant + counters.discarded_low_confidence}, sin dominio verificado ${counters.skipped_no_domain}, errores ${errors}.`,
@@ -1419,6 +1455,7 @@ export async function runScout(run: ProspectorRun, rawInput: Record<string, unkn
       ...(searchInfo ? { search: searchInfo } : {}),
       events,
       discarded_events: discarded,
+      ...(input.discover_only ? { lead_time: { window: windowInfo(leadTime, leadTimeToday), discarded_out_of_window: discardedOutOfWindow } } : {}),
       counters: { ...counters, errors },
       results,
       partial_reasons: partialReasons,

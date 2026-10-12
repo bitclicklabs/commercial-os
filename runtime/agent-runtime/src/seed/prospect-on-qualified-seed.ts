@@ -11,6 +11,10 @@
  * mode (`isScoutInput`); `ScoutInput` ignores the extra keys (`signal_id`, `event`). The scout
  * input shape and `isScoutInput` are unchanged.
  *
+ * Lead-time gate (tanda 18): the run checks the fair date against the lead-time window
+ * (src/signals/lead-time.ts). Outside it, or without a date, it ends SKIPPED without prospecting
+ * and leaves a note on the signal (`create_signal_note`); the signal keeps its QUALIFIED status.
+ *
  * Every run it creates writes the audit row `prospect.on_qualified` (actor system, method EVENT,
  * subject the signal, payload with `signal_id` and `run_id`).
  *
@@ -29,7 +33,7 @@ export const PROSPECT_ON_QUALIFIED_AUDIT_ACTION = 'prospect.on_qualified';
 export function desiredProspectOnQualifiedTask(): TaskSpec {
   return {
     description:
-      'Cuando un comercial califica en Twenty una señal de feria (estado QUALIFIED), el Prospector explora esa feria concreta (modo scout dirigido, una feria) y registra empresa, señal, research e hipótesis (PROPOSED) de los expositores relevantes. Una vez por señal: recalificarla antes de 24 h no la relanza.',
+      'Cuando un comercial califica en Twenty una señal de feria (estado QUALIFIED), el Prospector explora esa feria concreta (modo scout dirigido, una feria) y registra empresa, señal, research e hipótesis (PROPOSED) de los expositores relevantes. Una vez por señal: recalificarla antes de 24 h no la relanza. Ventana de lead time (LEADTIME_MIN_DAYS–LEADTIME_MAX_DAYS, 45–210 días por defecto): si la feria está fuera de ventana o no tiene fecha, no se prospecta (SKIPPED) y queda una nota en la señal explicando por qué; la señal sigue QUALIFIED.',
     defaultInput: { mode: 'scout', max_events: 1 },
     schedule: {
       type: 'EVENT',

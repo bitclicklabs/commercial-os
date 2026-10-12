@@ -10,6 +10,8 @@
  * | PROPOSED -> VALIDATED after (or together with) content edits   | EDITED     | 0.5   |
  * | business fields edited while PROPOSED                          | EDITED     | 0.5   |
  * | PROPOSED|VALIDATED -> REJECTED                                 | DISCARDED  | 0.0   |
+ * | any -> EXPIRED (lead time, calendar, or by hand)               | none: not a verdict    |
+ * | EXPIRED -> VALIDATED / REJECTED                                | none: not a verdict    |
  *
  * Twenty 2.45 webhooks carry only the record AFTER the change plus the NAMES of the
  * updated fields (`updatedFields`), never the previous values. So:
@@ -165,6 +167,9 @@ export type Classification =
 
 const HANDLED_EVENTS = new Set(['commercialHypothesis.updated', 'commercialHypothesis.upserted']);
 
+/** Reason of the ignored outcome of any transition to EXPIRED (tanda 18). */
+export const EXPIRY_NOT_A_VERDICT = 'transition to EXPIRED is an expiry, not a human verdict';
+
 export function classifyHypothesisChange(input: ClassifyInput): Classification {
   if (!HANDLED_EVENTS.has(input.eventName)) return { action: 'ignore', reason: `event ${input.eventName} is not a hypothesis update` };
   const toStatus = typeof input.record.status === 'string' ? input.record.status : null;
@@ -184,6 +189,8 @@ export function classifyHypothesisChange(input: ClassifyInput): Classification {
     const fromStatus = known ? (input.lastKnownStatus as string) : 'PROPOSED';
     const fromStatusSource = known ? 'last_evaluation' : 'assumed';
     if (fromStatus === toStatus) return { action: 'ignore', reason: `status unchanged (${toStatus})` };
+    // Tanda 18: an expiry (the runtime's lead-time / calendar maintenance, or a person) is never a verdict.
+    if (toStatus === 'EXPIRED') return { action: 'ignore', reason: EXPIRY_NOT_A_VERDICT };
     if (toStatus === 'VALIDATED') {
       if (fromStatus === 'EXPIRED') return { action: 'ignore', reason: 'EXPIRED -> VALIDATED is not a verdict on the proposal' };
       return { action: 'record', feedback: hasEdits ? 'EDITED' : 'ACCEPTED', fromStatus, fromStatusSource, ...base };

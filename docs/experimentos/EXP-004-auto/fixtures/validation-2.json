@@ -1,0 +1,32 @@
+{
+  "event": {
+    "date": "2027-06-20",
+    "name": "Expo Gastronómica de Valdecristal 2027",
+    "type": "FAIR",
+    "location": "Valdecristal (recinto ferial)",
+    "source_url": "https://expo-gastronomica-valdecristal.invalid/expositores"
+  },
+  "exhibitors": [
+    {
+      "name": "Quesos Zoritra S.L.U.",
+      "domain": "zoritra-quesos.invalid",
+      "sector": "Lácteos y quesos",
+      "description": "Productor de quesos curados de oveja con una plantilla de 190 personas y presencia comercial en 3 países. Presenta en la feria un queso madurado en bodega en el stand 1628 (código de expositor 52628). Su catálogo reúne 112 referencias propias. Se desconoce cuántos metros ocupa su stand y cuántos comerciales enviará."
+    },
+    {
+      "name": "Drovitra Mercados Centrales S.A.U.",
+      "domain": "drovitra-mercados-centrales.invalid",
+      "sector": "Distribución alimentaria",
+      "description": "Sociedad mercantil de capital íntegramente público, participada por la diputación de Zarcobre. Expone en un stand de 30 m² para captar operadores. Sus contratos de suministro se adjudican por licitación pública conforme a la Ley de Contratos del Sector Público."
+    },
+    {
+      "name": "Velarix Envases S.A.",
+      "sector": "Packaging alimentario"
+    }
+  ],
+  "case_ids": [
+    "48560b76-8afd-45db-b572-8ea65448ebc2",
+    "cfb97089-6fd1-4dbe-b2e5-6786ef735dce",
+    "f43d7f34-5734-4988-9cc5-fe28c6096c81"
+  ]
+}

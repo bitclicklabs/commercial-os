@@ -26,6 +26,7 @@ runtime/agent-runtime/
 │   ├── inbound/              Inbound: lector IMAP de solo lectura, clasificador de bajas, reglas de triaje (rebotes, autorrespuestas), clasificador LLM de respuestas, lista de supresión, enlace con email_sends, cursor (inbound_state) y triaje (inbound_triage)
 │   ├── integrations/twenty/  TwentyClient REST tipado, mapeo de objetos de la App y MemoryTwenty (CRM en memoria para los experimentos del optimizador)
 │   ├── integrations/catalog/ Catalog Service (contrato v1.1): tipos zod, cliente REST con exención SSRF de un solo origen, stub fiel, caché TTL en memoria y CatalogService
+│   ├── crm/                  Objetos estándar de Twenty (tanda 19): Personas (nombres, dedupe por email), Oportunidades (primera etapa real, una abierta por empresa, promoción manual) y tareas «📬 Responder a …»
 │   ├── tools/                Interfaz Tool, registry, tool_policy, executor, tools de Twenty y web/ (fetch_url con texto de PDF, render_url y guarda SSRF)
 │   ├── db/                   Esquema Drizzle, cliente y migrador
 │   ├── events/               Event bus: sobre event.envelope.v1, EventBus, payloads, triggers EVENT y GET /events; puente externo (POST /events/external, event_subscriptions y webhooks firmados con guarda SSRF)
@@ -294,6 +295,8 @@ Cabecera opcional `x-tenant-id` en todas las rutas. Las respuestas usan `snake_c
 | `GET /optimizer/runs`, `GET /optimizer/runs/:id` | Runs del optimizador (filtros `skill`, `status`, `limit`); el detalle incluye los fallos cosechados |
 | `POST /optimizer/runs/:id/close` | Cierre humano: `PROMOTED` (solo si la candidata ya es la `ACTIVE`) o `DISCARDED`. No hay `DELETE` |
 | `GET /optimizer/schedule` | Estado del optimizador [programado](#programado), solo lectura: activado, CRON, zona horaria, skills, último y próximo disparo |
+| `POST /contacts/backfill` | Encola el ContactFinder para las hipótesis `VALIDATED` sin **Email to**. Consulta [ContactFinder](#contactfinder-destinatario-de-los-borradores) |
+| `POST /opportunities/promote` | Promociona **a mano** una hipótesis a Oportunidad nativa de Twenty `{ hypothesis_id, by? }`: `201` nueva (emite `opportunity.created`), `200` si la empresa ya tenía una abierta. Auditada como `opportunity.promote`. Consulta [Personas y Oportunidades nativas](#personas-y-oportunidades-nativas-de-twenty) |
 
 ### Idempotencia
 
@@ -473,6 +476,7 @@ Todos los eventos viajan con este sobre. Los campos del sobre y de `data` usan `
 | `catalog.unavailable` | Gate del catálogo, con `CATALOG_ENABLED=true` y `/health` fallando antes de una ejecución (como mucho una vez al día por tenant, `idempotencyKey` `evt:catalog.unavailable:{tenant}:{día}`) | `day`, `reason`, `code`, `message`, `provider`, `checkedAt`, `executionId` |
 | `signal.qualified` | Webhook de Twenty, cuando una persona pasa una señal de feria (`commercialSignal` sin empresa, tipo `FAIR`, `CONGRESS` o `EVENT`, con URL) a `QUALIFIED`, o la crea ya calificada. Como mucho una vez por señal cada 24 h (`idempotencyKey` `evt:signal.qualified:{signal_id}:{evento_anterior\|first}`) | `signal_id`, `name` (sin el sufijo ` (feria)`), `event_url`, `event_date`, `signal_type`, `transition` (`updated_fields` o `status_only`), `twenty` (`webhook_id`, `workspace_id`, `event_date`), `chainDepth` 0 |
 | `hypothesis.status_changed` | Webhook de Twenty, cuando una `commercialHypothesis` pasa a `EXPIRED` (o se reabre a `PROPOSED` desde otro estado). Nunca es una evaluación: solo recuerda el estado para el siguiente cambio (`idempotencyKey` `evt:hypothesis.status_changed:{id}:{estado}:{updatedAt}`). Namespace `hypothesis.` reservado | `hypothesis_id`, `to_status`, `verdict` (`false`), `actor_human`, `updated_at`, `twenty_webhook_id` |
+| `opportunity.created` | Triaje del buzón (respuesta `INTERESADO`, `origin: "reply"`) o `POST /opportunities/promote` (`origin: "manual"`), solo cuando se **crea** una Oportunidad nativa en Twenty (reutilizar una abierta no emite nada). `idempotencyKey` `evt:opportunity.created:{opportunityId}`. Namespace `opportunity.` reservado | `opportunityId`, `name`, `stage`, `companyId`, `pointOfContactId`, `hypothesisId`, `taskId` (`null`), `origin`. Nunca una dirección |
 | `experiment.revalidation_failed` | Revalidación de un `PASS_FORM` con veredicto `REFUTED` cuya versión sigue `ACTIVE` o en canario (una vez por revalidación nueva) | `revalidationId`, `experimentId`, `experimentName`, `subjectType`, `subjectName`, `baselineVersion`, `candidateVersion`, `verdict`, `baselineAccuracy`, `candidateAccuracy`, `labels`, `versionState` (`ACTIVE` o `CANARY`), `noteId` |
 
 Cada evento del runtime lleva una `idempotencyKey` (`evt:{type}:{task_run_id}`, `evt:task.started:{task_run_id}:{attempt}`, `evt:{type}:{execution_id}`, `evt:evaluation.recorded:{evaluation_id}`): publicar dos veces el mismo hecho devuelve la fila existente.
@@ -1437,6 +1441,9 @@ Las de Twenty usan `TWENTY_BASE_URL` y `TWENTY_API_KEY` y tienen `outputTrust = 
 | `get_note` | `READ` | No | — (título y markdown de una nota; salida `untrusted`) |
 | `update_note` | `LOW_WRITE` | Sí | Solo añade líneas al final; las que ya están (coincidencia exacta) se omiten. Nunca edita ni borra contenido |
 | `revert_hypothesis_draft_status` | `LOW_WRITE` | Sí | Pone `emailStatus = DRAFT` solo si sigue en `READY` (relee antes de escribir) y el `PATCH` lleva solo ese campo. Solo puede hacer el envío menos probable. Ningún agente la tiene en su política: la usa email-ops |
+| `upsert_person` | `LOW_WRITE` | Sí | Por email (`emails.primaryEmail`, sin distinguir mayúsculas): una Persona existente solo se **completa** (nombre, cargo o empresa vacíos), nunca se pisa. `info@`, `comercial@`, `rrhh@`, `noreply@`... se omiten sin escribir: no son personas |
+| `upsert_opportunity` | `LOW_WRITE` | Sí | Por empresa: reutiliza su Oportunidad **abierta** (etapa que no sea de cierre); si no hay, la crea en la primera etapa del pipeline, sin importe. Engancha la nota de la respuesta. Solo el InboxAgent |
+| `create_reply_task` | `LOW_WRITE` | Sí | Título «📬 Responder a <persona/empresa>» + oportunidad (o empresa): una tarea abierta igual se reutiliza; adopta una huérfana. Solo el InboxAgent |
 | `fetch_url` | `READ` | No | — (consulta [Seguridad del contenido web](#seguridad-del-contenido-web)) |
 | `render_url` | `READ` | No | — (consulta [Render de JavaScript](#render-de-javascript-render_url)) |
 | `catalog_search_products` | `READ` | No | — (consulta [Catálogo](#catálogo-catalog-service); salida `untrusted`) |
@@ -1522,7 +1529,7 @@ Hay un solo workspace de Twenty y en él escriben también los tenants de test (
 
 #### Limitaciones
 
-- Los objetos estándar de Twenty **no tienen `tenantId`**: `companies`, `people`, `notes` y `noteTargets` son comunes a todos los tenants del workspace. `find_company`, `upsert_company`, `get_company` (la empresa en sí), `create_note`, `get_note` y `update_note` no pueden filtrar por tenant; una empresa o una nota creada por un tenant de test la ve cualquier otro. El triaje de entrada busca la empresa por dominio (`find_company`) con este mismo alcance. No se añade el campo a esos objetos desde el runtime: es un cambio de la App.
+- Los objetos estándar de Twenty **no tienen `tenantId`**: `companies`, `people`, `opportunities`, `tasks`, `notes`, `noteTargets` y `taskTargets` son comunes a todos los tenants del workspace. Desde la tanda 19 también `upsert_person`, `upsert_opportunity` y `create_reply_task`: una Persona, Oportunidad o Tarea creada por un tenant de test la ve (y la deduplica) cualquier otro; por ejemplo, la Oportunidad abierta de una empresa es una sola para todos los tenants. Solo la hipótesis que da nombre a la oportunidad se lee con filtro de tenant. `find_company`, `upsert_company`, `get_company` (la empresa en sí), `create_note`, `get_note` y `update_note` no pueden filtrar por tenant; una empresa o una nota creada por un tenant de test la ve cualquier otro. El triaje de entrada busca la empresa por dominio (`find_company`) con este mismo alcance. No se añade el campo a esos objetos desde el runtime: es un cambio de la App.
 - El filtro por tenant no protege de un `id` de otro tenant que se pase a un `create_*` como relación (`signalId`, `decisionMakerId`): la relación se escribe tal cual.
 - Twenty no tiene escritura condicional: entre la relectura y el `PATCH` queda la ventana de una petición REST.
 
@@ -2019,7 +2026,8 @@ El resto va al modelo ([src/inbound/reply-classifier.ts](src/inbound/reply-class
 |---|---|
 | `BAJA` | Línea `email — AAAA-MM-DD — baja solicitada (asunto: "...")` en la lista de supresión (igual que el BajasAgent) |
 | `NO_INTERESADO` | Línea `email — AAAA-MM-DD — no interesado (respuesta) (asunto: "...")` en la lista de supresión **y** nota de respuesta |
-| `INTERESADO`, `PREGUNTA` | Nota `📬 Respuesta recibida — <Interesado/Pregunta> (AAAA-MM-DD HH:mm)` |
+| `INTERESADO` | Nota `📬 Respuesta recibida — Interesado (AAAA-MM-DD HH:mm)` + (tanda 19) Persona del remitente, Oportunidad de la empresa y Tarea «📬 Responder a …» |
+| `PREGUNTA` | Nota `📬 Respuesta recibida — Pregunta (AAAA-MM-DD HH:mm)` + (tanda 19) Persona del remitente si el `From` trae nombre y Tarea «📬 Responder a …». **Sin** Oportunidad |
 | `REBOTE` duro | Nota `⚠️ Rebote: el email no existe (AAAA-MM-DD HH:mm)`; la lista de supresión no se toca |
 | `AUTO_REPLY`, rebote blando, `OTRO` | Solo registro |
 
@@ -2032,6 +2040,14 @@ Las notas se crean con `create_note` sobre la empresa y la hipótesis del envío
 1. Sin envío, una respuesta se enlaza a la empresa de Twenty con ese dominio (`find_company`, solo si hay exactamente una). Sin empresa no hay nota (`no_company_match`, contador `unmatched`).
 
 El extracto de la nota es texto plano: sin el mensaje citado, sin enlaces (`[enlace]`), sin sintaxis markdown o HTML, máximo 500 caracteres. El título lleva la hora local de recepción: cada respuesta tiene su nota y `create_note` (idempotente por empresa + título) no la duplica al reintentar.
+
+Registros nativos de Twenty (tanda 19), después de la nota y solo si la respuesta quedó enlazada a una empresa:
+
+1. **Persona** del remitente (`upsert_person`): nombre del `From` saneado (sin comillas ni direcciones, mayúsculas normalizadas, separado en nombre y apellidos) + dirección, en la empresa. Deduplicada por email; una Persona existente solo se completa. En `PREGUNTA`, solo si el `From` trae nombre. Un buzón genérico o de función (`info@`, `comercial@`) no crea Persona: la señal `sender_not_a_person:<tipo>` lo deja en `signals`.
+1. **Oportunidad** (`upsert_opportunity`, solo `INTERESADO` con confianza ≥ `triage.min_confidence`): «<Empresa> — <feria>» (la feria sale de la hipótesis del envío, si se conoce), `companyId`, `pointOfContactId` = la Persona (vacío con un remitente genérico), etapa = la **primera** opción del select `stage` del workspace (se lee de `GET /rest/open-api/core`; por defecto `NEW`), sin importe. Si la empresa ya tiene una Oportunidad abierta, se reutiliza y la nota se le engancha (`noteTargets` de la oportunidad y de la persona). Al crearla emite `opportunity.created`.
+1. **Tarea** (`create_reply_task`): «📬 Responder a <persona o, sin nombre, empresa>», `TODO`, vence a los 2 días laborables a las 09:00 locales, con el extracto y los enlaces a la nota y a la oportunidad en el cuerpo, enlazada (`taskTargets`) a la oportunidad, la empresa y la persona. La nota 📬 se conserva: la nota es el registro con el extracto; la tarea, lo accionable.
+
+Todo es idempotente: un fallo de Twenty a mitad para la ejecución (`FAILED`, el mensaje no se marca como triado) y la siguiente lo completa sin duplicar Persona, Oportunidad, Tarea ni evento. Una versión del agente sembrada antes de la tanda 19 (sin estas tools en su política) solo deja la nota. `NO_INTERESADO`, rebotes y respuestas sin empresa no crean nada nativo. Contadores nuevos: `people_created`, `people_existing`, `opportunities_created`, `opportunities_reused`, `reply_tasks`; cada mensaje de `triaged` lleva `person_id`, `opportunity_id`, `opportunity_created` y `task_id`.
 
 La hipótesis **no se marca**. El único campo de estado de email (`emailStatus`: `DRAFT`, `READY`, `SENDING`, `SENT`) es el del flujo de envío y no tiene un valor de "respondido"; cambiarlo rompería el workflow de Twenty, y no se añaden campos a la Twenty App.
 
@@ -2057,7 +2073,7 @@ El Commercial OS no responde ni envía nada: la respuesta es tuya.
 
 ### Evento `email.reply_received`
 
-Se emite uno por mensaje triado (para n8n y los triggers `EVENT`), con `idempotencyKey` derivada del Message-ID. Campos de `data`: `class`, `confidence`, `method` (`RULES` | `LLM`), `signals`, `fromDomain`, `companyId`, `hypothesisId`, `sendId`, `matchBy` (`email` | `domain` | `company_domain`), `noteId`, `suppressionAdded`, `receivedAt` y, en los rebotes, `bouncedDomain` y `hardBounce`. Como los demás eventos `email.*`, lleva dominios, nunca direcciones. Para filtrar por clase, usa `filter: {"class": {"in": ["INTERESADO", "PREGUNTA"]}}`.
+Se emite uno por mensaje triado (para n8n y los triggers `EVENT`), con `idempotencyKey` derivada del Message-ID. Campos de `data`: `class`, `confidence`, `method` (`RULES` | `LLM`), `signals`, `fromDomain`, `companyId`, `hypothesisId`, `sendId`, `matchBy` (`email` | `domain` | `company_domain`), `noteId`, `suppressionAdded`, `receivedAt`, desde la tanda 19 `personId`, `opportunityId` y `taskId` (en `INTERESADO` y `PREGUNTA` con empresa) y, en los rebotes, `bouncedDomain` y `hardBounce`. Como los demás eventos `email.*`, lleva dominios, nunca direcciones. Para filtrar por clase, usa `filter: {"class": {"in": ["INTERESADO", "PREGUNTA"]}}`.
 
 ### Idempotencia, cursor y presupuestos
 
@@ -2692,6 +2708,27 @@ Rellena **Email to** de las hipótesis validadas con la dirección que la propia
 - **Fase 2** (apagada por defecto, `ENRICH_*`): solo hipótesis `VALIDATED` sin contacto publicado. Con confianza menor de 0,7 la dirección queda en el Research y no se escribe.
 - **Escritura:** `set_hypothesis_recipient` escribe solo `emailTo` y solo si está vacío y el borrador no está `READY`, `SENDING` ni `SENT`. Cada búsqueda deja un Research `CONTACT_DISCOVERY` «Contacto — <empresa>» o «Sin contacto público — <empresa>» con los candidatos, la URL exacta de cada uno, los descartados y el porqué del elegido.
 - **Backfill** de las hipótesis `VALIDATED` ya existentes sin **Email to** (filtradas por `tenantId`): `pnpm contacts:backfill [--limit=25] [--force] [--dry-run]` o `POST /contacts/backfill` (auditada como `contact.backfill`). Encola un run del agente ContactFinder (tarea MANUAL `find-contact`) por hipótesis. Es idempotente: omite las que ya tienen destinatario, un borrador de una persona o un Research de contacto.
+- **Personas nativas (tanda 19).** Antes del Research, el elegido y los candidatos de prioridad 1 con **nombre de persona** publicado se escriben como Persona de Twenty (`upsert_person`, máximo 3 por búsqueda): nombre y apellidos, `emails.primaryEmail`, `jobTitle` (el cargo publicado) y `companyId`. Solo buzones personales, del dominio, con MX y fuera de la supresión; en fase 2, solo con confianza ≥ 0,7 **y** cargo. `info@`/`comercial@` nunca crean Persona. El Research las referencia (`structuredResult.people[]`, `chosen.person_id` y la línea «Persona en Twenty: <id>»). **Email to** sigue igual. Consulta [Personas y Oportunidades nativas](#personas-y-oportunidades-nativas-de-twenty).
+
+## Personas y Oportunidades nativas de Twenty
+
+Desde la tanda 19 el runtime usa los objetos **estándar** de Twenty (no necesitan la App): `person` (timeline y asociación automática de correos por dirección), `opportunity` (embudo kanban por `stage`) y `task`. Código en [src/crm/](src/crm/).
+
+Formas verificadas en solo lectura contra el Twenty vivo (`GET /rest/people`, `/rest/opportunities`, `/rest/tasks`, `/rest/taskTargets` y `GET /rest/open-api/core`; la API de metadatos REST responde `403` con la key del runtime):
+
+| Objeto | Campos que usa el runtime |
+|---|---|
+| `person` | `name { firstName, lastName }`, `emails { primaryEmail, additionalEmails }`, `jobTitle`, `companyId`. Un texto vacío se guarda como `''` |
+| `opportunity` | `name`, `stage` (SELECT, opciones en orden: `NEW`, `SCREENING`, `MEETING`, `PROPOSAL`, `CUSTOMER`), `amount { amountMicros, currencyCode }` (se deja vacío), `closeDate`, `companyId`, `pointOfContactId`, `ownerId` |
+| `task` | `title`, `bodyV2 { markdown }`, `dueAt`, `status` (`TODO`, `IN_PROGRESS`, `DONE`), `assigneeId` |
+| `taskTarget` | `taskId` + una columna por objeto: `targetCompanyId`, `targetPersonId`, `targetOpportunityId`, `targetCommercialHypothesisId`... |
+
+- **Personas:** desde el ContactFinder y desde el remitente de una respuesta `INTERESADO`/`PREGUNTA`. Dedupe por email antes de crear (y, si Twenty rechaza un duplicado por carrera, se adopta el ganador). Nunca se pisa un dato existente: solo se rellenan nombre, cargo o empresa vacíos. Un buzón genérico, de función o de rol no es una persona.
+- **Oportunidades, solo por promoción, nunca por volcado:** una respuesta `INTERESADO` del triaje o una persona con `POST /opportunities/promote`. Las hipótesis sin tracción nunca generan Oportunidad y no cambian de forma. Una por empresa mientras esté abierta (una etapa de cierre, `CUSTOMER`, `WON`, `LOST`, `CLOSED*`..., la cierra). La etapa de entrada es la primera opción real del select `stage` (caché de 10 minutos; si no se puede leer, el orden por defecto y `stage_source: "default"`).
+- **`POST /opportunities/promote`** `{ hypothesis_id, by? }` (cabecera `x-tenant-id`): lee la hipótesis con filtro de tenant (otro tenant o inexistente: `404`; `REJECTED` o sin empresa: `409`), toma como punto de contacto el decisor de la hipótesis o la Persona de su **Email to** si es un buzón personal (la crea o la completa; un genérico no da punto de contacto) y abre o reutiliza la Oportunidad de la empresa. `201` si la crea (con `event_id` de `opportunity.created`, `origin: "manual"`), `200` si reutiliza. `503` sin Twenty, `502` si Twenty falla. Auditada como `opportunity.promote` (también los rechazos).
+- **Tareas «📬 Responder a …»:** las crea el triaje ([Triaje del buzón](#acciones)). Se escriben por REST directo (`src/crm/reply-task.ts`) a la espera de unificarlas con el helper genérico de tareas.
+- **Sin `tenantId`:** Person, Opportunity y Task son objetos estándar sin ese campo (límite de la tanda 16, [Limitaciones](#limitaciones)). No se añade desde el runtime.
+- **Permisos de la key:** el rol «Agent runtime» lee estos objetos (verificado). La escritura sobre `people`, `opportunities`, `tasks` y `taskTargets` no se ha probado en vivo: si el rol se definió objeto a objeto, hay que darle escritura en ellos (sin borrado).
 
 ## Pendiente
 

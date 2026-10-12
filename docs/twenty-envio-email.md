@@ -31,8 +31,7 @@ La regla no cambia: **el sistema nunca envía**. Envías tú, con un gesto expl�
  validas la hipótesis
         │
         ▼
- EmailDrafter (runtime) ── escribe ──► nota «Borrador email — …»        (como hoy)
-                        └─ escribe ──► campos de la hipótesis:
+ EmailDrafter (runtime) ── escribe ──► campos de la hipótesis:
                                         Email to · Email subject · Email body
                                         Email status = Draft
         │
@@ -59,7 +58,7 @@ Por qué este diseño:
 - **No envía dos veces.** El workflow relee la hipótesis (no se fía de la copia que tiene tu navegador) y pone *Sending* antes de enviar: un segundo clic se detiene en el filtro.
 - **El runtime sigue sin poder enviar.** Solo rellena cuatro campos. Su política de tools no tiene ninguna tool de correo, y el [paso 1](#paso-1-restringir-la-api-key-del-runtime) le quita también el acceso a las tools de correo de Twenty.
 
-> **Nota:** mientras no esté conectado el buzón, todo sigue como hoy. La nota «Borrador email — …» se crea siempre, y es el borrador de referencia si el envío desde Twenty no está disponible.
+> **Nota:** desde la tanda 19, los campos de la hipótesis son el borrador de referencia y la EmailDrafter ya no crea la nota «Borrador email — …» cuando puede escribirlos: el workflow solo lee los campos, y la nota era una copia. La nota se sigue creando si la escritura en los campos está apagada (`send_from_twenty.enabled = false`) o falla (por ejemplo, con la App sin sincronizar). Las notas antiguas no se tocan.
 
 ## Qué permite Twenty 2.45
 
@@ -82,7 +81,7 @@ Opciones evaluadas para el «un clic»:
 |---|---|
 | (a) Workflow manual sobre la hipótesis con *Send Email* | **Elegida.** Funciona con solo SMTP, la persona edita en la propia hipótesis y pulsa una acción. Verificado contra los esquemas y utilidades de 2.45.6. |
 | (b) Borrador nativo (*Draft Email* en la carpeta Borradores del buzón) | Descartada como principal: exige IMAP y sincronizar el buzón con el CRM, y el runtime tendría que usar las tools de correo de Twenty (la misma puerta que `send_email`). |
-| (c) Enlace `mailto:` | No necesaria: (a) es viable. La nota sigue sirviendo de alternativa manual. |
+| (c) Enlace `mailto:` | No necesaria: (a) es viable. Con la escritura en los campos apagada, la nota del borrador sigue sirviendo de alternativa manual. |
 
 ## Antes de conectar: privacidad y seguridad
 
@@ -124,7 +123,7 @@ Empieza con solo SMTP. Si más adelante quieres el histórico en Twenty, añade 
 **Por qué es obligatorio.** La API key `agent-runtime` tiene hoy el rol **Admin** (`canAccessAllTools: true`). En Twenty 2.45, el endpoint MCP (`/mcp`) acepta API keys y ofrece a ese rol las tools `send_email` y `draft_email`. Sin un buzón conectado no pueden enviar nada; **en cuanto conectes uno, cualquiera con esa API key podría enviar desde él** (Twenty elige la primera cuenta del workspace cuando la llamada no viene de un usuario). Restringir el rol devuelve la garantía «el sistema no puede enviar» también en Twenty.
 
 1. En Twenty, abre **Settings → Roles** y crea un rol `Agent runtime`.
-1. Permisos sobre objetos: lectura y escritura de todos los objetos (el runtime crea empresas, señales, hipótesis, notas y resúmenes). Sin borrado definitivo.
+1. Permisos sobre objetos: lectura y escritura de todos los objetos (el runtime crea empresas, señales, hipótesis, notas, tareas y resúmenes; las tareas, desde la tanda 19, incluyen `tasks` y `taskTargets`). Sin borrado definitivo.
 1. Permisos de tools: **desactiva el acceso a todas las tools** y no concedas *Send Email*, *Workflows* ni *HTTP Request*.
 1. Ajustes: concede solo *API keys & webhooks* si vas a volver a ejecutar `pnpm register:webhook`; si no, ninguno.
 1. Abre **Settings → APIs & Webhooks**, entra en la API key `agent-runtime` y asígnale el rol `Agent runtime`.
@@ -214,7 +213,7 @@ Alternativa sin script: crea el workflow a mano en **Workflows** con la misma de
 
 La EmailDrafter escribe en los campos solo si su versión tiene `send_from_twenty.enabled = true` (`true` desde la tanda 7). Cambia el valor en `desiredEmailDrafterVersion()` de `src/seed/email-drafter-seed.ts` y ejecuta `pnpm seed`: se crea una versión nueva del agente. No hace falta ninguna variable de entorno nueva ni tocar `deployments/`.
 
-Si activas la marca sin el paso 3.1, el runtime no falla: crea la nota como siempre y anota en la ejecución que no pudo guardar los campos.
+Si activas la marca sin el paso 3.1, el runtime no falla: crea la nota «Borrador email — …» con el borrador y anota en la ejecución que no pudo guardar los campos.
 
 ### 3.4. Revisar y activar el workflow
 
@@ -235,7 +234,7 @@ Si activas la marca sin el paso 3.1, el runtime no falla: crea la nota como siem
 
 Cuando el flujo esté activo, en cada hipótesis validada:
 
-1. Abre la hipótesis y lee *Email subject* y *Email body*. Edita lo que haga falta **en la hipótesis** (no en la nota).
+1. Abre la hipótesis y lee *Email subject* y *Email body*. Edita lo que haga falta **en la hipótesis**.
 1. No quites la línea de baja ni la firma.
 1. Comprueba *Email to*. Si está vacío, escribe la dirección (de rol si no hay decisor).
 1. Comprueba que ni la dirección ni el dominio están en la nota `Lista de supresión — NO contactar`. **El workflow no lo comprueba.**

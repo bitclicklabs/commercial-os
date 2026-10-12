@@ -204,7 +204,7 @@ Origen: el usuario rechazó los 6 primeros borradores listos (Gastrónoma, feria
 
 | Pieza | Rama | Agente | Estado |
 |---|---|---|---|
-| Ventana de lead time: round-robin y trigger solo en ventana (too_close/too_far con días y nota ⏳ conservando QUALIFIED), scout no crea señales fuera de ventana, auto-EXPIRED de hipótesis PROPOSED sin crear evaluaciones HUMAN (webhook deja de tratar EXPIRED como veredicto) | `feat/lead-time-window` | Opus | 🔄 |
+| Ventana de lead time: round-robin y trigger solo en ventana (too_close/too_far con días y nota ⏳ conservando QUALIFIED), scout no crea señales fuera de ventana, auto-EXPIRED de hipótesis PROPOSED sin crear evaluaciones HUMAN (webhook deja de tratar EXPIRED como veredicto) | `feat/lead-time-window` | Opus | ✅ fusionado (caza fina: EXPIRED se ignoraba pero no se registraba — un rechazo posterior habría contado; ahora marcador hypothesis.status_changed en events; sin-fecha excluidas con nota; SKIPPED ya no cuenta como pasada en el round-robin; 1136 tests) |
 | Skills con el calendario correcto: candidatas DRAFT de Prospector (lead time en la evaluación) y EmailDrafter (ángulo "con calma", prohibido "plazos cortos", tono confirmado intacto) + experimento sintético + knowledge entry con la evidencia del feedback | `feat/leadtime-skills` | Opus | 🔄 |
 | Docs: ventana en prospeccion-por-senales, regla en la guía comercial, runbook, ROADMAP | `docs/tanda18` | Sonnet | ✅ entregado (decisiones de PM fijadas en vuelo al agente de ventana: señales sin fecha excluidas con nota, límites inclusivos 45≤d≤210) |
 | Integración, e2e y PR | `feat/tanda18` (worktree wt18-integracion) | PM | 🔄 .env copiado; al cierre: estreno de la auto-expiración con las ~40 PROPOSED de Gastrónoma si siguen vivas |

@@ -106,7 +106,7 @@ describe.skipIf(!dbAvailable)('qualified signal: Twenty webhook -> signal.qualif
     app = await buildServer({
       db: handle.db,
       queue: runQueue,
-      config: { defaultTenantId: 'publiexpe', defaultModelProvider: 'stub', twentyWebhookSecret: SECRET },
+      config: { defaultTenantId: tenant, defaultModelProvider: 'stub', twentyWebhookSecret: SECRET },
       events: bus,
     });
   });
@@ -233,8 +233,8 @@ describe.skipIf(!dbAvailable)('qualified signal: Twenty webhook -> signal.qualif
     eventQueue.drain();
     const body = payload(record({ id: oldSignal, name: 'Feria antigua (feria)', sourceUrl: { primaryLinkUrl: 'https://old.example/' } }));
     const outcomes = await Promise.all([
-      processSignalQualification(handle.db, body, { defaultTenantId: 'publiexpe', events: bus }),
-      processSignalQualification(handle.db, body, { defaultTenantId: 'publiexpe', events: bus }),
+      processSignalQualification(handle.db, body, { defaultTenantId: tenant, events: bus }),
+      processSignalQualification(handle.db, body, { defaultTenantId: tenant, events: bus }),
     ]);
     // The loser either computed the same chained key (deduplicated) or already saw the new event (window).
     expect(outcomes.filter((o) => o.status === 'emitted')).toHaveLength(1);

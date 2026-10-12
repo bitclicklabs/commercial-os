@@ -77,6 +77,22 @@ export function tenantOfRecord(record: Record<string, unknown>): string | null {
   return typeof record.tenantId === 'string' && TENANT_RE.test(record.tenantId) ? record.tenantId : null;
 }
 
+/**
+ * The tenant of a webhook record when it is NOT the one this runtime serves (`runtimeTenantId`,
+ * config.defaultTenantId), else null. A record without tenant (made by hand in the Twenty UI,
+ * which leaves the field empty) belongs to the runtime tenant. Any other non-empty value, valid
+ * or not, is another tenant's: the handlers ignore it (200 ignored, logged by the route).
+ */
+export function foreignTenantOf(record: Record<string, unknown>, runtimeTenantId: string): string | null {
+  const raw = typeof record.tenantId === 'string' ? record.tenantId.trim() : '';
+  return raw.length > 0 && raw !== runtimeTenantId ? raw.slice(0, 64) : null;
+}
+
+/** Reason of an `ignored` outcome for a record of another tenant. */
+export function foreignTenantReason(tenant: string, runtimeTenantId: string): string {
+  return `record of tenant "${tenant}" (this runtime serves "${runtimeTenantId}")`;
+}
+
 function actorOf(payload: TwentyWebhookPayload): { evaluatedBy: string | null; actor: Record<string, unknown> } {
   const updatedBy = (payload.record.updatedBy ?? null) as { source?: string; workspaceMemberId?: string | null; name?: string } | null;
   const memberId = payload.workspaceMemberId ?? updatedBy?.workspaceMemberId ?? null;
@@ -94,7 +110,7 @@ function actorOf(payload: TwentyWebhookPayload): { evaluatedBy: string | null; a
 }
 
 export type WebhookOutcome =
-  | { status: 'ignored'; reason: string }
+  | { status: 'ignored'; reason: string; foreign_tenant?: string }
   | {
       status: 'recorded' | 'deduplicated';
       evaluationId: string;
@@ -124,8 +140,11 @@ export async function processTwentyWebhook(db: Db, payload: TwentyWebhookPayload
   const record = payload.record;
   const hypothesisId = typeof record.id === 'string' ? record.id : null;
   if (!hypothesisId) return { status: 'ignored', reason: 'record has no id' };
+  // Tenancy: a record of another tenant (test tenants share the workspace) never becomes feedback here.
+  const foreign = foreignTenantOf(record, opts.defaultTenantId);
+  if (foreign !== null) return { status: 'ignored', reason: foreignTenantReason(foreign, opts.defaultTenantId), foreign_tenant: foreign };
   const recordTenant = tenantOfRecord(record);
-  const tenantId = recordTenant ?? opts.defaultTenantId;
+  const tenantId = opts.defaultTenantId;
   const updatedFields = Array.isArray(payload.updatedFields) ? payload.updatedFields.filter((f): f is string => typeof f === 'string') : [];
 
   const link = await resolveHypothesisOrigin(db, {

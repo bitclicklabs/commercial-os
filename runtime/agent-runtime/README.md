@@ -95,6 +95,9 @@ Requisitos: Node.js 22, pnpm, y los contenedores `pxos-postgres` (127.0.0.1:5440
 | `QUEUE_NAME` | `pxos-agent-runs` | Cola BullMQ |
 | `WORKER_CONCURRENCY` | `4` | Jobs simultáneos por worker |
 | `SCHEDULER_SYNC_INTERVAL_MS` | `60000` | Cada cuánto el scheduler reconcilia todas las tareas con BullMQ |
+| `SCHEDULER_TENANTS` | `DEFAULT_TENANT_ID` | Tenants cuyas tareas programa el scheduler (CRON, INTERVAL, ONCE y triggers `EVENT`), separados por comas. `*` = todos los tenants, **solo para entornos de test**. Consulta [Tenants del scheduler](#tenants-del-scheduler-scheduler_tenants) |
+| `CATCHUP_MAX_SLOTS` | `1` | Slots perdidos que recupera cada tarea CRON/INTERVAL tras una parada (los más recientes; mínimo 1) |
+| `CATCHUP_MAX_AGE_MS` | `172800000` (48 h) | Un slot perdido más antiguo no se recupera: lo sustituye el siguiente slot natural |
 | `RECONCILE_INTERVAL_MS` | `60000` | Cada cuánto el worker busca `TaskRun` huérfanos |
 | `RECONCILE_GRACE_MS` | `120000` | Antigüedad mínima de un `TaskRun` para considerarlo huérfano |
 | `RUN_HEARTBEAT_MS` | `30000` | Latido de un `TaskRun` `RUNNING`: el worker refresca `updated_at` mientras dura el intento. Debe quedar muy por debajo de `RECONCILE_GRACE_MS`; `0` lo desactiva |
@@ -197,11 +200,23 @@ pnpm build
 
 Los tests de integración comprueban la conexión a `DATABASE_URL` (y a `REDIS_URL` los del scheduler) y, si falla, se saltan con un aviso. Para forzar el salto, define `SKIP_DB_TESTS=1` o `SKIP_REDIS_TESTS=1`. Cada ejecución usa un tenant nuevo (`it-xxxxxxxx`), así que no borran datos. Los tests del scheduler usan colas BullMQ propias (`it-runs-xxxxxxxx`) y las eliminan al terminar.
 
-Para no interferir con otras ramas que comparten la BD de desarrollo, puedes apuntar los tests a una base propia del mismo servidor:
+Los tests **necesitan una base de datos propia**. `test/setup-env.ts` instala un guard (`test/helpers/shared-db-guard.ts`) que rechaza cualquier conexión a la base llamada exactamente `agentos`, el valor por defecto de `DATABASE_URL` y la base que usa el runtime en local. El 2026-10-12, las tareas `ACTIVE` que las suites habían dejado en tenants de test (`it-*`, `e2e-*`, ...) de esa base las ejecutó el scheduler de producción. Si la apuntas a `agentos`, el fichero falla con `SharedTestDatabaseError` y el remedio:
 
-```sh
-DATABASE_URL=postgres://agentos:agentos_dev@127.0.0.1:5440/agentos_wt2_scheduler pnpm test
-```
+1. Crea la base una vez en el mismo servidor:
+
+   ```sh
+   docker exec pxos-postgres psql -U agentos -d postgres -c "create database agentos_<tuya>"
+   ```
+
+1. Apunta los tests a ella y aplica las migraciones:
+
+   ```sh
+   export DATABASE_URL=postgres://agentos:agentos_dev@127.0.0.1:5440/agentos_<tuya>
+   pnpm db:migrate
+   pnpm test
+   ```
+
+`ALLOW_SHARED_TEST_DB=1` desactiva el guard. No lo uses salvo para una prueba manual consciente. Los tests unitarios no abren conexiones y no lo notan.
 
 `test/setup-env.ts` carga `runtime/agent-runtime/.env` antes de cada fichero de test, sin sobrescribir variables ya definidas. Los tests de Twenty (`test/integration/twenty-tools.test.ts`) se saltan si `TWENTY_API_KEY` está vacía o si `TWENTY_BASE_URL` no responde. Para ejecutarlos en local:
 
@@ -314,6 +329,49 @@ Cada intento crea una `AgentExecution` nueva. `task_runs.execution_id` apunta al
 - El proceso con rol `scheduler` (o `all`) consume los disparos y ejecuta `syncAll` al arrancar y cada `SCHEDULER_SYNC_INTERVAL_MS`. `syncAll` registra lo que falte, actualiza lo que haya cambiado y retira los schedules de tareas que ya no cumplen. Solo toca BullMQ si el estado deseado difiere del registrado.
 - Cada disparo pasa por `requestTaskRun`, el mismo camino que `POST /tasks/:id/run`, con `scheduled_at` igual al instante planificado del slot (no al de entrega). Un disparo repetido por un reinicio o un job stalled genera la misma clave `taskrun:{task_id}:{scheduled_at}` y no duplica el `TaskRun`.
 - Si la tarea ya no está activa cuando llega el disparo, se descarta y se retira el schedule. Si el agente no está `ACTIVE`, el slot se omite con un aviso en el log.
+
+### Tenants del scheduler (`SCHEDULER_TENANTS`)
+
+El scheduler solo registra y dispara tareas de los tenants de `SCHEDULER_TENANTS`. Por defecto es `DEFAULT_TENANT_ID` (`publiexpe`). Se añadió tras el incidente del 2026-10-12: el scheduler multi-tenant ejecutó en un catch-up las tareas que los tests de integración habían dejado `ACTIVE` en tenants `it-*`, `e2e-*`, `ev-*` y `ar-*`, con las credenciales reales de Gemini y Twenty.
+
+- `syncAll` solo lee de PostgreSQL las tareas de los tenants permitidos (filtro SQL). Los registros de BullMQ y los triggers `EVENT` de otros tenants se retiran como los de una tarea borrada.
+- `syncTask` (los hooks de la API) trata una tarea de otro tenant como si no quisiera schedule: no la registra y retira lo que tuviera. `GET /tasks/:id/schedule` lo indica con `tenant_allowed: false`.
+- Un disparo de otro tenant que aún estuviera en la cola no crea `TaskRun` (`skipped_tenant`), y el consumidor de eventos tampoco dispara triggers `EVENT` de otros tenants.
+- Lo ignorado se registra en **un solo `WARN` agregado por pasada** de `syncAll` (tareas `ACTIVE` y disparos por tenant), nunca una línea por tarea.
+- `SCHEDULER_TENANTS=a,b` programa varios tenants. `SCHEDULER_TENANTS=*` restaura el comportamiento multi-tenant y el proceso lo avisa al arrancar. Úsalo **solo en entornos de test**.
+- Las rutas de la API no cambian: `POST /tasks/:id/run` de una tarea de cualquier tenant sigue funcionando, porque es una acción humana y auditada.
+
+Para archivar lo que dejaron los tests en tenants de prueba, usa `pnpm cleanup:archive-test-tenants`. Consulta [Limpieza de tenants de test](#limpieza-de-tenants-de-test-pnpm-cleanuparchive-test-tenants).
+
+### Catch-up tras una parada
+
+BullMQ guarda un solo job pendiente por tarea CRON/INTERVAL. Tras una parada, al volver llega un único disparo tardío por tarea con el slot perdido **más antiguo**, y BullMQ calcula el siguiente a partir de ahora. Hasta la tanda 16, ese slot se ejecutaba siempre, fuera cual fuera su antigüedad.
+
+Ahora, un disparo con más de 5 minutos de retraso pasa por la política de catch-up:
+
+1. Calcula los slots naturales vencidos entre el del disparo y ahora.
+1. Descarta los más antiguos que `CATCHUP_MAX_AGE_MS` (48 h por defecto).
+1. Ejecuta como mucho los `CATCHUP_MAX_SLOTS` más recientes (1 por defecto), del más antiguo al más nuevo y cada uno con su `scheduled_at` y su clave de idempotencia. Lo registra con un `INFO` (`schedule catch-up after a stop`).
+1. Si no queda ninguno, no ejecuta nada (`skipped_stale`, `INFO`) y manda el siguiente slot natural.
+
+Ejemplo: una tarea diaria a las 09:00 con la máquina apagada del viernes al lunes a las 10:00 ejecuta solo el slot del lunes a las 09:00. Antes ejecutaba el del sábado. Los disparos `ONCE` no pasan por esta política.
+
+### Limpieza de tenants de test (`pnpm cleanup:archive-test-tenants`)
+
+`cleanup:archive-test-agents` busca agentes por **nombre** (`[TEST] …`, `… (live test)`) dentro de un tenant y protege `Prospector` y `EmailDrafter`, así que no cubre los tenants de test cuyos agentes tienen nombres normales. `cleanup:archive-test-tenants` busca por **tenant**:
+
+- Prefijos `it-*`, `e2e-*`, `ev-*`, `ar-*` (y el tenant exacto `it`).
+- `mt-`, `ms-` y `n8n-` seguidos de 8 caracteres hexadecimales.
+- Sufijos `*-run`, `*-empty`, `*-seed`, `*-trig` y `*-skip`.
+
+En cada tenant que coincide, pasa a `ARCHIVED` las tareas `ACTIVE`/`PAUSED` (la misma transición que `POST /tasks/:id/archive`) y los agentes que no lo estén. No borra nada. Nunca toca `publiexpe`, `DEFAULT_TENANT_ID`, los tenants de `SCHEDULER_TENANTS` ni los de `--protect=a,b`, aunque coincidan con el patrón. Es idempotente.
+
+```sh
+pnpm cleanup:archive-test-tenants --dry-run   # informe, sin escribir
+pnpm cleanup:archive-test-tenants             # archiva
+```
+
+El scheduler en marcha retira los registros de BullMQ de las tareas archivadas en su siguiente `syncAll`.
 
 ### max_concurrency por tarea
 
@@ -1423,6 +1481,7 @@ El `ToolExecutor` (uno por ejecución) aplica, en orden: allowlist, registro, `e
 | `INVALID_INPUT` / `INVALID_OUTPUT` | No cumple el esquema zod |
 | `TOOL_TIMEOUT` / `TOOL_ERROR` | Timeout de la tool o excepción |
 | `TWENTY_*` | Error de Twenty (`TWENTY_NOT_CONFIGURED`, `TWENTY_BAD_REQUEST`, `TWENTY_RATE_LIMITED`...) |
+| `TWENTY_TENANT_MISMATCH` | El registro pedido (lectura por id o escritura) es de otro tenant. Consulta [Tenancy en Twenty](#tenancy-en-twenty) |
 
 ### TwentyClient
 
@@ -1443,6 +1502,24 @@ Formas de campo verificadas contra Twenty 2.45:
 | `DATE` / `DATE_TIME` | `YYYY-MM-DD` / ISO 8601 |
 | `ARRAY` / `RAW_JSON` | `string[]` / JSON libre |
 | `RELATION` N:1 | Columna de unión: `companyId`, `commercialSignalId`, `decisionMakerId` |
+
+### Tenancy en Twenty
+
+Hay un solo workspace de Twenty y en él escriben también los tenants de test (`it-*`, `experiments`...). Los objetos de la App llevan el campo `tenantId` (C6), así que el runtime filtra por tenant en el cliente, no tool a tool:
+
+- **Objetos con `tenantId`** (`TENANT_SCOPED_OBJECTS`): `commercialSignals`, `researches`, `commercialHypotheses`, `agentRunSummaries` y `agentOsDailyMetrics`.
+- **Lecturas.** `list(objeto, { tenantId })` añade el filtro `tenantId[eq]` al filtro de la llamada (`and(...)`) y, por si un servidor lo ignorara, descarta en el cliente los registros de otro tenant. `get(objeto, id, { tenantId })` responde `TWENTY_TENANT_MISMATCH` si el registro es de otro tenant: nunca lo devuelve como propio.
+- **Registros sin tenant.** Un registro creado a mano en la interfaz de Twenty deja `tenantId` vacío. Esos registros son del tenant al que sirve el runtime (`DEFAULT_TENANT_ID`, por defecto `publiexpe`, el `ownerTenantId` del cliente): su filtro es `or(tenantId[eq]:"publiexpe",tenantId[is]:NULL,tenantId[eq]:"")`. Para cualquier otro tenant, solo `tenantId[eq]`.
+- **Escrituras.** Todos los `create_*` escriben `tenantId` y su búsqueda previa (find-before-create) solo mira los registros del tenant: un registro de otro tenant con la misma clave natural nunca se devuelve como "existente". Las tools que modifican (`expire_signal`, `set_hypothesis_draft`, `revert_hypothesis_draft_status`) releen el registro con `tenantId` antes del `PATCH`, así que uno de otro tenant se rechaza con `TWENTY_TENANT_MISMATCH` sin escribir nada. `update(objeto, id, datos, { tenantId })` hace esa misma relectura para quien no lea antes.
+- **Tools filtradas.** `list_event_signals` (y con ella el round-robin del [modo señales](#modo-señales-ferias-calificadas)), `expire_signal`, `get_hypothesis` (una señal enlazada de otro tenant sale como `null`), `set_hypothesis_draft`, `revert_hypothesis_draft_status`, `get_company` (solo las señales, investigaciones e hipótesis del tenant) y las búsquedas previas de `create_signal`, `create_research`, `create_hypothesis` y `create_agent_run_summary`. El tenant es el del `ToolExecutor` de la ejecución (`ctx.tenantId`).
+- **Webhooks.** El evaluador HUMAN y la [prospección al calificar](#señal-calificada--prospección-dirigida-prospect-on-qualified) ignoran un registro cuyo `tenantId` no esté vacío y no sea `DEFAULT_TENANT_ID`: responden `200` con `status: "ignored"` y `foreign_tenant`, y el runtime lo registra con un `warn`. Antes de la tanda 16 lo procesaban con el tenant del registro.
+- **Sin tenant a propósito.** Email-ops (el guardarraíl de `READY` y el registro de `SENT`) no filtra: protege el buzón del workspace, que comparten todos los tenants, y solo puede hacer un envío menos probable. Los `SENT` de otro tenant quedan en `email_sends` bajo ese tenant y el triaje de entrada, que cruza `email_sends` por tenant, no los ve.
+
+#### Limitaciones
+
+- Los objetos estándar de Twenty **no tienen `tenantId`**: `companies`, `people`, `notes` y `noteTargets` son comunes a todos los tenants del workspace. `find_company`, `upsert_company`, `get_company` (la empresa en sí), `create_note`, `get_note` y `update_note` no pueden filtrar por tenant; una empresa o una nota creada por un tenant de test la ve cualquier otro. El triaje de entrada busca la empresa por dominio (`find_company`) con este mismo alcance. No se añade el campo a esos objetos desde el runtime: es un cambio de la App.
+- El filtro por tenant no protege de un `id` de otro tenant que se pase a un `create_*` como relación (`signalId`, `decisionMakerId`): la relación se escribe tal cual.
+- Twenty no tiene escritura condicional: entre la relectura y el `PATCH` queda la ventana de una petición REST.
 
 ### Catálogo (Catalog Service)
 
@@ -1487,7 +1564,7 @@ El `StubAgent` sigue usando su tool simulada (`stub.lookup`), que no pasa por el
 
 Entrada de la tarea diaria desde la tanda 15: `{ "mode": "signals" }`, sin feria incrustada. Cada ejecución:
 
-1. Lee de Twenty (`list_event_signals`, READ) las `commercialSignal` **sin empresa** en `NEW`, `REVIEWING` o `QUALIFIED`. Solo cuentan las de feria: tipo `FAIR`, `CONGRESS` o `EVENT` y `sourceUrl` http(s). Las señales por expositor ("<feria> — <empresa>") tienen empresa y nunca entran.
+1. Lee de Twenty (`list_event_signals`, READ) las `commercialSignal` **sin empresa** del tenant de la ejecución (y, para `DEFAULT_TENANT_ID`, las creadas a mano sin `tenantId`; consulta [Tenancy en Twenty](#tenancy-en-twenty)) en `NEW`, `REVIEWING` o `QUALIFIED`. Solo cuentan las de feria: tipo `FAIR`, `CONGRESS` o `EVENT` y `sourceUrl` http(s). Las señales por expositor ("<feria> — <empresa>") tienen empresa y nunca entran.
 2. **Envejecimiento primero**, también si la ejecución acaba `SKIPPED`: cada una cuya `eventDate` es anterior a hoy pasa a `EXPIRED` (`expire_signal`, LOW_WRITE: relee la señal y solo escribe `status`; nunca toca una fecha futura, una sin fecha ni una `DISCARDED`/`EXPIRED`). Máximo 50 por ejecución. Es el único cambio de estado que hace la máquina.
 3. De las `QUALIFIED` vigentes (fecha futura o sin fecha) elige la **trabajada hace más tiempo** (round-robin): primero las que ninguna ejecución ha trabajado; después, la de última pasada más antigua; empates por la fecha de feria más próxima. La memoria es la tabla `agent_executions` del mismo agente: `output.signal_id` (este modo) o `input.signal_id` (un scout dirigido que la lleve, como el disparo al calificar).
 4. Lanza el scout dirigido con `{ event_url, event_name, event_date, max_events: 1 }` y el presupuesto de tiempo del scout (`scout.time_budget_ms`, 20 min; la entrada `scout_time_budget_ms` lo baja). La salida lleva `signal_id`, `signal_name`, `event_name`, `event_url` y `signals` (caducadas, candidatas con su última pasada).
@@ -2066,6 +2143,7 @@ Twenty 2.45 envía un `POST` por cada registro cambiado (`CallWebhookJob`). Payl
   - el "antes" del diff de `EDITED` es la propuesta original del agente: el input de la llamada a `create_hypothesis` en el trace (`details.edited_fields_before_source = "agent_proposal"`). Si la hipótesis no tiene trace, el diff lista los campos cambiados con `before: null` (`"unknown"`), y una validación cuenta como `EDITED` si antes se registró una edición.
 - Seguridad: si el webhook tiene `secret`, Twenty firma cada envío. `X-Twenty-Webhook-Signature` es el HMAC-SHA256 en hexadecimal de `` `${X-Twenty-Webhook-Timestamp}:${body}` `` (timestamp en milisegundos), y también envía `X-Twenty-Webhook-Nonce`. El runtime comprueba la firma sobre el cuerpo crudo y rechaza timestamps con más de 5 minutos de desfase. Como alternativa para emisores que no firman, acepta el secreto en la cabecera `x-pxos-webhook-secret` o en `?secret=`. Evita la forma `?secret=` con Twenty: Twenty escribe la URL completa en sus logs (`SecureHttpClientService`). Sin credenciales válidas responde `401`, y sin `TWENTY_WEBHOOK_SECRET` responde `503`.
 - Twenty no reintenta: un fallo de entrega se pierde. Para recuperar un veredicto perdido, usa `POST /evaluations/human`.
+- Tenancy: un registro con `tenantId` de otro tenant (no vacío y distinto de `DEFAULT_TENANT_ID`) se ignora (`200`, `status: "ignored"`, `foreign_tenant`, log `warn`). Un registro sin `tenantId` (creado a mano) es del tenant del runtime. Consulta [Tenancy en Twenty](#tenancy-en-twenty).
 
 Importante: Twenty bloquea por protección SSRF los webhooks hacia IPs privadas, y `pxos-runtime` y `host.docker.internal` lo son. Para que entregue los webhooks, el servidor y el worker de Twenty necesitan `OUTBOUND_HTTP_ALLOWED_INTERNAL_HOSTS=pxos-runtime,host.docker.internal`. Sin esa variable, Twenty descarta el envío sin registrar ningún error.
 
@@ -2567,7 +2645,7 @@ Cuando BullMQ re-entrega un job tras un stall (el worker no renovó el lock) y e
 - Triggers `DEPENDENCY` y `CONDITION` (hoy no registran nada).
 - Columna `trigger` (`SCHEDULE`, `MANUAL`...) en `task_runs` para distinguir el origen de cada run (LLD v0.2, AC-04).
 - Exponer `EntityLocks` a las tools (el helper está listo en `RunProcessor.locks`).
-- Política de catch-up si el scheduler estuvo parado: hoy, al volver, se procesa el slot pendiente (tarde, con su `scheduled_at` original) y los demás slots perdidos se omiten.
+- Política de catch-up si el scheduler estuvo parado: resuelta en la tanda 16 con `CATCHUP_MAX_SLOTS` y `CATCHUP_MAX_AGE_MS` (consulta [Catch-up tras una parada](#catch-up-tras-una-parada)). Los `ONCE` vencidos que nunca se dispararon siguen ejecutándose al registrarse, sin límite de antigüedad.
 - Tools pendientes del registro del MVP-0: `search_web` (hoy la búsqueda es el grounding de Gemini, un paso `MODEL`; el LLD prevé fuentes ligadas a pasos `TOOL`), `create_activity` y las del Catalog Service.
 - Modo scout: cada ficha renderizada tarda unos 10-12 s (2 a la vez). Con muchos relevantes, el presupuesto de tiempo deja sin dominio a los de menor confianza. La API JSON de la ficha (Feria Valencia: `/api/exhibitor/get?exhiid=`) podría dar la web sin renderizar la ficha. El agente no recibe el timeout de su tarea: `time_budget_ms` se configura aparte.
 - Integrar `pxos-renderer` en `deployments/docker-compose.yml` (fragmento en `services/renderer/docker-compose.renderer.yml`) y, opcionalmente, el perfil seccomp de Playwright para el sandbox de Chromium.

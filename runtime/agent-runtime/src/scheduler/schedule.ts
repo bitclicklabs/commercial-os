@@ -177,6 +177,109 @@ export function repeatOptionsFor(schedule: NormalizedSchedule): { pattern: strin
 }
 
 // ---------------------------------------------------------------------------
+// Catch-up policy (tanda 16): what a late CRON/INTERVAL tick may recover
+// ---------------------------------------------------------------------------
+/** `CATCHUP_MAX_SLOTS`: slots a task recovers after a stop (default 1, as before tanda 16). */
+export const DEFAULT_CATCHUP_MAX_SLOTS = 1;
+/** `CATCHUP_MAX_AGE_MS`: a missed slot older than this is never recovered (default 48 h). */
+export const DEFAULT_CATCHUP_MAX_AGE_MS = 48 * 3600 * 1000;
+/**
+ * A tick at most this late is "on time" (busy worker, BullMQ retry backoff, a short restart)
+ * and simply runs its own slot. Capped by the max age.
+ */
+export const CATCHUP_ON_TIME_GRACE_MS = 5 * 60 * 1000;
+
+export interface CatchUpPolicy {
+  /** >= 1: the most recent due slot always counts as one. */
+  maxSlots: number;
+  maxAgeMs: number;
+}
+
+export const DEFAULT_CATCHUP_POLICY: CatchUpPolicy = { maxSlots: DEFAULT_CATCHUP_MAX_SLOTS, maxAgeMs: DEFAULT_CATCHUP_MAX_AGE_MS };
+
+export type TickPlan =
+  /** Normal tick: run its own slot. */
+  | { kind: 'on_time'; tickSlot: string; run: string[] }
+  /** Late tick (the scheduler was down): run the most recent due slots within the policy, oldest first. */
+  | { kind: 'catch_up'; tickSlot: string; run: string[] }
+  /** Late tick whose due slots are all older than the max age: nothing runs, the next natural slot rules. */
+  | { kind: 'stale'; tickSlot: string; run: string[]; newestDue: string };
+
+/**
+ * Natural slots of a CRON/INTERVAL schedule in [fromMs, nowMs], most recent first, at most
+ * `limit` and none older than `oldestMs`. Bounded work: never walks the whole gap.
+ */
+function recentSlots(schedule: NormalizedSchedule, fromMs: number, nowMs: number, oldestMs: number, limit: number): number[] {
+  const lower = Math.max(fromMs, oldestMs);
+  if (limit <= 0 || lower > nowMs) return [];
+  if (schedule.type === 'INTERVAL') {
+    // Same phase as the tick (BullMQ `every` keeps the phase of its first slot).
+    const every = schedule.everySeconds * 1000;
+    const kMax = Math.floor((nowMs - fromMs) / every);
+    const out: number[] = [];
+    for (let k = kMax; k >= 0 && out.length < limit; k--) {
+      const ms = fromMs + k * every;
+      if (ms < lower) break;
+      out.push(ms);
+    }
+    return out;
+  }
+  if (schedule.type === 'CRON') {
+    // Start a little after now (cron-parser works in whole seconds) and walk backwards.
+    const it = CronExpressionParser.parse(schedule.expression, { tz: schedule.timezone, currentDate: new Date(nowMs + 1000) });
+    const out: number[] = [];
+    for (let guard = 0; guard < limit + 4 && out.length < limit; guard++) {
+      let ms: number;
+      try {
+        ms = it.prev().toDate().getTime();
+      } catch {
+        break; // no earlier occurrence
+      }
+      if (ms > nowMs) continue;
+      if (ms < lower) break;
+      out.push(ms);
+    }
+    return out;
+  }
+  return [];
+}
+
+/**
+ * Decides which slots a CRON/INTERVAL tick runs (ONCE ticks never go through here).
+ *
+ * BullMQ keeps one pending job per job scheduler and, once it is processed, computes the next
+ * one from "now": after a stop, exactly one late tick arrives per task, carrying the OLDEST
+ * missed slot. Before tanda 16 that slot always ran, however old (the 2026-10-12 storm).
+ * Now a late tick runs the most recent `maxSlots` due slots between its own slot and now that
+ * are younger than `maxAgeMs` (oldest first, each with its own idempotency key); if there is
+ * none, nothing runs and the next natural slot rules.
+ */
+export function planTickSlots(
+  schedule: NormalizedSchedule | null,
+  tickSlot: string,
+  policy: CatchUpPolicy = DEFAULT_CATCHUP_POLICY,
+  now: Date = new Date(),
+): TickPlan {
+  const slot = normalizeScheduledAt(tickSlot);
+  const nowMs = now.getTime();
+  const tickMs = new Date(slot).getTime();
+  const maxSlots = Math.max(1, Math.floor(policy.maxSlots));
+  const maxAgeMs = Math.max(0, policy.maxAgeMs);
+  if (nowMs - tickMs <= Math.min(CATCHUP_ON_TIME_GRACE_MS, maxAgeMs)) return { kind: 'on_time', tickSlot: slot, run: [slot] };
+
+  const due = new Set<number>([tickMs]);
+  if (schedule && schedule.type !== 'ONCE') {
+    // Ignoring the age here only to report the newest due slot when everything is stale.
+    for (const ms of recentSlots(schedule, tickMs, nowMs, Number.NEGATIVE_INFINITY, maxSlots)) due.add(ms);
+  }
+  const newestFirst = [...due].filter((ms) => ms <= nowMs || ms === tickMs).sort((a, b) => b - a);
+  const fresh = newestFirst.filter((ms) => nowMs - ms <= maxAgeMs).slice(0, maxSlots);
+  const iso = (ms: number) => normalizeScheduledAt(new Date(ms));
+  if (fresh.length === 0) return { kind: 'stale', tickSlot: slot, run: [], newestDue: iso(newestFirst[0] ?? tickMs) };
+  return { kind: 'catch_up', tickSlot: slot, run: fresh.reverse().map(iso) };
+}
+
+// ---------------------------------------------------------------------------
 // Slot resolution: the instant a tick belongs to (part of the idempotency key)
 // ---------------------------------------------------------------------------
 export interface TickJobLike {

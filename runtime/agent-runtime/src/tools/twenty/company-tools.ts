@@ -28,6 +28,9 @@ const DomainInput = z
   });
 
 /**
+ * Companies are a standard Twenty object without `tenantId`: they are shared by every tenant
+ * of the workspace, so the company lookups below cannot (and do not) filter by tenant.
+ *
  * Companies whose normalised `domainName` equals `domain`. Twenty only offers
  * `ilike` on the link URL, so the exact match is done client side (avoids
  * `acme.com` matching `notacme.com`).
@@ -146,7 +149,7 @@ export function createGetCompanyTool(deps: TwentyToolDeps) {
     id: 'get_company',
     name: 'Get company',
     version: '1.0.0',
-    description: 'Fetch a CRM company by id, with its existing commercial signals, research and hypotheses.',
+    description: 'Fetch a CRM company by id, with its existing commercial signals, research and hypotheses of the current tenant.',
     inputSchema: GetCompanyInput,
     outputSchema: GetCompanyOutput,
     riskLevel: 'READ',
@@ -160,6 +163,8 @@ export function createGetCompanyTool(deps: TwentyToolDeps) {
       withTwenty(deps, async () => {
         const c = await deps.twenty.get<TwentyCompany>(TWENTY_OBJECTS.company, input.companyId, { depth: 1, signal: ctx.signal });
         if (!c) return { status: 'ok', output: { found: false, company: null } };
+        // Companies are shared by every tenant (no tenantId field); their related App records are not.
+        const own = <R>(rows: R[] | undefined): R[] => (rows ?? []).filter((r) => deps.twenty.belongsTo(r, ctx.tenantId));
         return {
           status: 'ok',
           output: {
@@ -167,7 +172,7 @@ export function createGetCompanyTool(deps: TwentyToolDeps) {
             company: {
               ...toCompanySummary(c),
               linkedinUrl: c.linkedinLink?.primaryLinkUrl || null,
-              signals: (c.commercialSignals ?? []).map((s) => ({
+              signals: own(c.commercialSignals).map((s) => ({
                 id: s.id,
                 name: s.name,
                 signalType: s.signalType,
@@ -177,7 +182,7 @@ export function createGetCompanyTool(deps: TwentyToolDeps) {
                 confidence: s.confidence ?? null,
                 detectedAt: s.detectedAt ?? null,
               })),
-              researches: (c.researches ?? []).map((r) => ({
+              researches: own(c.researches).map((r) => ({
                 id: r.id,
                 name: r.name,
                 researchType: r.researchType || null,
@@ -185,7 +190,7 @@ export function createGetCompanyTool(deps: TwentyToolDeps) {
                 confidence: r.confidence ?? null,
                 createdAt: r.createdAt,
               })),
-              hypotheses: (c.commercialHypotheses ?? []).map((h) => ({
+              hypotheses: own(c.commercialHypotheses).map((h) => ({
                 id: h.id,
                 name: h.name,
                 need: h.need || null,

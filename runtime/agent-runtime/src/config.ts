@@ -2,6 +2,8 @@ import { z } from 'zod';
 import { parseEventTypePrefixes } from './events/external.js';
 import { DEFAULT_WEBHOOK_BACKOFF_MS, DEFAULT_WEBHOOK_TIMEOUT_MS } from './events/webhook-delivery.js';
 import { parsePrivateAllowlist } from './events/webhook-target.js';
+import { DEFAULT_CATCHUP_MAX_AGE_MS, DEFAULT_CATCHUP_MAX_SLOTS } from './scheduler/schedule.js';
+import { parseSchedulerTenants } from './scheduler/tenant-allowlist.js';
 
 const RuntimeRole = z.enum(['all', 'api', 'worker', 'scheduler']);
 export type RuntimeRole = z.infer<typeof RuntimeRole>;
@@ -21,6 +23,12 @@ const ConfigSchema = z.object({
   geminiApiKey: z.string().optional(),
   geminiModel: z.string().optional(),
   schedulerSyncIntervalMs: z.coerce.number().int().positive().default(60_000),
+  /** `SCHEDULER_TENANTS` as given; resolved into `schedulerTenants` (default `[defaultTenantId]`, `*` = all). */
+  schedulerTenantsRaw: z.string().optional(),
+  /** Missed slots a CRON/INTERVAL task recovers after a stop (>= 1). */
+  catchupMaxSlots: z.coerce.number().int().min(1).max(100).default(DEFAULT_CATCHUP_MAX_SLOTS),
+  /** A missed slot older than this is skipped (the next natural slot rules). */
+  catchupMaxAgeMs: z.coerce.number().int().positive().default(DEFAULT_CATCHUP_MAX_AGE_MS),
   reconcileIntervalMs: z.coerce.number().int().positive().default(60_000),
   reconcileGraceMs: z.coerce.number().int().nonnegative().default(120_000),
   /** TaskRun heartbeat (`updated_at`) while an attempt runs; keep it well below reconcileGraceMs. 0 = off. */
@@ -65,6 +73,14 @@ const ConfigSchema = z.object({
   traceRetentionDays: z.coerce.number().nonnegative().default(90),
   /** Where the archive files live (`<tenant>/<YYYY-MM>.jsonl.gz`); GET /traces/:id rehydrates from here. */
   traceArchiveDir: z.string().min(1).default('./data/trace-archive'),
+}).transform((c, ctx) => {
+  // SCHEDULER_TENANTS depends on DEFAULT_TENANT_ID, hence resolved after the field parse.
+  try {
+    return { ...c, schedulerTenants: parseSchedulerTenants(c.schedulerTenantsRaw, c.defaultTenantId) };
+  } catch (err) {
+    ctx.addIssue({ code: 'custom', path: ['schedulerTenantsRaw'], message: (err as Error).message });
+    return z.NEVER;
+  }
 });
 
 export type Config = z.infer<typeof ConfigSchema>;
@@ -91,6 +107,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env, argv: string[] 
     geminiApiKey: emptyToUndefined(env.GEMINI_API_KEY),
     geminiModel: emptyToUndefined(env.GEMINI_MODEL),
     schedulerSyncIntervalMs: emptyToUndefined(env.SCHEDULER_SYNC_INTERVAL_MS),
+    schedulerTenantsRaw: emptyToUndefined(env.SCHEDULER_TENANTS),
+    catchupMaxSlots: emptyToUndefined(env.CATCHUP_MAX_SLOTS),
+    catchupMaxAgeMs: emptyToUndefined(env.CATCHUP_MAX_AGE_MS),
     reconcileIntervalMs: emptyToUndefined(env.RECONCILE_INTERVAL_MS),
     reconcileGraceMs: emptyToUndefined(env.RECONCILE_GRACE_MS),
     runHeartbeatMs: emptyToUndefined(env.RUN_HEARTBEAT_MS),

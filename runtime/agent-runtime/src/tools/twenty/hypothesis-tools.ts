@@ -1,6 +1,7 @@
 /**
  * get_hypothesis (READ): one `commercialHypothesis` with its company, commercial signal and
- * decision maker (Twenty REST with depth 1, a single request).
+ * decision maker (Twenty REST with depth 1, a single request). A hypothesis of another tenant
+ * is an error (`TWENTY_TENANT_MISMATCH`); a linked signal of another tenant is left out.
  */
 import { z } from 'zod';
 import {
@@ -110,10 +111,12 @@ export function createGetHypothesisTool(deps: TwentyToolDeps) {
       withTwenty(deps, async () => {
         const h = await deps.twenty.get<TwentyCommercialHypothesisExpanded>(TWENTY_OBJECTS.commercialHypothesis, input.hypothesisId, {
           depth: 1,
+          tenantId: ctx.tenantId,
           signal: ctx.signal,
         });
         if (!h) return { status: 'ok', output: { found: false, hypothesis: null, company: null, signal: null, decisionMaker: null } };
-        const s = h.commercialSignal ?? null;
+        const linked = h.commercialSignal ?? null;
+        const s = linked && deps.twenty.belongsTo(linked, ctx.tenantId) ? linked : null;
         return {
           status: 'ok',
           output: {
@@ -210,7 +213,12 @@ export function createSetHypothesisDraftTool(deps: TwentyToolDeps) {
     enabled: true,
     execute: (input, ctx) =>
       withTwenty(deps, async () => {
-        const h = await deps.twenty.get<TwentyCommercialHypothesis>(TWENTY_OBJECTS.commercialHypothesis, input.hypothesisId, { depth: 0, signal: ctx.signal });
+        // With tenantId: a hypothesis of another tenant throws TWENTY_TENANT_MISMATCH here, before any PATCH.
+        const h = await deps.twenty.get<TwentyCommercialHypothesis>(TWENTY_OBJECTS.commercialHypothesis, input.hypothesisId, {
+          depth: 0,
+          tenantId: ctx.tenantId,
+          signal: ctx.signal,
+        });
         if (!h) return { status: 'ok', output: { written: false, reason: 'not_found', emailStatus: null } };
         const current = typeof h.emailStatus === 'string' && h.emailStatus.length > 0 ? h.emailStatus : null;
         if (current && (HUMAN_OWNED_DRAFT_STATUSES as readonly string[]).includes(current)) {
@@ -254,16 +262,21 @@ export type RevertHypothesisDraftStatusResult = z.infer<typeof RevertHypothesisD
  * (SENDING / SENT: the send workflow won the race, or a person changed it) is not touched.
  * Twenty has no conditional update, so a change between the read and the PATCH is still
  * possible; the window is one REST round trip.
+ *
+ * With `tenantId` (the tool), a hypothesis of another tenant is refused before the PATCH. The
+ * email-ops READY guard calls it WITHOUT tenant on purpose: it protects the workspace mailbox,
+ * shared by every tenant, and can only make a send less likely.
  */
 export async function revertHypothesisDraftStatus(
   twenty: TwentyClient,
   hypothesisId: string,
-  opts: { expectedStatus?: 'READY'; signal?: AbortSignal } = {},
+  opts: { expectedStatus?: 'READY'; signal?: AbortSignal; tenantId?: string } = {},
 ): Promise<RevertHypothesisDraftStatusResult> {
   const expected = opts.expectedStatus ?? 'READY';
   const h = await twenty.get<TwentyCommercialHypothesis>(TWENTY_OBJECTS.commercialHypothesis, hypothesisId, {
     depth: 0,
     ...(opts.signal ? { signal: opts.signal } : {}),
+    ...(opts.tenantId !== undefined ? { tenantId: opts.tenantId } : {}),
   });
   if (!h) return { reverted: false, reason: 'not_found', previousStatus: null };
   const current = typeof h.emailStatus === 'string' && h.emailStatus.length > 0 ? h.emailStatus : null;
@@ -296,7 +309,7 @@ export function createRevertHypothesisDraftStatusTool(deps: TwentyToolDeps) {
     enabled: true,
     execute: (input, ctx) =>
       withTwenty(deps, async () => {
-        const out = await revertHypothesisDraftStatus(deps.twenty, input.hypothesisId, { expectedStatus: input.expectedStatus, signal: ctx.signal });
+        const out = await revertHypothesisDraftStatus(deps.twenty, input.hypothesisId, { expectedStatus: input.expectedStatus, signal: ctx.signal, tenantId: ctx.tenantId });
         if (out.reverted) ctx.logger.info('hypothesis draft status reverted to DRAFT', { hypothesisId: input.hypothesisId });
         return { status: 'ok', output: out };
       }),

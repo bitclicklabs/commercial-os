@@ -22,6 +22,7 @@
     "register:webhook": "tsx --env-file-if-exists=.env src/integrations/twenty/register-webhook.ts",
     "twenty:send-workflow": "tsx --env-file-if-exists=.env src/integrations/twenty/create-send-workflow.ts",
     "cleanup:archive-test-agents": "tsx --env-file-if-exists=.env src/maintenance/archive-test-agents.ts",
+    "cleanup:archive-test-tenants": "tsx --env-file-if-exists=.env src/maintenance/archive-test-tenants.ts",
     "metrics:sync-twenty": "tsx --env-file-if-exists=.env src/maintenance/sync-metrics-to-twenty.ts",
     "skill:candidate": "tsx --env-file-if-exists=.env scripts/skill-candidate.ts",
     "skill:compare": "tsx --env-file-if-exists=.env scripts/skill-compare.ts",

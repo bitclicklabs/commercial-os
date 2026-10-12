@@ -208,3 +208,14 @@ Origen: el usuario rechazó los 6 primeros borradores listos (Gastrónoma, feria
 | Skills con el calendario correcto: candidatas DRAFT de Prospector (lead time en la evaluación) y EmailDrafter (ángulo "con calma", prohibido "plazos cortos", tono confirmado intacto) + experimento sintético + knowledge entry con la evidencia del feedback | `feat/leadtime-skills` | Opus | ✅ fusionado (5 ops Prospector + 3 ops EmailDrafter probadas contra textos reales; 2 plantillas sintéticas opt-in de lead time con as_of propio; knowledge ACTIVE con evidencia; experimento programado: FAIL en set diluido/PASS_FORM en set de lead time — real pendiente del PM; 1132 tests) |
 | Docs: ventana en prospeccion-por-senales, regla en la guía comercial, runbook, ROADMAP | `docs/tanda18` | Sonnet | ✅ entregado (decisiones de PM fijadas en vuelo al agente de ventana: señales sin fecha excluidas con nota, límites inclusivos 45≤d≤210) |
 | Integración, e2e y PR | `feat/tanda18` (worktree wt18-integracion) | PM | ✅ 1155 tests (BD aislada); constantes de ventana unificadas en signals/lead-time (acuerdo entre ramas aplicado); compose con LEADTIME_*; desplegado + seed (Prospector v6 DRAFT, EmailDrafter v2 DRAFT, knowledge) + estreno de auto-expiración + experimento sintético real |
+
+## Tanda 19 — Twenty nativo 🔄 (en curso, 2026-10-12)
+
+Origen: feedback del usuario — "mucho potencial desaprovechado, reinventamos la rueda" (Personas vacía, Oportunidades sin usar, alertas perdidas en notas, sin tableros) + el envío real a FOSS (primer e2e completo: Anuga→validación→contacto→borrador v2→clic) no salía en la página nativa (causa raíz: el sync manda sends.in_window=null en vez del contador del día). Decisión: promoción con tracción (nunca volcar hipótesis a Oportunidades); descartado por ahora controlar tareas de agentes desde Twenty. Límite explícito: Person/Opportunity/Task sin tenantId.
+
+| Pieza | Rama | Agente | Estado |
+|---|---|---|---|
+| Personas (upsert desde ContactFinder, dedupe por email, genéricos no crean Person) + Oportunidades por promoción (INTERESADO→Opportunity+Person remitente+Task 📬; POST /opportunities/promote auditado; idempotente por empresa abierta) | `feat/native-people-opps` | Opus | 🔄 |
+| Tasks nativas (4 alertas nota→Task con fecha; supresión sigue como nota; nota-borrador del drafter se retira si el workflow no la usa) + vistas de fábrica en la App + fix del sync de envíos | `feat/native-tasks-views` | Opus | 🔄 |
+| Docs: twenty-nativo.md (el mapa pestaña a pestaña), guía comercial (Tareas como bandeja), triaje/contactos, runbook (sync de la App) | `docs/tanda19` | Sonnet | 🔄 |
+| Integración, e2e y PR | `feat/tanda19` (worktree wt19-integracion) | PM | 🔄 .env copiado; al cierre: sync de la App por el usuario (vistas, rol Admin temporal) |

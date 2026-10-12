@@ -176,3 +176,14 @@ Contexto: diagnóstico del PM a raíz del aviso del usuario ("cada día el mismo
 | Trigger al calificar: webhook commercialSignal→evento signal.qualified→EVENT task prospect-on-qualified (una vez por señal, ventana 24 h, auditado) | `feat/qualified-trigger` | Opus | ✅ fusionado (dedup sobre la tabla events append-only con clave encadenada — sin locks; opciones genéricas input_from_event/audit en triggers EVENT; acepta updated+created+upserted; signal.* namespace reservado frente a eventos externos; isScoutInput intacto; 1002 tests en rama) |
 | Docs: guía comercial (señales como cola de decisión), prospeccion-por-senales.md, runbook (webhook), ROADMAP | `docs/tanda15` | Sonnet | ✅ entregado (leyó el código en vuelo de las otras ramas; destapó que el scout semanal aún peina expositores sin calificar → decisión PM: scout pasa a solo-descubrimiento, reenviado a signals15; +created-con-QUALIFIED al trigger) |
 | Integración, e2e y PR | `feat/tanda15` (worktree wt15-integracion) | PM | ✅ 1017 tests; event_date añadido al trigger (recomendación cruzada); docs del webhook reconciliados (mismo webhook, updated+created); desplegado + seed + register:webhook ejecutado |
+
+## Tanda 16 — Endurecimiento post-incidente 🔄 (en curso, 2026-10-12)
+
+Origen: incidente del 2026-10-12 — tormenta de catch-up de 1.418 tasks de tenants de test contra credenciales reales (~18 €, 250 registros basura en Twenty). Mitigado el mismo día (señales DISCARDED, hipótesis REJECTED, tasks archivadas por el usuario). Esta tanda cierra las 3 causas raíz. Migraciones preasignadas: 0018 scheduler, 0019 tenancy (no se esperan).
+
+| Pieza | Rama | Agente | Estado |
+|---|---|---|---|
+| Scheduler: allowlist SCHEDULER_TENANTS (default publiexpe), tope de catch-up (1 slot, 48 h), cleanup por patrón de tenant, guard anti-BD-compartida en tests de integración | `feat/scheduler-hardening` | Opus | 🔄 |
+| Tenancy en Twenty: toda lectura filtra por tenantId, updates cruzados rechazados, webhooks descartan records de otro tenant | `feat/twenty-tenant-filter` | Opus | 🔄 |
+| Docs: postmortem docs/incidentes/2026-10-12, runbook (variables, parada larga, tests), ROADMAP | `docs/tanda16` | Sonnet | 🔄 |
+| Integración, e2e y PR | `feat/tanda16` (worktree wt16-integracion) | PM | 🔄 worktree creado con .env copiado; al desplegar: pasar las variables nuevas al compose |

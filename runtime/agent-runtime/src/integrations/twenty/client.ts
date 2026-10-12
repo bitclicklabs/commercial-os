@@ -323,6 +323,17 @@ export class TwentyClient {
     return unwrap(json) as T;
   }
 
+  /**
+   * The workspace's OpenAPI document of the core objects (`GET /rest/open-api/core`, read only).
+   * It carries the SELECT options of every field in their configured order (e.g. the stages of
+   * `opportunity.stage`), readable with an ordinary API key (the metadata REST API is not).
+   */
+  async getOpenApiCore(opts: { signal?: AbortSignal } = {}): Promise<Record<string, unknown>> {
+    const json = await this.request('GET', '/rest/open-api/core', { signal: opts.signal });
+    if (!json || typeof json !== 'object') throw new TwentyApiError('TWENTY_INVALID_RESPONSE', 'OpenAPI document is not an object', null, false);
+    return json as Record<string, unknown>;
+  }
+
   private async request(
     method: Method,
     path: string,

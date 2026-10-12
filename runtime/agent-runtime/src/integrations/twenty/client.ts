@@ -9,7 +9,15 @@
  *   out may have been applied, so the tools re-check (find-before-create) instead.
  * - There is intentionally NO delete method: deleting CRM data is never autonomous
  *   (LLD v0.2 section 10.3).
+ * - Tenancy (LLD C6): one Twenty workspace may hold records of several tenants (the App
+ *   objects carry `tenantId`). `list()` / `get()` / `update()` take an optional `tenantId`: on a
+ *   tenant-scoped object (`TENANT_SCOPED_OBJECTS`) the list gets the `tenantId[eq]` filter
+ *   injected, and a record of another tenant is refused with `TWENTY_TENANT_MISMATCH` before any
+ *   PATCH. Records with an EMPTY `tenantId` (created by hand in the Twenty UI, which does not
+ *   fill it) belong to the workspace owner, `ownerTenantId` (the runtime's DEFAULT_TENANT_ID).
+ *   On the standard objects (no `tenantId` field) the option is a no-op.
  */
+import { isTenantScopedObject } from './objects.js';
 
 export interface TwentyClientOptions {
   baseUrl: string;
@@ -23,7 +31,15 @@ export interface TwentyClientOptions {
   maxRetryDelayMs?: number;
   fetch?: typeof fetch;
   sleep?: (ms: number) => Promise<void>;
+  /**
+   * Tenant that owns the records with an empty `tenantId` (hand-made in the Twenty UI): the
+   * runtime's DEFAULT_TENANT_ID. Default `publiexpe` (the config default).
+   */
+  ownerTenantId?: string;
 }
+
+/** Same default as `config.defaultTenantId` (src/config.ts). */
+export const DEFAULT_OWNER_TENANT_ID = 'publiexpe';
 
 export type TwentyErrorCode =
   | 'TWENTY_NOT_CONFIGURED'
@@ -36,7 +52,8 @@ export type TwentyErrorCode =
   | 'TWENTY_TIMEOUT'
   | 'TWENTY_NETWORK_ERROR'
   | 'TWENTY_INVALID_RESPONSE'
-  | 'TWENTY_SYNTHETIC_REFUSED';
+  | 'TWENTY_SYNTHETIC_REFUSED'
+  | 'TWENTY_TENANT_MISMATCH';
 
 export class TwentyApiError extends Error {
   constructor(
@@ -66,6 +83,17 @@ export interface ListOptions {
   depth?: 0 | 1 | 2;
   startingAfter?: string;
   signal?: AbortSignal;
+  /**
+   * Tenant of the caller. On a tenant-scoped object the client adds the `tenantId[eq]` filter
+   * (plus the empty-tenant records when it is the owner tenant) and drops any record of another
+   * tenant a server might return anyway. No-op on objects without `tenantId`.
+   */
+  tenantId?: string;
+}
+
+export interface TenantOption {
+  /** Tenant of the caller: a record of another tenant is refused with `TWENTY_TENANT_MISMATCH`. */
+  tenantId?: string;
 }
 
 export interface ListResult<T> {
@@ -81,6 +109,28 @@ const defaultSleep = (ms: number) => new Promise<void>((resolve) => setTimeout(r
 /** Quotes a value for a Twenty filter expression. Quotes and backslashes are dropped (no escape syntax). */
 export function filterValue(value: string): string {
   return `"${value.replace(/["\\]/g, '')}"`;
+}
+
+/** The `tenantId` of a record, trimmed; null when the field is missing, null or empty. */
+export function recordTenantOf(record: unknown): string | null {
+  if (!record || typeof record !== 'object') return null;
+  const t = (record as { tenantId?: unknown }).tenantId;
+  return typeof t === 'string' && t.trim().length > 0 ? t.trim() : null;
+}
+
+/** True when `record` belongs to `tenantId`: same `tenantId`, or no tenant and `tenantId` is the owner. */
+export function recordBelongsTo(record: unknown, tenantId: string, ownerTenantId: string): boolean {
+  const t = recordTenantOf(record);
+  return t === null ? tenantId === ownerTenantId : t === tenantId;
+}
+
+/**
+ * Twenty filter that keeps the records of `tenantId`. The owner tenant also keeps the records
+ * without tenant (`[is]:NULL`, or empty text: how Twenty stores an unfilled TEXT field).
+ */
+export function tenantFilter(tenantId: string, ownerTenantId: string): string {
+  const own = `tenantId[eq]:${filterValue(tenantId)}`;
+  return tenantId === ownerTenantId ? `or(${own},tenantId[is]:NULL,tenantId[eq]:"")` : own;
 }
 
 function classify(status: number, messages: string[]): { code: TwentyErrorCode; retryable: boolean } {
@@ -143,6 +193,8 @@ export class TwentyClient {
   private readonly maxRetryDelayMs: number;
   private readonly fetchImpl: typeof fetch;
   private readonly sleep: (ms: number) => Promise<void>;
+  /** Tenant that owns the records with an empty `tenantId` (see the module comment). */
+  readonly ownerTenantId: string;
 
   constructor(opts: TwentyClientOptions) {
     this.baseUrl = opts.baseUrl.replace(/\/+$/, '');
@@ -153,6 +205,26 @@ export class TwentyClient {
     this.maxRetryDelayMs = opts.maxRetryDelayMs ?? 5_000;
     this.fetchImpl = opts.fetch ?? globalThis.fetch.bind(globalThis);
     this.sleep = opts.sleep ?? defaultSleep;
+    this.ownerTenantId = opts.ownerTenantId && opts.ownerTenantId.trim().length > 0 ? opts.ownerTenantId.trim() : DEFAULT_OWNER_TENANT_ID;
+  }
+
+  /** True when `record` belongs to `tenantId` (records without tenant belong to the owner tenant). */
+  belongsTo(record: unknown, tenantId: string): boolean {
+    return recordBelongsTo(record, tenantId, this.ownerTenantId);
+  }
+
+  /**
+   * Throws `TWENTY_TENANT_MISMATCH` when `record` (of a tenant-scoped object) belongs to another
+   * tenant than `tenantId`. No-op without `tenantId` or on objects without `tenantId`.
+   */
+  assertTenant(objectPlural: string, id: string, record: unknown, tenantId: string | undefined): void {
+    if (tenantId === undefined || !isTenantScopedObject(objectPlural) || this.belongsTo(record, tenantId)) return;
+    throw new TwentyApiError(
+      'TWENTY_TENANT_MISMATCH',
+      `Twenty ${objectPlural}/${id} belongs to tenant "${recordTenantOf(record) ?? this.ownerTenantId}", not to "${tenantId}": refused`,
+      null,
+      false,
+    );
   }
 
   isConfigured(): boolean {
@@ -194,7 +266,10 @@ export class TwentyClient {
 
   async list<T>(objectPlural: string, opts: ListOptions = {}): Promise<ListResult<T>> {
     const query: Record<string, string> = {};
-    if (opts.filter) query.filter = opts.filter;
+    const scoped = opts.tenantId !== undefined && isTenantScopedObject(objectPlural) ? opts.tenantId : undefined;
+    const tenant = scoped !== undefined ? tenantFilter(scoped, this.ownerTenantId) : undefined;
+    const filter = tenant && opts.filter ? `and(${tenant},${opts.filter})` : (tenant ?? opts.filter);
+    if (filter) query.filter = filter;
     if (opts.limit !== undefined) query.limit = String(opts.limit);
     if (opts.orderBy) query.order_by = opts.orderBy;
     if (opts.depth !== undefined) query.depth = String(opts.depth);
@@ -205,20 +280,28 @@ export class TwentyClient {
       throw new TwentyApiError('TWENTY_INVALID_RESPONSE', `Expected a list for ${objectPlural}`, null, false);
     }
     const envelope = json as { totalCount?: number; pageInfo?: PageInfo };
-    return { records: records as T[], totalCount: envelope.totalCount ?? null, pageInfo: envelope.pageInfo ?? {} };
+    // Defensive: a server that ignored the filter must not leak another tenant's records in.
+    const kept = scoped !== undefined ? records.filter((r) => this.belongsTo(r, scoped)) : records;
+    return { records: kept as T[], totalCount: envelope.totalCount ?? null, pageInfo: envelope.pageInfo ?? {} };
   }
 
-  /** Returns null when the record does not exist (404). */
-  async get<T>(objectPlural: string, id: string, opts: { depth?: 0 | 1 | 2; signal?: AbortSignal } = {}): Promise<T | null> {
+  /**
+   * Returns null when the record does not exist (404). With `tenantId`, a record of another
+   * tenant throws `TWENTY_TENANT_MISMATCH` (it is never returned as if it were the caller's).
+   */
+  async get<T>(objectPlural: string, id: string, opts: { depth?: 0 | 1 | 2; signal?: AbortSignal } & TenantOption = {}): Promise<T | null> {
     const query: Record<string, string> = {};
     if (opts.depth !== undefined) query.depth = String(opts.depth);
+    let record: T | null;
     try {
       const json = await this.request('GET', `/rest/${objectPlural}/${encodeURIComponent(id)}`, { query, signal: opts.signal });
-      return (unwrap(json) as T | undefined) ?? null;
+      record = (unwrap(json) as T | undefined) ?? null;
     } catch (err) {
       if (err instanceof TwentyApiError && err.code === 'TWENTY_NOT_FOUND') return null;
       throw err;
     }
+    if (record !== null) this.assertTenant(objectPlural, id, record, opts.tenantId);
+    return record;
   }
 
   async create<T>(objectPlural: string, data: Record<string, unknown>, opts: { signal?: AbortSignal } = {}): Promise<T> {
@@ -226,7 +309,16 @@ export class TwentyClient {
     return unwrap(json) as T;
   }
 
-  async update<T>(objectPlural: string, id: string, data: Record<string, unknown>, opts: { signal?: AbortSignal } = {}): Promise<T> {
+  /**
+   * PATCH. With `tenantId` (tenant-scoped object), the record is re-read first and a record of
+   * another tenant is refused with `TWENTY_TENANT_MISMATCH` BEFORE the PATCH (a missing one with
+   * `TWENTY_NOT_FOUND`). Callers that already read the record with `get({ tenantId })` can skip it.
+   */
+  async update<T>(objectPlural: string, id: string, data: Record<string, unknown>, opts: { signal?: AbortSignal } & TenantOption = {}): Promise<T> {
+    if (opts.tenantId !== undefined && isTenantScopedObject(objectPlural)) {
+      const current = await this.get(objectPlural, id, { depth: 0, tenantId: opts.tenantId, ...(opts.signal ? { signal: opts.signal } : {}) });
+      if (current === null) throw new TwentyApiError('TWENTY_NOT_FOUND', `Twenty ${objectPlural}/${id} not found`, 404, false);
+    }
     const json = await this.request('PATCH', `/rest/${objectPlural}/${encodeURIComponent(id)}`, { body: data, signal: opts.signal });
     return unwrap(json) as T;
   }
@@ -322,12 +414,14 @@ function extractMessages(json: unknown): string[] {
   return [];
 }
 
-/** Builds a client from TWENTY_BASE_URL / TWENTY_API_KEY (and optional TWENTY_TIMEOUT_MS). */
+/** Builds a client from TWENTY_BASE_URL / TWENTY_API_KEY (optional TWENTY_TIMEOUT_MS; owner tenant from DEFAULT_TENANT_ID). */
 export function twentyClientFromEnv(env: NodeJS.ProcessEnv = process.env, overrides: Partial<TwentyClientOptions> = {}): TwentyClient {
   const timeout = Number(env.TWENTY_TIMEOUT_MS);
   return new TwentyClient({
     baseUrl: env.TWENTY_BASE_URL && env.TWENTY_BASE_URL.length > 0 ? env.TWENTY_BASE_URL : 'http://localhost:3020',
     apiKey: env.TWENTY_API_KEY,
+    // Same variable as config.defaultTenantId: the tenant this runtime serves owns the hand-made records.
+    ownerTenantId: env.DEFAULT_TENANT_ID && env.DEFAULT_TENANT_ID.trim().length > 0 ? env.DEFAULT_TENANT_ID : DEFAULT_OWNER_TENANT_ID,
     ...(Number.isFinite(timeout) && timeout > 0 ? { timeoutMs: timeout } : {}),
     ...overrides,
   });

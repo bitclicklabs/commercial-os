@@ -1,7 +1,7 @@
 /**
  * In-memory stand-in for the Twenty REST API, used through the real TwentyClient
  * (injected `fetch`). Understands the subset of filters the tools generate:
- * `field[eq]:"v"`, `field[ilike]:"%v%"`, `field[is]:NULL`, nested `a.b` paths and `and(...)`.
+ * `field[eq]:"v"`, `field[ilike]:"%v%"`, `field[is]:NULL`, nested `a.b` paths, `and(...)` and `or(...)` (the tenant filter).
  * Mirrors observed server behaviour: strips the scheme from Company.domainName and
  * enforces its uniqueness, rejects unknown SELECT values and returns 404 for unknown ids.
  */
@@ -54,6 +54,7 @@ function getPath(rec: Rec, path: string): unknown {
 function matches(rec: Rec, filter: string): boolean {
   const f = filter.trim();
   if (f.startsWith('and(') && f.endsWith(')')) return splitTopLevel(f.slice(4, -1)).every((c) => matches(rec, c));
+  if (f.startsWith('or(') && f.endsWith(')')) return splitTopLevel(f.slice(3, -1)).some((c) => matches(rec, c));
   const m = /^([\w.]+)\[(eq|ilike|is)\]:(?:"(.*)"|(NULL))$/.exec(f);
   if (!m) throw new Error(`fake-twenty: unsupported filter ${f}`);
   const [, path, op, value] = m;
@@ -190,10 +191,11 @@ export class FakeTwenty {
     return json(405, { messages: ['Method not supported by fake'] });
   };
 
-  client(opts: { apiKey?: string } = {}): TwentyClient {
+  client(opts: { apiKey?: string; ownerTenantId?: string } = {}): TwentyClient {
     return new TwentyClient({
       baseUrl: 'http://twenty.test',
       apiKey: 'apiKey' in opts ? opts.apiKey : 'test-key',
+      ...(opts.ownerTenantId ? { ownerTenantId: opts.ownerTenantId } : {}),
       fetch: this.fetch,
       sleep: async () => {},
     });

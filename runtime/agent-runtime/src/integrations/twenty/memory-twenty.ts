@@ -6,7 +6,7 @@
  * runtime build can use it: the image does not ship `test/`.
  *
  * Understands the filters the tools generate: `field[eq]:"v"`, `field[ilike]:"%v%"`,
- * `field[is]:NULL`, nested `a.b` paths and `and(...)`. Strips the scheme from
+ * `field[is]:NULL`, nested `a.b` paths, `and(...)` and `or(...)` (the tenant filter). Strips the scheme from
  * Company.domainName and enforces its uniqueness, rejects unknown SELECT values and returns
  * 404 for unknown ids, like the server. No DELETE (the tools never delete).
  */
@@ -59,6 +59,7 @@ function getPath(rec: Rec, path: string): unknown {
 function matches(rec: Rec, filter: string): boolean {
   const f = filter.trim();
   if (f.startsWith('and(') && f.endsWith(')')) return splitTopLevel(f.slice(4, -1)).every((c) => matches(rec, c));
+  if (f.startsWith('or(') && f.endsWith(')')) return splitTopLevel(f.slice(3, -1)).some((c) => matches(rec, c));
   const m = /^([\w.]+)\[(eq|ilike|is)\]:(?:"(.*)"|(NULL))$/.exec(f);
   if (!m) throw new Error(`memory-twenty: unsupported filter ${f}`);
   const [, path, op, value] = m;

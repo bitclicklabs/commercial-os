@@ -1423,6 +1423,7 @@ El `ToolExecutor` (uno por ejecución) aplica, en orden: allowlist, registro, `e
 | `INVALID_INPUT` / `INVALID_OUTPUT` | No cumple el esquema zod |
 | `TOOL_TIMEOUT` / `TOOL_ERROR` | Timeout de la tool o excepción |
 | `TWENTY_*` | Error de Twenty (`TWENTY_NOT_CONFIGURED`, `TWENTY_BAD_REQUEST`, `TWENTY_RATE_LIMITED`...) |
+| `TWENTY_TENANT_MISMATCH` | El registro pedido (lectura por id o escritura) es de otro tenant. Consulta [Tenancy en Twenty](#tenancy-en-twenty) |
 
 ### TwentyClient
 
@@ -1443,6 +1444,24 @@ Formas de campo verificadas contra Twenty 2.45:
 | `DATE` / `DATE_TIME` | `YYYY-MM-DD` / ISO 8601 |
 | `ARRAY` / `RAW_JSON` | `string[]` / JSON libre |
 | `RELATION` N:1 | Columna de unión: `companyId`, `commercialSignalId`, `decisionMakerId` |
+
+### Tenancy en Twenty
+
+Hay un solo workspace de Twenty y en él escriben también los tenants de test (`it-*`, `experiments`...). Los objetos de la App llevan el campo `tenantId` (C6), así que el runtime filtra por tenant en el cliente, no tool a tool:
+
+- **Objetos con `tenantId`** (`TENANT_SCOPED_OBJECTS`): `commercialSignals`, `researches`, `commercialHypotheses`, `agentRunSummaries` y `agentOsDailyMetrics`.
+- **Lecturas.** `list(objeto, { tenantId })` añade el filtro `tenantId[eq]` al filtro de la llamada (`and(...)`) y, por si un servidor lo ignorara, descarta en el cliente los registros de otro tenant. `get(objeto, id, { tenantId })` responde `TWENTY_TENANT_MISMATCH` si el registro es de otro tenant: nunca lo devuelve como propio.
+- **Registros sin tenant.** Un registro creado a mano en la interfaz de Twenty deja `tenantId` vacío. Esos registros son del tenant al que sirve el runtime (`DEFAULT_TENANT_ID`, por defecto `publiexpe`, el `ownerTenantId` del cliente): su filtro es `or(tenantId[eq]:"publiexpe",tenantId[is]:NULL,tenantId[eq]:"")`. Para cualquier otro tenant, solo `tenantId[eq]`.
+- **Escrituras.** Todos los `create_*` escriben `tenantId` y su búsqueda previa (find-before-create) solo mira los registros del tenant: un registro de otro tenant con la misma clave natural nunca se devuelve como "existente". Las tools que modifican (`expire_signal`, `set_hypothesis_draft`, `revert_hypothesis_draft_status`) releen el registro con `tenantId` antes del `PATCH`, así que uno de otro tenant se rechaza con `TWENTY_TENANT_MISMATCH` sin escribir nada. `update(objeto, id, datos, { tenantId })` hace esa misma relectura para quien no lea antes.
+- **Tools filtradas.** `list_event_signals` (y con ella el round-robin del [modo señales](#modo-señales-ferias-calificadas)), `expire_signal`, `get_hypothesis` (una señal enlazada de otro tenant sale como `null`), `set_hypothesis_draft`, `revert_hypothesis_draft_status`, `get_company` (solo las señales, investigaciones e hipótesis del tenant) y las búsquedas previas de `create_signal`, `create_research`, `create_hypothesis` y `create_agent_run_summary`. El tenant es el del `ToolExecutor` de la ejecución (`ctx.tenantId`).
+- **Webhooks.** El evaluador HUMAN y la [prospección al calificar](#señal-calificada--prospección-dirigida-prospect-on-qualified) ignoran un registro cuyo `tenantId` no esté vacío y no sea `DEFAULT_TENANT_ID`: responden `200` con `status: "ignored"` y `foreign_tenant`, y el runtime lo registra con un `warn`. Antes de la tanda 16 lo procesaban con el tenant del registro.
+- **Sin tenant a propósito.** Email-ops (el guardarraíl de `READY` y el registro de `SENT`) no filtra: protege el buzón del workspace, que comparten todos los tenants, y solo puede hacer un envío menos probable. Los `SENT` de otro tenant quedan en `email_sends` bajo ese tenant y el triaje de entrada, que cruza `email_sends` por tenant, no los ve.
+
+#### Limitaciones
+
+- Los objetos estándar de Twenty **no tienen `tenantId`**: `companies`, `people`, `notes` y `noteTargets` son comunes a todos los tenants del workspace. `find_company`, `upsert_company`, `get_company` (la empresa en sí), `create_note`, `get_note` y `update_note` no pueden filtrar por tenant; una empresa o una nota creada por un tenant de test la ve cualquier otro. El triaje de entrada busca la empresa por dominio (`find_company`) con este mismo alcance. No se añade el campo a esos objetos desde el runtime: es un cambio de la App.
+- El filtro por tenant no protege de un `id` de otro tenant que se pase a un `create_*` como relación (`signalId`, `decisionMakerId`): la relación se escribe tal cual.
+- Twenty no tiene escritura condicional: entre la relectura y el `PATCH` queda la ventana de una petición REST.
 
 ### Catálogo (Catalog Service)
 
@@ -1487,7 +1506,7 @@ El `StubAgent` sigue usando su tool simulada (`stub.lookup`), que no pasa por el
 
 Entrada de la tarea diaria desde la tanda 15: `{ "mode": "signals" }`, sin feria incrustada. Cada ejecución:
 
-1. Lee de Twenty (`list_event_signals`, READ) las `commercialSignal` **sin empresa** en `NEW`, `REVIEWING` o `QUALIFIED`. Solo cuentan las de feria: tipo `FAIR`, `CONGRESS` o `EVENT` y `sourceUrl` http(s). Las señales por expositor ("<feria> — <empresa>") tienen empresa y nunca entran.
+1. Lee de Twenty (`list_event_signals`, READ) las `commercialSignal` **sin empresa** del tenant de la ejecución (y, para `DEFAULT_TENANT_ID`, las creadas a mano sin `tenantId`; consulta [Tenancy en Twenty](#tenancy-en-twenty)) en `NEW`, `REVIEWING` o `QUALIFIED`. Solo cuentan las de feria: tipo `FAIR`, `CONGRESS` o `EVENT` y `sourceUrl` http(s). Las señales por expositor ("<feria> — <empresa>") tienen empresa y nunca entran.
 2. **Envejecimiento primero**, también si la ejecución acaba `SKIPPED`: cada una cuya `eventDate` es anterior a hoy pasa a `EXPIRED` (`expire_signal`, LOW_WRITE: relee la señal y solo escribe `status`; nunca toca una fecha futura, una sin fecha ni una `DISCARDED`/`EXPIRED`). Máximo 50 por ejecución. Es el único cambio de estado que hace la máquina.
 3. De las `QUALIFIED` vigentes (fecha futura o sin fecha) elige la **trabajada hace más tiempo** (round-robin): primero las que ninguna ejecución ha trabajado; después, la de última pasada más antigua; empates por la fecha de feria más próxima. La memoria es la tabla `agent_executions` del mismo agente: `output.signal_id` (este modo) o `input.signal_id` (un scout dirigido que la lleve, como el disparo al calificar).
 4. Lanza el scout dirigido con `{ event_url, event_name, event_date, max_events: 1 }` y el presupuesto de tiempo del scout (`scout.time_budget_ms`, 20 min; la entrada `scout_time_budget_ms` lo baja). La salida lleva `signal_id`, `signal_name`, `event_name`, `event_url` y `signals` (caducadas, candidatas con su última pasada).
@@ -2066,6 +2085,7 @@ Twenty 2.45 envía un `POST` por cada registro cambiado (`CallWebhookJob`). Payl
   - el "antes" del diff de `EDITED` es la propuesta original del agente: el input de la llamada a `create_hypothesis` en el trace (`details.edited_fields_before_source = "agent_proposal"`). Si la hipótesis no tiene trace, el diff lista los campos cambiados con `before: null` (`"unknown"`), y una validación cuenta como `EDITED` si antes se registró una edición.
 - Seguridad: si el webhook tiene `secret`, Twenty firma cada envío. `X-Twenty-Webhook-Signature` es el HMAC-SHA256 en hexadecimal de `` `${X-Twenty-Webhook-Timestamp}:${body}` `` (timestamp en milisegundos), y también envía `X-Twenty-Webhook-Nonce`. El runtime comprueba la firma sobre el cuerpo crudo y rechaza timestamps con más de 5 minutos de desfase. Como alternativa para emisores que no firman, acepta el secreto en la cabecera `x-pxos-webhook-secret` o en `?secret=`. Evita la forma `?secret=` con Twenty: Twenty escribe la URL completa en sus logs (`SecureHttpClientService`). Sin credenciales válidas responde `401`, y sin `TWENTY_WEBHOOK_SECRET` responde `503`.
 - Twenty no reintenta: un fallo de entrega se pierde. Para recuperar un veredicto perdido, usa `POST /evaluations/human`.
+- Tenancy: un registro con `tenantId` de otro tenant (no vacío y distinto de `DEFAULT_TENANT_ID`) se ignora (`200`, `status: "ignored"`, `foreign_tenant`, log `warn`). Un registro sin `tenantId` (creado a mano) es del tenant del runtime. Consulta [Tenancy en Twenty](#tenancy-en-twenty).
 
 Importante: Twenty bloquea por protección SSRF los webhooks hacia IPs privadas, y `pxos-runtime` y `host.docker.internal` lo son. Para que entregue los webhooks, el servidor y el worker de Twenty necesitan `OUTBOUND_HTTP_ALLOWED_INTERNAL_HOSTS=pxos-runtime,host.docker.internal`. Sin esa variable, Twenty descarta el envío sin registrar ningún error.
 

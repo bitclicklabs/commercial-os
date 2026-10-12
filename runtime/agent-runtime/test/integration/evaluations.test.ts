@@ -109,7 +109,7 @@ describe.skipIf(!dbAvailable)('HUMAN evaluator (PostgreSQL + real Twenty payload
     app = await buildServer({
       db: handle.db,
       queue: new MemoryRunQueue(),
-      config: { defaultTenantId: 'publiexpe', defaultModelProvider: 'stub', twentyWebhookSecret: SECRET, evaluationDedupeWindowMs: 600_000 },
+      config: { defaultTenantId: tenant, defaultModelProvider: 'stub', twentyWebhookSecret: SECRET, evaluationDedupeWindowMs: 600_000 },
     });
   });
 

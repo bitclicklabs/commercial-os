@@ -26,6 +26,23 @@ export const TWENTY_OBJECTS = {
   noteTarget: 'noteTargets',
 } as const;
 
+/**
+ * Objects that carry a `tenantId` field (LLD C6): the five objects of the Twenty App
+ * (apps/twenty-app/src/objects). The standard objects (companies, people, notes, noteTargets)
+ * have no such field and are shared by every tenant of the workspace (README, limitations).
+ */
+export const TENANT_SCOPED_OBJECTS: ReadonlySet<string> = new Set([
+  TWENTY_OBJECTS.commercialSignal,
+  TWENTY_OBJECTS.research,
+  TWENTY_OBJECTS.commercialHypothesis,
+  TWENTY_OBJECTS.agentRunSummary,
+  'agentOsDailyMetrics',
+]);
+
+export function isTenantScopedObject(objectPlural: string): boolean {
+  return TENANT_SCOPED_OBJECTS.has(objectPlural);
+}
+
 export const SIGNAL_TYPES = [
   'FAIR',
   'CONGRESS',

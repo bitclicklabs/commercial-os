@@ -2,12 +2,14 @@
  * Event-level commercial signals (the fairs the commercial qualifies by hand in Twenty).
  *
  * - `list_event_signals` (READ): commercial signals WITHOUT company (event level: a fair, a
- *   congress) in the given statuses. Per-exhibitor signals ("<feria> — <empresa>") always
- *   carry a company and never come back from this tool.
+ *   congress) in the given statuses, of the run's tenant only (the client injects the
+ *   `tenantId` filter). Per-exhibitor signals ("<feria> — <empresa>") always carry a company
+ *   and never come back from this tool.
  * - `expire_signal` (LOW_WRITE): moves ONE signal to EXPIRED, and only when its event date
  *   is already past and its status is still NEW / REVIEWING / QUALIFIED. It re-reads the
  *   record right before the PATCH and writes nothing else: it can never qualify, discard or
- *   reopen a signal, and never touches a date in the future.
+ *   reopen a signal, and never touches a date in the future. A signal of another tenant is
+ *   refused (`TWENTY_TENANT_MISMATCH`) before the PATCH.
  */
 import { z } from 'zod';
 import { SIGNAL_STATUSES, TWENTY_OBJECTS, filterValue, type TwentyCommercialSignal } from '../../integrations/twenty/index.js';
@@ -67,7 +69,7 @@ export function createListEventSignalsTool(deps: TwentyToolDeps) {
     name: 'List event-level commercial signals',
     version: '1.0.0',
     description:
-      'List the commercial signals without company (event level: fairs, congresses) in the given statuses, with their event date and source URL. Per-company signals are not returned.',
+      'List the commercial signals without company (event level: fairs, congresses) of the current tenant in the given statuses, with their event date and source URL. Per-company signals are not returned.',
     inputSchema: ListEventSignalsInput,
     outputSchema: ListEventSignalsOutput,
     riskLevel: 'READ',
@@ -94,6 +96,7 @@ export function createListEventSignalsTool(deps: TwentyToolDeps) {
               limit: PAGE_SIZE,
               orderBy: 'createdAt',
               ...(after ? { startingAfter: after } : {}),
+              tenantId: ctx.tenantId,
               signal: ctx.signal,
             });
             // Defensive: a server that ignores the filter must not leak per-company signals in.
@@ -144,7 +147,8 @@ export function createExpireSignalTool(deps: TwentyToolDeps) {
     enabled: true,
     execute: (input, ctx) =>
       withTwenty(deps, async () => {
-        const s = await deps.twenty.get<TwentyCommercialSignal>(TWENTY_OBJECTS.commercialSignal, input.signalId, { depth: 0, signal: ctx.signal });
+        // With tenantId: a signal of another tenant throws TWENTY_TENANT_MISMATCH here, before any PATCH.
+        const s = await deps.twenty.get<TwentyCommercialSignal>(TWENTY_OBJECTS.commercialSignal, input.signalId, { depth: 0, tenantId: ctx.tenantId, signal: ctx.signal });
         if (!s) return { status: 'ok', output: { expired: false, reason: 'not_found', previousStatus: null, eventDate: null } };
         const eventDate = text(s.eventDate)?.slice(0, 10) ?? null;
         const base = { previousStatus: s.status ?? null, eventDate };

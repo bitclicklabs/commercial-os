@@ -283,7 +283,7 @@ describe('ProspectorAgent signals mode', () => {
 describe('expire_signal tool', () => {
   it('only expires open signals with a past date, and only writes the status', async () => {
     const fake = new FakeTwenty();
-    const mk = (status: string, eventDate: string | null) => fake.seed('commercialSignals', { name: 'X', signalType: 'FAIR', status, eventDate, companyId: null });
+    const mk = (status: string, eventDate: string | null) => fake.seed('commercialSignals', { name: 'X', signalType: 'FAIR', status, eventDate, companyId: null, tenantId: 't' });
     const cases = [mk('QUALIFIED', '2026-10-08'), mk('DISCARDED', '2026-10-01'), mk('NEW', '2026-10-09'), mk('REVIEWING', null)];
     const registry = createDefaultToolRegistry({ twenty: fake.client(), render: { endpoint: null } });
     const tool = registry.get('expire_signal')!;

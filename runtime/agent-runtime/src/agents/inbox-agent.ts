@@ -20,6 +20,13 @@
  *      the sender's domain in Twenty;
  *    - hard bounce -> note "⚠️ Rebote: el email no existe" on the company of the send (the
  *      suppression list is NOT touched);
+ *    - native CRM records (tanda 19), after the 📬 note, when the reply is linked to a company:
+ *      INTERESADO -> Person of the sender (From name + address; none for info@/comercial@...),
+ *      the company's OPEN Opportunity (created at the first stage of the pipeline, or reused:
+ *      never duplicated) with the note attached, a Task «📬 Responder a <persona/empresa>» (TODO,
+ *      due in 2 working days) and the event `opportunity.created` when it is new;
+ *      PREGUNTA -> Person (only when the From header carries a name) + the same Task, NO
+ *      Opportunity. The 📬 note stays: it is the record with the excerpt, the Task is the action;
  *    - AUTO_REPLY, soft bounces, OTRO -> only recorded.
  *    Every triaged message emits `email.reply_received` (with its class) and gets its
  *    `inbound_triage` row, written after the actions.
@@ -40,7 +47,10 @@ import { DEFAULT_REPLY_THRESHOLDS, REPLY_CLASSIFICATION_JSON_SCHEMA, REPLY_CLASS
 import { DrizzleSendLookup, FREEMAIL_DOMAINS, type SendLookup, type SendMatch } from '../inbound/reply-links.js';
 import { localDate, noInterestLine, sanitizeSubject, suppressionLine } from '../inbound/suppression-list.js';
 import { appendSuppressionEntries, toolError } from '../inbound/suppression-writer.js';
-import { bounceNoteBody, bounceNoteTitle, NOTE_CLASSES, replyNoteBody, replyNoteTitle } from '../inbound/triage-notes.js';
+import { bounceNoteBody, bounceNoteTitle, NOTE_CLASSES, replyNoteBody, replyNoteTitle, sanitizeExcerpt } from '../inbound/triage-notes.js';
+import { cleanPersonName, personDisplayName, type PersonSummary } from '../crm/people.js';
+import { opportunityCreatedEvent } from '../crm/opportunities.js';
+import { addBusinessDays, REPLY_TASK_BUSINESS_DAYS, replyTaskBody } from '../crm/reply-task.js';
 import { classifyByRules, extractTriageFeatures, type BounceInfo, type TriageClass, type TriageFeatures } from '../inbound/triage-rules.js';
 import { DrizzleInboundTriageStore, messageKeyOf, type InboundTriageStore } from '../inbound/triage-store.js';
 import { emailDomain, isDomainOrSubdomain, parseRawMessage, type ParsedInboundMessage } from '../inbound/unsubscribe-classifier.js';
@@ -51,7 +61,9 @@ import { ProspectorRun, readConfig, round6 } from './prospector-core.js';
 
 export const INBOX_IMPLEMENTATION = 'inbound_inbox';
 export const INBOX_CONSUMER = 'inbox';
-export const INBOX_TOOLS = ['get_note', 'update_note', 'create_note', 'find_company'] as const;
+/** Native Person / Opportunity / Task of a reply (tanda 19), plus `get_company` to name the task. */
+export const INBOX_CRM_TOOLS = ['upsert_person', 'upsert_opportunity', 'create_reply_task', 'get_company'] as const;
+export const INBOX_TOOLS = ['get_note', 'update_note', 'create_note', 'find_company', ...INBOX_CRM_TOOLS] as const;
 export const REPLY_RECEIVED_EVENT = 'email.reply_received';
 
 export interface InboxTriageConfig extends ReplyThresholds {
@@ -130,6 +142,11 @@ function zeroCounters() {
     parse_errors: 0,
     marked_seen: 0,
     audit_errors: 0,
+    people_created: 0,
+    people_existing: 0,
+    opportunities_created: 0,
+    opportunities_reused: 0,
+    reply_tasks: 0,
   };
 }
 
@@ -387,6 +404,9 @@ export class InboxAgent implements AgentImplementation {
         }
       }
       const unattributed = new Set(written.newEntries);
+      // Native CRM follow-up (tanda 19) only with the tools the policy allows (older seeded versions: none).
+      const allowed = new Set(tools.specs().map((t) => t.name));
+      const crmTools = INBOX_CRM_TOOLS.every((t) => allowed.has(t));
 
       // ---- Phase 3: per message, in UID order: link, note, event, inbound_triage row ----
       let lastDoneUid = afterUid;
@@ -402,7 +422,7 @@ export class InboxAgent implements AgentImplementation {
         }
         try {
           const suppressionAdded = p.email !== null && (p.class === 'BAJA' || p.class === 'NO_INTERESADO') && unattributed.delete(p.email);
-          const done = await this.act(ctx, cfg, p, { sends, events, suppressionAdded, steps, counters, mailbox: key.mailbox, uidValidity: session.uidValidity });
+          const { row: done, crm } = await this.act(ctx, cfg, p, { sends, events, suppressionAdded, steps, counters, mailbox: key.mailbox, uidValidity: session.uidValidity, crmTools });
           await triageStore.insert(done);
           counters.messages_reviewed++;
           counters[CLASS_COUNTER[p.class]]++;
@@ -419,6 +439,7 @@ export class InboxAgent implements AgentImplementation {
             hypothesis_id: done.hypothesisId,
             match_by: done.matchBy,
             note_id: done.noteId,
+            ...(crm ? { person_id: crm.personId, opportunity_id: crm.opportunityId, opportunity_created: crm.opportunityCreated, task_id: crm.taskId } : {}),
           });
           lastDoneUid = Math.max(lastDoneUid, p.item.raw.uid);
         } catch (err) {
@@ -462,7 +483,7 @@ export class InboxAgent implements AgentImplementation {
     ctx: AgentContext,
     cfg: InboxConfig,
     d: Decision,
-    o: { sends: SendLookup; events: EventPublisher; suppressionAdded: boolean; steps: AgentStep[]; counters: Counters; mailbox: string; uidValidity: number },
+    o: { sends: SendLookup; events: EventPublisher; suppressionAdded: boolean; steps: AgentStep[]; counters: Counters; mailbox: string; uidValidity: number; crmTools: boolean },
   ) {
     const tools = ctx.tools!;
     const msg = d.item.msg;
@@ -481,6 +502,7 @@ export class InboxAgent implements AgentImplementation {
     const hypothesisId = match?.hypothesisId ?? null;
     let matchBy: string | null = match?.by ?? null;
     let noteId: string | null = null;
+    let crm: CrmFollowUp | null = null;
     const signals = [...d.signals];
 
     if (needsNote) {
@@ -532,6 +554,10 @@ export class InboxAgent implements AgentImplementation {
         if (created.result.status !== 'ok') throw new StopRun('error', toolError('create_note', created.result as { status: string } & Record<string, unknown>));
         noteId = (created.result.output as { record: { id: string } }).record.id;
         o.counters.notes_created++;
+        if (o.crmTools && (d.class === 'INTERESADO' || d.class === 'PREGUNTA') && fromEmail) {
+          crm = await this.crmFollowUp(ctx, cfg, d, o, { companyId, hypothesisId, noteId, fromEmail, when, receivedLocal, sendSubject: match?.subject ?? null });
+          signals.push(...crm.signals);
+        }
       } else {
         signals.push('no_company_match');
         o.counters.unmatched++;
@@ -560,6 +586,7 @@ export class InboxAgent implements AgentImplementation {
           sendId: match?.sendId ?? null,
           matchBy,
           noteId,
+          ...(crm ? { personId: crm.personId, opportunityId: crm.opportunityId, taskId: crm.taskId } : {}),
           suppressionAdded: o.suppressionAdded,
           receivedAt: when.toISOString(),
         },
@@ -570,7 +597,7 @@ export class InboxAgent implements AgentImplementation {
       }
     }
 
-    return {
+    const row = {
       tenantId: ctx.tenantId,
       messageKey: d.item.key,
       messageId: msg?.messageId ?? null,
@@ -595,6 +622,108 @@ export class InboxAgent implements AgentImplementation {
       executionId: ctx.executionId,
       costEur: d.costEur,
     };
+    return { row, crm };
+  }
+
+  /**
+   * Native CRM records of an INTERESADO / PREGUNTA reply already linked to a company (tanda 19):
+   * Person of the sender, the company's open Opportunity (INTERESADO only, confidence at or above
+   * the triage threshold), the Task «📬 Responder a …», and `opportunity.created` when new. Every
+   * write is idempotent, so a retried run (Twenty failure -> StopRun) never duplicates anything.
+   */
+  private async crmFollowUp(
+    ctx: AgentContext,
+    cfg: InboxConfig,
+    d: Decision,
+    o: { events: EventPublisher; steps: AgentStep[]; counters: Counters },
+    r: { companyId: string; hypothesisId: string | null; noteId: string; fromEmail: string; when: Date; receivedLocal: string; sendSubject: string | null },
+  ): Promise<CrmFollowUp> {
+    const tools = ctx.tools!;
+    const msg = d.item.msg;
+    const out: CrmFollowUp = { personId: null, personName: null, opportunityId: null, opportunityCreated: false, taskId: null, signals: [] };
+    const call = async (tool: string, input: Record<string, unknown>) => {
+      const res = await tools.call(tool, input);
+      o.steps.push(res.step);
+      if (res.result.status !== 'ok') throw new StopRun('error', toolError(tool, res.result as { status: string } & Record<string, unknown>));
+      return res.result.output as Record<string, unknown>;
+    };
+
+    // 1. Person of the sender. PREGUNTA only when the From header carries a person name.
+    const fromName = cleanPersonName(msg?.fromName ?? null);
+    if (d.class === 'INTERESADO' || fromName) {
+      const p = (await call('upsert_person', { email: r.fromEmail, fullName: fromName, companyId: r.companyId })) as { outcome: string; reason: string | null; person: PersonSummary | null };
+      if (p.person) {
+        out.personId = p.person.id;
+        out.personName = personDisplayName(p.person);
+        if (p.outcome === 'created') o.counters.people_created++;
+        else o.counters.people_existing++;
+      } else out.signals.push(`sender_not_a_person:${p.reason ?? 'unknown'}`);
+    }
+
+    // 2. Opportunity: only an INTERESADO at or above the threshold (rules never decide it).
+    const interested = d.class === 'INTERESADO' && d.confidence !== null && d.confidence >= cfg.triage.minConfidence;
+    if (interested) {
+      const up = (await call('upsert_opportunity', { companyId: r.companyId, hypothesisId: r.hypothesisId, pointOfContactId: out.personId, noteId: r.noteId, origin: 'reply' })) as {
+        created: boolean;
+        opportunity: OpportunityOut;
+      };
+      const opportunity = up.opportunity;
+      out.opportunityId = up.opportunity.id;
+      out.opportunityCreated = up.created;
+      out.signals.push(up.created ? 'opportunity_created' : 'opportunity_reused');
+      if (up.created) o.counters.opportunities_created++;
+      else o.counters.opportunities_reused++;
+      // opportunity.created (n8n) right after the creation, before anything else can fail: a
+      // retried run reuses the opportunity (created = false) and would never emit it again.
+      if (up.created && cfg.triage.emitEvents) {
+        await o.events.emit(opportunityCreatedEvent({ tenantId: ctx.tenantId, opportunity, origin: 'reply', hypothesisId: r.hypothesisId, personId: out.personId, occurredAt: r.when }));
+      }
+    }
+
+    // 3. Task «📬 Responder a <persona/empresa>», due in 2 working days.
+    let who = out.personName;
+    if (!who) {
+      const c = (await call('get_company', { companyId: r.companyId })) as { company: { name: string } | null };
+      who = c.company?.name ?? r.fromEmail;
+    }
+    const task = (await call('create_reply_task', {
+      who,
+      bodyMarkdown: replyTaskBody({
+        class: d.class as 'INTERESADO' | 'PREGUNTA',
+        fromEmail: r.fromEmail,
+        subject: msg?.subject ?? '',
+        excerpt: sanitizeExcerpt(msg?.authoredText ?? ''),
+        receivedLocal: r.receivedLocal,
+        timezone: cfg.timezone,
+        sendSubject: r.sendSubject,
+      }),
+      dueAt: addBusinessDays(r.when, REPLY_TASK_BUSINESS_DAYS, cfg.timezone).toISOString(),
+      companyId: r.companyId,
+      opportunityId: out.opportunityId,
+      personId: out.personId,
+      noteId: r.noteId,
+    })) as { created: boolean; task: { id: string } };
+    out.taskId = task.task.id;
+    o.counters.reply_tasks++;
+    return out;
   }
 }
+
+interface OpportunityOut {
+  id: string;
+  name: string | null;
+  stage: string | null;
+  companyId: string | null;
+  pointOfContactId: string | null;
+}
+
+interface CrmFollowUp {
+  personId: string | null;
+  personName: string | null;
+  opportunityId: string | null;
+  opportunityCreated: boolean;
+  taskId: string | null;
+  signals: string[];
+}
+
 

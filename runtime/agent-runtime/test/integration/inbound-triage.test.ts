@@ -189,8 +189,24 @@ describe.skipIf(!dbAvailable)('inbound triage: process-inbox -> InboxAgent -> no
     expect(notes.map((n) => n.title).sort()).toEqual(['⚠️ Rebote: el email no existe (2026-10-08 12:00)', '📬 Respuesta recibida — Interesado (2026-10-08 10:00)']);
     for (const n of notes) {
       const targets = fake.tables.noteTargets!.filter((t) => t.noteId === n.id);
-      expect(targets.map((t) => t.targetCompanyId ?? t.targetCommercialHypothesisId).sort()).toEqual([company.id, hypothesisId].sort());
+      expect(targets.map((t) => t.targetCompanyId ?? t.targetCommercialHypothesisId).filter(Boolean).sort()).toEqual([company.id, hypothesisId].sort());
     }
+
+    // Tanda 19: the INTERESADO reply opened the native records: Person of the sender (From name),
+    // the company's Opportunity at the first stage of the pipeline, the Task «📬 Responder a …».
+    expect(fake.tables.people).toEqual([expect.objectContaining({ name: { firstName: 'Carmen', lastName: '' }, emails: { primaryEmail: 'carmen@cliente.example', additionalEmails: [] }, companyId: company.id })]);
+    const carmen = fake.tables.people[0]!;
+    expect(fake.tables.opportunities).toEqual([expect.objectContaining({ name: 'Cliente SA', stage: 'NEW', companyId: company.id, pointOfContactId: carmen.id })]);
+    const opp = fake.tables.opportunities[0]!;
+    expect(fake.tables.tasks).toEqual([expect.objectContaining({ title: '📬 Responder a Carmen', status: 'TODO', dueAt: '2026-10-12T07:00:00.000Z' })]);
+    expect(fake.tables.taskTargets.map((t) => t.targetOpportunityId ?? t.targetCompanyId ?? t.targetPersonId).sort()).toEqual([opp.id, company.id, carmen.id].sort());
+    const interestedNote = notes.find((n) => String(n.title).startsWith('📬'))!;
+    expect(fake.tables.noteTargets.filter((t) => t.noteId === interestedNote.id && (t.targetOpportunityId === opp.id || t.targetPersonId === carmen.id))).toHaveLength(2);
+    // opportunity.created in the events table (for n8n): ids only.
+    const oppEvents = await handle.db.query.events.findMany({ where: and(eq(events.tenantId, tenant), eq(events.type, 'opportunity.created')) });
+    expect(oppEvents).toHaveLength(1);
+    expect(oppEvents[0]!.payload).toMatchObject({ opportunityId: opp.id, origin: 'reply', companyId: company.id, pointOfContactId: carmen.id, hypothesisId, stage: 'NEW' });
+    expect(JSON.stringify(oppEvents[0]!.payload)).not.toContain('@');
 
     // inbound_triage (append-only), linked to the email_sends rows.
     const r = await rows();
@@ -231,7 +247,7 @@ describe.skipIf(!dbAvailable)('inbound triage: process-inbox -> InboxAgent -> no
     const trace = await handle.db.query.traces.findFirst({ where: eq(traces.taskRunId, run.id) });
     const steps = await handle.db.query.traceSteps.findMany({ where: eq(traceSteps.traceId, trace!.id), orderBy: traceSteps.sequence });
     expect(steps.filter((s) => s.type === 'MODEL')).toHaveLength(2);
-    expect(steps.map((s) => s.tool).filter(Boolean)).toEqual(['imap.fetch', 'get_note', 'update_note', 'create_note', 'find_company', 'create_note']);
+    expect(steps.map((s) => s.tool).filter(Boolean)).toEqual(['imap.fetch', 'get_note', 'update_note', 'create_note', 'upsert_person', 'upsert_opportunity', 'create_reply_task', 'find_company', 'create_note']);
   });
 
   it('is idempotent: a second run and a UIDVALIDITY reset change nothing (no LLM, no notes, no events)', async () => {
@@ -247,6 +263,30 @@ describe.skipIf(!dbAvailable)('inbound triage: process-inbox -> InboxAgent -> no
     expect(fake.count('PATCH', 'notes')).toBe(patches);
     expect(await replyEvents()).toHaveLength(5);
     expect(await rows()).toHaveLength(5);
+    // Re-delivery of the same messages: no second Person, Opportunity, Task or event.
+    expect([fake.tables.people.length, fake.tables.opportunities.length, fake.tables.tasks.length]).toEqual([1, 1, 1]);
+    expect(await handle.db.query.events.findMany({ where: and(eq(events.tenantId, tenant), eq(events.type, 'opportunity.created')) })).toHaveLength(1);
+  });
+
+  it('PREGUNTA (tanda 19): Person of a named sender + Task, NO Opportunity; a new interested reply reuses the open one', async () => {
+    stub = new StubProvider({ responses: [JSON.stringify({ clase: 'PREGUNTA', confianza: 0.9, motivo: 'pregunta plazos' }), JSON.stringify({ clase: 'INTERESADO', confianza: 0.92, motivo: 'pide más' })] });
+    const at = (h: number) => new Date(`2026-10-09T${String(h).padStart(2, '0')}:00:00Z`);
+    imap.messages = [
+      ...imap.messages,
+      { uid: 40, source: mail({ From: '"PEDRO SANZ" <pedro.sanz@cliente.example>', Subject: 'Re: Material para vuestro stand' }, `¿En cuánto tiempo entregáis 300 tazas?${QUOTED}`), internalDate: at(8) },
+      { uid: 41, source: mail({ From: 'Carmen <carmen@cliente.example>', Subject: 'Re: Material para vuestro stand' }, `Y otras 200 bolsas más, por favor.${QUOTED}`), internalDate: at(9) },
+    ];
+    const run = await runOnce();
+    expect(run.output).toMatchObject({ outcome: 'SUCCESS', counters: { preguntas: 1, interesados: 1, opportunities_created: 0, opportunities_reused: 1, reply_tasks: 2 } });
+    expect(fake.tables.opportunities).toHaveLength(1);
+    expect(fake.tables.people.map((p) => (p.name as { firstName: string; lastName: string }).firstName).sort()).toEqual(['Carmen', 'Pedro']);
+    expect(fake.tables.people.find((p) => (p.name as { firstName: string }).firstName === 'Pedro')).toMatchObject({ name: { firstName: 'Pedro', lastName: 'Sanz' }, companyId: company.id });
+    // Pedro's question: its own task, on the company and the person, not on the opportunity.
+    const pedroTask = fake.tables.tasks.find((t) => t.title === '📬 Responder a Pedro Sanz')!;
+    expect(fake.tables.taskTargets.filter((t) => t.taskId === pedroTask.id).some((t) => t.targetOpportunityId)).toBe(false);
+    // Carmen's second reply: the open «📬 Responder a Carmen» task is reused; no new event.
+    expect(fake.tables.tasks).toHaveLength(2);
+    expect(await handle.db.query.events.findMany({ where: and(eq(events.tenantId, tenant), eq(events.type, 'opportunity.created')) })).toHaveLength(1);
   });
 
   it('inbound_triage is append-only (UPDATE rejected by trigger, DELETE trigger installed)', async () => {

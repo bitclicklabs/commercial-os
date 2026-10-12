@@ -7,7 +7,9 @@
  *
  * LLM: one small Gemini Flash call per reply the rules cannot decide (bounded per run).
  * Tool policy: `get_note` + `update_note` (suppression list, one each), `create_note` (notes
- * for the commercial) and `find_company` (READ). No tool can send, move or delete mail.
+ * for the commercial) and `find_company` (READ); since tanda 19 also `upsert_person`,
+ * `upsert_opportunity`, `create_reply_task` (LOW_WRITE, native CRM records of INTERESADO /
+ * PREGUNTA replies) and `get_company` (READ). No tool can send, move or delete mail.
  */
 import type { Db } from '../db/client.js';
 import { INBOX_IMPLEMENTATION, INBOX_TOOLS } from '../agents/inbox-agent.js';
@@ -33,8 +35,19 @@ export function desiredInboxVersion(): AgentVersionSpec {
       tool_policy: {
         allow: [...INBOX_TOOLS],
         max_risk_level: 'LOW_WRITE',
-        max_calls_per_execution: 2 + 2 * INBOX_MAX_NOTES_PER_RUN,
-        max_calls_per_tool: { get_note: 1, update_note: 1, create_note: INBOX_MAX_NOTES_PER_RUN, find_company: INBOX_MAX_NOTES_PER_RUN },
+        // Per reply note at most: create_note, find_company + (tanda 19) upsert_person,
+        // upsert_opportunity, get_company, create_reply_task.
+        max_calls_per_execution: 2 + 6 * INBOX_MAX_NOTES_PER_RUN,
+        max_calls_per_tool: {
+          get_note: 1,
+          update_note: 1,
+          create_note: INBOX_MAX_NOTES_PER_RUN,
+          find_company: INBOX_MAX_NOTES_PER_RUN,
+          upsert_person: INBOX_MAX_NOTES_PER_RUN,
+          upsert_opportunity: INBOX_MAX_NOTES_PER_RUN,
+          get_company: INBOX_MAX_NOTES_PER_RUN,
+          create_reply_task: INBOX_MAX_NOTES_PER_RUN,
+        },
       },
       suppression_note_id: SUPPRESSION_NOTE_ID,
       suppression_note_title: SUPPRESSION_NOTE_TITLE,
@@ -68,7 +81,7 @@ export function desiredInboxVersion(): AgentVersionSpec {
 export function desiredInboxTask(): TaskSpec {
   return {
     description:
-      'Cada 2 horas lee (solo lectura) el buzón jesus.abril@publiexpe.info y clasifica cada correo nuevo una sola vez: bajas, rebotes y respuestas automáticas por reglas; el resto (interesado, pregunta, no interesado, otro) con una llamada corta al modelo. Las bajas y los "no interesado" explícitos van a la nota "Lista de supresión — NO contactar"; interesados, preguntas y no interesados dejan una nota "📬 Respuesta recibida" en la empresa; los rebotes duros, una nota "⚠️ Rebote". No envía, responde, mueve ni borra ningún correo.',
+      'Cada 2 horas lee (solo lectura) el buzón jesus.abril@publiexpe.info y clasifica cada correo nuevo una sola vez: bajas, rebotes y respuestas automáticas por reglas; el resto (interesado, pregunta, no interesado, otro) con una llamada corta al modelo. Las bajas y los "no interesado" explícitos van a la nota "Lista de supresión — NO contactar"; interesados, preguntas y no interesados dejan una nota "📬 Respuesta recibida" en la empresa; interesados y preguntas, además, la Persona del remitente y una tarea "📬 Responder a …", y los interesados abren (o reutilizan) la Oportunidad de la empresa; los rebotes duros, una nota "⚠️ Rebote". No envía, responde, mueve ni borra ningún correo.',
     defaultInput: {},
     schedule: { type: 'CRON', expression: '0 */2 * * *' },
     timezone: 'Europe/Madrid',

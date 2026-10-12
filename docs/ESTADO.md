@@ -176,3 +176,13 @@ Contexto: diagnóstico del PM a raíz del aviso del usuario ("cada día el mismo
 | Trigger al calificar: webhook commercialSignal→evento signal.qualified→EVENT task prospect-on-qualified (una vez por señal, ventana 24 h, auditado) | `feat/qualified-trigger` | Opus | ✅ fusionado (dedup sobre la tabla events append-only con clave encadenada — sin locks; opciones genéricas input_from_event/audit en triggers EVENT; acepta updated+created+upserted; signal.* namespace reservado frente a eventos externos; isScoutInput intacto; 1002 tests en rama) |
 | Docs: guía comercial (señales como cola de decisión), prospeccion-por-senales.md, runbook (webhook), ROADMAP | `docs/tanda15` | Sonnet | ✅ entregado (leyó el código en vuelo de las otras ramas; destapó que el scout semanal aún peina expositores sin calificar → decisión PM: scout pasa a solo-descubrimiento, reenviado a signals15; +created-con-QUALIFIED al trigger) |
 | Integración, e2e y PR | `feat/tanda15` (worktree wt15-integracion) | PM | ✅ 1017 tests; event_date añadido al trigger (recomendación cruzada); docs del webhook reconciliados (mismo webhook, updated+created); desplegado + seed + register:webhook ejecutado |
+
+## Tanda 17 — ContactFinder: destinatarios reales para el canal de email 🔄 (en curso, 2026-10-12, en paralelo con la 16)
+
+Origen: bloqueo comercial señalado por el usuario — las hipótesis validadas no tienen Email to y no sale ningún envío. Decisión conjunta: fase 1 webs de las propias empresas (gratis, LSSI/RGPD sólido, fuente citada); fase 2 enriquecimiento con abstracción de proveedor (Hunter recomendado; Apollo descartado como primero por cobertura PYME-ES y riesgo RGPD). Coordinación: la 16 toca scheduler/webhooks/tools-twenty; esta tanda es aditiva en ficheros compartidos. Migración preasignada: 0020 (no se espera).
+
+| Pieza | Rama | Agente | Estado |
+|---|---|---|---|
+| ContactFinder: extracción determinista de la web (contacto/aviso legal/equipo, máx 6 páginas), prioridades cargo>función>genérico, MX sin SMTP, supresión respetada, emailTo solo-si-vacío + Research con URL de origen; enganche en draft-on-validated (contacto→borrador) + contacts:backfill; fase 2 ENRICH_PROVIDER=stub|hunter con tope diario y umbral 0,7 | `feat/contact-finder` | Opus | 🔄 |
+| Docs: contactos.md (diseño, legal, Apollo razonado), guía comercial (revisar destinatario y fuente antes del clic), runbook, ROADMAP, warm-up | `docs/tanda17` | Sonnet | 🔄 |
+| Integración, e2e y PR | `feat/tanda17` (worktree wt17-integracion) | PM | 🔄 worktree creado con .env copiado; integrará DESPUÉS de la 16 (rebase sobre su merge) |

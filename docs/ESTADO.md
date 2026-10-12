@@ -197,3 +197,14 @@ Origen: bloqueo comercial señalado por el usuario — las hipótesis validadas 
 | Docs: contactos.md (diseño, legal, Apollo razonado), guía comercial (revisar destinatario y fuente antes del clic), runbook, ROADMAP, warm-up | `docs/tanda17` | Sonnet | ✅ entregado (pendiente de fusión tras la 16; conflictos triviales previstos en ROADMAP con docs16; la base legal lleva aviso de no-asesoramiento — validación humana recomendada) |
 | Integración, e2e y PR | `feat/tanda17` (worktree wt17-integracion) | PM | ✅ 1113 tests (16+17 combinadas, BD aislada agentos_wt17_pm); docs reconciliados; desplegado + seed (agente ContactFinder, EmailDrafter v nueva) + backfill |
 
+
+## Tanda 18 — La regla NEXT_QUARTER en el sistema 🔄 (en curso, 2026-10-12)
+
+Origen: el usuario rechazó los 6 primeros borradores listos (Gastrónoma, feria a 14 días): "imposible vender o producir un pedido; deben ser las ferias del próximo trimestre". Los textos además presumían de "plazos cortos". Regla nueva: ventana de lead time 45-210 días y el argumento invertido (producir con calma). Verificado antes de arrancar: el trigger al calificar funcionó en vivo con Madrid Fusión (webhook→evento→run en el mismo segundo). Base: feat/tanda17 (PRs #16/#17 abiertos — el clasificador denegó al PM fusionarlos sin revisión; pendientes del clic del usuario).
+
+| Pieza | Rama | Agente | Estado |
+|---|---|---|---|
+| Ventana de lead time: round-robin y trigger solo en ventana (too_close/too_far con días y nota ⏳ conservando QUALIFIED), scout no crea señales fuera de ventana, auto-EXPIRED de hipótesis PROPOSED sin crear evaluaciones HUMAN (webhook deja de tratar EXPIRED como veredicto) | `feat/lead-time-window` | Opus | 🔄 |
+| Skills con el calendario correcto: candidatas DRAFT de Prospector (lead time en la evaluación) y EmailDrafter (ángulo "con calma", prohibido "plazos cortos", tono confirmado intacto) + experimento sintético + knowledge entry con la evidencia del feedback | `feat/leadtime-skills` | Opus | 🔄 |
+| Docs: ventana en prospeccion-por-senales, regla en la guía comercial, runbook, ROADMAP | `docs/tanda18` | Sonnet | 🔄 |
+| Integración, e2e y PR | `feat/tanda18` (worktree wt18-integracion) | PM | 🔄 .env copiado; al cierre: estreno de la auto-expiración con las ~40 PROPOSED de Gastrónoma si siguen vivas |

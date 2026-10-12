@@ -64,8 +64,18 @@ export interface ResearchWriteState {
   emailTo: 'written' | 'already_set' | 'human_owned' | 'not_written' | 'decision_maker';
   /** Tie broken by the LLM (rol triage), when it happened. */
   triage: { email: string; reason: string } | null;
+  /** Native Persons written for this search (tanda 19): the Research references their ids. */
+  people?: ReadonlyArray<{ email: string; chosen: boolean; outcome: string; personId: string | null }>;
   timeZone?: string;
 }
+
+const PERSON_OUTCOME_TEXT: Record<string, string> = {
+  created: 'creada',
+  updated: 'ya existía; completados sus campos vacíos',
+  unchanged: 'ya existía',
+  skipped: 'no es una persona',
+  error: 'no se pudo escribir',
+};
 
 const EMAIL_TO_TEXT: Record<ResearchWriteState['emailTo'], string> = {
   written: 'Escrita en «Email to» de la hipótesis (estaba vacío).',
@@ -86,6 +96,8 @@ export function buildContactResearchSummary(result: FinderResult, state: Researc
     lines.push(`Por qué: ${result.chosen.reason}${state.triage ? `; desempate entre ${result.tie.length} candidatos equivalentes por el modelo: ${cleanWebText(state.triage.reason, 200) ?? 'sin motivo'}` : ''}.`);
     lines.push(`Fuente: ${sourcesText(chosen)}`);
     lines.push(EMAIL_TO_TEXT[state.emailTo]);
+    const chosenPerson = state.people?.find((p) => p.chosen && p.personId);
+    if (chosenPerson) lines.push(`Persona en Twenty: ${chosenPerson.personId} (${PERSON_OUTCOME_TEXT[chosenPerson.outcome] ?? chosenPerson.outcome}).`);
   } else {
     lines.push(`Sin contacto público: ${result.noChoiceReason ?? 'no se ha encontrado ninguna dirección utilizable'}.`);
     lines.push('No se ha escrito nada en «Email to» y no se ha inventado ninguna dirección.');
@@ -104,6 +116,11 @@ export function buildContactResearchSummary(result: FinderResult, state: Researc
     ].filter(Boolean);
     lines.push(`${i + 1}. ${c.email} — prioridad ${c.tier}, ${c.tier === 1 ? `${TIER_LABELS[1]} (${c.roleKind})` : c.label}${who ? ` — ${who}` : ''} — ${sourcesText(c)}${flags.length > 0 ? ` [${flags.join('; ')}]` : ''}`);
   });
+  const written = (state.people ?? []).filter((p) => p.personId || p.outcome === 'error');
+  if (written.length > 0) {
+    lines.push('', 'Personas en Twenty (por email, sin pisar datos existentes):');
+    for (const p of written) lines.push(`- ${p.email} — ${p.personId ? `persona ${p.personId}` : 'sin persona'} (${PERSON_OUTCOME_TEXT[p.outcome] ?? p.outcome})${p.chosen ? ' — contacto elegido' : ''}`);
+  }
   if (result.discarded.length > 0) {
     lines.push('', 'Descartados:');
     for (const d of result.discarded.slice(0, 20)) lines.push(`- ${d.email} — ${d.reason} — ${d.sources.map((s) => s.url).slice(0, 2).join(', ') || d.origin}`);
@@ -147,7 +164,14 @@ export function buildContactStructuredResult(result: FinderResult, state: Resear
     hypothesis_id: state.hypothesisId,
     domain: result.domain,
     searched_at: result.searchedAt,
-    chosen: result.chosen ? { ...result.chosen, ...(state.triage ? { tie_break: { by: 'llm_triage', reason: cleanWebText(state.triage.reason, 300) } } : {}) } : null,
+    chosen: result.chosen
+      ? {
+          ...result.chosen,
+          person_id: state.people?.find((p) => p.chosen)?.personId ?? null,
+          ...(state.triage ? { tie_break: { by: 'llm_triage', reason: cleanWebText(state.triage.reason, 300) } } : {}),
+        }
+      : null,
+    people: (state.people ?? []).map((p) => ({ email: p.email, person_id: p.personId, outcome: p.outcome, chosen: p.chosen })),
     no_choice_reason: result.noChoiceReason,
     email_to: state.emailTo,
     candidates: result.candidates.slice(0, 30).map((c) => ({

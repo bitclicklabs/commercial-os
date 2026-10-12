@@ -390,7 +390,8 @@ describe('EmailDrafterAgent', () => {
     // + the five catalog tools (READ, tanda 14): allowed for a future skill, never called by the drafter code.
     // + the contact step (tanda 17): find_contact (READ), set_hypothesis_recipient and create_research (LOW_WRITE).
     expect([...policy.allow].sort()).toEqual(
-      [...CATALOG_TOOL_IDS, 'create_note', 'find_company', 'get_company', 'get_hypothesis', 'set_hypothesis_draft', 'find_contact', 'set_hypothesis_recipient', 'create_research'].sort(),
+      // + upsert_person (tanda 19, LOW_WRITE): the contact step writes the published people as Persons.
+      [...CATALOG_TOOL_IDS, 'create_note', 'find_company', 'get_company', 'get_hypothesis', 'set_hypothesis_draft', 'find_contact', 'set_hypothesis_recipient', 'create_research', 'upsert_person'].sort(),
     );
     expect(policy.maxRiskLevel).toBe('LOW_WRITE');
     expect(policy.allow.some((t) => /mail|send/.test(t))).toBe(false);

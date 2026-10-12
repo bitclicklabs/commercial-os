@@ -17,6 +17,7 @@ import { BullRunQueue } from './queue/run-queue.js';
 import { desiredProspectorVersion } from './seed/prospector-seed.js';
 import { EventTriggerConsumer } from './scheduler/event-triggers.js';
 import { BullTaskScheduler, scheduleQueueName } from './scheduler/task-scheduler.js';
+import { describeAllowlist } from './scheduler/tenant-allowlist.js';
 import { startBullWorker } from './worker/bull-worker.js';
 import { RunProcessor, type ProcessorLogger } from './worker/processor.js';
 import { OrphanReconciler } from './worker/recovery.js';
@@ -56,6 +57,9 @@ async function main(): Promise<void> {
         logger: lateLogger,
         eventsQueueName: eventsQueue,
         events: eventBus,
+        // SCHEDULER_TENANTS (default: DEFAULT_TENANT_ID) and the catch-up cap: incident 2026-10-12.
+        tenants: config.schedulerTenants,
+        catchUp: { maxSlots: config.catchupMaxSlots, maxAgeMs: config.catchupMaxAgeMs },
       })
     : undefined;
   let eventConsumer: EventTriggerConsumer | undefined;
@@ -143,7 +147,16 @@ async function main(): Promise<void> {
 
   if (has('scheduler') && scheduler) {
     scheduler.start({ syncIntervalMs: config.schedulerSyncIntervalMs });
-    logger.info({ queue: scheduleQueueName(config.queueName) }, 'scheduler started');
+    logger.info(
+      {
+        queue: scheduleQueueName(config.queueName),
+        tenants: describeAllowlist(config.schedulerTenants),
+        catchupMaxSlots: config.catchupMaxSlots,
+        catchupMaxAgeMs: config.catchupMaxAgeMs,
+      },
+      'scheduler started',
+    );
+    if (config.schedulerTenants.all) logger.warn({}, 'SCHEDULER_TENANTS=* schedules EVERY tenant (test environments only)');
     // Outbound webhooks (event_subscriptions): fan-out from the events consumer to the
     // {QUEUE_NAME}-webhooks queue, delivered with retries by a worker of this role.
     const webhooksQueue = webhooksQueueName(config.queueName);
@@ -165,6 +178,7 @@ async function main(): Promise<void> {
       maxChainDepth: config.eventChainMaxDepth,
       concurrency: config.eventConsumerConcurrency,
       logger,
+      tenants: config.schedulerTenants,
       observers: [new WebhookDispatcher(dbHandle.db, webhookQueue, { logger })],
     });
     eventConsumer.start();

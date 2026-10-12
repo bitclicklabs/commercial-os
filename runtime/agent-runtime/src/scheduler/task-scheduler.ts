@@ -17,9 +17,17 @@
  *
  * EVENT schedules follow the same sync path when `eventsQueueName` is set: they are
  * registered in the trigger registry consumed by `EventTriggerConsumer` (event-triggers.ts).
+ *
+ * Hardening after the 2026-10-12 catch-up storm (tanda 16):
+ * - Tenant allowlist (`tenants`, `SCHEDULER_TENANTS`): `syncAll` only reads tasks of the
+ *   allowed tenants (SQL filter), `syncTask` treats a task of any other tenant as "nothing
+ *   desired" (so it is never registered and a stale registration is removed) and `handleTick`
+ *   drops ticks of other tenants. What was ignored is logged as ONE aggregated WARN per pass.
+ * - Catch-up cap (`catchUp`, `CATCHUP_MAX_SLOTS` / `CATCHUP_MAX_AGE_MS`): a late CRON/INTERVAL
+ *   tick recovers at most `maxSlots` due slots, none older than `maxAgeMs` (`planTickSlots`).
  */
 import { Queue, Worker, type ConnectionOptions, type Job, type JobSchedulerJson, type JobsOptions } from 'bullmq';
-import { and, eq, sql } from 'drizzle-orm';
+import { and, eq, inArray, notInArray, sql } from 'drizzle-orm';
 import type { Db } from '../db/client.js';
 import { agents, taskDefinitions, taskRuns, type TaskDefinition } from '../db/schema.js';
 import { taskRunIdempotencyKey } from '../domain/idempotency.js';
@@ -29,19 +37,24 @@ import { redisConnectionFromUrl, type RunQueue } from '../queue/run-queue.js';
 import { requestTaskRun } from '../services/task-runs.js';
 import type { ProcessorLogger } from '../worker/processor.js';
 import {
+  DEFAULT_CATCHUP_POLICY,
   desiredSchedule,
   nextRuns,
   onceJobIdFor,
   parseSchedule,
+  planTickSlots,
   repeatOptionsFor,
   sameRepeat,
   schedulerIdFor,
   slotFromTickJob,
   taskIdFromSchedulerId,
   TIME_SCHEDULE_TYPES,
+  type CatchUpPolicy,
   type NormalizedSchedule,
+  type TickPlan,
 } from './schedule.js';
 import { EventTriggerRegistry, sameTrigger, triggerRegistryKey, type RegisteredTrigger } from './event-triggers.js';
+import { allTenants, IgnoredTenantsReport, onlyTenants, tenantAllowed, type TenantAllowlist } from './tenant-allowlist.js';
 
 export interface ScheduleTickJob {
   kind: 'schedule_tick';
@@ -60,6 +73,8 @@ export interface SyncResult {
   /** EVENT schedules: the trigger that should be registered (null when none). */
   trigger?: EventTrigger | null;
   error?: string;
+  /** Set when the task's tenant is outside the allowlist (nothing desired, registrations removed). */
+  ignored?: 'tenant_not_allowed';
 }
 
 export interface RegisteredSchedule {
@@ -80,6 +95,8 @@ export interface TaskScheduleState {
   task_id: string;
   task_status: string;
   enabled: boolean;
+  /** False when the task's tenant is outside SCHEDULER_TENANTS: it is never scheduled (manual runs still work). */
+  tenant_allowed: boolean;
   schedule: unknown;
   desired: NormalizedSchedule | null;
   error: string | null;
@@ -98,9 +115,22 @@ export interface SchedulerStatus {
   items: RegisteredSchedule[];
 }
 
+/** Present when a late tick went through the catch-up policy. */
+export interface TickCatchUp {
+  kind: 'catch_up' | 'stale';
+  /** The slot the late tick carried (the oldest missed one). */
+  tick_slot: string;
+  /** Slots actually requested, oldest first (empty when stale). */
+  runs: Array<{ scheduledAt: string; outcome: 'created' | 'deduplicated'; taskRunId: string }>;
+}
+
 export type TickOutcome =
-  | { outcome: 'created' | 'deduplicated'; taskRunId: string; scheduledAt: string }
-  | { outcome: 'task_missing' | 'skipped_inactive' | 'skipped_agent_inactive'; scheduledAt: string };
+  | { outcome: 'created' | 'deduplicated'; taskRunId: string; scheduledAt: string; catchUp?: TickCatchUp }
+  | {
+      outcome: 'task_missing' | 'skipped_inactive' | 'skipped_agent_inactive' | 'skipped_tenant' | 'skipped_stale';
+      scheduledAt: string;
+      catchUp?: TickCatchUp;
+    };
 
 /** What the API needs from the scheduler (keeps routes testable without Redis). */
 export interface SchedulerControl {
@@ -135,8 +165,18 @@ export interface BullTaskSchedulerOptions {
   queueName: string;
   redisUrl: string;
   logger?: ProcessorLogger;
-  /** Restrict syncAll to one tenant (tests); production syncs every tenant. */
+  /**
+   * Restrict syncAll's reconciliation scope to one tenant (tests: other tenants' registrations
+   * in the same queue are left alone). Without `tenants` it is also the allowlist.
+   */
   tenantId?: string;
+  /**
+   * Tenants whose tasks are scheduled (`SCHEDULER_TENANTS`; main.ts always passes it, default
+   * `[DEFAULT_TENANT_ID]`). Omitted: `[tenantId]` when set, else every tenant.
+   */
+  tenants?: TenantAllowlist;
+  /** Catch-up cap for late CRON/INTERVAL ticks (`CATCHUP_MAX_SLOTS`, `CATCHUP_MAX_AGE_MS`). */
+  catchUp?: Partial<CatchUpPolicy>;
   /** `{QUEUE_NAME}-events`: enables EVENT trigger registration. */
   eventsQueueName?: string;
   /** Emits task.scheduled for runs created by ticks. */
@@ -147,7 +187,11 @@ export class BullTaskScheduler implements SchedulerControl {
   readonly queue: Queue<ScheduleTickJob>;
   /** EVENT trigger registry (only with `eventsQueueName`). */
   readonly triggers?: EventTriggerRegistry;
+  /** Tenants this scheduler registers and fires. */
+  readonly tenants: TenantAllowlist;
+  readonly catchUp: CatchUpPolicy;
   private readonly logger: ProcessorLogger;
+  private readonly ignored = new IgnoredTenantsReport();
   private worker: Worker<ScheduleTickJob> | undefined;
   private syncTimer: NodeJS.Timeout | undefined;
   private syncing = false;
@@ -158,6 +202,8 @@ export class BullTaskScheduler implements SchedulerControl {
     private readonly opts: BullTaskSchedulerOptions,
   ) {
     this.logger = opts.logger ?? silent;
+    this.tenants = opts.tenants ?? (opts.tenantId ? onlyTenants([opts.tenantId]) : allTenants());
+    this.catchUp = { ...DEFAULT_CATCHUP_POLICY, ...(opts.catchUp ?? {}) };
     this.queue = new Queue<ScheduleTickJob>(opts.queueName, {
       // Fail fast when Redis is down: API callers log and rely on the periodic syncAll.
       connection: { ...redisConnectionFromUrl(opts.redisUrl), enableOfflineQueue: false } as ConnectionOptions,
@@ -188,20 +234,35 @@ export class BullTaskScheduler implements SchedulerControl {
     return Boolean(run);
   }
 
-  /** Brings BullMQ (and the EVENT trigger registry) in line with the task's desired schedule. Idempotent. */
+  /** True when this scheduler registers and fires tasks of `tenantId` (SCHEDULER_TENANTS). */
+  allows(tenantId: string | null | undefined): boolean {
+    return tenantAllowed(this.tenants, tenantId);
+  }
+
+  /** The time schedule to register: none for a tenant outside the allowlist. */
+  private desiredFor(task: TaskDefinition): NormalizedSchedule | null {
+    return this.allows(task.tenantId) ? desiredSchedule(task) : null;
+  }
+
+  /**
+   * Brings BullMQ (and the EVENT trigger registry) in line with the task's desired schedule.
+   * Idempotent. A task of a tenant outside the allowlist desires nothing: it is never
+   * registered and any stale registration is removed.
+   */
   async syncTask(task: TaskDefinition, pending?: Job<ScheduleTickJob>[]): Promise<SyncResult> {
+    const ignored = this.allows(task.tenantId) ? {} : { ignored: 'tenant_not_allowed' as const };
     const time = await this.syncTimeSchedule(task, pending);
-    if (!this.triggers) return time;
+    if (!this.triggers) return { ...time, ...ignored };
     const event = await this.syncEventTrigger(task, this.triggers);
     const action = event.trigger ? event.action : time.action === 'none' ? event.action : time.action;
-    return { ...time, action, trigger: event.trigger };
+    return { ...time, action, trigger: event.trigger, ...ignored };
   }
 
   private async syncEventTrigger(
     task: TaskDefinition,
     registry: EventTriggerRegistry,
   ): Promise<{ action: SyncAction; trigger: EventTrigger | null }> {
-    const trigger = desiredEventTrigger(task);
+    const trigger = this.allows(task.tenantId) ? desiredEventTrigger(task) : null;
     const existing = await registry.get(task.id);
     if (!trigger) return { action: existing && (await registry.remove(task.id)) ? 'removed' : 'none', trigger };
     if (sameTrigger(existing, task, trigger)) return { action: 'unchanged', trigger };
@@ -216,7 +277,7 @@ export class BullTaskScheduler implements SchedulerControl {
   }
 
   private async syncTimeSchedule(task: TaskDefinition, pending?: Job<ScheduleTickJob>[]): Promise<SyncResult> {
-    const desired = desiredSchedule(task);
+    const desired = this.desiredFor(task);
     const schedId = schedulerIdFor(task.id);
     const existing = await this.queue.getJobScheduler(schedId);
     const onceJobs = (pending ?? (await this.pendingOnceJobs())).filter((j) => j.data?.taskDefinitionId === task.id);
@@ -271,23 +332,39 @@ export class BullTaskScheduler implements SchedulerControl {
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       this.logger.warn({ taskId: task.id, err: message }, 'schedule sync failed; periodic sync will retry');
-      return { taskId: task.id, action: 'error', desired: desiredSchedule(task), error: message };
+      return { taskId: task.id, action: 'error', desired: this.desiredFor(task), error: message };
     }
   }
 
-  /** Full reconciliation of every tenant's schedules. */
+  /**
+   * Full reconciliation of the allowed tenants' schedules. Tasks of other tenants are not even
+   * read (SQL filter); their registrations are removed like those of deleted tasks, and the
+   * ACTIVE ones are counted for one aggregated WARN per pass.
+   */
   async syncAll(): Promise<SyncResult[]> {
     const scheduleTypes: string[] = [...TIME_SCHEDULE_TYPES, ...(this.triggers ? ['EVENT'] : [])];
     const types = scheduleTypes.map((t) => sql`${t}`);
-    const tasks = await this.db
-      .select()
-      .from(taskDefinitions)
-      .where(
-        and(
-          sql`${taskDefinitions.schedule}->>'type' in (${sql.join(types, sql`, `)})`,
-          this.opts.tenantId ? eq(taskDefinitions.tenantId, this.opts.tenantId) : undefined,
-        ),
-      );
+    const hasSchedule = sql`${taskDefinitions.schedule}->>'type' in (${sql.join(types, sql`, `)})`;
+    const scope = this.opts.tenantId ? eq(taskDefinitions.tenantId, this.opts.tenantId) : undefined;
+    const allowed = this.tenants.all ? undefined : inArray(taskDefinitions.tenantId, [...this.tenants.tenants]);
+    const tasks = await this.db.select().from(taskDefinitions).where(and(hasSchedule, scope, allowed));
+    if (!this.tenants.all) {
+      const ignored = await this.db
+        .select({ tenantId: taskDefinitions.tenantId, n: sql<number>`count(*)::int` })
+        .from(taskDefinitions)
+        .where(
+          and(
+            hasSchedule,
+            scope,
+            notInArray(taskDefinitions.tenantId, [...this.tenants.tenants]),
+            eq(taskDefinitions.status, 'ACTIVE'),
+            eq(taskDefinitions.enabled, true),
+          ),
+        )
+        .groupBy(taskDefinitions.tenantId);
+      for (const row of ignored) this.ignored.addTasks(row.tenantId, Number(row.n));
+    }
+    this.ignored.flush(this.tenants, this.logger);
     const inScope = (tenantId: string | null | undefined) => !this.opts.tenantId || tenantId === this.opts.tenantId;
     const pending = await this.pendingOnceJobs();
     const results: SyncResult[] = [];
@@ -381,7 +458,8 @@ export class BullTaskScheduler implements SchedulerControl {
     } catch (err) {
       error = (err as Error).message;
     }
-    const desired = desiredSchedule(task);
+    const tenantAllowedHere = this.allows(task.tenantId);
+    const desired = this.desiredFor(task);
     const existing = await this.queue.getJobScheduler(schedulerIdFor(task.id));
     const once = (await this.pendingOnceJobs()).filter((j) => j.data?.taskDefinitionId === task.id);
     const registered = existing ? this.fromScheduler(existing) : once[0] ? this.fromOnceJob(once[0]) : null;
@@ -394,7 +472,7 @@ export class BullTaskScheduler implements SchedulerControl {
 
     let eventTrigger: TaskScheduleState['event_trigger'];
     if (this.triggers) {
-      const desiredTrigger = desiredEventTrigger(task);
+      const desiredTrigger = tenantAllowedHere ? desiredEventTrigger(task) : null;
       const registeredTrigger = await this.triggers.get(task.id);
       eventTrigger = { desired: desiredTrigger, registered: registeredTrigger };
       inSync &&= desiredTrigger ? sameTrigger(registeredTrigger, task, desiredTrigger) : registeredTrigger === null;
@@ -404,6 +482,7 @@ export class BullTaskScheduler implements SchedulerControl {
       task_id: task.id,
       task_status: task.status,
       enabled: task.enabled,
+      tenant_allowed: tenantAllowedHere,
       schedule: task.schedule,
       desired,
       error,
@@ -435,8 +514,21 @@ export class BullTaskScheduler implements SchedulerControl {
   // -------------------------------------------------------------------------
   // Ticks
   // -------------------------------------------------------------------------
-  /** Turns a tick into a TaskRun through the same path as POST /tasks/:id/run. */
-  async handleTick(data: ScheduleTickJob, scheduledAt: string): Promise<TickOutcome> {
+  /**
+   * Turns a tick into TaskRun(s) through the same path as POST /tasks/:id/run.
+   *
+   * - A tick of a tenant outside the allowlist runs nothing (`skipped_tenant`), drops its job
+   *   scheduler and is counted for the aggregated WARN of the next `syncAll` pass.
+   * - A late CRON/INTERVAL tick goes through the catch-up policy (`planTickSlots`): it runs the
+   *   most recent due slots allowed (`catchUp`), or nothing when they are all too old
+   *   (`skipped_stale`). ONCE ticks always run their slot.
+   */
+  async handleTick(data: ScheduleTickJob, scheduledAt: string, now: Date = new Date()): Promise<TickOutcome> {
+    if (!this.allows(data.tenantId)) {
+      if (!data.slot) await this.queue.removeJobScheduler(schedulerIdFor(data.taskDefinitionId)).catch(() => undefined);
+      this.ignored.addTick(data.tenantId);
+      return { outcome: 'skipped_tenant', scheduledAt };
+    }
     const task = await this.db.query.taskDefinitions.findFirst({
       where: and(eq(taskDefinitions.tenantId, data.tenantId), eq(taskDefinitions.id, data.taskDefinitionId)),
     });
@@ -444,26 +536,54 @@ export class BullTaskScheduler implements SchedulerControl {
       await this.queue.removeJobScheduler(schedulerIdFor(data.taskDefinitionId)).catch(() => undefined);
       return { outcome: 'task_missing', scheduledAt };
     }
-    if (!desiredSchedule(task)) {
+    const desired = desiredSchedule(task);
+    if (!desired) {
       // Stale registration (paused/archived/disabled meanwhile): drop it.
       await this.sync(task);
       return { outcome: 'skipped_inactive', scheduledAt };
+    }
+    const plan: TickPlan = data.slot
+      ? { kind: 'on_time', tickSlot: scheduledAt, run: [scheduledAt] }
+      : planTickSlots(desired, scheduledAt, this.catchUp, now);
+    if (plan.kind === 'stale') {
+      this.logger.info(
+        { taskId: task.id, tenantId: task.tenantId, tickSlot: plan.tickSlot, newestDue: plan.newestDue, maxAgeMs: this.catchUp.maxAgeMs },
+        'missed slot older than CATCHUP_MAX_AGE_MS skipped; the next natural slot rules',
+      );
+      return { outcome: 'skipped_stale', scheduledAt, catchUp: { kind: 'stale', tick_slot: plan.tickSlot, runs: [] } };
     }
     const agent = await this.db.query.agents.findFirst({ where: eq(agents.id, task.agentId) });
     if (!agent || agent.status !== 'ACTIVE' || !agent.activeVersionId) {
       this.logger.warn({ taskId: task.id, scheduledAt }, 'scheduled slot skipped: agent not ACTIVE or without active version');
       return { outcome: 'skipped_agent_inactive', scheduledAt };
     }
-    // QueueUnavailableError propagates: BullMQ retries the tick, and the reconciler would
-    // enqueue the persisted QUEUED TaskRun anyway.
-    const result = await requestTaskRun(
-      this.db,
-      this.runQueue,
-      task,
-      { scheduledAt, trigger: 'SCHEDULE' },
-      { ...(this.opts.events ? { events: this.opts.events } : {}), producer: 'scheduler' },
-    );
-    return { outcome: result.deduplicated ? 'deduplicated' : 'created', taskRunId: result.taskRun.id, scheduledAt };
+    if (plan.kind === 'catch_up') {
+      this.logger.info(
+        { taskId: task.id, tenantId: task.tenantId, tickSlot: plan.tickSlot, slots: plan.run, maxSlots: this.catchUp.maxSlots, maxAgeMs: this.catchUp.maxAgeMs },
+        'schedule catch-up after a stop',
+      );
+    }
+    // QueueUnavailableError propagates: BullMQ retries the tick (slots already created are
+    // deduplicated by their idempotency key), and the reconciler would enqueue the persisted
+    // QUEUED TaskRun anyway.
+    const runs: TickCatchUp['runs'] = [];
+    for (const slot of plan.run) {
+      const result = await requestTaskRun(
+        this.db,
+        this.runQueue,
+        task,
+        { scheduledAt: slot, trigger: 'SCHEDULE' },
+        { ...(this.opts.events ? { events: this.opts.events } : {}), producer: 'scheduler' },
+      );
+      runs.push({ scheduledAt: slot, outcome: result.deduplicated ? 'deduplicated' : 'created', taskRunId: result.taskRun.id });
+    }
+    const last = runs[runs.length - 1]!;
+    return {
+      outcome: last.outcome,
+      taskRunId: last.taskRunId,
+      scheduledAt: last.scheduledAt,
+      ...(plan.kind === 'catch_up' ? { catchUp: { kind: 'catch_up' as const, tick_slot: plan.tickSlot, runs } } : {}),
+    };
   }
 
   /** Starts the tick worker plus `syncAll` at boot and every `syncIntervalMs`. */
@@ -474,7 +594,8 @@ export class BullTaskScheduler implements SchedulerControl {
       async (job) => {
         const slot = slotFromTickJob(job);
         const res = await this.handleTick(job.data, slot);
-        this.logger.info({ jobId: job.id, taskId: job.data.taskDefinitionId, ...res }, 'schedule tick');
+        // Ticks of other tenants are summed into the aggregated WARN of the next syncAll pass.
+        if (res.outcome !== 'skipped_tenant') this.logger.info({ jobId: job.id, taskId: job.data.taskDefinitionId, ...res }, 'schedule tick');
         return res;
       },
       {

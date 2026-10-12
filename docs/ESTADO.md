@@ -193,7 +193,7 @@ Origen: bloqueo comercial señalado por el usuario — las hipótesis validadas 
 
 | Pieza | Rama | Agente | Estado |
 |---|---|---|---|
-| ContactFinder: extracción determinista de la web (contacto/aviso legal/equipo, máx 6 páginas), prioridades cargo>función>genérico, MX sin SMTP, supresión respetada, emailTo solo-si-vacío + Research con URL de origen; enganche en draft-on-validated (contacto→borrador) + contacts:backfill; fase 2 ENRICH_PROVIDER=stub|hunter con tope diario y umbral 0,7 | `feat/contact-finder` | Opus | 🔄 |
+| ContactFinder: extracción determinista de la web (contacto/aviso legal/equipo, máx 6 páginas), prioridades cargo>función>genérico, MX sin SMTP, supresión respetada, emailTo solo-si-vacío + Research con URL de origen; enganche en draft-on-validated (contacto→borrador) + contacts:backfill; fase 2 ENRICH_PROVIDER=stub|hunter con tope diario y umbral 0,7 | `feat/contact-finder` | Opus | ✅ fusionado (probado con expositores reales de Gastrónoma: info@vicentegandia.com y tienda@reyjayon.com con fuente, 5 fallos de webs reales corregidos; decisiones PM aprobadas: desempate marketing>gerencia>comercial>compras y dominio hermano solo-si-publicado; 1064 tests en rama) |
 | Docs: contactos.md (diseño, legal, Apollo razonado), guía comercial (revisar destinatario y fuente antes del clic), runbook, ROADMAP, warm-up | `docs/tanda17` | Sonnet | ✅ entregado (pendiente de fusión tras la 16; conflictos triviales previstos en ROADMAP con docs16; la base legal lleva aviso de no-asesoramiento — validación humana recomendada) |
-| Integración, e2e y PR | `feat/tanda17` (worktree wt17-integracion) | PM | 🔄 worktree creado con .env copiado; integrará DESPUÉS de la 16 (rebase sobre su merge) |
+| Integración, e2e y PR | `feat/tanda17` (worktree wt17-integracion) | PM | ✅ 1113 tests (16+17 combinadas, BD aislada agentos_wt17_pm); docs reconciliados; desplegado + seed (agente ContactFinder, EmailDrafter v nueva) + backfill |
 

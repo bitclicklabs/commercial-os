@@ -469,6 +469,41 @@ Para comprobar el resultado:
 2. Abre la barra lateral y verifica la carpeta **Commercial OS** con **Signals**, **Research**, **Hypotheses** y **Agent runs**.
 3. En **Settings → Data model**, verifica que existen los cuatro objetos.
 
+## Sincronizar las vistas de fábrica
+
+Desde la tanda 19, la App declara cuatro vistas de fábrica (**Señales · Cola**, **Hipótesis · Por estado**, **Oportunidades · Pipeline** y **Tareas · Bandeja**; [mapa](twenty-nativo.md#tableros-las-vistas-de-fábrica)). Existen en Twenty solo después de sincronizar la App, y la sincronización la **ejecuta el usuario** con una API key de rol Admin temporal: la key del runtime tiene el rol restringido «Agent runtime» y no puede (ni debe) cambiar el modelo de datos ni las vistas. Es el mismo procedimiento de la tanda 9.
+
+> **Nota:** sin este paso el sistema funciona igual: las personas, las oportunidades y las tareas se crean en sus pestañas nativas. Lo que falta son los tableros preconfigurados; mientras tanto, usa las listas normales de cada pestaña.
+
+Antes de empezar: el stack levantado, Docker Desktop en marcha y el runtime ya actualizado a la tanda 19 (si no, las pestañas se verán vacías hasta que haya datos).
+
+1. **Crea una API key temporal con rol Admin.** En Twenty, **Settings → APIs & Webhooks → Create API key**, con rol **Admin** y la caducidad más corta que permita la interfaz. Cópiala. No la pegues en `deployments/.env` ni en ningún fichero.
+1. **Pásala solo a la sesión de PowerShell.** El script usa la variable de entorno de la sesión antes que `deployments/.env`:
+
+   ```powershell
+   $env:TWENTY_API_KEY = '<key temporal>'
+   ```
+
+1. **Previsualiza el cambio** y revisa la salida:
+
+   ```powershell
+   .\scripts\sync-twenty-app.ps1 -Action plan
+   ```
+
+   Esperado: altas de las cuatro vistas y, si procede, cambios en el objeto de métricas. **No debe haber borrados.** Si el plan propone borrar algo, no continúes y consulta antes con el responsable (nada se borra sin revisión).
+1. **Aplica:**
+
+   ```powershell
+   .\scripts\sync-twenty-app.ps1
+   ```
+
+   Usa `-Force` solo si el plan propone cambios que requieren confirmación y ya los has revisado.
+1. **Comprueba el resultado.** En Twenty, abre **Signals**, **Hypotheses**, **Opportunities** y **Tasks** y verifica el selector de vistas: deben estar **Señales · Cola**, **Hipótesis · Por estado**, **Oportunidades · Pipeline** y **Tareas · Bandeja**. Revisa también la [página de métricas](estudio-dashboard-twenty.md): los envíos del día ya no deben salir a 0 si hubo envíos.
+1. **Revoca la key temporal** en **Settings → APIs & Webhooks** y cierra la sesión de PowerShell (o ejecuta `Remove-Item Env:TWENTY_API_KEY`).
+1. **Comprueba que el rol del runtime no ha cambiado**: el comando de [Rol de la API key de Twenty](#rol-de-la-api-key-de-twenty) debe seguir dando `0`. Comprueba además que ese rol puede leer y escribir **Person**, **Opportunity** y **Task**: si las personas, oportunidades o tareas no se crean, mira la fila correspondiente en [Problemas frecuentes](#problemas-frecuentes).
+
+> **Precaución:** una key con rol Admin permite a quien la tenga usar las tools de correo de Twenty. Que viva solo en la sesión y se revoque al terminar.
+
 ## Rotar la API key de Twenty
 
 Rota la clave si se filtra, caduca o el runtime recibe `401` de Twenty.
@@ -786,6 +821,9 @@ ORDER BY created_at DESC;
 | Tras arrancar hay muchas ejecuciones de tasks que no reconoces, o el gasto de LLM se dispara | El scheduler registró tasks de tenants de test (`it-*`, `e2e-*`…): `SCHEDULER_TENANTS=*` o un runtime anterior a la tanda 16 | Archiva las tasks de test por patrón de tenant (con `--dry-run` primero: [Limpiar tenants de test](#limpiar-tenants-de-test-con---dry-run)), comprueba `SCHEDULER_TENANTS` y marca como descartado lo que haya llegado a Twenty (no lo borres). Detalle en el [postmortem del 2026-10-12](incidentes/2026-10-12-catchup-tenants-test.md) |
 | `pnpm test:integration` se niega a ejecutarse y menciona la base compartida | El guard de la tanda 16: `DATABASE_URL` apunta a la base `agentos` | Usa una base aislada ([Tests de integración](#tests-de-integración-base-aislada)). `ALLOW_SHARED_TEST_DB=1` solo si ningún scheduler lee esa base |
 | Un cambio de webhook hecho por SQL en Twenty no tiene efecto | El servidor de Twenty cachea la lista de webhooks | `docker compose restart pxos-twenty`. Prefiere la interfaz o `pnpm register:webhook` |
+| La página nativa de métricas muestra 0 envíos aunque se han enviado correos | Runtime anterior al fix de la tanda 19: el sync diario enviaba `sends.in_window` (que llegaba como `null`, es decir 0) en lugar del contador del día | Actualiza el runtime a la tanda 19 y recréalo (`docker compose up -d pxos-runtime`). Los registros diarios ya escritos se corrigen en la siguiente sincronización. Si persiste, compara con el bloque Email de `GET /metrics/summary` y revisa los [logs](#dónde-mirar-los-logs) del sync |
+| Faltan las vistas **Señales · Cola**, **Hipótesis · Por estado**, **Oportunidades · Pipeline** o **Tareas · Bandeja** | La App no se ha sincronizado desde la tanda 19 | [Sincronizar las vistas de fábrica](#sincronizar-las-vistas-de-fábrica) (lo ejecuta el usuario con una key Admin temporal) |
+| Se validan hipótesis con persona publicada y no aparece nada en **Personas**, o un interesado no genera oportunidad ni tarea | El rol «Agent runtime» no tiene permisos de escritura sobre Person, Opportunity o Task (`403` o error de permisos en el trace del run), o el runtime es anterior a la tanda 19 | Comprueba el rol en **Settings → APIs & Webhooks** y concede lectura y escritura sobre esos objetos sin darle tools; las personas de hipótesis ya validadas solo se crean si el [backfill](#backfill-de-contactos) las cubre `[POR VERIFICAR]`. No uses la key Admin para el runtime |
 | Una hipótesis `Validated` no tiene **Email to** | La web de la empresa no publica ningún email del dominio (Research «Sin contacto público»); la hipótesis se validó antes de la tanda 17 y no se ha pasado el backfill; la fase 2 está apagada (`ENRICH_PROVIDER` vacío), sin cupo (`ENRICH_MAX_LOOKUPS_PER_DAY`) o devolvió confianza menor de 0,7 | Abre el Research «Contacto — empresa» o «Sin contacto público» de esa empresa para ver qué pasó. Si es anterior a la tanda 17, ejecuta el [backfill](#backfill-de-contactos). Si no hay nada publicado, que el comercial escriba la dirección a mano o activa la fase 2 ([variables](#variables-del-runtime)). |
 
 | Hipótesis duplicadas en Twenty | Fallo de idempotencia | Conserva los datos, anota las `idempotencyKey` afectadas y abre una incidencia. No borres registros sin revisión. |

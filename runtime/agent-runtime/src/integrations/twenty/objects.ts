@@ -24,6 +24,9 @@ export const TWENTY_OBJECTS = {
   person: 'people',
   note: 'notes',
   noteTarget: 'noteTargets',
+  /** Standard `task` and its join rows (tanda 19: actionable alerts are Tasks, not notes). */
+  task: 'tasks',
+  taskTarget: 'taskTargets',
 } as const;
 
 /**
@@ -217,6 +220,41 @@ export interface TwentyNoteTarget extends TwentySystemFields {
   targetOpportunityId?: string | null;
   targetCommercialHypothesisId?: string | null;
   targetCommercialSignalId?: string | null;
+  targetResearchId?: string | null;
+  targetAgentRunSummaryId?: string | null;
+}
+
+/** Standard `task.status` values (Twenty 2.45, verified in GET /rest/open-api/core). */
+export const TASK_STATUSES = ['TODO', 'IN_PROGRESS', 'DONE'] as const;
+export type TaskStatus = (typeof TASK_STATUSES)[number];
+
+/**
+ * Standard `task` (Twenty 2.45, verified read-only against GET /rest/open-api/core):
+ * `{ title, bodyV2: { markdown, blocknote }, dueAt (DATE_TIME), status, assigneeId, position }`.
+ * Like notes, it has NO `tenantId` (standard object, shared by every tenant of the workspace).
+ */
+export interface TwentyTask extends TwentySystemFields {
+  title: string | null;
+  bodyV2: { markdown: string | null; blocknote: string | null } | null;
+  dueAt: string | null;
+  status: TaskStatus | null;
+  assigneeId?: string | null;
+}
+
+/**
+ * Standard `taskTarget`: join row between a task and ONE record, one nullable column per
+ * target object. Verified in the live OpenAPI: `targetCompanyId`, `targetPersonId`,
+ * `targetOpportunityId` and, for the App objects, `targetCommercialSignalId`,
+ * `targetCommercialHypothesisId`, `targetResearchId`, `targetAgentRunSummaryId`,
+ * `targetAgentOsDailyMetricId` (custom objects are task-targetable).
+ */
+export interface TwentyTaskTarget extends TwentySystemFields {
+  taskId: string | null;
+  targetCompanyId?: string | null;
+  targetPersonId?: string | null;
+  targetOpportunityId?: string | null;
+  targetCommercialSignalId?: string | null;
+  targetCommercialHypothesisId?: string | null;
   targetResearchId?: string | null;
   targetAgentRunSummaryId?: string | null;
 }

@@ -179,7 +179,7 @@ describe.skipIf(!dbAvailable)('Catalog Service (PostgreSQL)', () => {
     expect(await handle.db.select().from(events).where(and(eq(events.tenantId, tenantId), eq(events.type, 'catalog.unavailable')))).toHaveLength(0);
   });
 
-  it('catalog enabled but down: degraded run (generic families), one ⚠️ note and one catalog.unavailable event for the day, never an email', async () => {
+  it('catalog enabled but down: degraded run (generic families), one ⚠️ task and one catalog.unavailable event for the day, never an email', async () => {
     const { tenantId } = await tenantWith({ pinCandidate: true });
     const { api, catalog } = stubCatalog();
     api.failure = new CatalogError('CATALOG_UNAVAILABLE', 'UNAVAILABLE: mantenimiento', 503, true);
@@ -189,12 +189,16 @@ describe.skipIf(!dbAvailable)('Catalog Service (PostgreSQL)', () => {
     expect(first.output).toMatchObject({ outcome: 'SUCCESS' });
     expect((first.output.results as Result[])[0]).toMatchObject({ status: 'hypothesis_created', catalog: { status: 'unavailable', code: 'CATALOG_UNAVAILABLE' } });
     expect((fake.tables.commercialHypotheses[0] as { recommendedProducts: string[] }).recommendedProducts).toEqual(['Bolsas tote de algodón', 'Libretas']);
-    expect(gateStep(first.steps)?.catalog).toMatchObject({ available: false, reason: 'unhealthy', code: 'CATALOG_UNAVAILABLE', notice: { eventPublished: true, noteCreated: true } });
-    // Second run the same day: no new note, no new event.
+    expect(gateStep(first.steps)?.catalog).toMatchObject({ available: false, reason: 'unhealthy', code: 'CATALOG_UNAVAILABLE', notice: { eventPublished: true, taskCreated: true } });
+    // Second run the same day: no new task, no new event.
     const second = await runTask(processor, tenantId);
     expect(second.output).toMatchObject({ outcome: 'SUCCESS' });
-    const warnings = (fake.tables.notes as Array<{ title: string }>).filter((n) => n.title.startsWith('⚠️ Catálogo no disponible'));
+    // Tanda 19: a Twenty Task (TODO, due today), never a note.
+    expect((fake.tables.notes as Array<{ title: string }>).filter((n) => n.title.startsWith('⚠️ Catálogo no disponible'))).toHaveLength(0);
+    const warnings = (fake.tables.tasks as Array<{ title: string; status: string; dueAt: string }>).filter((n) => n.title.startsWith('⚠️ Catálogo no disponible'));
     expect(warnings).toHaveLength(1);
+    expect(warnings[0]!.status).toBe('TODO');
+    expect(warnings[0]!.dueAt).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:00:00\.000Z$/);
     expect(warnings[0]!.title).toContain(tenantId);
     const evts = await handle.db.select().from(events).where(and(eq(events.tenantId, tenantId), eq(events.type, 'catalog.unavailable')));
     expect(evts).toHaveLength(1);

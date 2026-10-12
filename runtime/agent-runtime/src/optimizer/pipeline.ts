@@ -53,7 +53,7 @@ import {
   type ProposalFailure,
 } from './core.js';
 import { harvestFailures, selectFailures } from './harvest-failures.js';
-import { upsertPromotionNote } from './promotion-note.js';
+import { upsertPromotionTask } from './promotion-note.js';
 import { recordRun, requireRun, transitionRun } from './service.js';
 
 export const OPTIMIZER_VERSION = 1;
@@ -332,12 +332,12 @@ export async function runOptimization(deps: OptimizerDeps, tenantId: string, run
     }
     run = await transitionRun(db, run.id, 'GATE_PASS', { experimentId: experiment.id, verdict: decision, costEur: cost(), details: { experiment: expDetails } }, 'EXPERIMENT_RUNNING');
 
-    // --- 7. Promotion proposal for the human (never an activation) ------------------------
-    let note: Record<string, unknown>;
-    if (!deps.twenty) note = { skipped: 'sin cliente de Twenty' };
+    // --- 7. Promotion proposal for the human (never an activation): a Twenty Task ----------
+    let task: Record<string, unknown>;
+    if (!deps.twenty) task = { skipped: 'sin cliente de Twenty' };
     else {
       try {
-        const n = await upsertPromotionNote(deps.twenty, {
+        const n = await upsertPromotionTask(deps.twenty, {
           tenantId,
           runId: run.id,
           runLabel: label,
@@ -355,14 +355,14 @@ export async function runOptimization(deps: OptimizerDeps, tenantId: string, run
           cost: { optimizer_eur: round(llm.spentEur), experiment_eur: round(experimentCost), total_eur: cost() },
           ...(deps.apiUrl ? { apiUrl: deps.apiUrl } : {}),
         });
-        note = { id: n.noteId, created: n.created, title: n.title };
+        task = { id: n.taskId, created: n.created, title: n.title, due_at: n.dueAt };
       } catch (err) {
-        // The gate passed: a CRM failure does not undo that; the run says the note is missing.
-        note = { error: err instanceof Error ? err.message : String(err) };
+        // The gate passed: a CRM failure does not undo that; the run says the task is missing.
+        task = { error: err instanceof Error ? err.message : String(err) };
       }
     }
-    log(`${label}: GATE_PASS · nota en Twenty: ${JSON.stringify(note)}`);
-    return await recordRun(db, run.id, 'GATE_PASS', { details: { note } });
+    log(`${label}: GATE_PASS · tarea en Twenty: ${JSON.stringify(task)}`);
+    return await recordRun(db, run.id, 'GATE_PASS', { details: { task } });
   } catch (err) {
     const current = await requireRun(db, tenantId, run.id);
     if (current.status !== 'PENDING' && !['HARVESTING', 'CLUSTERED', 'CANDIDATE_CREATED', 'EXPERIMENT_RUNNING'].includes(current.status)) throw err;

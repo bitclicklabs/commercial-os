@@ -388,7 +388,7 @@ Reglas:
 - Es el **mismo webhook** del feedback (`pxos-runtime:human-feedback`): `register:webhook` lo amplía en el sitio; no crees uno duplicado salvo que lo prefieras separado.
 - Twenty no tiene estado "inactivo" para los webhooks: para pausar el disparo inmediato, vacía **Operations**. No borres el webhook.
 - Twenty no reintenta entregas fallidas. Un disparo perdido no se recupera, pero el run diario recoge la señal calificada.
-- Desde la tanda 18, el disparo solo prospecta si la feria está dentro de la [ventana de lead time](prospeccion-por-senales.md#ventana-de-lead-time). Fuera de ella, el webhook llega igual pero el resultado es una nota ⏳ en la señal y ninguna prospección.
+- Desde la tanda 18, el disparo solo prospecta si la feria está dentro de la [ventana de lead time](prospeccion-por-senales.md#ventana-de-lead-time). Fuera de ella, el webhook llega igual pero el resultado es una tarea ⏳ en la señal (una nota antes de la tanda 19) y ninguna prospección.
 
 Detalle del ciclo, de la idempotencia y de las limitaciones: [Prospección guiada por señales](prospeccion-por-senales.md).
 
@@ -468,6 +468,54 @@ Para comprobar el resultado:
 1. Abre `http://localhost:3020/settings/applications#developer` y verifica que aparece `publiexpe-commercial-os`.
 2. Abre la barra lateral y verifica la carpeta **Commercial OS** con **Signals**, **Research**, **Hypotheses** y **Agent runs**.
 3. En **Settings → Data model**, verifica que existen los cuatro objetos.
+
+### Sincronizar con el rol restringido del runtime
+
+Desde la tanda 9, la API key del runtime tiene el rol **Agent runtime**, sin permisos de administración ([Rol de la API key de Twenty](#rol-de-la-api-key-de-twenty)). El `apply` de la App necesita una key de rol **Admin**. Este paso lo ejecuta la persona que opera Twenty; ningún agente lo lanza.
+
+**Quién:** el PM o el usuario, con acceso a **Settings** de Twenty.
+
+1. Previsualiza lo que cambiará, con la key Admin temporal en la sesión (no la guardes en `deployments/.env`):
+
+   ```powershell
+   $env:TWENTY_API_KEY = '<key Admin temporal>'
+   .\scripts\sync-twenty-app.ps1 -Action plan
+   ```
+
+   Revisa la salida. Si aparece algún **borrado**, detente: ninguna tanda reciente borra objetos, campos ni vistas.
+
+1. Aplica:
+
+   ```powershell
+   .\scripts\sync-twenty-app.ps1
+   Remove-Item Env:TWENTY_API_KEY
+   ```
+
+1. Revierte el permiso. Elige una de estas opciones:
+   - Si creaste una key temporal, revócala en **Settings → APIs & Webhooks**.
+   - Si diste el rol **Admin** a la key del runtime, devuélvele el rol **Agent runtime** en esa misma pantalla.
+1. Verifica que el runtime no ve las tools de correo. Ejecuta el comando de [Rol de la API key de Twenty](#rol-de-la-api-key-de-twenty) con la key del runtime. El resultado esperado es `0` (`send_email=0`).
+1. Verifica el cambio de la tanda en la UI (siguiente sección).
+
+> **Precaución:** no dejes la key del runtime con rol **Admin**. Con un buzón conectado, cualquiera con esa key podría enviar correo desde Twenty.
+
+### Qué añade la sincronización de la tanda 19
+
+Solo una **vista**. No cambia objetos ni campos, así que el `plan` no debe mostrar borrados ni cambios de esquema.
+
+| Vista | Objeto | Tipo | Dónde verla |
+|---|---|---|---|
+| **Señales · Cola** | Signals | Kanban por `status` (New, Reviewing, Qualified, Discarded, Expired) | **Commercial OS → Signals**, selector de vistas |
+
+Las demás vistas de fábrica ya existen y no se duplican (comprobado en solo lectura contra la instancia el 2026-10-12):
+
+| Vista | Origen |
+|---|---|
+| Hypotheses → **By status** (kanban por estado) | Twenty App, tanda 9 |
+| Opportunities → **By Stage** (kanban por etapa) | Twenty, de serie |
+| Tasks → **By Status** (kanban por estado) y **Assigned to Me** | Twenty, de serie. Es la bandeja de las alertas accionables, que desde la tanda 19 son tareas |
+
+> **Nota:** desde la tanda 19, el runtime crea **tareas** (objeto estándar `task`) para las alertas accionables. El rol **Agent runtime** debe poder leer y escribir `tasks` y `taskTargets`. Si el rol se creó con permisos por objeto en lugar de «todos los objetos», añádelos. Las tareas, como las notas, no tienen `tenantId`: son comunes a todo el workspace.
 
 ## Rotar la API key de Twenty
 

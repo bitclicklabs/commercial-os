@@ -23,6 +23,7 @@
     "twenty:send-workflow": "tsx --env-file-if-exists=.env src/integrations/twenty/create-send-workflow.ts",
     "cleanup:archive-test-agents": "tsx --env-file-if-exists=.env src/maintenance/archive-test-agents.ts",
     "metrics:sync-twenty": "tsx --env-file-if-exists=.env src/maintenance/sync-metrics-to-twenty.ts",
+    "contacts:backfill": "tsx --env-file-if-exists=.env src/contact-finder/backfill-cli.ts",
     "skill:candidate": "tsx --env-file-if-exists=.env scripts/skill-candidate.ts",
     "skill:compare": "tsx --env-file-if-exists=.env scripts/skill-compare.ts",
     "evaluate": "tsx --env-file-if-exists=.env scripts/evaluate.ts",

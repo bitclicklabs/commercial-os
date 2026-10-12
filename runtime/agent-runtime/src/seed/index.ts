@@ -25,6 +25,7 @@ import { loadConfig } from '../config.js';
 import { createDb } from '../db/client.js';
 import { seedBajas } from './bajas-seed.js';
 import { seedCatalogSkillCandidate } from './catalog-skill-seed.js';
+import { seedContactFinder } from './contact-finder-seed.js';
 import { seedEmailDrafter } from './email-drafter-seed.js';
 import { seedHarnesses } from './harness-seed.js';
 import { seedInbox } from './inbox-seed.js';
@@ -63,6 +64,8 @@ if (isMain) {
     .then(async (r) => ({ ...r, emailDrafter: await seedEmailDrafter(handle.db, { tenantId, log }) }))
     .then(async (r) => ({ ...r, bajas: await seedBajas(handle.db, { tenantId, log }) }))
     .then(async (r) => ({ ...r, inbox: await seedInbox(handle.db, { tenantId, log }) }))
+    // ContactFinder (tanda 17): MANUAL task `find-contact`, target of the contacts backfill.
+    .then(async (r) => ({ ...r, contactFinder: await seedContactFinder(handle.db, { tenantId, log }) }))
     .then((r) => console.log(JSON.stringify({ tenant: tenantId, ...r }, null, 2)))
     .catch((err: unknown) => {
       console.error('[seed] failed', err);

@@ -6,7 +6,8 @@
  *   -----------------  ------------------------------------------------  -------------------------
  *   executor_cheap     simple agents (EmailDrafter, Bajas, stub, smoke)  gemini:gemini-flash-latest
  *   executor_reasoner  research agents (Prospector + EventScout)         gemini:gemini-flash-latest
- *   triage             inbound reply classifier (InboxAgent)             gemini:gemini-flash-latest
+ *   triage             inbound reply classifier (InboxAgent),            gemini:gemini-flash-latest
+ *                      contact tie-break (ContactFinder)
  *   judge              LLM_JUDGE evaluators (experiments, evaluate)      gemini:gemini-pro-latest
  *   optimizer          Skill Optimizer clustering + proposal             gemini:gemini-flash-latest
  *
@@ -85,6 +86,7 @@ export const IMPLEMENTATION_ROLES: Readonly<Record<string, ModelRole>> = Object.
   prospector: 'executor_reasoner',
   email_drafter: 'executor_cheap',
   inbound_inbox: 'triage',
+  contact_finder: 'triage',
   inbound_bajas: 'executor_cheap',
   stub: 'executor_cheap',
   smoke: 'executor_cheap',

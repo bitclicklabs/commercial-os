@@ -216,14 +216,16 @@ class FetchError extends Error {
 
 /**
  * Core of the tool, usable outside the executor (it never throws: errors come back
- * as `{ status: 'error' }`).
+ * as `{ status: 'error' }`). `keepHtml` also returns the decoded HTML (`html`) for
+ * in-process callers that need the markup (mailto: links); the tool never asks for it.
  */
 export async function fetchPublicUrl(
   rawUrl: string,
   deps: FetchUrlDeps,
   signal: AbortSignal,
   maxChars?: number,
-): Promise<ToolResult<FetchUrlOutput>> {
+  opts: { keepHtml?: boolean } = {},
+): Promise<ToolResult<FetchUrlOutput & { html?: string }>> {
   const resolver = deps.resolver ?? systemResolver;
   const transport = deps.transport ?? nodeTransport;
   const policy = deps.policy ?? hostPolicyFromEnv();
@@ -345,6 +347,8 @@ export async function fetchPublicUrl(
           content_kind: isHtml ? 'html' : 'text',
           js_app_likely: isHtml && detectJsApp(raw, page.text).likely,
           pdf_pages: null,
+          // In-process callers only (ContactFinder reads mailto: links): never part of the tool output.
+          ...(opts.keepHtml && isHtml ? { html: raw } : {}),
         },
       };
     }

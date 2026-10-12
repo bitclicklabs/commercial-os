@@ -656,11 +656,11 @@ Si una base ya tiene tasks de tenants de test activas, archívalas por patrón d
 
 ```bash
 cd runtime/agent-runtime
-pnpm cleanup:archive-test-tenants --dry-run                          # [NO VERIFICADO] nombre exacto del script
-pnpm cleanup:archive-test-tenants --pattern='it-*,e2e-*,ev-*,ar-*'   # [NO VERIFICADO] nombre y opciones
+pnpm cleanup:archive-test-tenants --dry-run
+pnpm cleanup:archive-test-tenants --protect=otro-tenant-a-conservar   # patrones fijos: it-*, e2e-*, ev-*, ar-*, mt-/ms-/n8n-+hex, *-run/-empty/-seed/-trig/-skip
 ```
 
-Es idempotente y nunca toca `publiexpe`. El nombre y las opciones exactos están en el [README del runtime](../runtime/agent-runtime/README.md). Para los agentes `[TEST]` sigue vigente `pnpm cleanup:archive-test-agents`.
+Es idempotente y nunca toca `publiexpe`, `DEFAULT_TENANT_ID`, los tenants de `SCHEDULER_TENANTS` ni los de `--protect`. Para los agentes `[TEST]` sigue vigente `pnpm cleanup:archive-test-agents`.
 
 ## Dónde mirar los logs
 

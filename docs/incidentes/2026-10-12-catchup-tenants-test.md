@@ -32,7 +32,7 @@ Este documento es un postmortem sin culpables: describe qué pasó, qué se hizo
 
 ## Cronología
 
-Las horas son las que se conservan. Las marcadas `[POR COMPLETAR]` no quedaron registradas con precisión.
+Las horas de la mitigación son aproximadas (reconstruidas de la sesión del PM); las del daño salen de la base de datos.
 
 | Cuándo | Qué ocurrió |
 |---|---|
@@ -41,9 +41,9 @@ Las horas son las que se conservan. Las marcadas `[POR COMPLETAR]` no quedaron r
 | Fin de semana (10 y 11 de octubre) | La máquina está apagada. El scheduler no dispara ningún slot |
 | Lunes 2026-10-12, 11:29 | La máquina arranca y con ella el scheduler. Hace catch-up de los slots perdidos de todos los tenants, sin distinguir los de test de los de `publiexpe` |
 | 11:29 a unas 13:30 | 485 ejecuciones de test con la clave real de Gemini y la API key del Twenty de producción. Escriben señales, empresas e hipótesis en el workspace único de Twenty |
-| `[POR COMPLETAR]` | El PM detecta el gasto (de menos de 2 € acumulados a 17,95 €) y la actividad anómala |
-| `[POR COMPLETAR]` | El usuario archiva por SQL las 1.418 tasks de test (`enabled=false`, `status='ARCHIVED'`). La actividad se detiene |
-| `[POR COMPLETAR]` | Se marcan en Twenty, por API, las señales como `DISCARDED` y las hipótesis como `REJECTED`, con backoff por el rate-limit `429` de Twenty |
+| ~14:30 | El PM, al verificar el webhook de señales, detecta señales anómalas en Twenty y, al investigar, el gasto (de menos de 2 € acumulados a 17,95 €) |
+| ~15:30 | El PM marca en Twenty, por API, 81 señales como `DISCARDED` y 106 hipótesis como `REJECTED`, con backoff por el rate-limit `429` |
+| ~16:00 | El usuario archiva por SQL las 1.418 tasks de test (`enabled=false`, `status='ARCHIVED'`). Verificado después: 0 activas |
 | Mismo día | Verificación: 0 tasks de test activas. Se diagnostica y repara además el webhook de señales ([apéndice](#apéndice-el-webhook-cacheado-de-twenty)) |
 
 > **Nota:** la parada del scheduler no fue necesaria para contener el incidente: bastó con archivar las tasks. El scheduler descarta las inscripciones de tasks archivadas en su sincronización periódica.
@@ -153,3 +153,7 @@ Prefiere siempre la interfaz de Twenty o `pnpm register:webhook` (con `--dry-run
 - [Runbook de operación local](../runbook-local.md): variables del scheduler, [parada larga](../runbook-local.md#después-de-una-parada-larga) y [tests de integración](../runbook-local.md#tests-de-integración-base-aislada).
 - [README del runtime](../../runtime/agent-runtime/README.md)
 - [Roadmap](../ROADMAP.md), tanda 16.
+
+## Efecto colateral de la propia mitigación (verificado)
+
+Marcar las 106 hipótesis como `REJECTED` por API disparó el webhook de feedback de Twenty: se crearon **106 evaluaciones `HUMAN` bajo tenants de test**. Las métricas de `publiexpe` no se contaminaron (filtran por tenant), y las filas son append-only. El filtro de tenant en los webhooks de esta misma tanda descarta exactamente este caso (`200 ignored`), así que la mitigación de un incidente futuro ya no puede generar este ruido. Las cifras 81/106 frente a 80/104 del recuento inicial se deben a registros creados entre el recuento y el marcado.

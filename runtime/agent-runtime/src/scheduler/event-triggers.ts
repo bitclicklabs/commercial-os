@@ -17,6 +17,10 @@
  * `input.event`), and `audit` writes one audit_log row (actor `system`, method `EVENT`) per run
  * the trigger creates, e.g. `prospect.on_qualified` of the task `prospect-on-qualified`.
  *
+ * Tenant allowlist (`tenants` option, `SCHEDULER_TENANTS`, tanda 16): triggers of a tenant
+ * outside the list never fire (outcome `skipped_tenant`, one WARN per event). syncTask does
+ * not register them in the first place; this covers registrations made before the upgrade.
+ *
  * Observers (`observers` option, e.g. the outbound WebhookDispatcher) run after the
  * triggers for every event of the queue. An observer that throws fails the job, so BullMQ
  * retries it: triggers (idempotency key per task and event) and observers must be
@@ -47,6 +51,7 @@ import { recordAudit } from '../audit/service.js';
 import { redisConnectionFromUrl, type RunQueue } from '../queue/run-queue.js';
 import { QueueUnavailableError, requestTaskRun } from '../services/task-runs.js';
 import type { ProcessorLogger } from '../worker/processor.js';
+import { IgnoredTenantsReport, tenantAllowed, type TenantAllowlist } from './tenant-allowlist.js';
 
 // ---------------------------------------------------------------------------
 // Registry
@@ -109,7 +114,12 @@ export type EventTriggerOutcome =
   | { taskId: string; outcome: 'created' | 'deduplicated' | 'created_unqueued'; taskRunId: string }
   | {
       taskId: string;
-      outcome: 'task_missing' | 'skipped_inactive' | 'skipped_agent_inactive' | Extract<TriggerDecision, { fire: false }>['reason'];
+      outcome:
+        | 'task_missing'
+        | 'skipped_inactive'
+        | 'skipped_agent_inactive'
+        | 'skipped_tenant'
+        | Extract<TriggerDecision, { fire: false }>['reason'];
     };
 
 export interface EventTriggerConsumerOptions {
@@ -123,6 +133,11 @@ export interface EventTriggerConsumerOptions {
   logger?: ProcessorLogger;
   /** Called with every event after the triggers (outbound webhooks). */
   observers?: EventObserver[];
+  /**
+   * Tenants whose EVENT tasks may fire (`SCHEDULER_TENANTS`; main.ts always passes it).
+   * Omitted: every tenant. Registered triggers of other tenants are ignored (one WARN per event).
+   */
+  tenants?: TenantAllowlist;
 }
 
 /** What the consumer needs from the scheduler: drop stale registrations. */
@@ -158,6 +173,15 @@ export class EventTriggerConsumer {
     if (!registry) return [];
     const candidates = (await registry.list()).filter((t) => t.tenant_id === envelope.tenantId && t.event_type === envelope.type);
     const outcomes: EventTriggerOutcome[] = [];
+    if (this.opts.tenants && !tenantAllowed(this.opts.tenants, envelope.tenantId)) {
+      // Stale registrations (syncAll removes them): never fire, one aggregated WARN per event.
+      if (candidates.length > 0) {
+        const report = new IgnoredTenantsReport();
+        report.addTasks(envelope.tenantId, candidates.length);
+        report.flush(this.opts.tenants, this.logger, 'event triggers of a tenant outside SCHEDULER_TENANTS ignored');
+      }
+      return candidates.map((c) => ({ taskId: c.task_id, outcome: 'skipped_tenant' as const }));
+    }
     for (const candidate of candidates) outcomes.push(await this.fire(candidate, envelope, registry));
     return outcomes;
   }

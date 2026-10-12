@@ -20,15 +20,16 @@
  *
  * Merge note: the window constants live in src/signals/lead-time.ts on feat/lead-time-window
  * (DEFAULT_LEADTIME_MIN_DAYS / DEFAULT_LEADTIME_MAX_DAYS). This branch does not have it yet:
- * after merging, import them from there instead of the local copies below.
+ * Single source of truth: src/signals/lead-time.ts (agreed between the tanda-18 branches).
  */
+import { DEFAULT_LEADTIME_MIN_DAYS, DEFAULT_LEADTIME_MAX_DAYS } from '../signals/lead-time.js';
 import { EMAIL_DRAFTER_SKILL_ID } from '../agents/email-drafter-prompt.js';
 import { PROSPECTOR_SKILL_ID } from '../agents/prospector-prompt.js';
 import { applyEditOperations, type EditOperation, type EditResult } from './edit-ops.js';
 
 /** Local copy of the commercial window (see the merge note above). */
-export const LEAD_TIME_WINDOW_MIN_DAYS = 45;
-export const LEAD_TIME_WINDOW_MAX_DAYS = 210;
+export const LEAD_TIME_WINDOW_MIN_DAYS = DEFAULT_LEADTIME_MIN_DAYS;
+export const LEAD_TIME_WINDOW_MAX_DAYS = DEFAULT_LEADTIME_MAX_DAYS;
 
 export const LEAD_TIME_FEEDBACK_DATE = '2026-10-12';
 /** `metadata.candidate` of both DRAFT versions (idempotency key of the seed). */

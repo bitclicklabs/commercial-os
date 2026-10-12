@@ -89,7 +89,8 @@ export function resolveAgentImplementation(configuration: Record<string, unknown
     case 'smoke':
       return new SmokeAgent();
     case 'prospector':
-      return new ProspectorAgent();
+      // The database is the round-robin memory of the signals mode (agent_executions).
+      return new ProspectorAgent(undefined, deps.db ? { db: deps.db } : {});
     case 'email_drafter':
       return new EmailDrafterAgent();
     case BAJAS_IMPLEMENTATION:

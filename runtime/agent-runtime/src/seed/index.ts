@@ -8,12 +8,14 @@
  * (ACTIVE, with evidence; existing domain/topic pairs are never touched), the DRAFT candidate of the
  * Prospector skill with real catalog products (never activated), then the Prospector
  * agent and its tasks `daily-event-prospecting` and
- * `weekly-event-scouting`, and the EmailDrafter agent with its task
+ * `weekly-event-scouting`, the EVENT task `prospect-on-qualified` (Prospector scout of a fair
+ * signal qualified in Twenty, `signal.qualified`), and the EmailDrafter agent with its task
  * `draft-email-on-validated`, the BajasAgent with its task `process-unsubscribes` (kept
  * DISABLED since the inbound triage) and the InboxAgent with its task `process-inbox` (CRON
  * every 2 hours; all idempotent).
- * The daily task default input is the demo fixture `test/fixtures/feria-ejemplo.json`
- * unless `--input` points to another file with the same shape.
+ * The daily task default input is `{ mode: 'signals' }` (tanda 15: the fairs QUALIFIED in Twenty);
+ * `--input` still accepts a direct-mode fixture (`{ event, exhibitors[] }`, e.g.
+ * `test/fixtures/feria-ejemplo.json`) for a demo tenant.
  */
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
@@ -27,6 +29,7 @@ import { seedEmailDrafter } from './email-drafter-seed.js';
 import { seedHarnesses } from './harness-seed.js';
 import { seedInbox } from './inbox-seed.js';
 import { seedKnowledge } from './knowledge-seed.js';
+import { seedProspectOnQualified } from './prospect-on-qualified-seed.js';
 import { seedProspector } from './prospector-seed.js';
 import { seedSkills } from './skills-seed.js';
 
@@ -49,13 +52,14 @@ if (isMain) {
   const input = arg('input');
   const handle = createDb(config.databaseUrl);
   const log = (m: string) => console.log(`[seed] ${m}`);
-  const defaultInput = loadSeedInput(input ? path.resolve(input) : DEFAULT_FIXTURE);
+  const defaultInput = input ? loadSeedInput(path.resolve(input)) : undefined;
   seedHarnesses(handle.db, { tenantId, log })
     .then(async (harness) => ({ harness, skills: await seedSkills(handle.db, { tenantId, log }) }))
     // Catalog (tanda 14): one DRAFT candidate of the Prospector skill with real products; never activated here.
     .then(async (acc) => ({ ...acc, catalogSkill: await seedCatalogSkillCandidate(handle.db, { tenantId, log }) }))
     .then(async (acc) => ({ ...acc, knowledge: await seedKnowledge(handle.db, { tenantId, log }) }))
-    .then(async (r) => ({ ...r, prospector: await seedProspector(handle.db, { tenantId, defaultInput, log }) }))
+    .then(async (r) => ({ ...r, prospector: await seedProspector(handle.db, { tenantId, ...(defaultInput ? { defaultInput } : {}), log }) }))
+    .then(async (r) => ({ ...r, prospectOnQualified: await seedProspectOnQualified(handle.db, { tenantId, log }) }))
     .then(async (r) => ({ ...r, emailDrafter: await seedEmailDrafter(handle.db, { tenantId, log }) }))
     .then(async (r) => ({ ...r, bajas: await seedBajas(handle.db, { tenantId, log }) }))
     .then(async (r) => ({ ...r, inbox: await seedInbox(handle.db, { tenantId, log }) }))

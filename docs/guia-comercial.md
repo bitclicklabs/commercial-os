@@ -7,6 +7,7 @@ El sistema propone; tú decides. El sistema nunca contacta con nadie por su cuen
 ## Contenido
 
 1. [Qué hace el sistema por ti](#qué-hace-el-sistema-por-ti)
+1. [Señales de feria: tu cola de decisión](#señales-de-feria-tu-cola-de-decisión)
 1. [Dónde mirar en Twenty](#dónde-mirar-en-twenty)
 1. [Cómo leer una hipótesis](#cómo-leer-una-hipótesis)
 1. [Tu rutina diaria de 10 minutos](#tu-rutina-diaria-de-10-minutos)
@@ -20,34 +21,80 @@ El sistema propone; tú decides. El sistema nunca contacta con nadie por su cuen
 
 El sistema es un equipo de agentes automáticos que prepara el trabajo de prospección y deja el resultado en Twenty. Tú no ejecutas nada: abres Twenty y el trabajo ya está hecho.
 
-### Cada mañana a las 08:00
+### Los lunes a las 07:30: busca ferias nuevas
 
-El agente **Prospector** analiza los expositores de un evento (feria, congreso o evento sectorial) y, para cada uno, decide si PubliEXPE puede venderle merchandising con motivo de ese evento. Para cada expositor con encaje:
+> **Activo desde el 2026-10-07.** La primera ejecución automática es el lunes siguiente a las 07:30.
+
+Cada lunes, el sistema busca ferias y eventos reales relevantes para PubliEXPE y deja en **Commercial OS → Signals** una **señal por cada feria descubierta**, en estado `NEW`, con su fecha y su fuente. Es tu cola de decisión: consulta [qué hacer con ella](#señales-de-feria-tu-cola-de-decisión). El lunes ya no es la única vía por la que llega material nuevo: lo que desencadena el trabajo sobre una feria es que tú la califiques, no el calendario.
+
+La ejecución tiene un límite de 20 minutos: si algo es muy grande, el resumen de la ejecución (*Agent run*) sale como `Partial` e indica en qué fase se cortó. Lo ya hecho se guarda igualmente.
+
+### Cuando calificas una feria: al momento
+
+Cuando pones una señal en `QUALIFIED`, el agente **Prospector** investiga esa feria de inmediato: analiza sus expositores y, para cada uno, decide si PubliEXPE puede venderle merchandising con motivo de ese evento. Para cada expositor con encaje:
 
 - Localiza o crea la **empresa** en Twenty.
-- Registra una **señal** (*Signal*): el hecho que justifica el contacto, por ejemplo "expone en Expo Alimentaria el 24 de noviembre". Nace en estado `NEW`.
+- Registra una **señal** (*Signal*) del expositor: el hecho que justifica el contacto, por ejemplo "expone en Expo Alimentaria el 24 de noviembre". Nace en estado `NEW`.
 - Redacta una **hipótesis** (*Hypothesis*): qué podría necesitar la empresa, por qué ahora, cuántas unidades, qué presupuesto y qué productos encajan. Nace en estado `PROPOSED`, a la espera de tu revisión.
 
 Al terminar, deja un **resumen de la ejecución** (*Agent run*) con lo que ha hecho y lo que ha costado.
 
 El sistema solo registra hipótesis con una confianza igual o superior a 0,50. Los expositores dudosos o sin encaje no llegan a Twenty.
 
-> **Nota:** la tarea diaria trabaja con la lista de expositores configurada (hoy incluye datos de demostración, reconocibles por dominios `.example`). El scouting de los lunes sí busca por su cuenta: localiza ferias reales del sector, lee sus catálogos de expositores y crea empresas reales con su señal e hipótesis. Los registros de demostración se reconocen porque el dominio de la empresa termina en `.example`. Ignóralos o recházalos.
+### Cada mañana a las 08:00: sigue con tus ferias calificadas
 
-### Los lunes a las 07:30
+La tarea diaria reparte su presupuesto entre **todas las ferias que tienes en `QUALIFIED` y siguen vigentes**, empezando cada día por la que menos se ha trabajado. Así, una feria calificada sigue dando hipótesis nuevas los días siguientes sin que tengas que hacer nada más.
 
-> **Activo desde el 2026-10-07.** La primera ejecución automática es el lunes siguiente a las 07:30.
+- **Si no tienes ninguna feria calificada, no hace nada**: el resumen de la ejecución sale como `Skipped`, a coste 0. No es un fallo.
+- Cuando la fecha de una feria pasa, su señal cambia sola a `EXPIRED` y sale del reparto. Es lo único que el sistema cambia por su cuenta en una señal.
 
-Cada lunes, el sistema busca ferias y eventos reales relevantes para PubliEXPE, lee el catálogo de expositores completo y deja en Twenty las empresas con encaje, con su señal y su hipótesis en `Proposed`. Lo verás reflejado en **Commercial OS → Signals**, en **Commercial OS → Hypotheses** y en **Commercial OS → Agent runs**. La ejecución tiene un límite de 20 minutos: si un catálogo es muy grande, el resumen de la ejecución (*Agent run*) sale como `Partial` e indica en qué fase se cortó. Lo ya evaluado se guarda igualmente.
+> **Nota:** la tarea diaria ya no trabaja con una lista fija de expositores de demostración. Si todavía ves registros cuyo dominio termina en `.example`, son de demostración de cuando existía esa lista: ignóralos o recházalos.
 
 ### Lo que el sistema no hace
 
 - **No envía emails ni mensajes por su cuenta.** Un correo solo sale cuando tú revisas el borrador y pulsas el envío.
 - **No contacta con decisores.** Elegir a quién escribir y cuándo es cosa tuya.
 - **No cambia etapas de oportunidad ni crea presupuestos.**
+- **No califica ni descarta ferias por ti.** Solo las pasa a `EXPIRED` cuando su fecha ya ha pasado.
 - **No borra nada.**
 
 El sistema sí prepara **borradores de email** cuando validas una hipótesis, pero nunca los envía: los revisas y los envías tú, con un clic desde Twenty o a mano desde tu correo. Consulta [Borradores de email](#borradores-de-email). También clasifica las respuestas que llegan al buzón y te deja una nota con las que piden tu atención, sin responder nunca por ti. Consulta [Respuestas de los clientes](#respuestas-de-los-clientes).
+
+## Señales de feria: tu cola de decisión
+
+Una **señal** es un hecho que justifica un contacto. Las que más te importan son las **señales de feria**: cada lunes el sistema busca ferias y eventos del sector y deja una por feria en **Commercial OS → Signals**, en estado `NEW`. Con ellas decides **en qué ferias quieres que el sistema trabaje**: el sistema propone las ferias y tú eliges.
+
+### Estados de una señal
+
+| Estado | Qué significa | Quién lo pone |
+|---|---|---|
+| `NEW` | Feria descubierta, todavía sin decidir. | El sistema |
+| `REVIEWING` | La estás mirando. Es opcional y no hace que ocurra nada. | Tú |
+| `QUALIFIED` | **Trabájala.** Es una feria que merece la pena. | Tú |
+| `DISCARDED` | **Ya no.** No te interesa. | Tú |
+| `EXPIRED` | La fecha de la feria ya pasó. | Solo el sistema |
+
+### El gesto clave
+
+- **Calificar** (`QUALIFIED`): el agente investiga esa feria **al momento** y, además, la mantiene en el reparto de cada mañana mientras siga vigente. Las hipótesis llegan a **Hypotheses** como siempre, en `Proposed`.
+- **Descartar** (`DISCARDED`): el sistema no vuelve a tocar esa feria.
+- **Dejar en `NEW`**: no pasa nada. Una feria sin decidir no consume presupuesto.
+
+Para calificar, abre la señal en **Commercial OS → Signals** y cambia el campo **Status** a `Qualified`. No hay ningún botón adicional.
+
+> **Importante:** calificar tiene coste: el agente usa un modelo de pago por uso sobre los expositores de esa feria. Califica las ferias que de verdad te interesen. Si ya has sacado de una feria lo que querías, **descártala** para que deje de recibir presupuesto cada día.
+
+### Dónde las ves
+
+En **Commercial OS → Signals**. Filtra por **Status** = `New` para ver tu cola de decisión y por `Qualified` para ver las ferias que el sistema está trabajando. Cada señal lleva la fecha de la feria y el enlace a su fuente, para que decidas con datos.
+
+### Lo que no cambia
+
+Las **hipótesis** siguen llegando como siempre: en **Commercial OS → Hypotheses**, estado `Proposed`, y las validas, editas o rechazas con tu rutina diaria. Validar una hipótesis sigue sin enviar nada. Tampoco cambian los borradores ni el envío de email.
+
+> **Nota:** las señales antiguas por expositor (una por empresa, de antes de este ciclo) siguen ahí, pero cambiarles el estado no pone nada en marcha: lo que dispara el trabajo es calificar la **señal de la feria**.
+
+El detalle técnico del ciclo está en [Prospección guiada por señales](prospeccion-por-senales.md).
 
 ## Dónde mirar en Twenty
 
@@ -55,7 +102,7 @@ Abre Twenty (`http://localhost:3020` en el entorno local) y localiza en la barra
 
 | Entrada | Qué es | Quién la escribe | Qué haces tú |
 |---|---|---|---|
-| **Commercial OS → Signals** | Hechos que justifican un contacto: una feria, un lanzamiento, una contratación. | El sistema | Revisarlas y clasificarlas (opcional pero recomendable). |
+| **Commercial OS → Signals** | Hechos que justifican un contacto. Las ferias que se descubren cada lunes son tu cola de decisión. | El sistema las crea; tú las calificas | **Calificar o descartar las ferias nuevas.** Consulta [Señales de feria](#señales-de-feria-tu-cola-de-decisión). |
 | **Commercial OS → Research** | Investigación de apoyo sobre una empresa o señal. | El sistema | Consultarla al preparar un contacto: el Prospector la rellena desde la tanda 9 con hechos observados y sus fuentes. |
 | **Commercial OS → Hypotheses** | Las propuestas comerciales: qué vender, a quién y por qué ahora. | El sistema | **Validarlas, editarlas o rechazarlas. Es tu tarea diaria.** |
 | **Commercial OS → Agent runs** | Un resumen por cada ejecución del sistema: qué hizo, si fue bien y cuánto costó. | El sistema | Solo lectura. Sirve para saber si hoy se ha ejecutado todo. |
@@ -63,7 +110,7 @@ Abre Twenty (`http://localhost:3020` en el entorno local) y localiza en la barra
 ### Vistas útiles
 
 - En **Hypotheses**, abre la vista **By status**. Muestra un tablero con una columna por estado (`Proposed`, `Validated`, `Rejected`, `Expired`). Tu trabajo diario está en la columna `Proposed`.
-- En **Signals**, abre la vista **Recent signals**. Muestra primero las señales detectadas más recientemente.
+- En **Signals**, abre la vista **Recent signals**. Muestra primero las señales detectadas más recientemente. Para ver solo las ferias pendientes de decidir, filtra por **Status** = `New`.
 - Cambia de vista desde el selector de vistas de la parte superior de la lista.
 
 ### Cómo se relacionan
@@ -123,7 +170,8 @@ Dos ejemplos:
 
 ## Tu rutina diaria de 10 minutos
 
-1. Abre Twenty y ve a **Commercial OS → Agent runs**. Comprueba que hay una ejecución de hoy. Si el resultado (*Outcome*) es `Failed` o `Partial`, avisa al equipo técnico (consulta [Preguntas frecuentes](#preguntas-frecuentes)).
+1. Abre Twenty y ve a **Commercial OS → Agent runs**. Comprueba que hay una ejecución de hoy. Si el resultado (*Outcome*) es `Failed` o `Partial`, avisa al equipo técnico (consulta [Preguntas frecuentes](#preguntas-frecuentes)). Un `Skipped` es normal si no tienes ninguna feria calificada.
+1. Ve a **Commercial OS → Signals** y filtra por **Status** = `New`. Si el lunes llegaron ferias nuevas, califica las que merecen trabajo y descarta el resto ([cómo](#señales-de-feria-tu-cola-de-decisión)).
 1. Ve a **Commercial OS → Hypotheses** y abre la vista **By status**.
 1. En la columna `Proposed`, empieza por las hipótesis con **Timing** `IMMEDIATE` y **Confidence** más alta.
 1. Abre cada hipótesis y lee `Need`, `Why now`, `Evidence` y los importes. Decide una de estas tres acciones.
@@ -137,7 +185,7 @@ Dos ejemplos:
    Puedes cambiar el estado abriendo la hipótesis y editando el campo **Status**, o arrastrando la tarjeta a otra columna del tablero **By status**.
 
 1. Para cada hipótesis validada, decide tú el siguiente paso: a quién escribir, por qué canal y con qué mensaje. Busca o crea el contacto en Twenty y enlázalo en **Decision maker**.
-1. Opcional: en **Commercial OS → Signals**, marca las señales que has revisado (consulta [Estados de señal](#señales)).
+1. Si una feria calificada ya no te da más (has sacado de ella lo que querías), descártala para que el sistema deje de dedicarle presupuesto (consulta [Estados de señal](#señales)).
 
 > **Importante:** validar una hipótesis **no envía ningún email** ni avisa a nadie. Solo significa "esta hipótesis es buena y la voy a trabajar yo". El contacto con el cliente lo decides y lo ejecutas tú. Esto es así por diseño: en el sistema, toda acción con efecto hacia fuera (enviar un email, contactar con un decisor) exige una persona.
 
@@ -275,17 +323,17 @@ Cómo funciona por dentro, las garantías y el evento para n8n están en [Triaje
 
 ### Señales
 
-El sistema crea todas las señales en `NEW`. A partir de ahí, las clasificas tú. Es opcional, pero mantiene la lista ordenada.
+Las señales de feria nacen en `NEW` y las gestionas tú: el estado que les pones decide si el sistema trabaja esa feria. Consulta [Señales de feria: tu cola de decisión](#señales-de-feria-tu-cola-de-decisión).
 
-| Estado | Significa | Cuándo lo usas |
+| Estado | Significa | Quién lo pone |
 |---|---|---|
-| `NEW` | Detectada, sin revisar. | Lo pone el sistema. |
-| `REVIEWING` | La estás mirando. | Cuando empiezas a trabajar la señal y no has decidido todavía. |
-| `QUALIFIED` | Señal real e interesante: merece seguimiento. | Cuando confirmas que el hecho es cierto y es relevante. |
-| `DISCARDED` | No sirve. | Cuando el dato es erróneo o irrelevante para PubliEXPE. |
-| `EXPIRED` | Ha perdido vigencia. | Cuando el evento ya se celebró o el momento pasó. |
+| `NEW` | Feria descubierta, sin decidir. | El sistema |
+| `REVIEWING` | La estás mirando. Opcional: no dispara nada. | Tú |
+| `QUALIFIED` | Trabájala: el agente la investiga al momento y la mantiene en el reparto diario. | Tú |
+| `DISCARDED` | Ya no: el sistema no la toca. | Tú |
+| `EXPIRED` | La fecha de la feria ya pasó. | Solo el sistema |
 
-> **Nota:** cambiar el estado de una hipótesis no cambia el de su señal. Actualiza la señal tú si quieres que la lista refleje tu decisión.
+> **Nota:** cambiar el estado de una hipótesis no cambia el de su señal.
 
 ## Por qué tu feedback importa
 
@@ -337,7 +385,8 @@ Distingue dos casos:
 
 Abre **Commercial OS → Agent runs** y mira la ejecución de hoy:
 
-- **Success** y 0 hipótesis nuevas: el evento no tenía expositores con encaje, o ya estaban registrados. El campo **Result** detalla cuántos se descartaron y por qué.
+- **Skipped:** no tienes ninguna feria en `QUALIFIED` vigente, así que no había nada que trabajar. Es lo esperado hasta que califiques alguna.
+- **Success** y 0 hipótesis nuevas: las ferias calificadas no tenían expositores nuevos con encaje, o ya estaban registrados. El campo **Result** detalla cuántos se descartaron y por qué.
 - **Partial** o **Failed**: algo falló. Avisa al equipo técnico e indica la fecha.
 - **No hay ejecución de hoy:** avisa al equipo técnico.
 
@@ -347,7 +396,7 @@ Son estimaciones del sistema basadas en el tamaño de la empresa y del evento. �
 
 ### ¿Cuánto cuesta esto?
 
-El sistema usa un modelo de inteligencia artificial de pago por uso. Cada ejecución del Prospector cuesta aproximadamente **0,006 €** con un evento de ejemplo de tres expositores. El coste crece con el número de expositores analizados. Puedes ver el coste real de cada ejecución en el campo **Cost** de **Commercial OS → Agent runs**.
+El sistema usa un modelo de inteligencia artificial de pago por uso. Una ejecución del Prospector cuesta unos **0,006 €** por cada tres expositores analizados (cifra medida con un evento de ejemplo). El coste crece con el número de expositores y de ferias calificadas; si no hay ninguna, la tarea diaria no gasta nada. Puedes ver el coste real de cada ejecución en el campo **Cost** de **Commercial OS → Agent runs**.
 
 ### ¿Qué es la "traza" (*Trace*) de una ejecución?
 

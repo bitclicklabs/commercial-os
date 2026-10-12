@@ -37,7 +37,7 @@ runtime/agent-runtime/
 │   ├── providers/            ModelProvider, StubProvider, AnthropicProvider, GeminiProvider y tabla de precios
 │   ├── queue/                RunQueue (BullMQ y en memoria)
 │   ├── scheduler/            TaskScheduler sobre BullMQ, parseo de schedules y rutas
-│   ├── seed/                 Seed idempotente del harness default-commercial, las skills, el Prospector, el EmailDrafter, el BajasAgent y sus tareas (pnpm seed)
+│   ├── seed/                 Seed idempotente del harness default-commercial, las skills, el Prospector (con prospect-on-qualified), el EmailDrafter, el BajasAgent y sus tareas (pnpm seed)
 │   ├── skills/               Skills versionadas (MVP-1): render, resolución desde la BD con fallback a las constantes, ciclo de estados
 │   ├── harness/              Harness versionado (MVP-1): config v1 por dimensiones, precedencia, resolución desde la BD con fallback y ciclo de estados
 │   ├── datasets/             Datasets de evaluación (MVP-2): cosecha de trazas y veredictos, split determinista, registro de exclusiones de EXP-001/EXP-002 y control de contaminación (markUsed)
@@ -250,7 +250,7 @@ Cabecera opcional `x-tenant-id` en todas las rutas. Las respuestas usan `snake_c
 | `GET /executions`, `GET /executions/:id` | Lista o detalle con trace y pasos |
 | `POST /executions/:id/cancel` | `QUEUED` o `RUNNING` a `CANCELLED` |
 | `POST /executions/:id/{pause,resume}` | `501`, requiere harness con checkpoints |
-| `POST /webhooks/twenty` | Webhook de Twenty firmado. Convierte cambios de `commercialHypothesis` en evaluaciones HUMAN y, si cambia `emailStatus` a `READY` o `SENT`, ejecuta [email-ops](#email-ops-guardarraíles-del-envío-desde-twenty) (respuesta con `email`; `502` si email-ops falla) |
+| `POST /webhooks/twenty` | Webhook de Twenty firmado. Convierte cambios de `commercialHypothesis` en evaluaciones HUMAN y, si cambia `emailStatus` a `READY` o `SENT`, ejecuta [email-ops](#email-ops-guardarraíles-del-envío-desde-twenty) (respuesta con `email`; `502` si email-ops falla). Una señal de feria de `commercialSignal` que pasa a `QUALIFIED` emite `signal.qualified` ([prospección al calificar](#señal-calificada--prospección-dirigida-prospect-on-qualified); respuesta con `signal`, `202` si se emitió) |
 | `POST /evaluations/human` | Registra un veredicto manual: `201` nuevo, `200` duplicado |
 | `GET /evaluations` | Lista evaluaciones. Filtros: `subject_id`, `subject_type`, `feedback`, `agent_execution_id`, `since`, `limit` |
 | `GET /metrics/summary` | Runs por estado, tarea y outcome; coste, tokens, latencia, embudo comercial, feedback y bloque `email` (envíos y warm-up). Filtros `since`, `until` |
@@ -409,6 +409,7 @@ Todos los eventos viajan con este sobre. Los campos del sobre y de `data` usan `
 | `email.sent_suppressed` | Email-ops, si lo enviado iba a una dirección suprimida (el chequeo de `READY` perdió la carrera) | `hypothesisId`, `companyId`, `matchedBy`, `toDomains`, `noteId` |
 | `email.warmup_target_exceeded` | Email-ops, cuando los envíos del día superan el objetivo del warm-up (una vez por día local) | `date`, `timezone`, `phase`, `restDay`, `target`, `sendsToday`, `countedSource` |
 | `catalog.unavailable` | Gate del catálogo, con `CATALOG_ENABLED=true` y `/health` fallando antes de una ejecución (como mucho una vez al día por tenant, `idempotencyKey` `evt:catalog.unavailable:{tenant}:{día}`) | `day`, `reason`, `code`, `message`, `provider`, `checkedAt`, `executionId` |
+| `signal.qualified` | Webhook de Twenty, cuando una persona pasa una señal de feria (`commercialSignal` sin empresa, tipo `FAIR`, `CONGRESS` o `EVENT`, con URL) a `QUALIFIED`, o la crea ya calificada. Como mucho una vez por señal cada 24 h (`idempotencyKey` `evt:signal.qualified:{signal_id}:{evento_anterior\|first}`) | `signal_id`, `name` (sin el sufijo ` (feria)`), `event_url`, `event_date`, `signal_type`, `transition` (`updated_fields` o `status_only`), `twenty` (`webhook_id`, `workspace_id`, `event_date`), `chainDepth` 0 |
 | `experiment.revalidation_failed` | Revalidación de un `PASS_FORM` con veredicto `REFUTED` cuya versión sigue `ACTIVE` o en canario (una vez por revalidación nueva) | `revalidationId`, `experimentId`, `experimentName`, `subjectType`, `subjectName`, `baselineVersion`, `candidateVersion`, `verdict`, `baselineAccuracy`, `candidateAccuracy`, `labels`, `versionState` (`ACTIVE` o `CANARY`), `noteId` |
 
 Cada evento del runtime lleva una `idempotencyKey` (`evt:{type}:{task_run_id}`, `evt:task.started:{task_run_id}:{attempt}`, `evt:{type}:{execution_id}`, `evt:evaluation.recorded:{evaluation_id}`): publicar dos veces el mismo hecho devuelve la fila existente.
@@ -437,7 +438,9 @@ Tabla `events` (migración `0002_events`): `id`, `tenant_id`, `type`, `schema_ve
 - El registro sigue el mismo camino que `CRON`: la API sincroniza tras `POST /tasks`, `PATCH`, `pause`, `resume` y `archive`, y `syncAll` lo corrige periódicamente. Solo se registran tareas `ACTIVE`, `enabled` y con un `EVENT` válido, en el hash de Redis `pxos:{QUEUE_NAME}-events:triggers`. `GET /tasks/:id/schedule` devuelve `event_trigger` (deseado y registrado) y `GET /scheduler/status` lista los triggers con `kind = "event"`.
 - El consumidor (rol `scheduler` o `all`) recibe cada evento, busca los triggers del mismo tenant y tipo, vuelve a leer la tarea en PostgreSQL (un registro obsoleto se retira), aplica el filtro y la guardia anti-bucle y llama a `requestTaskRun` con la clave `taskrun:{task_id}:event:{event_id}`. El mismo evento entregado dos veces devuelve el `TaskRun` existente.
 - El `input` del run es `default_input` más el sobre completo bajo la clave `event` (`input.event.data` es el payload).
-- `POST /tasks` y `PATCH /tasks/:id` devuelven `400 invalid_schedule` si falta `event_type`, tiene un formato inválido o el filtro no es un objeto.
+- Opcional, `input_from_event`: `{"clave_del_input": "ruta.en.data"}` copia valores del evento a claves de primer nivel del `input` (máx. 20; `event` está reservada; las rutas ausentes o `null` se omiten). Ejemplo: `{"event_url": "event_url", "event_name": "name"}`.
+- Opcional, `audit`: `{"action": "dominio.accion", "subject_type": "snake_case", "subject_path": "ruta.en.data"}` escribe una fila en `audit_log` (actor `system`, método `EVENT`, ruta `event:{tipo}`, `payload` con el sujeto, `run_id`, `event_id` y `task_id`) por cada run que el trigger **crea**. Una entrega duplicada no crea run ni fila. Si la escritura falla, queda en el log y el run sigue.
+- `POST /tasks` y `PATCH /tasks/:id` devuelven `400 invalid_schedule` si falta `event_type`, tiene un formato inválido, el filtro no es un objeto o `input_from_event` / `audit` están mal formados.
 
 ### Guardia anti-bucle
 
@@ -1472,12 +1475,25 @@ El `StubAgent` sigue usando su tool simulada (`stub.lookup`), que no pasa por el
 
 ## Prospector
 
-`ProspectorAgent` (`configuration.implementation = "prospector"`) evalúa los expositores de un evento y propone hipótesis de merchandising para PubliEXPE. Tiene dos modos, que elige por la forma de la entrada:
+`ProspectorAgent` (`configuration.implementation = "prospector"`) evalúa los expositores de un evento y propone hipótesis de merchandising para PubliEXPE. Tiene tres modos, que elige por la forma de la entrada:
 
 | Modo | Entrada | Tarea | Qué hace |
 |---|---|---|---|
-| Directo | `{ event, exhibitors[] }` | `daily-event-prospecting` | Evalúa los expositores ya extraídos (fixture de demo) |
-| Scout | `{ sector, region?, horizon_months? }` o `{ event_url }` | `weekly-event-scouting` | Busca ferias reales, descarga su página de expositores y evalúa los expositores reales. Consulta [Modo scout](#modo-scout-ferias-reales) |
+| Señales | `{ mode: "signals", scout_time_budget_ms? }` | `daily-event-prospecting` (v2, tanda 15) | Caduca las señales de feria con fecha pasada y peina la feria `QUALIFIED` vigente trabajada hace más tiempo. Consulta [Modo señales](#modo-señales-ferias-calificadas) |
+| Directo | `{ event, exhibitors[] }` | — (era la v1 de `daily-event-prospecting`) | Evalúa los expositores ya extraídos (fixture de demo) |
+| Scout | `{ sector, region?, horizon_months?, discover_only? }` o `{ event_url, event_name?, event_date?, max_events? }` | `weekly-event-scouting` (`discover_only: true` desde la tanda 15) | Busca ferias reales; con `discover_only` solo las registra como señal FAIR `NEW`; con `event_url` (scout dirigido) peina su catálogo. Consulta [Modo scout](#modo-scout-ferias-reales) |
+
+### Modo señales (ferias calificadas)
+
+Entrada de la tarea diaria desde la tanda 15: `{ "mode": "signals" }`, sin feria incrustada. Cada ejecución:
+
+1. Lee de Twenty (`list_event_signals`, READ) las `commercialSignal` **sin empresa** en `NEW`, `REVIEWING` o `QUALIFIED`. Solo cuentan las de feria: tipo `FAIR`, `CONGRESS` o `EVENT` y `sourceUrl` http(s). Las señales por expositor ("<feria> — <empresa>") tienen empresa y nunca entran.
+2. **Envejecimiento primero**, también si la ejecución acaba `SKIPPED`: cada una cuya `eventDate` es anterior a hoy pasa a `EXPIRED` (`expire_signal`, LOW_WRITE: relee la señal y solo escribe `status`; nunca toca una fecha futura, una sin fecha ni una `DISCARDED`/`EXPIRED`). Máximo 50 por ejecución. Es el único cambio de estado que hace la máquina.
+3. De las `QUALIFIED` vigentes (fecha futura o sin fecha) elige la **trabajada hace más tiempo** (round-robin): primero las que ninguna ejecución ha trabajado; después, la de última pasada más antigua; empates por la fecha de feria más próxima. La memoria es la tabla `agent_executions` del mismo agente: `output.signal_id` (este modo) o `input.signal_id` (un scout dirigido que la lleve, como el disparo al calificar).
+4. Lanza el scout dirigido con `{ event_url, event_name, event_date, max_events: 1 }` y el presupuesto de tiempo del scout (`scout.time_budget_ms`, 20 min; la entrada `scout_time_budget_ms` lo baja). La salida lleva `signal_id`, `signal_name`, `event_name`, `event_url` y `signals` (caducadas, candidatas con su última pasada).
+5. Sin ninguna `QUALIFIED` vigente: `outcome = SKIPPED`, coste 0, sin llamadas al modelo y sin `agentRunSummary`.
+
+La deduplicación del pipeline (empresa por dominio, hipótesis por empresa y nombre) hace que repetir una feria ya peinada cueste poco y solo escriba expositores nuevos. No hay marca de "feria agotada": una feria calificada se sigue peinando por turno hasta que caduca o alguien la descarta.
 
 El modo scout es un modo del mismo agente, no un agente hermano: el LLD v0.2 asigna al Prospector tanto el descubrimiento de eventos (`search_web`, `fetch_url`, `render_url`) como la evaluación de expositores, y así los dos modos comparten versión, prompt de evaluación, pipeline por expositor, tool policy y trazas.
 
@@ -1662,12 +1678,12 @@ Cada llamada al LLM es un paso `MODEL` con `model` (el modelo real que respondi�
 | Clave de `configuration` | Por defecto | Uso |
 |---|---|---|
 | `implementation` | — | `prospector` |
-| `tool_policy` | — | `find_company`, `upsert_company`, `create_signal`, `create_hypothesis`, `create_agent_run_summary`, `fetch_url` (máximo 230 llamadas: páginas, PDF, redirecciones, fichas y comprobación de dominios) y `render_url` (máximo 115: catálogo y fichas); techo `LOW_WRITE`; 1 500 llamadas por ejecución (el límite real de una ejecución scout es su presupuesto de tiempo) |
+| `tool_policy` | — | `find_company`, `upsert_company`, `create_signal`, `create_hypothesis`, `create_agent_run_summary`, `fetch_url` (máximo 230 llamadas: páginas, PDF, redirecciones, fichas y comprobación de dominios) y `render_url` (máximo 115: catálogo y fichas), `list_event_signals` (máximo 2) y `expire_signal` (máximo 50; modo señales); techo `LOW_WRITE`; 1 500 llamadas por ejecución (el límite real de una ejecución scout es su presupuesto de tiempo) |
 | `min_confidence` | `0.5` | Umbral para escribir en Twenty |
 | `usd_to_eur` | `0.86` | Conversión del coste para Twenty |
 | `model_options` | `{}` | `thinking_level` (Gemini 3.x), `thinking_budget` (Gemini 2.5), `temperature` |
 | `max_output_tokens` | `4096` | Por llamada; incluye los tokens de razonamiento |
-| `task_name` | `daily-event-prospecting` | Campo `task` del `agentRunSummary` (modo directo) |
+| `task_name` | `daily-event-prospecting` | Campo `task` del `agentRunSummary` (modos señales y directo) |
 | `scout.task_name` | `weekly-event-scouting` | Campo `task` del `agentRunSummary` (modo scout) |
 | `scout.max_events` | `3` | Ferias por ejecución (máximo 3) |
 | `scout.max_exhibitors_per_event` | `100` | Expositores evaluados por feria (máximo 200) |
@@ -1695,8 +1711,9 @@ Es idempotente:
 
 - **Skills** (primero): crea las que faltan con su versión 1 `ACTIVE` y el texto exacto de las constantes de código. No modifica las que ya existen. Consulta [Skills](#skills).
 - **Agente `Prospector`**: si no existe, lo crea con la versión 1 `ACTIVE` (`model_provider = gemini`, `model = gemini-flash-latest`, `thinking_level = low`, la tool policy anterior y el prompt en español con los diferenciales de PubliEXPE: ofertas, trato cercano, taller propio y precio). Si existe y su versión activa es distinta, añade una versión nueva, la activa y pasa la anterior a `DEPRECATED`. Si es igual, no cambia nada.
-- **Tarea `daily-event-prospecting`**: `CRON 0 8 * * *` en `Europe/Madrid`, `timeout_ms = 900000`, sin reintentos, con `test/fixtures/feria-ejemplo.json` como `default_input`. Si cambia, se actualiza y se guarda una `TaskDefinitionVersion` nueva.
-- **Tarea `weekly-event-scouting`** (modo scout): `CRON 30 7 * * 1` (lunes 07:30) en `Europe/Madrid`, `timeout_ms = 1800000`, sin reintentos, `default_input = { "sector": "alimentación y bebidas", "region": "España", "horizon_months": 6 }`.
+- **Tarea `daily-event-prospecting`** (v2, tanda 15): `CRON 0 8 * * *` en `Europe/Madrid`, `timeout_ms = 1800000`, sin reintentos, `default_input = { "mode": "signals" }` (modo señales). `--input=fichero.json` aún acepta un fixture del modo directo para un tenant de demo. Si cambia, se actualiza y se guarda una `TaskDefinitionVersion` nueva (la v1 con la feria de ejemplo se conserva).
+- **Tarea `weekly-event-scouting`** (modo scout, solo descubrimiento desde la tanda 15): `CRON 30 7 * * 1` (lunes 07:30) en `Europe/Madrid`, `timeout_ms = 1800000`, sin reintentos, `default_input = { "sector": "alimentación y bebidas", "region": "España", "horizon_months": 6, "discover_only": true }`: cada feria verificada queda como señal FAIR `NEW` con URL y fecha, sin leer ni evaluar expositores.
+- **Tareas retiradas** (`RETIRED_TASKS`, hoy `event-scouting-live-test-muxyo7gz`): `enabled = false` con una versión nueva; nunca se borran.
 - **Agente `BajasAgent` y tarea `process-unsubscribes`**: `CRON 0 */2 * * *` en `Europe/Madrid`, sin LLM (`model_provider = stub`), tool policy `get_note` + `update_note` (una escritura por ejecución). Desde la tanda 12 la tarea queda **desactivada** (`enabled = false`). Consulta [Inbound de bajas](#inbound-de-bajas).
 - **Agente `InboxAgent` y tarea `process-inbox`**: `CRON 0 */2 * * *` en `Europe/Madrid`, Gemini Flash solo para las respuestas que las reglas no deciden, tool policy `get_note` + `update_note` + `create_note` + `find_company`. Consulta [Triaje del buzón](#triaje-del-buzón).
 
@@ -2063,9 +2080,34 @@ pnpm register:webhook --dry-run
 
 - Desde los contenedores de Twenty, el runtime se alcanza como `http://pxos-runtime:4020` (misma red `pxos-net`). Es el destino por defecto.
 - Si el runtime corre en el host (`pnpm dev`), usa `http://host.docker.internal:<puerto>/webhooks/twenty` y escucha en `RUNTIME_HOST=0.0.0.0`.
-- El script es idempotente: identifica el webhook por la marca `pxos-runtime:human-feedback` en la descripción, lo crea si no existe y si no lo actualiza. Suscribe solo `commercialHypothesis.updated`. Guarda `TWENTY_WEBHOOK_SECRET` como `secret` del webhook (Twenty firma con él) y nunca lo pone en la URL.
+- El script es idempotente: identifica el webhook por la marca `pxos-runtime:human-feedback` en la descripción, lo crea si no existe y si no lo actualiza. Suscribe `commercialHypothesis.updated` (evaluador HUMAN y email-ops), `commercialSignal.updated` y `commercialSignal.created` ([prospección al calificar](#señal-calificada--prospección-dirigida-prospect-on-qualified)). Guarda `TWENTY_WEBHOOK_SECRET` como `secret` del webhook (Twenty firma con él) y nunca lo pone en la URL.
 - Twenty no tiene un estado "inactivo" para los webhooks: `--pause` deja `operations` vacío. El script nunca borra webhooks.
 - El runtime que recibe el webhook necesita el mismo `TWENTY_WEBHOOK_SECRET` en su entorno.
+
+### Señal calificada → prospección dirigida (`prospect-on-qualified`)
+
+Cuando un comercial califica en Twenty una señal de feria (`commercialSignal.status` → `QUALIFIED`), el Prospector explora esa feria en el momento, sin esperar al run diario ni al semanal.
+
+1. Twenty envía `commercialSignal.updated` (o `commercialSignal.created` si la señal se crea ya calificada) al mismo `POST /webhooks/twenty`, con la misma firma HMAC. La ruta enruta por objeto (`objectMetadata.nameSingular`): las hipótesis siguen al evaluador HUMAN y a email-ops; las señales, a `src/signals/qualified.ts`.
+1. Solo cuentan las **señales de feria**: sin `companyId`, `signalType` `FAIR`, `CONGRESS` o `EVENT`, y una URL http(s) en `sourceUrl` (un dominio sin esquema se completa con `https://`). Las señales por expositor (las que el Prospector cuelga de una empresa), las de otro tipo y las que no tienen URL se ignoran; la respuesta lleva `signal.status = "ignored"` y el motivo, que también queda en el log.
+1. Transición: si llega `updatedFields`, debe incluir `status` (editar otro campo de una señal ya calificada no la recalifica). Sin `updatedFields` (por ejemplo, en `created`) basta con `status = QUALIFIED`, y la ventana de 24 h hace de guarda.
+1. Una vez por señal: si la señal ya emitió `signal.qualified` en las últimas 24 h, no se emite nada (`signal.status = "within_window"`). Calificar → descalificar → recalificar, o un reenvío del webhook, no relanza la prospección. Pasadas 24 h, una recalificación sí la relanza. La clave del evento se encadena con el evento anterior de la señal (`evt:signal.qualified:{signal_id}:{id_anterior|first}`), así que dos entregas simultáneas producen un solo evento.
+1. La tarea `EVENT` `prospect-on-qualified` (seed, agente Prospector, `max_concurrency` 1) se dispara con `signal.qualified` y encola un `TaskRun` (clave `taskrun:{task_id}:event:{event_id}`) con el input del scout dirigido: `{"mode": "scout", "max_events": 1, "event_url": "...", "event_name": "...", "signal_id": "...", "event": {...}}`. `mode: "scout"` es necesario porque la clave `event` elegiría el modo directo. El scout ignora `signal_id` y `event`.
+1. Cada run encolado deja la fila de auditoría `prospect.on_qualified` (actor `system`, método `EVENT`, sujeto `commercial_signal` = id de la señal, `payload` con `signal_id` y `run_id`). Consulta: `GET /audit?action=prospect.on_qualified`.
+
+Respuesta del webhook: `202` si se emitió el evento, `200` si se ignoró o cayó dentro de la ventana, y `502` si el bus de eventos no pudo publicarlo.
+
+#### Paso manual en Twenty (una vez por entorno)
+
+El runtime no crea este webhook solo. Elige una de las dos opciones:
+
+- **Con el script** (recomendado): `pnpm register:webhook` actualiza el webhook existente (marca `pxos-runtime:human-feedback`) para que suscriba también `commercialSignal.updated` y `commercialSignal.created`. Prueba antes con `--dry-run`.
+- **A mano en Twenty**: en *Settings → APIs & Webhooks → Webhooks*, abre el webhook del runtime (el que apunta a `/webhooks/twenty`) y añade a sus operaciones el objeto *Commercial Signal* con las operaciones **Updated** y **Created**. Si prefieres un webhook aparte, créalo con:
+  - URL: la misma del webhook de las hipótesis, `http://pxos-runtime:4020/webhooks/twenty` (o `http://host.docker.internal:<puerto>/webhooks/twenty` si el runtime corre en el host).
+  - Operaciones: `commercialSignal.updated` y `commercialSignal.created`.
+  - Secret: el valor de `TWENTY_WEBHOOK_SECRET` del runtime (el mismo de siempre; nunca en la URL).
+
+Después, ejecuta `pnpm seed` en el runtime para crear la tarea `prospect-on-qualified`, y comprueba con `GET /tasks/:id/schedule` que el trigger `EVENT` está registrado (`in_sync: true`).
 
 ### Vínculo con la ejecución de origen
 

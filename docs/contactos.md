@@ -4,13 +4,16 @@ Hasta la tanda 16, el sistema encontraba empresas y redactaba borradores, pero n
 
 Este documento es la referencia del diseño: por qué se hace así, qué hace cada fase, qué no hará nunca y en qué se apoya legalmente. Lo que ve y hace el comercial está en la [guía del equipo comercial](guia-comercial.md#cuando-validas-el-sistema-busca-el-contacto); la operación (variables, backfill) está en el [runbook](runbook-local.md#backfill-de-contactos).
 
-> **Nota:** este documento describe la especificación de la tanda 17. Los nombres exactos de variables, endpoints y comandos son los del código y del [README del runtime](../runtime/agent-runtime/README.md); si alguno difiere, manda el README.
+Desde la tanda 19, cuando la web publica a una **persona con nombre y cargo**, el ContactFinder además la crea en la pestaña nativa **Personas** de Twenty ([detalle](#la-person-nativa)), para que los correos con esa dirección se asocien a su ficha.
+
+> **Nota:** este documento describe la especificación de la tanda 17, ampliada en la tanda 19 con la Person nativa. Los nombres exactos de variables, endpoints y comandos son los del código y del [README del runtime](../runtime/agent-runtime/README.md); si alguno difiere, manda el README. Los puntos marcados `[POR VERIFICAR]` dependen de la implementación final.
 
 ## Contenido
 
 1. [Por qué este diseño](#por-qué-este-diseño)
 1. [Fase 1: la web de la propia empresa](#fase-1-la-web-de-la-propia-empresa)
 1. [Prioridad entre candidatos](#prioridad-entre-candidatos)
+1. [La Person nativa](#la-person-nativa)
 1. [Fase 2: enriquecimiento externo](#fase-2-enriquecimiento-externo)
 1. [Qué nunca hace](#qué-nunca-hace)
 1. [Base legal, en términos llanos](#base-legal-en-términos-llanos)
@@ -47,7 +50,8 @@ Se dispara al validar una hipótesis, **antes** de redactar el borrador (flujo d
 1. **Verifica** cada candidato por sintaxis y por registro MX del dominio. No se hace sondeo SMTP en esta versión: no se "llama" al servidor de la empresa para comprobar si el buzón existe.
 1. **Escribe el resultado**:
    - Si **Email to** estaba vacío y hay un candidato válido, lo rellena con el mejor.
-   - Siempre crea un Research **«Contacto — empresa»** con cada candidato encontrado y la URL exacta de origen.
+   - Si el mejor candidato es una **persona con nombre publicado**, hace *upsert* de su [Person nativa](#la-person-nativa) en Twenty.
+   - Siempre crea un Research **«Contacto — empresa»** con cada candidato encontrado y la URL exacta de origen (y el `personId`, si se creó la Person).
    - Si no hay nada publicado, crea el Research **«Sin contacto público»** y la hipótesis pasa a la fase 2 (si está activada).
 
 La fase 1 no necesita ninguna clave ni cuenta externa.
@@ -62,6 +66,33 @@ La fase 1 no necesita ninguna clave ni cuenta externa.
 | Nunca | **Descartados** | `noreply@`, `no-reply@`, `dpo@`, `privacy@`, `baja@`, direcciones de baja o protección de datos, y cualquier dirección o dominio en la lista de supresión | No se proponen ni como candidato de reserva. |
 
 Dentro de un mismo nivel, gana el candidato con la fuente más específica (página de equipo antes que pie de página). Los demás candidatos no se pierden: quedan listados en el Research, por si el comercial prefiere otro.
+
+## La Person nativa
+
+Hasta la tanda 18, el ContactFinder encontraba nombres y cargos y los dejaba solo en el texto del Research. La pestaña **Personas** de Twenty estaba vacía y el nombre no servía para nada más. Desde la tanda 19 se convierte en un registro nativo.
+
+**Cuándo se crea.** Cuando hay una persona con **nombre publicado** en la web de la empresa, asociada a un email del dominio de la empresa. El caso típico es la página de equipo con «Marta López, Directora de marketing» y `marta.lopez@empresa.com`.
+
+**Cuándo NO se crea.** Los buzones genéricos y de función (`info@`, `contacto@`, `comercial@`, `ventas@`, `export@`...) no crean Person: son de un departamento, no de una persona, y siguen yendo a **Email to** y al Research como hasta ahora. Tampoco se crea si solo hay un nombre sin email del dominio, ni se inventa un email para un nombre ([no inventa emails](#qué-nunca-hace)).
+
+| Campo de la Person | Valor |
+|---|---|
+| Nombre | El publicado por la web |
+| Email | El de la persona, del dominio de la empresa |
+| Cargo (`jobTitle`) | El que la web asocia a esa persona |
+| Empresa | Enlazada a la empresa de la hipótesis |
+
+Reglas:
+
+- **Dedupe por email.** Si ya existe una Person con esa dirección, se reutiliza: no se duplica ni se sobrescribe lo que ya tuviera rellenado (`[POR VERIFICAR]` si completa el cargo cuando estaba vacío). Lo que escribes tú manda siempre, igual que con **Email to**.
+- **El Research referencia el `personId`**, de modo que del Research «Contacto — empresa» se salta a la ficha de la persona.
+- **Idempotente.** Repetir la pasada o el [backfill](#backfill-de-las-hipótesis-existentes) no crea duplicados.
+- **No sustituye a Decision maker.** El campo de la hipótesis sigue siendo decisión del comercial; la Person solo está disponible para elegirla `[POR VERIFICAR]` si el ContactFinder llega a rellenarlo en el futuro.
+- **Misma fuente y trazabilidad:** la URL de origen consta en el Research.
+
+**Para qué sirve.** Twenty asocia los correos por dirección. Con la persona creada, los correos que envías y recibes con esa dirección cuelgan de su ficha como timeline de conversación, sin trabajo manual. Es la ventaja de usar el objeto nativo en lugar de guardar el nombre en una nota. Depende de que el buzón conectado a Twenty sincronice mensajes (`[POR VERIFICAR]`). Con un buzón genérico no hay Person y, por tanto, no hay timeline.
+
+**Fase 2.** Si el proveedor externo devuelve nombre y cargo con confianza de 0,70 o más, se aplica la misma regla (`[POR VERIFICAR]`); por debajo, no se crea Person, igual que no se rellena **Email to**.
 
 ## Fase 2: enriquecimiento externo
 
@@ -88,7 +119,8 @@ El proveedor `stub` (para desarrollo y pruebas) devuelve datos ficticios sin sal
 ## Qué nunca hace
 
 - **No inventa emails.** Nunca construye una dirección a partir de un patrón (`nombre.apellido@dominio`) ni adivina buzones. Si no hay un email publicado o devuelto por un proveedor, la hipótesis queda sin destinatario.
-- **No pisa lo manual.** Si **Email to** ya tiene un valor, el sistema no lo cambia, aunque encuentre otro mejor: el candidato queda en el Research y la decisión es tuya. Lo que escribes tú manda siempre.
+- **No pisa lo manual.** Si **Email to** ya tiene un valor, el sistema no lo cambia, aunque encuentre otro mejor: el candidato queda en el Research y la decisión es tuya. Lo que escribes tú manda siempre. Lo mismo vale para una Person creada por ti.
+- **No crea Person de buzones genéricos** ni de nombres sin email publicado.
 - **No envía nada.** Ni emails ni mensajes. Rellenar **Email to** no avisa a nadie.
 - **No consulta proveedores sin un hueco real.** Si la hipótesis ya tiene destinatario, o la fase 1 lo ha encontrado, no se gasta ninguna consulta.
 - **No usa direcciones de otros dominios** distintos del de la empresa.
@@ -114,6 +146,7 @@ En **Commercial OS → Research**, junto a la empresa de la hipótesis, hay un r
 | Elemento | Qué significa |
 |---|---|
 | **Candidato elegido** | La dirección que se ha escrito en **Email to** (o la que se habría escrito si ya había una manual). |
+| **Person** | Si el candidato es una persona con nombre, el enlace a su ficha en **Personas** (`personId`). |
 | **Tipo** | Persona con cargo, buzón de función o genérico (la [prioridad](#prioridad-entre-candidatos)). |
 | **Fuente (URL)** | La página exacta donde aparece la dirección. Ábrela: es la comprobación de que existe y de que la publica la empresa. |
 | **Otros candidatos** | Los demás emails válidos encontrados, con su fuente, por si prefieres otro. |
@@ -172,11 +205,15 @@ Hasta entonces, la regla es la de este documento: web propia primero, un proveed
 - **Webs que cargan el contenido con JavaScript.** La fase 1 lee el HTML de las páginas; un email que solo aparece tras ejecutar JavaScript puede no verse.
 - **MX no garantiza que el buzón exista.** Un dominio con MX puede rechazar la dirección concreta; si pasa, el rebote lo recoge el [triaje del inbound](inbound-triaje.md) y te deja una nota.
 - **El mejor candidato no es siempre el decisor.** Un buzón genérico llega a alguien de la empresa, no necesariamente a quien compra: por eso se prefiere la persona con cargo cuando la web la publica.
+- **Las Person no llevan `tenantId`.** Es un objeto estándar de Twenty: el aislamiento por tenant es por convención, y solo `publiexpe` escribe en él ([límites](twenty-nativo.md#límites-conocidos)).
+- **Un nombre sin cargo** crea la Person con el cargo vacío; el cargo se completa solo si una pasada posterior lo encuentra `[POR VERIFICAR]`.
 - **El tope diario de la fase 2 retrasa, no pierde.** Lo que no cabe hoy se procesa mañana.
 
 ## Documentos relacionados
 
 - [Guía del equipo comercial](guia-comercial.md#cuando-validas-el-sistema-busca-el-contacto): qué ves y qué haces.
+- [Twenty nativo](twenty-nativo.md#personas): dónde aparece la Person y por qué.
+- [Triaje del inbound](inbound-triaje.md#clases-y-acciones): la Person del remitente cuando contesta un interesado.
 - [Runbook de operación local](runbook-local.md#backfill-de-contactos): variables, backfill y problemas frecuentes.
 - [Plan de warm-up del canal de email](email-warmup.md): el calendario que limita cuántos borradores envías.
 - [Triaje del inbound](inbound-triaje.md): rebotes y bajas.

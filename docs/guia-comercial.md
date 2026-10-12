@@ -1,17 +1,21 @@
 # Guía del equipo comercial
 
-Esta guía explica cómo trabajar cada día con PubliEXPE Commercial OS desde Twenty, sin necesidad de conocimientos técnicos. En unos 10 minutos al día revisas las oportunidades que el sistema ha preparado para ti, y decides cuáles merecen tu tiempo.
+Esta guía explica cómo trabajar cada día con PubliEXPE Commercial OS desde Twenty, sin necesidad de conocimientos técnicos. En unos 10 minutos al día revisas las hipótesis que el sistema ha preparado para ti, decides cuáles merecen tu tiempo y despachas tu bandeja de **Tareas**.
 
 El sistema propone; tú decides. El sistema nunca contacta con nadie por su cuenta: todo envío lo lanzas tú.
+
+Desde la tanda 19, el trabajo se reparte entre las pestañas nativas de Twenty en lugar de acumularse en notas: lo que te toca hacer está en **Tareas**, las personas de contacto en **Personas** (con su historial de correos) y los tratos con interés real en **Oportunidades**. El mapa completo está en [Twenty nativo](twenty-nativo.md).
 
 ## Contenido
 
 1. [Qué hace el sistema por ti](#qué-hace-el-sistema-por-ti)
 1. [Señales de feria: tu cola de decisión](#señales-de-feria-tu-cola-de-decisión)
 1. [Dónde mirar en Twenty](#dónde-mirar-en-twenty)
+1. [Tu bandeja: las Tareas](#tu-bandeja-las-tareas)
 1. [Cómo leer una hipótesis](#cómo-leer-una-hipótesis)
 1. [Tu rutina diaria de 10 minutos](#tu-rutina-diaria-de-10-minutos)
 1. [Cuando validas, el sistema busca el contacto](#cuando-validas-el-sistema-busca-el-contacto)
+1. [Personas y oportunidades](#personas-y-oportunidades)
 1. [Borradores de email](#borradores-de-email)
 1. [Respuestas de los clientes](#respuestas-de-los-clientes)
 1. [Estados: cuándo usar cada uno](#estados-cuándo-usar-cada-uno)
@@ -55,12 +59,12 @@ La tarea diaria reparte su presupuesto entre **todas las ferias que tienes en `Q
 ### Lo que el sistema no hace
 
 - **No envía emails ni mensajes por su cuenta.** Un correo solo sale cuando tú revisas el borrador y pulsas el envío.
-- **No contacta con decisores.** Busca una dirección de contacto publicada por la empresa y te la deja en **Email to**, pero elegir a quién escribir y cuándo es cosa tuya.
-- **No cambia etapas de oportunidad ni crea presupuestos.**
+- **No contacta con decisores.** Busca una dirección de contacto publicada por la empresa, la deja en **Email to** y, si la web publica una persona con nombre y cargo, la crea en **Personas**; pero elegir a quién escribir y cuándo es cosa tuya.
+- **No mueve las oportunidades por el pipeline ni crea presupuestos.** Solo crea la oportunidad cuando [alguien responde con interés](#personas-y-oportunidades) o cuando tú lo pides; el avance de etapas es tuyo.
 - **No califica ni descarta ferias por ti.** Solo las pasa a `EXPIRED` cuando su fecha ya ha pasado.
 - **No borra nada.**
 
-Cuando validas una hipótesis, el sistema [busca el contacto](#cuando-validas-el-sistema-busca-el-contacto) de la empresa y prepara un **borrador de email**, pero nunca lo envía: los revisas y los envías tú, con un clic desde Twenty o a mano desde tu correo. Consulta [Borradores de email](#borradores-de-email). También clasifica las respuestas que llegan al buzón y te deja una nota con las que piden tu atención, sin responder nunca por ti. Consulta [Respuestas de los clientes](#respuestas-de-los-clientes).
+Cuando validas una hipótesis, el sistema [busca el contacto](#cuando-validas-el-sistema-busca-el-contacto) de la empresa y prepara un **borrador de email**, pero nunca lo envía: los revisas y los envías tú, con un clic desde Twenty o a mano desde tu correo. Consulta [Borradores de email](#borradores-de-email). También clasifica las respuestas que llegan al buzón y te deja una **tarea** con las que piden tu atención, sin responder nunca por ti. Consulta [Respuestas de los clientes](#respuestas-de-los-clientes).
 
 ## Señales de feria: tu cola de decisión
 
@@ -78,7 +82,7 @@ Una **señal** es un hecho que justifica un contacto. Las que más te importan s
 
 ### El gesto clave
 
-- **Calificar** (`QUALIFIED`): si la feria es del próximo trimestre, el agente la investiga **al momento** y, además, la mantiene en el reparto de cada mañana mientras siga vigente. Las hipótesis llegan a **Hypotheses** como siempre, en `Proposed`. Si la feria queda fuera de plazo, [verás una nota ⏳](#qué-ferias-calificar-las-del-próximo-trimestre) y no se trabajará todavía.
+- **Calificar** (`QUALIFIED`): si la feria es del próximo trimestre, el agente la investiga **al momento** y, además, la mantiene en el reparto de cada mañana mientras siga vigente. Las hipótesis llegan a **Hypotheses** como siempre, en `Proposed`. Si la feria queda fuera de plazo, [verás una tarea ⏳](#qué-ferias-calificar-las-del-próximo-trimestre) y no se trabajará todavía.
 - **Descartar** (`DISCARDED`): el sistema no vuelve a tocar esa feria.
 - **Dejar en `NEW`**: no pasa nada. Una feria sin decidir no consume presupuesto.
 
@@ -94,16 +98,17 @@ Qué verás si calificas fuera de ese plazo:
 
 | La feria queda... | Qué pasa | Qué haces |
 |---|---|---|
-| **Demasiado cerca** (menos de 45 días) | Verás una **nota ⏳** en la señal que explica los días que faltan. La señal sigue en `Qualified`, pero no se trabajará. Cuando pase la fecha, cambia sola a `Expired`. | Nada. Puedes descartarla si no quieres tenerla pendiente. |
-| **Demasiado lejana** (más de 210 días) | Verás la misma nota ⏳. La señal sigue en `Qualified` y **se queda esperando su momento**: el día en que la feria entre en plazo, entra sola en el reparto de la mañana. | Nada. No hace falta volver a calificarla. |
+| **Demasiado cerca** (menos de 45 días) | Verás una **tarea ⏳** en tu bandeja que explica los días que faltan. La señal sigue en `Qualified`, pero no se trabajará. Cuando pase la fecha, cambia sola a `Expired`. | Nada. Puedes descartar la señal si no quieres tenerla pendiente y cerrar la tarea. |
+| **Demasiado lejana** (más de 210 días) | Verás la misma tarea ⏳. La señal sigue en `Qualified` y **se queda esperando su momento**: el día en que la feria entre en plazo, entra sola en el reparto de la mañana. | Nada. No hace falta volver a calificarla. |
+| **Sin fecha** | También recibes la tarea ⏳: el sistema no puede saber si está en plazo. | Pon la fecha en la señal o descártala. |
 
-La nota ⏳ no es un fallo: es el sistema diciéndote «te he hecho caso, pero ahora no toca». Si no quieres que una feria lejana te quede pendiente, descártala.
+La tarea ⏳ no es un fallo: es el sistema diciéndote «te he hecho caso, pero ahora no toca». Si no quieres que una feria lejana te quede pendiente, descártala.
 
 El lunes, el sistema ya no te deja en la cola ferias demasiado próximas ni demasiado lejanas: la cola de `New` son, en su mayoría, ferias del próximo trimestre.
 
 ### Dónde las ves
 
-En **Commercial OS → Signals**. Filtra por **Status** = `New` para ver tu cola de decisión y por `Qualified` para ver las ferias que el sistema está trabajando. Cada señal lleva la fecha de la feria y el enlace a su fuente, para que decidas con datos.
+En **Commercial OS → Signals**, con la vista **Señales · Cola**: un tablero con una columna por estado. La columna `New` es tu cola de decisión y `Qualified`, las ferias que el sistema está trabajando; arrastra la tarjeta de una columna a otra para calificar o descartar. Cada señal lleva la fecha de la feria y el enlace a su fuente, para que decidas con datos.
 
 ### Lo que no cambia
 
@@ -115,26 +120,64 @@ El detalle técnico del ciclo está en [Prospección guiada por señales](prospe
 
 ## Dónde mirar en Twenty
 
-Abre Twenty (`http://localhost:3020` en el entorno local) y localiza en la barra lateral izquierda la carpeta **Commercial OS**. Contiene cuatro entradas, en este orden.
+Abre Twenty (`http://localhost:3020` en el entorno local). Tu trabajo está repartido entre dos zonas de la barra lateral: la carpeta **Commercial OS**, con lo que propone el sistema, y las pestañas nativas de Twenty, con lo que es tuyo.
+
+### Carpeta Commercial OS: lo que propone el sistema
 
 | Entrada | Qué es | Quién la escribe | Qué haces tú |
 |---|---|---|---|
 | **Commercial OS → Signals** | Hechos que justifican un contacto. Las ferias que se descubren cada lunes son tu cola de decisión. | El sistema las crea; tú las calificas | **Calificar o descartar las ferias nuevas.** Consulta [Señales de feria](#señales-de-feria-tu-cola-de-decisión). |
-| **Commercial OS → Research** | Investigación de apoyo sobre una empresa o señal. | El sistema | Consultarla al preparar un contacto: el Prospector la rellena desde la tanda 9 con hechos observados y sus fuentes. |
-| **Commercial OS → Hypotheses** | Las propuestas comerciales: qué vender, a quién y por qué ahora. | El sistema | **Validarlas, editarlas o rechazarlas. Es tu tarea diaria.** |
+| **Commercial OS → Research** | Investigación de apoyo sobre una empresa o señal, incluidos los contactos encontrados con su fuente. | El sistema | Consultarla al preparar un contacto: el Prospector la rellena con hechos observados y sus fuentes. |
+| **Commercial OS → Hypotheses** | Las propuestas comerciales: qué vender, a quién y por qué ahora. | El sistema | **Validarlas, editarlas o rechazarlas.** |
 | **Commercial OS → Agent runs** | Un resumen por cada ejecución del sistema: qué hizo, si fue bien y cuánto costó. | El sistema | Solo lectura. Sirve para saber si hoy se ha ejecutado todo. |
 
-### Vistas útiles
+### Pestañas nativas de Twenty: lo que es tuyo
 
-- En **Hypotheses**, abre la vista **By status**. Muestra un tablero con una columna por estado (`Proposed`, `Validated`, `Rejected`, `Expired`). Tu trabajo diario está en la columna `Proposed`.
-- En **Signals**, abre la vista **Recent signals**. Muestra primero las señales detectadas más recientemente. Para ver solo las ferias pendientes de decidir, filtra por **Status** = `New`.
-- Cambia de vista desde el selector de vistas de la parte superior de la lista.
+| Pestaña | Qué hay | Qué haces tú |
+|---|---|---|
+| **Tareas** | Todo lo que te toca hacer, con fecha: responder a un interesado, revisar una alerta. Ver [Tu bandeja](#tu-bandeja-las-tareas). | **Despacharlas. Es tu tarea diaria.** |
+| **Personas** | Las personas de contacto que el sistema encuentra en las webs de las empresas y los remitentes que te responden, con su cargo y el historial de correos. | Consultarlas antes de escribir; crear o corregir las que conozcas. |
+| **Oportunidades** | Los tratos con interés real, en un tablero por etapa. Ver [Personas y oportunidades](#personas-y-oportunidades). | Mover cada una por el pipeline según avance. |
+| **Empresas** | La ficha de cada cuenta, con todo lo relacionado. | Consultarla para tener el contexto en un solo sitio. |
+
+### Vistas de fábrica
+
+La App trae cuatro vistas pensadas para el trabajo diario. Existen cuando se ha [sincronizado la App](runbook-local.md#sincronizar-las-vistas-de-fábrica) tras la tanda 19; si todavía no las ves, usa las listas normales de cada pestaña.
+
+| Vista | Qué muestra |
+|---|---|
+| **Señales · Cola** | Tablero de señales por estado. Tu cola de decisión está en `New`. |
+| **Hipótesis · Por estado** | Tablero de hipótesis con una columna por estado (`Proposed`, `Validated`, `Rejected`, `Expired`). Tu trabajo está en `Proposed`. Sustituye a la vista **By status**. |
+| **Oportunidades · Pipeline** | Tablero de oportunidades por etapa. |
+| **Tareas · Bandeja** | Tablero de tareas por estado (*To do*, *In progress*, *Done*). |
+
+Cambia de vista desde el selector de la parte superior de la lista. En **Signals** sigue disponible la vista **Recent signals** para ver primero las detectadas más recientemente.
 
 ### Cómo se relacionan
 
-Cada **hipótesis** está enlazada a una **empresa** y a la **señal** que la originó. Desde la ficha de una empresa de Twenty también ves sus señales, hipótesis y ejecuciones. Úsalo para tener todo el contexto de una cuenta en un solo sitio.
+Cada **hipótesis** está enlazada a una **empresa** y a la **señal** que la originó. Desde la ficha de una empresa de Twenty ves también sus personas, oportunidades, tareas, señales, hipótesis y ejecuciones. Úsala para tener todo el contexto de una cuenta en un solo sitio.
 
 > **Nota:** en **Agent runs** no puedes crear ni editar registros. Es intencionado: son el registro de lo que hizo el sistema.
+
+## Tu bandeja: las Tareas
+
+Las alertas que piden una acción ya no se quedan enterradas en notas: el sistema las convierte en **tareas con fecha** en la pestaña **Tareas** de Twenty. Abre la vista **Tareas · Bandeja**, trabaja primero las que vencen antes y márcalas como hechas (*Done*) al terminar.
+
+| Tarea | Cuándo aparece | Fecha | Qué haces |
+|---|---|---|---|
+| **📬 Responder a…** | Alguien ha contestado a tu correo con interés (o con una pregunta) | La que fija el sistema al crearla | Responde desde tu correo y márcala como hecha. Es la más importante |
+| **⚠️ Revalidación fallida** | Una versión de skill en uso ha dado peor resultado al medirla con tus veredictos | +1 día | Avisa al equipo técnico: decide si se revierte. Tú no tienes que hacer nada más |
+| **Propuesta de promoción** | El optimizador propone una skill mejor y ha pasado el Release Gate | +3 días | Avisa al equipo técnico para que la revise. Si no se hace nada, no pasa nada |
+| **⏳ Fuera de ventana / sin fecha** | Has calificado una feria demasiado cercana, demasiado lejana o sin fecha | La que fija el sistema | Nada urgente: [qué ferias calificar](#qué-ferias-calificar-las-del-próximo-trimestre) |
+| **⚠️ Catálogo no disponible** | El catálogo de productos no respondió | Como máximo una al día | Nada: las hipótesis de ese día llevan familias genéricas. Avisa al equipo técnico si se repite varios días |
+
+> **Importante:** el sistema **nunca cierra ni borra tus tareas**. Una tarea sin cerrar es una tarea pendiente: lo que ves en la columna *To do* es lo que te queda por hacer.
+
+Qué **no** son tareas:
+
+- La **lista de supresión** sigue siendo una nota: es un libro donde solo se añaden líneas ([cómo se usa](#lista-de-supresión-qué-haces-antes-de-enviar)).
+- Las notas **📬 Respuesta recibida** (con el extracto del mensaje) y **⚠️ Rebote** siguen siendo notas informativas en la empresa.
+- La investigación de apoyo vive en **Research**.
 
 ## Cómo leer una hipótesis
 
@@ -153,10 +196,10 @@ Abre una hipótesis desde **Commercial OS → Hypotheses** para ver todos sus ca
 | **Timing** | Cuándo conviene actuar. Ver tabla siguiente. |
 | **Confidence** | Cuánto se fía el sistema de la hipótesis, de 0 a 1. Ver [más abajo](#cómo-interpretar-la-confianza). |
 | **Evidence** | Los datos en que se apoya la hipótesis: afirmaciones y, cuando existe, el enlace a la fuente. Compruébalas si vas a actuar. |
-| **Decision maker** | La persona de contacto recomendada. En esta versión el sistema **no la rellena**: la eliges tú. |
+| **Decision maker** | La persona de contacto recomendada. El sistema **no la rellena**: la eliges tú. Si la web de la empresa publica personas, las encontrarás ya creadas en **Personas**. |
 | **Status** | En qué punto del proceso está. Ver [Estados](#estados-cuándo-usar-cada-uno). |
 
-> **Nota:** cuando el catálogo de PubliEXPE esté conectado ([Catalog Service](catalog-service.md)), las hipótesis nuevas llevarán en **Recommended products** productos reales con su **referencia (SKU)** y un **rango de precio orientativo** por unidad, sin IVA y sin personalización. Ese rango es solo un punto de partida: **el presupuesto se hace donde siempre**, en el CMS de PubliEXPE. Si un día el catálogo no está disponible, verás una nota ⚠️ en Twenty y las hipótesis de ese día volverán a llevar familias genéricas; no tienes que hacer nada.
+> **Nota:** cuando el catálogo de PubliEXPE esté conectado ([Catalog Service](catalog-service.md)), las hipótesis nuevas llevarán en **Recommended products** productos reales con su **referencia (SKU)** y un **rango de precio orientativo** por unidad, sin IVA y sin personalización. Ese rango es solo un punto de partida: **el presupuesto se hace donde siempre**, en el CMS de PubliEXPE. Si un día el catálogo no está disponible, verás una tarea ⚠️ en tu bandeja y las hipótesis de ese día volverán a llevar familias genéricas; no tienes que hacer nada.
 
 ### Valores de Timing
 
@@ -187,9 +230,10 @@ Dos ejemplos:
 
 ## Tu rutina diaria de 10 minutos
 
-1. Abre Twenty y ve a **Commercial OS → Agent runs**. Comprueba que hay una ejecución de hoy. Si el resultado (*Outcome*) es `Failed` o `Partial`, avisa al equipo técnico (consulta [Preguntas frecuentes](#preguntas-frecuentes)). Un `Skipped` es normal si no tienes ninguna feria calificada.
-1. Ve a **Commercial OS → Signals** y filtra por **Status** = `New`. Si el lunes llegaron ferias nuevas, califica las que merecen trabajo y descarta el resto ([cómo](#señales-de-feria-tu-cola-de-decisión)).
-1. Ve a **Commercial OS → Hypotheses** y abre la vista **By status**.
+1. Abre Twenty y ve a **Tareas → Tareas · Bandeja**. Despacha primero las **📬 Responder a…** (alguien ha contestado con interés: responde hoy desde tu correo y márcala como hecha) y después el resto, empezando por las que vencen antes ([qué es cada una](#tu-bandeja-las-tareas)). Si hay una tarea ⚠️ de skill o de catálogo, no tienes que resolverla tú: avisa al equipo técnico.
+1. Ve a **Commercial OS → Agent runs** y comprueba que hay una ejecución de hoy. Si el resultado (*Outcome*) es `Failed` o `Partial`, avisa al equipo técnico (consulta [Preguntas frecuentes](#preguntas-frecuentes)). Un `Skipped` es normal si no tienes ninguna feria calificada.
+1. Ve a **Commercial OS → Signals** con la vista **Señales · Cola**. Si el lunes llegaron ferias nuevas (columna `New`), califica las que merecen trabajo y descarta el resto ([cómo](#señales-de-feria-tu-cola-de-decisión)).
+1. Ve a **Commercial OS → Hypotheses** con la vista **Hipótesis · Por estado**.
 1. En la columna `Proposed`, empieza por las hipótesis con **Timing** `IMMEDIATE` y **Confidence** más alta.
 1. Abre cada hipótesis y lee `Need`, `Why now`, `Evidence` y los importes. Decide una de estas tres acciones.
 
@@ -199,9 +243,10 @@ Dos ejemplos:
    | **Editar y validar** | Es buena, pero hay que corregir algo: cantidades, presupuesto, productos, el enfoque. | Corrige los campos y después cambia **Status** a `Validated`. |
    | **Rechazar** | No encaja: empresa equivocada, ya es cliente de otro comercial, no es el momento, es un competidor. | Cambia **Status** a `Rejected`. |
 
-   Puedes cambiar el estado abriendo la hipótesis y editando el campo **Status**, o arrastrando la tarjeta a otra columna del tablero **By status**.
+   Puedes cambiar el estado abriendo la hipótesis y editando el campo **Status**, o arrastrando la tarjeta a otra columna del tablero **Hipótesis · Por estado**.
 
-1. Para cada hipótesis validada, espera a que el sistema deje el contacto y el borrador, y **revisa el destinatario y su fuente antes del clic**: abre **Email to** y el Research «Contacto — empresa» ([cómo](#cuando-validas-el-sistema-busca-el-contacto)). Después decide tú el siguiente paso: por qué canal y con qué mensaje. Si quieres a una persona concreta, búscala o créala en Twenty y enlázala en **Decision maker**.
+1. Para cada hipótesis validada, espera a que el sistema deje el contacto y el borrador, y **revisa el destinatario y su fuente antes del clic**: abre **Email to**, el Research «Contacto — empresa» y, si hay, la persona en **Personas** ([cómo](#cuando-validas-el-sistema-busca-el-contacto)). Después decide tú el siguiente paso: por qué canal y con qué mensaje. Si quieres a una persona concreta, selecciónala en **Decision maker**.
+1. Echa un vistazo a **Oportunidades → Oportunidades · Pipeline**: mueve de etapa las que hayan avanzado ([cómo](#personas-y-oportunidades)).
 1. Si una feria calificada ya no te da más (has sacado de ella lo que querías), descártala para que el sistema deje de dedicarle presupuesto (consulta [Estados de señal](#señales)).
 
 > **Importante:** validar una hipótesis **no envía ningún email** ni avisa a nadie. Solo significa "esta hipótesis es buena y la voy a trabajar yo". El contacto con el cliente lo decides y lo ejecutas tú. Esto es así por diseño: en el sistema, toda acción con efecto hacia fuera (enviar un email, contactar con un decisor) exige una persona.
@@ -225,7 +270,8 @@ Qué hace, en este orden:
 
 1. **Mira la web de la propia empresa** (portada, contacto, aviso legal, equipo) y recoge los emails que la empresa publica, solo del dominio de la empresa. Prefiere una persona con cargo relevante; si no hay, un buzón de función (`comercial@`, `ventas@`, `marketing@`, `export@`); y si tampoco, uno genérico (`info@`, `contacto@`). Nunca propone `noreply`, protección de datos, bajas ni nada de la lista de supresión.
 1. **Escribe el mejor candidato en Email to**, pero **solo si estaba vacío**. Si ya habías puesto una dirección tú, no la toca.
-1. **Deja un Research «Contacto — empresa»** en **Commercial OS → Research** con todos los candidatos y la **URL exacta** de la página donde aparece cada uno.
+1. **Crea la persona en Personas**, si la web publica una persona con nombre y cargo: queda enlazada a la empresa, con su cargo y su email. Los buzones como `info@` o `comercial@` **no** crean persona.
+1. **Deja un Research «Contacto — empresa»** en **Commercial OS → Research** con todos los candidatos y la **URL exacta** de la página donde aparece cada uno (y el enlace a la persona, si se creó).
 1. **Si la web no publica ningún email**, deja un Research **«Sin contacto público»**. Si el enriquecimiento externo está activado, lo intentará después; si no, queda para ti.
 
 > **Nota:** el sistema nunca inventa una dirección (no adivina `nombre.apellido@`). Todo lo que ves en **Email to** viene de una página pública o, si está activado, de un proveedor externo, y consta con su fuente.
@@ -235,7 +281,7 @@ Qué hace, en este orden:
 Antes de poner `Reviewed` en un borrador:
 
 1. Abre la hipótesis y mira **Email to**.
-1. Abre el Research **«Contacto — empresa»** de esa empresa y haz clic en la **URL de origen**: comprueba que la dirección está ahí y que tiene sentido para esta oferta.
+1. Abre el Research **«Contacto — empresa»** de esa empresa y haz clic en la **URL de origen**: comprueba que la dirección está ahí y que tiene sentido para esta oferta. Si se creó una persona, ábrela desde el Research: verás su cargo y, si ya habéis intercambiado correos, el historial.
 1. Si hay varios candidatos y prefieres otro (por ejemplo, la persona de marketing en lugar de `info@`), sustituye **Email to** por ese. Tu valor manda: el sistema no lo vuelve a cambiar.
 1. Sigue con la revisión del borrador y la [lista de supresión](#lista-de-supresión-qué-haces-antes-de-enviar) como siempre.
 
@@ -249,6 +295,35 @@ La empresa no publica un email en su web. Tienes dos opciones:
 | **Esperar al enriquecimiento** | Si el enriquecimiento externo está activado, el sistema consulta un proveedor para esas hipótesis (con un tope diario). Solo rellena **Email to** si la confianza es alta; si no, deja el candidato en el Research para que decidas tú. |
 
 > **Importante:** que el sistema encuentre un contacto no significa que el correo salga. El envío sigue siendo tuyo: `Reviewed` y el botón. Los criterios legales y qué hace cada fase están en [Búsqueda de contactos](contactos.md).
+
+## Personas y oportunidades
+
+Estas dos pestañas nativas de Twenty se llenan solas, pero con criterio: **no todo lo que el sistema propone es un trato**.
+
+### Personas
+
+Cada persona que el sistema encuentra publicada en la web de una empresa (con nombre y cargo), o que te responde a un correo, aparece en **Personas**, enlazada a su empresa. Para ti tiene dos ventajas:
+
+- **Sabes a quién escribes**: nombre, cargo y empresa, en lugar de una dirección suelta.
+- **Ves el historial de correos**: Twenty asocia los correos por dirección, así que en la ficha de la persona se acumula la conversación (lo que enviaste y lo que respondió). Esto depende de que el buzón conectado a Twenty sincronice mensajes; si no ves correos en una ficha donde sí ha habido intercambio, avisa al equipo técnico.
+
+No se crea persona para direcciones de departamento (`info@`, `comercial@`, `ventas@`): esas siguen yendo a **Email to**. Si conoces a la persona real de una empresa, créala tú en **Personas** con su email y el sistema la reutilizará (no duplica por email).
+
+### Oportunidades: solo cuando hay tracción
+
+Las hipótesis **no** se vuelcan a **Oportunidades**: la mayoría no pasa de propuesta y llenarías el pipeline de ruido. Una oportunidad aparece solo en dos casos:
+
+| Caso | Qué ocurre |
+|---|---|
+| **Alguien responde con interés** (`Interesado`) | El sistema crea la **oportunidad** de la empresa, con la persona que te escribió como punto de contacto, y una tarea **📬 Responder a…** con fecha en tu bandeja. |
+| **Tú decides promocionar una hipótesis** | Pídelo al equipo técnico (es una operación auditada). Crea la oportunidad sin esperar respuesta, para hipótesis que ya sabes que son buenas. |
+
+Qué debes saber:
+
+- **Una sola oportunidad abierta por empresa.** Si la empresa ya tiene una abierta, no se crea otra.
+- **El sistema no la mueve de etapa.** El pipeline es tuyo: arrastra la tarjeta en **Oportunidades · Pipeline** según avance el trato (reunión, propuesta, cliente...).
+- **La hipótesis no cambia sola.** Un interesado no pasa la hipótesis a `Validated`; si procede, valídala tú.
+- **El funnel de venta vive aquí**, no en la hipótesis. La hipótesis es la idea del sistema; la oportunidad es el trato real.
 
 ## Borradores de email
 
@@ -267,12 +342,9 @@ En las dos formas se aplican las mismas reglas: [lista de supresión](#lista-de-
 
 ### Dónde aparece el borrador
 
-El borrador aparece en dos sitios:
+El borrador está **en la hipótesis**, en los campos **Email to** (destinatario), **Email subject** (asunto) y **Email body** (cuerpo), con **Email status** = `Draft`. Es donde lo revisas y lo envías.
 
-- **En la hipótesis**, en los campos **Email to** (destinatario), **Email subject** (asunto) y **Email body** (cuerpo), con **Email status** = `Draft`. Es donde lo revisas y lo envías.
-- **Como una nota en la empresa**, con el título "Borrador email — ...". Es una copia de referencia: se crea siempre, aunque no uses el envío desde Twenty.
-
-> **Nota:** edita el borrador **en la hipótesis**, no en la nota. Lo que envía Twenty son los campos de la hipótesis.
+> **Nota:** antes de la tanda 19 el sistema dejaba además una copia como nota en la empresa («Borrador email — ...»). Esa nota deja de crearse si el envío desde Twenty no la necesita (el equipo técnico lo confirma; las notas antiguas se conservan). Edita siempre el borrador **en la hipótesis**: lo que envía Twenty son sus campos.
 
 ### Enviar desde Twenty con un clic
 
@@ -303,14 +375,14 @@ Qué debes saber:
 - **Sin `Reviewed`, no sale nada.** Si pulsas el botón con otro estado, Twenty se detiene sin enviar. Tampoco envía si la hipótesis no está en `Validated` o si faltan destinatario, asunto o cuerpo.
 - **No vuelvas a pulsar si se queda en `Sending`.** El envío ha fallado o sigue en curso. Avisa al equipo técnico, que lo revisa en **Workflows → Runs**. Pulsar otra vez podría duplicar el correo.
 - **El correo enviado no aparece en la carpeta *Enviados* de IONOS**, porque Twenty solo se conecta a tu buzón para enviar. Las respuestas de los clientes llegan a tu correo como siempre.
-- **No tienes histórico del correo en la ficha de la empresa.** Queda `Sent` en la hipótesis y el registro del envío en **Workflows → Runs**.
+- **El historial de correos cuelga de la persona, no de la empresa.** Si el destinatario es una persona de **Personas**, Twenty asocia los correos por su dirección y los ves en su ficha. Si escribes a un buzón genérico (`info@`), no hay persona y no hay historial; queda `Sent` en la hipótesis y el registro del envío en **Workflows → Runs**.
 - **Cuenta tus envíos del día.** En **Hypotheses**, filtra por **Email status** = `Sent` y por fecha de actualización.
 
 ### Alternativa: enviar a mano desde tu correo
 
-Usa esta forma si el envío desde Twenty no está disponible. El sistema deja el mismo borrador en la nota de la empresa.
+Usa esta forma si el envío desde Twenty no está disponible. El borrador es el mismo, el de los campos de la hipótesis.
 
-1. Abre la nota "Borrador email — ..." de la empresa de la hipótesis que acabas de validar.
+1. Abre la hipótesis que acabas de validar y copia **Email subject** y **Email body**.
 1. **Lee el borrador completo.** Revísalo siempre, aunque la hipótesis te parezca buena.
 1. Personaliza lo que haga falta: saludo, nombre de la persona, referencia al evento, cantidades o tono. Comprueba que los datos son correctos.
 1. Antes de enviar, comprueba que el destinatario no está en la lista de supresión (consulta el apartado siguiente).
@@ -343,8 +415,8 @@ Cada 2 horas el sistema lee el buzón (sin marcar ni mover nada) y clasifica cad
 
 | Lo que llega | Lo que hace el sistema | Lo que haces tú |
 |---|---|---|
-| **Interesado** (pide precios, catálogo, una llamada...) | Deja en la empresa (y en la hipótesis del envío) una nota `📬 Respuesta recibida — Interesado (fecha hora)` con un extracto del texto y el envío al que responde. | Abre el correo en tu bandeja y respóndelo hoy. |
-| **Pregunta** concreta | Nota `📬 Respuesta recibida — Pregunta (...)`. | Contesta la pregunta desde tu correo. |
+| **Interesado** (pide precios, catálogo, una llamada...) | Crea la **persona** que te escribe en **Personas**, la **oportunidad** de la empresa en el pipeline (con esa persona como contacto) y una **tarea 📬 «Responder a…»** con fecha en tu bandeja. Deja además en la empresa una nota `📬 Respuesta recibida — Interesado (fecha hora)` con un extracto del texto. | Abre la tarea, lee el correo en tu bandeja y respóndelo hoy. Márcala como hecha. |
+| **Pregunta** concreta | Tarea **📬 «Responder a…»** y nota `📬 Respuesta recibida — Pregunta (...)`. No crea oportunidad. | Contesta la pregunta desde tu correo. |
 | **No interesado** explícito | Nota `📬 Respuesta recibida — No interesado (...)` y alta en la lista de supresión. | No vuelvas a escribirle. Si la clasificación es un error, avisa al operador. |
 | **Baja** | Alta en la lista de supresión (como hasta ahora). | Nada. |
 | **Rebote**: la dirección no existe | Nota `⚠️ Rebote: el email no existe (...)` en la empresa. No la añade a la supresión. | Busca otro contacto y corrige **Email to** antes de volver a enviar. |
@@ -354,8 +426,9 @@ Qué debes saber:
 
 - **La clasificación es una ayuda, no un filtro.** Sigue leyendo tu bandeja: todo el correo sigue ahí.
 - **En caso de duda, el sistema no decide.** Una respuesta ambigua ("ahora no", "escribidme en enero", "habla con mi compañera") queda como *Otro* y no crea nota ni da de baja a nadie.
-- **Las notas se buscan por el título.** Filtra las notas por "Respuesta recibida" para ver las de los últimos días.
-- Si el remitente no corresponde a ningún envío ni a ninguna empresa de Twenty (por ejemplo, una dirección de Gmail), no hay nota: el correo queda en tu bandeja.
+- **Tu punto de entrada es la tarea**, no la nota. La nota 📬 queda en la empresa como contexto (el extracto del mensaje); la acción pendiente está en **Tareas**.
+- Si el remitente no corresponde a ningún envío ni a ninguna empresa de Twenty (por ejemplo, una dirección de Gmail), no hay nota, ni tarea, ni oportunidad: el correo queda en tu bandeja.
+- **Un interesado no cambia sola la hipótesis.** Si procede, valídala tú.
 
 Cómo funciona por dentro, las garantías y el evento para n8n están en [Triaje del inbound](inbound-triaje.md).
 
@@ -381,7 +454,7 @@ Las señales de feria nacen en `NEW` y las gestionas tú: el estado que les pone
 |---|---|---|
 | `NEW` | Feria descubierta, sin decidir. | El sistema |
 | `REVIEWING` | La estás mirando. Opcional: no dispara nada. | Tú |
-| `QUALIFIED` | Trabájala: si es del próximo trimestre (de 2 a 6 meses vista), el agente la investiga al momento y la mantiene en el reparto diario. Fuera de plazo se queda esperando, con una nota ⏳. | Tú |
+| `QUALIFIED` | Trabájala: si es del próximo trimestre (de 2 a 6 meses vista), el agente la investiga al momento y la mantiene en el reparto diario. Fuera de plazo se queda esperando, con una tarea ⏳. | Tú |
 | `DISCARDED` | Ya no: el sistema no la toca. | Tú |
 | `EXPIRED` | La fecha de la feria ya pasó. | Solo el sistema |
 
@@ -414,7 +487,11 @@ No. Validar solo cambia el estado de la hipótesis. El sistema no envía emails 
 
 ### El sistema se equivocó de contacto
 
-El sistema elige la **dirección de email** (**Email to**) a partir de lo que la empresa publica, pero no elige a la persona: el campo **Decision maker** viene vacío. Si **Email to** no es la dirección adecuada, cámbiala (el sistema no la volverá a tocar) y, si quieres, busca a la persona en **People** (o créala) y selecciónala en **Decision maker**. Si el campo ya tiene a alguien que no es, sustitúyelo. Ese cambio cuenta como una edición.
+El sistema elige la **dirección de email** (**Email to**) a partir de lo que la empresa publica y crea en **Personas** a quien la web publica con nombre y cargo, pero no decide quién es el decisor: el campo **Decision maker** viene vacío. Si **Email to** no es la dirección adecuada, cámbiala (el sistema no la volverá a tocar) y, si quieres, busca a la persona en **Personas** (o créala) y selecciónala en **Decision maker**. Si el campo ya tiene a alguien que no es, sustitúyelo. Ese cambio cuenta como una edición.
+
+### ¿Por qué mis hipótesis no aparecen en Oportunidades?
+
+Porque una hipótesis es una propuesta del sistema, no un trato. A **Oportunidades** solo llegan los tratos con tracción: cuando [alguien responde con interés](#personas-y-oportunidades) o cuando decides promocionar una hipótesis concreta. Así el pipeline refleja negocio real.
 
 ### La empresa ya es cliente
 
@@ -437,7 +514,7 @@ Distingue dos casos:
 
 Abre **Commercial OS → Agent runs** y mira la ejecución de hoy:
 
-- **Skipped:** no tienes ninguna feria en `QUALIFIED` vigente y dentro de plazo (de 2 a 6 meses vista), así que no había nada que trabajar. Es lo esperado hasta que califiques alguna. Si calificaste una y no pasó nada, mira si tiene la [nota ⏳](#qué-ferias-calificar-las-del-próximo-trimestre): está fuera de plazo.
+- **Skipped:** no tienes ninguna feria en `QUALIFIED` vigente y dentro de plazo (de 2 a 6 meses vista), así que no había nada que trabajar. Es lo esperado hasta que califiques alguna. Si calificaste una y no pasó nada, mira si tienes la [tarea ⏳](#qué-ferias-calificar-las-del-próximo-trimestre) en tu bandeja: está fuera de plazo.
 - **Success** y 0 hipótesis nuevas: las ferias calificadas no tenían expositores nuevos con encaje, o ya estaban registrados. El campo **Result** detalla cuántos se descartaron y por qué.
 - **Partial** o **Failed**: algo falló. Avisa al equipo técnico e indica la fecha.
 - **No hay ejecución de hoy:** avisa al equipo técnico.

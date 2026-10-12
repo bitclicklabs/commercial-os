@@ -157,3 +157,11 @@ Integración de `feat/mvp0-bootstrap` en `main` (PR #1).
 - Seed: daily-event-prospecting v2 ({mode:'signals'}, la v1 con la feria de ejemplo se conserva versionada), weekly-event-scouting v2 (discover_only), prospect-on-qualified nueva, task de test huérfana desactivada. pnpm register:webhook suscribe además commercialSignal.updated+created en el webhook existente.
 - Operación manual puente del mismo día (previa a la tanda): Anuga Select Ibérica 2027 y Barcelona Wine Week 2027 → QUALIFIED con scouts dirigidos lanzados a mano; 30 señales viejas (Gastrónoma por-expositor + feria ficticia) → DISCARDED.
 - PM: event_date añadido al input del trigger (recomendación cruzada entre agentes); docs del webhook reconciliados. Suite 1017 tests, sin migraciones.
+
+## 2026-10-12 — Tanda 16 (PR #16)
+
+- Endurecimiento post-incidente (postmortem: docs/incidentes/2026-10-12-catchup-tenants-test.md — tormenta de catch-up de 1.418 tasks de tenants de test, 17,95 € y 250 registros basura; mitigado el mismo día). Tres candados, cada uno suficiente para evitarlo o reducirlo:
+- Scheduler: allowlist SCHEDULER_TENANTS (default publiexpe; `*` solo test, con WARN) aplicada en query, registro, tick y consumidor EVENT; catch-up con tope (CATCHUP_MAX_SLOTS=1, el slot más RECIENTE — antes ejecutaba el más antiguo — y CATCHUP_MAX_AGE_MS=48 h); POST /tasks/:id/run manual intacto. Cleanup nuevo `pnpm cleanup:archive-test-tenants` por patrón de tenant con --dry-run y --protect.
+- Guard estructural en tests: cualquier conexión de la suite a la BD llamada `agentos` se rechaza a nivel de pg.Client salvo ALLOW_SHARED_TEST_DB=1, con el remedio en el mensaje. El PM integra ya contra BD propia (agentos_wt16_pm).
+- Tenancy en Twenty: filtro por tenantId en el punto común del cliente (list/get/update), registros manuales sin tenant = del tenant propietario vía or(eq,NULL,"") — sintaxis verificada en vivo contra el Twenty real; updates cruzados rechazados (TWENTY_TENANT_MISMATCH); webhooks responden 200 ignored a records de otro tenant (habría evitado las 106 evaluaciones colaterales de la mitigación). companies/people/notes sin tenantId documentado como límite.
+- Suite 1066 tests; sin migraciones. Riesgos residuales anotados: observers de eventos de tenants de test, ONCE vencidos sin límite de edad.

@@ -289,6 +289,8 @@ export interface DraftNoteInput {
   executionId: string;
   /** The same draft was written into the hypothesis email fields (send-from-Twenty flow). */
   inHypothesisFields?: boolean;
+  /** Recipient found by the ContactFinder on the company's web (no decision maker with email). */
+  foundContact?: { email: string; sourceUrl: string | null; written: boolean } | null;
 }
 
 /** Paragraph added to the note when the draft is also in the hypothesis fields. */
@@ -299,9 +301,13 @@ export function buildDraftNoteMarkdown(input: DraftNoteInput): string {
   const { draft, sender, contact } = input;
   const from = `${sender.name} <${sender.email}>${sender.altEmail ? ` (o ${sender.altEmail})` : ''}`;
   const contactName = contact ? [contact.firstName, contact.lastName].filter(Boolean).join(' ') : '';
+  const found = input.foundContact ?? null;
+  const foundText = found
+    ? `<${found.email}> (encontrado por el sistema${found.sourceUrl ? ` en ${found.sourceUrl}` : ''}; consulta el Research «Contacto» y revísalo antes de enviar)`
+    : null;
   const to = contact
-    ? `${escapeMarkdown(contactName || 'Contacto')}${contact.jobTitle ? `, ${escapeMarkdown(contact.jobTitle)}` : ''}${contact.email ? ` <${contact.email}>` : ' (sin email en el CRM: añádelo tú)'}`
-    : 'añade tú el destinatario (la hipótesis no tiene persona de contacto; usa una dirección corporativa de rol)';
+    ? `${escapeMarkdown(contactName || 'Contacto')}${contact.jobTitle ? `, ${escapeMarkdown(contact.jobTitle)}` : ''}${contact.email ? ` <${contact.email}>` : foundText ? ` ${foundText}` : ' (sin email en el CRM: añádelo tú)'}`
+    : (foundText ?? 'añade tú el destinatario (la hipótesis no tiene persona de contacto; usa una dirección corporativa de rol)');
   const verdict = input.feedback ? `veredicto ${input.feedback}${input.evaluatedAt ? ` del ${input.evaluatedAt.slice(0, 10)}` : ''}` : 'petición manual';
   const lines = [
     `> **${DRAFT_NOTE_HEADER}**`,

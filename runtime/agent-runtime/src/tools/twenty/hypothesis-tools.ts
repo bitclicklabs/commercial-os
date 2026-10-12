@@ -37,6 +37,9 @@ export const HypothesisDetail = z.object({
   commercialSignalId: z.string().nullable(),
   decisionMakerId: z.string().nullable(),
   updatedAt: z.string(),
+  /** Draft fields of the send-from-Twenty flow (null when empty or not synced yet). */
+  emailTo: z.string().nullable().default(null),
+  emailStatus: z.string().nullable().default(null),
 });
 export type HypothesisDetail = z.infer<typeof HypothesisDetail>;
 
@@ -139,6 +142,8 @@ export function createGetHypothesisTool(deps: TwentyToolDeps) {
               commercialSignalId: h.commercialSignalId ?? null,
               decisionMakerId: h.decisionMakerId ?? null,
               updatedAt: h.updatedAt,
+              emailTo: text(h.emailTo),
+              emailStatus: text(h.emailStatus),
             },
             company: h.company ? toCompanySummary(h.company) : null,
             signal: s
@@ -190,6 +195,9 @@ export const SetHypothesisDraftOutput = z.object({
  * and sets `emailStatus = DRAFT`, so a person can review it, edit it in place and send it
  * from Twenty with the manual workflow "Commercial OS · Enviar borrador de email".
  *
+ * A recipient already in `emailTo` (typed by a person, or found by the ContactFinder before
+ * the draft) is kept: the tool then PATCHes only subject, body and status.
+ *
  * This tool sends nothing and cannot send: it only PATCHes four fields. It writes only when
  * there is no draft yet (`emailStatus` empty): a DRAFT already there may carry edits of the
  * commercial, and READY / SENDING / SENT belong to a person. A redelivered event therefore
@@ -225,10 +233,12 @@ export function createSetHypothesisDraftTool(deps: TwentyToolDeps) {
           return { status: 'ok', output: { written: false, reason: 'human_owned', emailStatus: current } };
         }
         if (current === 'DRAFT') return { status: 'ok', output: { written: false, reason: 'draft_exists', emailStatus: current } };
+        // A recipient already there (typed by a person, or found by the ContactFinder) is kept.
+        const keepTo = typeof h.emailTo === 'string' && h.emailTo.trim().length > 0;
         await deps.twenty.update(
           TWENTY_OBJECTS.commercialHypothesis,
           input.hypothesisId,
-          { emailTo: input.to, emailSubject: input.subject, emailBody: input.body, emailStatus: 'DRAFT' },
+          { ...(keepTo ? {} : { emailTo: input.to }), emailSubject: input.subject, emailBody: input.body, emailStatus: 'DRAFT' },
           { signal: ctx.signal },
         );
         ctx.logger.info('hypothesis draft fields written', { hypothesisId: input.hypothesisId });

@@ -13,7 +13,10 @@
  * - `{ hypothesis_id }`: manual run (`POST /tasks/:id/run`).
  *
  * Flow: get_hypothesis (hypothesis + signal + company + decision maker, one READ) ->
- * get_company only if the company was not expanded -> ONE Gemini call returning
+ * get_company only if the company was not expanded -> [contact step, with
+ * `configuration.contact_finder.enabled`: find_contact on the company's own web, Research
+ * "Contacto — <empresa>" with the sources, `emailTo` filled ONLY if empty; never fatal] ->
+ * ONE Gemini call returning
  * `{asunto, cuerpo}` -> `finalizeDraft` (signature and unsubscribe line by code) ->
  * [set_hypothesis_draft, only with `configuration.send_from_twenty.enabled`] ->
  * create_note (idempotent per company + title).
@@ -44,8 +47,19 @@ import { EMAIL_DRAFT_JSON_SCHEMA, EMAIL_DRAFTER_SKILL_ID, EMAIL_DRAFTER_SYSTEM_P
 import { useSkill } from '../skills/resolver.js';
 import { useKnowledge } from '../knowledge/resolver.js';
 import { DIFFERENTIATORS, ProspectorRun, issues, readConfig, round6, toolError } from './prospector-core.js';
+import { readContactStepConfig, runContactStep, type ContactStepResult } from '../contact-finder/step.js';
 
-export const EMAIL_DRAFTER_TOOLS = ['find_company', 'get_company', 'get_hypothesis', 'create_note', 'set_hypothesis_draft'] as const;
+export const EMAIL_DRAFTER_TOOLS = [
+  'find_company',
+  'get_company',
+  'get_hypothesis',
+  'create_note',
+  'set_hypothesis_draft',
+  // Contact step (tanda 17): search the recipient before drafting.
+  'find_contact',
+  'set_hypothesis_recipient',
+  'create_research',
+] as const;
 
 const Guid = z.guid();
 
@@ -222,6 +236,24 @@ export class EmailDrafterAgent implements AgentImplementation {
     const notes: string[] = [];
     if (req.companyId && req.companyId !== companyId) notes.push(`el evento traía companyId ${req.companyId}; se usa el de la hipótesis`);
 
+    // 1b. Contact FIRST (same run). Never fatal: on any error the draft goes on with an empty recipient.
+    const contactCfg = readContactStepConfig(ctx.version.configuration);
+    let contactStep: ContactStepResult | null = null;
+    if (contactCfg.enabled) {
+      try {
+        contactStep = await runContactStep(run, { hypothesis: h, company, decisionMaker: contact }, contactCfg);
+      } catch (err) {
+        if (ctx.signal.aborted) throw err;
+        contactStep = { status: 'error', error: { code: 'CONTACT_STEP_ERROR', message: err instanceof Error ? err.message : String(err) }, email: null };
+      }
+      if (contactStep.status === 'error') notes.push(`no se pudo buscar el contacto (${contactStep.error.code}); el borrador sigue sin destinatario`);
+    }
+    const recipient = contact?.email ?? contactStep?.email ?? h.emailTo ?? '';
+    const foundContact =
+      !contact?.email && contactStep?.status === 'done' && contactStep.email && contactStep.found
+        ? { email: contactStep.email, sourceUrl: contactStep.sourceUrl, written: contactStep.emailTo === 'written' }
+        : null;
+
     // 2. One LLM call.
     const today = run.startedAt.toISOString().slice(0, 10);
     const system = useKnowledge(ctx, useSkill(ctx, EMAIL_DRAFTER_SKILL_ID, ctx.version.systemPrompt.trim().length > 0 ? ctx.version.systemPrompt : EMAIL_DRAFTER_SYSTEM_PROMPT));
@@ -271,7 +303,7 @@ export class EmailDrafterAgent implements AgentImplementation {
     if (cfg.sendFromTwenty) {
       const set = await run.callTool('set_hypothesis_draft', {
         hypothesisId: h.id,
-        to: contact?.email ?? '',
+        to: recipient,
         subject: draft.subject,
         body: draft.body,
       });
@@ -298,6 +330,7 @@ export class EmailDrafterAgent implements AgentImplementation {
         evaluatedAt: req.evaluatedAt,
         executionId: ctx.executionId,
         inHypothesisFields: hypothesisDraft?.written === true,
+        foundContact,
       }),
     });
     const result = {
@@ -309,6 +342,7 @@ export class EmailDrafterAgent implements AgentImplementation {
       event_id: req.eventId,
       draft: { subject: draft.subject, body: draft.body, word_count: draft.wordCount, fixes: draft.fixes, warnings: draft.warnings },
       ...(hypothesisDraft ? { hypothesis_draft: hypothesisDraft } : {}),
+      ...(contactStep ? { contact: contactStep } : {}),
       ...(notes.length > 0 ? { notes } : {}),
     };
     if (note.result.status !== 'ok') return { outcome: 'FAILED', ...result, error: toolError(note) };

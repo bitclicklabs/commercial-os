@@ -2,6 +2,7 @@ import type { Db } from '../db/client.js';
 import type { EventPublisher } from '../events/event-bus.js';
 import type { AgentContext, AgentImplementation, AgentResult, AgentStep } from './agent.js';
 import { BAJAS_IMPLEMENTATION, BajasAgent } from './bajas-agent.js';
+import { CONTACT_FINDER_IMPLEMENTATION, ContactFinderAgent } from './contact-finder-agent.js';
 import { EmailDrafterAgent } from './email-drafter.js';
 import { INBOX_IMPLEMENTATION, InboxAgent } from './inbox-agent.js';
 import { ProspectorAgent } from './prospector-agent.js';
@@ -93,6 +94,8 @@ export function resolveAgentImplementation(configuration: Record<string, unknown
       return new ProspectorAgent(undefined, deps.db ? { db: deps.db } : {});
     case 'email_drafter':
       return new EmailDrafterAgent();
+    case CONTACT_FINDER_IMPLEMENTATION:
+      return new ContactFinderAgent();
     case BAJAS_IMPLEMENTATION:
       return new BajasAgent(deps.db ? { db: deps.db } : {});
     case INBOX_IMPLEMENTATION:

@@ -388,7 +388,10 @@ describe('EmailDrafterAgent', () => {
     expect(resolveAgentImplementation({ implementation: 'email_drafter' }).kind).toBe('email_drafter');
     const policy = parseToolPolicy(desiredEmailDrafterVersion().configuration);
     // + the five catalog tools (READ, tanda 14): allowed for a future skill, never called by the drafter code.
-    expect([...policy.allow].sort()).toEqual([...CATALOG_TOOL_IDS, 'create_note', 'find_company', 'get_company', 'get_hypothesis', 'set_hypothesis_draft'].sort());
+    // + the contact step (tanda 17): find_contact (READ), set_hypothesis_recipient and create_research (LOW_WRITE).
+    expect([...policy.allow].sort()).toEqual(
+      [...CATALOG_TOOL_IDS, 'create_note', 'find_company', 'get_company', 'get_hypothesis', 'set_hypothesis_draft', 'find_contact', 'set_hypothesis_recipient', 'create_research'].sort(),
+    );
     expect(policy.maxRiskLevel).toBe('LOW_WRITE');
     expect(policy.allow.some((t) => /mail|send/.test(t))).toBe(false);
   });
@@ -407,7 +410,8 @@ describe('EmailDrafterAgent', () => {
     expect(note.bodyV2.markdown).toContain('baja@publiexpe.info');
     expect((output.draft as { body: string }).body.endsWith(unsubscribeLine(DEFAULT_SENDER))).toBe(true);
     expect(fake.tables.noteTargets.map((t) => t.targetCompanyId ?? t.targetCommercialHypothesisId)).toEqual([company.id, hyp.id]);
-    expect(steps.filter((s) => s.type === 'TOOL').map((s) => s.tool)).toEqual(['get_hypothesis', 'set_hypothesis_draft', 'create_note']);
+    // Contact first (reserved test domain: nothing fetched, Research "Sin contacto público"), then the draft.
+    expect(steps.filter((s) => s.type === 'TOOL').map((s) => s.tool)).toEqual(['get_hypothesis', 'find_contact', 'create_research', 'set_hypothesis_draft', 'create_note']);
 
     // Second delivery (another event, same hypothesis): same note, nothing new in Twenty.
     const again = await new EmailDrafterAgent().run(ctxFor(fake, eventTriggeredInput(envelope({ subjectId: hyp.id })), new StubProvider({ responses: [JSON.stringify(ANSWER)] })));

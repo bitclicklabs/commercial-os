@@ -10,7 +10,8 @@
  * a changed task gets a new TaskDefinitionVersion; a second run changes nothing.
  *
  * The agent only writes internal Notes in Twenty (and, with `send_from_twenty.enabled`, the
- * draft fields of the hypothesis): its tool policy has no mail tool (none exists) and its
+ * draft fields of the hypothesis; with `contact_finder.enabled`, an empty `emailTo` and a
+ * Research "Contacto — <empresa>"): its tool policy has no mail tool (none exists) and its
  * risk ceiling is LOW_WRITE.
  */
 import type { Db } from '../db/client.js';
@@ -39,10 +40,13 @@ export function desiredEmailDrafterVersion(): AgentVersionSpec {
         // code does not call them and its copy (confirmed by the user) does not change.
         allow: [...EMAIL_DRAFTER_TOOLS, ...CATALOG_TOOL_IDS],
         max_risk_level: 'LOW_WRITE',
-        max_calls_per_execution: 12,
+        max_calls_per_execution: 15,
         max_calls_per_tool: {
           create_note: 1,
           set_hypothesis_draft: 1,
+          find_contact: 1,
+          set_hypothesis_recipient: 1,
+          create_research: 1,
           catalog_search_products: 2,
           catalog_get_product: 3,
           catalog_estimate_customization: 2,
@@ -54,6 +58,10 @@ export function desiredEmailDrafterVersion(): AgentVersionSpec {
       // emailTo / emailSubject / emailBody / emailStatus are synced. Turning it on only adds
       // the draft to those fields; sending is always a person clicking the Twenty workflow.
       send_from_twenty: { enabled: true },
+      // ContactFinder (tanda 17): before drafting, look for the recipient on the company's own
+      // web, fill an EMPTY emailTo and leave a Research with the sources. Never overwrites a
+      // recipient typed by a person; never fatal (the draft is written anyway).
+      contact_finder: { enabled: true, llm_triage: true, enrich: true },
       sender: {
         name: DEFAULT_SENDER.name,
         company: DEFAULT_SENDER.company,
@@ -89,7 +97,8 @@ export function desiredEmailDraftTask(): TaskSpec {
     priority: 0,
     maxConcurrency: 2,
     retryPolicy: { max_attempts: 2, backoff_ms: 5_000 },
-    timeoutMs: 120_000,
+    // 180 s: contact step (web search, max ~60 s) + the drafting call.
+    timeoutMs: 180_000,
   };
 }
 

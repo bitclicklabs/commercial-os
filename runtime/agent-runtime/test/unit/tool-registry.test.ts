@@ -91,6 +91,8 @@ describe('ToolRegistry', () => {
       expire_signal: 'LOW_WRITE',
       fetch_url: 'READ',
       render_url: 'READ',
+      find_contact: 'READ',
+      set_hypothesis_recipient: 'LOW_WRITE',
       catalog_search_products: 'READ',
       catalog_get_product: 'READ',
       catalog_estimate_customization: 'READ',

@@ -151,7 +151,8 @@ describe('EmailDrafter: send_from_twenty flag', () => {
     const { output, steps } = await new EmailDrafterAgent().run(ctxFor(fake.client(), { hypothesis_id: hyp.id }, new StubProvider({ responses: [JSON.stringify(ANSWER)] }), false));
     expect(output).toMatchObject({ outcome: 'SUCCESS', note_created: true, sends_email: false });
     expect(output).not.toHaveProperty('hypothesis_draft');
-    expect(steps.filter((s) => s.type === 'TOOL').map((s) => s.tool)).toEqual(['get_hypothesis', 'create_note']);
+    // The contact step runs before (tanda 17); with send_from_twenty OFF the hypothesis fields stay untouched.
+    expect(steps.filter((s) => s.type === 'TOOL').map((s) => s.tool)).toEqual(['get_hypothesis', 'find_contact', 'create_research', 'create_note']);
     expect(hyp.emailStatus).toBeUndefined();
     expect((fake.tables.notes[0] as { bodyV2: { markdown: string } }).bodyV2.markdown).not.toContain('campos Email');
   });

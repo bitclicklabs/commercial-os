@@ -184,6 +184,6 @@ Origen: incidente del 2026-10-12 — tormenta de catch-up de 1.418 tasks de tena
 | Pieza | Rama | Agente | Estado |
 |---|---|---|---|
 | Scheduler: allowlist SCHEDULER_TENANTS (default publiexpe), tope de catch-up (1 slot, 48 h), cleanup por patrón de tenant, guard anti-BD-compartida en tests de integración | `feat/scheduler-hardening` | Opus | 🔄 |
-| Tenancy en Twenty: toda lectura filtra por tenantId, updates cruzados rechazados, webhooks descartan records de otro tenant | `feat/twenty-tenant-filter` | Opus | 🔄 |
+| Tenancy en Twenty: toda lectura filtra por tenantId, updates cruzados rechazados, webhooks descartan records de otro tenant | `feat/twenty-tenant-filter` | Opus | ✅ fusionado (filtro en el punto común del cliente; registros manuales sin tenant = del tenant propietario vía or(eq,NULL,"") — sintaxis verificada en vivo por el PM contra el Twenty real; companies/notes sin tenantId documentado como límite; 1038 tests) |
 | Docs: postmortem docs/incidentes/2026-10-12, runbook (variables, parada larga, tests), ROADMAP | `docs/tanda16` | Sonnet | ✅ entregado (detectó que marcar hipótesis REJECTED disparó el webhook de feedback → 106 evaluaciones HUMAN de tenants de test, verificado: métricas publiexpe intactas por filtro de tenant; a reconciliar en el postmortem al integrar) |
 | Integración, e2e y PR | `feat/tanda16` (worktree wt16-integracion) | PM | 🔄 worktree creado con .env copiado; al desplegar: pasar las variables nuevas al compose |

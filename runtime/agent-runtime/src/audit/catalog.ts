@@ -86,6 +86,12 @@ export const AUDITED_ROUTES: Readonly<Record<string, AuditSpec>> = {
     subjectType: 'tenant',
     subjectId: (i) => str(res(i, 'backfill', 'tenant_id')),
   },
+  // Native Opportunity (src/api/routes/opportunities.ts, tanda 19): a person promotes a hypothesis.
+  'POST /opportunities/promote': {
+    action: 'opportunity.promote',
+    subjectType: 'hypothesis',
+    subjectId: (i) => str(i.body.hypothesis_id) ?? str(i.response?.hypothesis_id),
+  },
 };
 
 /** Mutating routes deliberately left out, with the reason (they have their own record). */

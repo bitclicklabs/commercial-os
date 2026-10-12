@@ -4,7 +4,9 @@
  * The App objects have no `idempotencyKey` column (README deviation #14), so each
  * tool derives a natural key (LLD v0.2 section 2.3) and looks for an existing
  * record with it before creating: a retried call returns `created: false` and the
- * existing record instead of a duplicate. Every write carries `tenantId`.
+ * existing record instead of a duplicate. Every write carries `tenantId`, and the
+ * find-before-create only looks at the records of the run's tenant (a record of another
+ * tenant with the same natural key is never returned as "existing").
  */
 import { z } from 'zod';
 import {
@@ -33,8 +35,8 @@ const IsoDate = z.iso.date();
 const IsoDateTime = z.iso.datetime({ offset: true });
 const LongText = (max: number) => z.string().trim().min(1).max(max);
 
-async function findFirst<T>(twenty: TwentyClient, plural: string, filter: string, signal: AbortSignal): Promise<T | null> {
-  const { records } = await twenty.list<T>(plural, { filter, limit: 1, signal });
+async function findFirst<T>(twenty: TwentyClient, plural: string, filter: string, ctx: Pick<ToolContext, 'tenantId' | 'signal'>): Promise<T | null> {
+  const { records } = await twenty.list<T>(plural, { filter, limit: 1, tenantId: ctx.tenantId, signal: ctx.signal });
   return records[0] ?? null;
 }
 
@@ -116,7 +118,7 @@ export function createCreateSignalTool(deps: TwentyToolDeps) {
             eventDate: s.eventDate ?? null,
           },
         });
-        const existing = await findFirst<TwentyCommercialSignal>(deps.twenty, TWENTY_OBJECTS.commercialSignal, filter, ctx.signal);
+        const existing = await findFirst<TwentyCommercialSignal>(deps.twenty, TWENTY_OBJECTS.commercialSignal, filter, ctx);
         if (existing) return { status: 'ok', output: toOutput(existing, false) };
         const created = await deps.twenty.create<TwentyCommercialSignal>(
           TWENTY_OBJECTS.commercialSignal,
@@ -201,7 +203,7 @@ export function createCreateResearchTool(deps: TwentyToolDeps) {
             agentExecutionId: r.agentExecutionId || null,
           },
         });
-        const existing = await findFirst<TwentyResearch>(deps.twenty, TWENTY_OBJECTS.research, filter, ctx.signal);
+        const existing = await findFirst<TwentyResearch>(deps.twenty, TWENTY_OBJECTS.research, filter, ctx);
         if (existing) return { status: 'ok', output: toOutput(existing, false) };
         const name = input.name ?? `${input.researchType} — ${(await companyName(deps.twenty, input.companyId, ctx.signal)) ?? input.companyId}`;
         const created = await deps.twenty.create<TwentyResearch>(
@@ -301,7 +303,7 @@ export function createCreateHypothesisTool(deps: TwentyToolDeps) {
           deps.twenty,
           TWENTY_OBJECTS.commercialHypothesis,
           `and(${eq('companyId', input.companyId)},${eq('name', name)})`,
-          ctx.signal,
+          ctx,
         );
         if (existing) return { status: 'ok', output: toOutput(existing, false) };
         const created = await deps.twenty.create<TwentyCommercialHypothesis>(
@@ -388,7 +390,7 @@ export function createCreateAgentRunSummaryTool(deps: TwentyToolDeps) {
           deps.twenty,
           TWENTY_OBJECTS.agentRunSummary,
           eq('agentExecutionId', agentExecutionId),
-          ctx.signal,
+          ctx,
         );
         if (existing) return { status: 'ok', output: toOutput(existing, false) };
         const name = input.name ?? `${input.task} · ${input.agentName} v${input.agentVersion} · ${input.startedAt.slice(0, 10)}`;

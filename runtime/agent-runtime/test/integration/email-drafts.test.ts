@@ -51,10 +51,11 @@ describe.skipIf(!dbAvailable)('email drafts: evaluation.recorded -> EmailDrafter
   const tenant = `it-${randomUUID().slice(0, 8)}`;
   const fake = new FakeTwenty();
   const company = fake.seed('companies', { name: 'Acme Conservas', domainName: { primaryLinkUrl: 'acme.example', primaryLinkLabel: '', secondaryLinks: [] } });
-  const signal = fake.seed('commercialSignals', { name: 'Feria — Acme', signalType: 'FAIR', eventDate: '2026-11-24', companyId: company.id });
+  const signal = fake.seed('commercialSignals', { name: 'Feria — Acme', signalType: 'FAIR', eventDate: '2026-11-24', companyId: company.id, tenantId: tenant });
   const hypothesis = fake.seed('commercialHypotheses', {
     name: 'Acme Conservas — Feria 2026',
     status: 'PROPOSED',
+    tenantId: tenant,
     need: 'Regalos para el stand',
     whyNow: 'Feria en noviembre',
     recommendedProducts: ['Bolsas tote'],

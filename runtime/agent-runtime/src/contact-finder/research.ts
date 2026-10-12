@@ -8,7 +8,7 @@
  * Plain text (Twenty shows `summary` as text); web-derived names and titles are sanitised.
  */
 import { TIER_LABELS } from './classify.js';
-import type { ContactCandidate, FinderResult } from './finder.js';
+import { domainRelation, type ContactCandidate, type FinderResult } from './finder.js';
 
 export const CONTACT_RESEARCH_TYPE = 'CONTACT_DISCOVERY' as const;
 
@@ -98,6 +98,7 @@ export function buildContactResearchSummary(result: FinderResult, state: Researc
     const who = person(c);
     const flags = [
       c.tier === 5 ? 'nunca se propone' : null,
+      c.onDomain && domainRelation(c.email, result.domain, { allowSibling: true }) === 'sibling' ? `dominio hermano de ${result.domain}` : null,
       c.onDomain && c.mx !== 'ok' && c.mx !== 'not_checked' ? `MX ${c.mx === 'none' ? 'inexistente' : 'no verificable'}` : null,
       c.origin !== 'web' && (c.confidence ?? 0) < 0.7 ? 'confianza < 0,70: no se escribe en Email to' : null,
     ].filter(Boolean);

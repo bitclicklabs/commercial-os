@@ -138,6 +138,10 @@ Requisitos: Node.js 22, pnpm, y los contenedores `pxos-postgres` (127.0.0.1:5440
 | `CATALOG_API_TOKEN` | vacío | Token Bearer de solo lectura (`pxcat_…`). Obligatorio con `http`. Nunca aparece en logs, errores ni trace |
 | `CATALOG_TIMEOUT_MS` | `10000` | Timeout por intento (el contrato corta a los 10 s) |
 | `CATALOG_STUB_FIXTURES_DIR` | `fixtures/catalog` | Directorio de fixtures del stub (para sustituirlos por los del backend sin tocar el código) |
+| `ENRICH_PROVIDER` | `stub` | Fase 2 del ContactFinder: `stub` (solo dominios de prueba `.example`: apagado en la práctica) o `hunter` (Hunter.io Domain Search). Consulta [ContactFinder](#contactfinder-destinatario-de-los-borradores) |
+| `ENRICH_API_KEY` | vacío | API key de Hunter.io. Sin ella, `hunter` vuelve al stub |
+| `ENRICH_MAX_LOOKUPS_PER_DAY` | `25` | Tope diario (día local de Madrid) de consultas de enriquecimiento por proceso, contador en memoria |
+| `ENRICH_COST_PER_LOOKUP_EUR` | `0.10` | Coste que se anota por consulta real (el stub cuesta 0) |
 | `TRACE_RETENTION_DAYS` | `90` | Antigüedad (días) por defecto de `pnpm traces:archive`. Consulta [Retención de trazas](#retención-de-trazas-sin-pérdida-pnpm-tracesarchive) |
 | `TRACE_ARCHIVE_DIR` | `./data/trace-archive` | Directorio del archivo de trazas (`<tenant>/<YYYY-MM>.jsonl.gz`); en Docker, un volumen persistente |
 | `TRACE_ARCHIVE_ENABLED` | `false` | `true` activa el archivado programado de trazas en el rol `scheduler`. Consulta [Archivado programado](#archivado-programado) |
@@ -2561,6 +2565,18 @@ Cuando BullMQ re-entrega un job tras un stall (el worker no renovó el lock) y e
 - `test/integration/audit.test.ts` (PostgreSQL): auditoría de create, activate bloqueado (`409`), force sin motivo (`400`) y con motivo, canario, cierre del optimizador, knowledge, `GET /audit` y los triggers append-only (en transacciones que siempre se deshacen).
 - `test/integration/trace-archive.test.ts` (PostgreSQL): simulación, archivado → verificación → aligerado → lectura con puntero → rehidratación verificada, campo no representable que se queda en la BD, idempotencia, fichero ausente y la vía estrecha del trigger.
 - `test/integration/recovery-race.test.ts`: re-entrega con latido fresco (el intento sobrevive) y con huérfano real (se recupera o falla sin intentos).
+
+## ContactFinder (destinatario de los borradores)
+
+Rellena **Email to** de las hipótesis validadas con la dirección que la propia empresa publica, citando la fuente. Nunca envía nada y nunca pisa un destinatario puesto por una persona.
+
+- **Dónde engancha.** El EmailDrafter (`draft-email-on-validated`) ejecuta primero el paso de contacto y después el borrador, en el mismo run (`configuration.contact_finder.enabled`). Si el paso falla, el borrador se crea igual con **Email to** vacío.
+- **Fase 1, web de la empresa** (`src/contact-finder/`): portada, enlaces del menú que casan con contacto/equipo/aviso legal/quiénes somos y las rutas típicas (`/contacto`, `/contact`, `/aviso-legal`, `/legal`, `/equipo`, `/quienes-somos`, `/about`, `/empresa`). Máximo 6 peticiones y 25 s por empresa, con el mismo guard de salida que `fetch_url`; `render_url` solo si el HTML es un esqueleto JavaScript. Extracción determinista: `mailto:`, texto, ofuscaciones simples, Cloudflare y JSON-LD.
+- **Prioridad:** 1) persona con cargo de marketing, gerencia, comercial o compras; 2) buzón de función (`marketing@`, `comercial@`, `ventas@`, `export@`…); 3) genérico (`info@`, `contacto@`, `hola@`); 4) resto del dominio. Nunca `noreply@`, `dpo@`, `rgpd@`, `privacy@`, `baja@` ni direcciones de la lista de supresión (sin lista legible no se propone nada). Una dirección fuera del dominio (un gmail) queda como candidata de prioridad 5 y no se elige nunca. Verificación: sintaxis y registros MX del dominio, sin sondeo SMTP.
+- **LLM (rol `triage`)** solo para desempatar candidatos equivalentes; el texto web va en `<<<DATOS_NO_CONFIABLES>>>` y solo se acepta una de las direcciones empatadas.
+- **Fase 2** (apagada por defecto, `ENRICH_*`): solo hipótesis `VALIDATED` sin contacto publicado. Con confianza menor de 0,7 la dirección queda en el Research y no se escribe.
+- **Escritura:** `set_hypothesis_recipient` escribe solo `emailTo` y solo si está vacío y el borrador no está `READY`, `SENDING` ni `SENT`. Cada búsqueda deja un Research `CONTACT_DISCOVERY` «Contacto — <empresa>» o «Sin contacto público — <empresa>» con los candidatos, la URL exacta de cada uno, los descartados y el porqué del elegido.
+- **Backfill** de las hipótesis `VALIDATED` ya existentes sin **Email to** (filtradas por `tenantId`): `pnpm contacts:backfill [--limit=25] [--force] [--dry-run]` o `POST /contacts/backfill` (auditada como `contact.backfill`). Encola un run del agente ContactFinder (tarea MANUAL `find-contact`) por hipótesis. Es idempotente: omite las que ya tienen destinatario, un borrador de una persona o un Research de contacto.
 
 ## Pendiente
 

@@ -668,3 +668,52 @@ describe('ContactFinder agent and seed', () => {
     expect(provider.requests).toHaveLength(0);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Cases seen on real exhibitor sites (Gastrónoma 2026, 2026-10-12)
+// ---------------------------------------------------------------------------
+
+describe('cases from real exhibitor sites', () => {
+  it('web on .es, mail on the .com of the same brand: accepted as sibling domain and flagged', async () => {
+    const web = new FakeWeb().page(
+      'https://bodega-hermana.es/',
+      '<html><body><p>Bodega Hermana</p><p>Dirección postal Ctra. Cheste a Godelleta s/n</p><p>info@bodega-hermana.com</p><p>Protección de datos: rgpd@bodega-hermana.com</p><p>Distribuidor: ventas@otra-empresa.es</p></body></html>',
+    );
+    const r = await finder(web).find({ companyName: 'Bodega Hermana', domain: 'bodega-hermana.es', allowEnrich: false, suppression: EMPTY_LIST }, signal());
+    expect(r.chosen).toMatchObject({ email: 'info@bodega-hermana.com' });
+    expect(r.chosen!.reason).toContain('dominio hermano bodega-hermana.com');
+    expect(r.candidates.find((c) => c.email === 'ventas@otra-empresa.es')).toMatchObject({ tier: 5, onDomain: false });
+    expect(r.discarded.map((d) => d.email)).toEqual(['rgpd@bodega-hermana.com']);
+    const info = r.candidates.find((c) => c.email === 'info@bodega-hermana.com')!;
+    expect(info.jobTitle).toBeNull(); // "Dirección postal ..." is not a job title
+    expect(info.name).toBeNull(); // "Ctra Cheste" is not a person
+    expect(buildContactResearchSummary(r, { hypothesisName: 'H', emailTo: 'written', triage: null })).toContain('dominio hermano de bodega-hermana.es');
+  });
+
+  it('a sentence of the legal notice is never taken as a job title', () => {
+    const occ = extractFromPage({ url: 'https://x.es/aviso-legal', html: null, text: 'Identidad del responsable. EMPRESA SA, en adelante LA ORGANIZACIÓN, con email info@x.es' });
+    expect(occ[0]).toMatchObject({ email: 'info@x.es', jobTitle: null });
+  });
+
+  it('shop and order mailboxes rank below a person-looking address', () => {
+    expect(classifyCandidate('tienda@x.es', { onDomain: true })).toMatchObject({ tier: 4, subrank: 2 });
+    expect(classifyCandidate('pedidos@x.es', { onDomain: true })).toMatchObject({ tier: 4, subrank: 2 });
+    expect(classifyCandidate('lmartin@x.es', { onDomain: true })).toMatchObject({ tier: 4, subrank: 0 });
+  });
+
+  it('a domain that does not resolve stops after the home page (and www.)', async () => {
+    const web = new FakeWeb();
+    web.defaultAddress = null;
+    const r = await finder(web).find({ companyName: 'Fantasma', domain: 'fantasma.es', allowEnrich: false, suppression: EMPTY_LIST }, signal());
+    expect(r.pages.map((p) => p.url)).toEqual(['https://fantasma.es/', 'https://www.fantasma.es/']);
+    expect(r.noChoiceReason).toBe('la web de la empresa no responde (DNS_ERROR)');
+  });
+
+  it('missing pages that redirect to the home page are not read twice', async () => {
+    const web = new FakeWeb().page('https://spa.es/', '<html><body><p>' + 'Portada. '.repeat(40) + '</p><p>hola@spa.es</p></body></html>');
+    web.redirect('https://spa.es/contacto', 'https://spa.es/');
+    const r = await finder(web).find({ companyName: 'Spa', domain: 'spa.es', allowEnrich: false, suppression: EMPTY_LIST }, signal());
+    expect(r.pages.find((p) => p.url === 'https://spa.es/contacto')).toMatchObject({ status: 'error', code: 'ALREADY_READ' });
+    expect(r.candidates.find((c) => c.email === 'hola@spa.es')!.sources).toHaveLength(1);
+  });
+});

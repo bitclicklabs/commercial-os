@@ -111,6 +111,15 @@ const LOW_LOCALS = [
   'web',
   'webmaster',
   'calidad',
+  'tienda',
+  'tiendaonline',
+  'shop',
+  'store',
+  'ecommerce',
+  'online',
+  'reservas',
+  'booking',
+  'visitas',
 ];
 
 /** Folded local part without separators, digits kept (`no-reply` -> `noreply`). */

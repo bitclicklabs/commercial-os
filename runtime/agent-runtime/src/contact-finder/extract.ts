@@ -88,13 +88,14 @@ const NOT_NAME_WORDS = new Set([
   'informacion', 'info', 'aviso', 'legal', 'politica', 'privacidad', 'cookies', 'empresa', 'equipo', 'nosotros', 'quienes', 'somos', 'inicio', 'home', 'blog',
   'tienda', 'productos', 'servicios', 'espana', 'spain', 'madrid', 'barcelona', 'valencia', 'sevilla', 'escribenos', 'llamanos', 'siguenos', 'nuestro', 'nuestra',
   'el', 'la', 'los', 'las', 'de', 'del', 'y', 'para', 'con', 'por', 'en', 'a', 's.l', 's.a', 'sl', 'sa', 'slu', 'ceo', 'cfo', 'coo', 'key', 'account', 'trade',
+  'ctra', 'pol', 'apdo', 'apartado', 'urb', 'urbanizacion', 'parcela', 'nave', 'local',
   'administracion', 'administrador', 'administradora', 'presidente', 'presidenta', 'fundador', 'fundadora', 'socio', 'socia', 'grupo', 'lunes', 'martes',
 ]);
 
 const NAME_RE = /\b([A-ZÁÉÍÓÚÑ][a-záéíóúñü]{1,20}(?:\s+(?:de\s+(?:la\s+|los\s+)?|del\s+|y\s+)?[A-ZÁÉÍÓÚÑ][a-záéíóúñü]{1,20}){1,3})\b/g;
 
 /** Words that make a line read as a job title even when no relevant kind matches. */
-const JOB_WORDS = /\b(director|directora|direccion|gerente|responsable|jefe|jefa|manager|head of|coordinador|coordinadora|tecnic[oa]|administrativ[oa]|ceo|cfo|coo|cmo|fundador|fundadora|founder|propietari[oa]|president[ea]?|consejer[oa]|delegad[oa]|comercial|ejecutiv[oa]|key account|buyer|compras|ventas|marketing|export)\b/;
+const JOB_WORDS = /\b(director|directora|gerente|responsable|jefe|jefa|manager|head of|coordinador|coordinadora|tecnic[oa]|administrativ[oa]|ceo|cfo|coo|cmo|fundador|fundadora|founder|propietari[oa]|president[ea]?|consejer[oa]|delegad[oa]|comercial|ejecutiv[oa]|key account|buyer|compras|ventas|marketing|export)\b/;
 
 /** First plausible person name in `text` (2-4 capitalised words, none of them a generic word), or null. */
 export function findPersonName(text: string, exclude: readonly string[] = []): string | null {
@@ -119,7 +120,8 @@ function titleIn(line: string, name: string | null): string | null {
     .replace(/\s+/g, ' ')
     .trim()
     .replace(/^[-–—\s]+|[-–—\s]+$/g, '');
-  if (t.length < 3 || t.length > 120) return null;
+  // A job title is short: a sentence of the legal notice that mentions "responsable" is not one.
+  if (t.length < 3 || t.length > 80 || t.split(' ').length > 8 || /[.!?]\s/.test(t)) return null;
   const f = fold(t);
   return JOB_WORDS.test(f) || roleKindOf(t) ? t : null;
 }

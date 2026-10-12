@@ -164,10 +164,28 @@ export interface FinderInput {
   suppression: SuppressionList | null;
 }
 
-function onCompanyDomain(email: string, domain: string): boolean {
+/** The brand label of a registrable domain: `vicentegandia` for `vicentegandia.es` / `.com`. */
+function brandLabel(domain: string): string {
+  return registrableDomain(domain).split('.')[0] ?? '';
+}
+
+/**
+ * The address belongs to the company: its domain or a subdomain, or a SIBLING domain (same
+ * brand label, other TLD: the web is `vicentegandia.es` and the mail `@vicentegandia.com`).
+ * Siblings are only accepted for addresses the company publishes on its own web (phase 1),
+ * so it is the company's own claim; they are flagged in the Research.
+ */
+export function domainRelation(email: string, domain: string, opts: { allowSibling: boolean }): 'own' | 'sibling' | 'external' {
   const d = emailDomain(email);
   const base = registrableDomain(domain);
-  return d === domain || d.endsWith(`.${domain}`) || d === base || d.endsWith(`.${base}`);
+  if (d === domain || d.endsWith(`.${domain}`) || d === base || d.endsWith(`.${base}`)) return 'own';
+  const label = brandLabel(domain);
+  if (opts.allowSibling && label.length >= 4 && brandLabel(d) === label && registrableDomain(d) === d.replace(/^www\./, '')) return 'sibling';
+  return 'external';
+}
+
+function onCompanyDomain(email: string, domain: string, opts: { allowSibling: boolean } = { allowSibling: false }): boolean {
+  return domainRelation(email, domain, opts) !== 'external';
 }
 
 function sameSite(url: string, domain: string): boolean {
@@ -225,8 +243,9 @@ function eligible(c: ContactCandidate): boolean {
   return true;
 }
 
-function chooseReason(c: ContactCandidate): string {
-  const who = c.tier === 1 ? `${TIER_LABELS[1]} (${c.roleKind})` : c.label;
+function chooseReason(c: ContactCandidate, domain: string): string {
+  const base = c.tier === 1 ? `${TIER_LABELS[1]} (${c.roleKind})` : c.label;
+  const who = domainRelation(c.email, domain, { allowSibling: true }) === 'sibling' ? `${base}, en el dominio hermano ${emailDomain(c.email)}` : base;
   if (c.origin === 'web') return `${who}, publicada por la propia empresa en su web`;
   return `${who}, dato del proveedor ${c.origin} con confianza ${(c.confidence ?? 0).toFixed(2)} (umbral ${ENRICH_MIN_CONFIDENCE.toFixed(2)})`;
 }
@@ -313,7 +332,7 @@ export class ContactFinder {
           subrank: 0,
           label: '',
           roleKind: null,
-          onDomain: onCompanyDomain(o.email, domain),
+          onDomain: onCompanyDomain(o.email, domain, { allowSibling: true }),
           mx: 'not_checked',
           origin: 'web',
           confidence: null,
@@ -342,6 +361,11 @@ export class ContactFinder {
         pages.push({ url, finalUrl: null, method, status: 'error', code: page.code, emails: 0 });
         return null;
       }
+      // A missing page that redirects to one already read (often the home page): nothing new.
+      if (method === 'fetch' && pages.some((p) => p.status === 'ok' && p.method === 'fetch' && p.finalUrl === page.finalUrl)) {
+        pages.push({ url, finalUrl: page.finalUrl, method, status: 'error', code: 'ALREADY_READ', emails: 0 });
+        return null;
+      }
       const n = addOccurrences(page);
       pages.push({ url, finalUrl: page.finalUrl, method, status: 'ok', code: null, emails: n });
       return page;
@@ -354,6 +378,10 @@ export class ContactFinder {
     let home = await visit(`https://${domain}/`, 'fetch');
     if (!home && pages[0]?.code && /DNS|NETWORK|TIMEOUT|HTTP_ERROR|SSRF|TLS|CERT/i.test(pages[0].code)) {
       home = await visit(`https://www.${domain}/`, 'fetch');
+    }
+    // The domain does not resolve (or resolves to a private address): no other page will answer.
+    if (!home && pages.length > 0 && pages.every((p) => p.code === 'DNS_ERROR' || p.code === 'SSRF_BLOCKED')) {
+      return this.finish(result({ noChoiceReason: `la web de la empresa no responde (${pages[pages.length - 1]!.code})` }), byEmail, discarded, input, mx, signal, budget, now);
     }
     const usefulText = (p: PageFetchOk | null) => p !== null && p.text.replace(/\s+/g, ' ').trim().length >= 200;
     if (home && (home.jsAppLikely || !usefulText(home))) {
@@ -469,7 +497,9 @@ export class ContactFinder {
     let noChoiceReason = base.noChoiceReason;
     if (!chosen && !noChoiceReason) {
       if (!input.suppression) noChoiceReason = 'no se pudo leer la lista de supresión: no se propone ninguna dirección';
-      else if (candidates.length === 0) noChoiceReason = 'la empresa no publica ninguna dirección utilizable en su web';
+      else if (candidates.length === 0 && base.pages.length > 0 && base.pages.every((p) => p.status === 'error')) {
+        noChoiceReason = `no se pudo leer la web de la empresa (${[...new Set(base.pages.map((p) => p.code))].join(', ')})`;
+      } else if (candidates.length === 0) noChoiceReason = 'la empresa no publica ninguna dirección utilizable en su web';
       else if (candidates.every((c) => !c.onDomain)) noChoiceReason = 'solo hay direcciones fuera del dominio de la empresa';
       else if (candidates.some((c) => c.onDomain && c.mx !== 'ok')) noChoiceReason = 'el dominio de las direcciones no tiene registros MX verificables';
       else noChoiceReason = `ninguna dirección supera los filtros (las del proveedor necesitan confianza ≥ ${ENRICH_MIN_CONFIDENCE.toFixed(2)})`;
@@ -479,7 +509,7 @@ export class ContactFinder {
       searchedAt: now().toISOString(),
       candidates,
       discarded: [...discarded.values()],
-      chosen: chosen ? { email: chosen.email, reason: chooseReason(chosen), origin: chosen.origin, sourceUrl: chosen.sources[0]?.url ?? null } : null,
+      chosen: chosen ? { email: chosen.email, reason: chooseReason(chosen, domain), origin: chosen.origin, sourceUrl: chosen.sources[0]?.url ?? null } : null,
       tie,
       noChoiceReason: chosen ? null : noChoiceReason,
       mx: Object.fromEntries(mx.results),

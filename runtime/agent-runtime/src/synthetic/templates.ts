@@ -43,7 +43,26 @@ export interface SyntheticTemplate {
   expectation: string;
   /** The skill rule that makes the truth hold. */
   rationale: string;
-  build(rng: Rng): { exhibitor: SyntheticExhibitor; checks: SyntheticCheck[] };
+  build(rng: Rng): SyntheticBuild;
+}
+
+/** What a template draws. `event` + `asOf`: a template that needs its own fair and "today" (lead time, tanda 18). */
+export interface SyntheticBuild {
+  exhibitor: SyntheticExhibitor;
+  checks: SyntheticCheck[];
+  /** Own fictitious fair (`.invalid` URL) instead of one of the build's shared fairs. */
+  event?: SyntheticBuildEvent;
+  /** The "today" (YYYY-MM-DD) the agent must see: stored as `ground_truth.as_of`. */
+  asOf?: string;
+}
+
+/** Same shape as `SyntheticEvent` (src/synthetic/generate.ts). */
+export interface SyntheticBuildEvent {
+  name: string;
+  type: 'FAIR';
+  date: string;
+  location: string;
+  source_url: string;
 }
 
 /** Skill calibration: "0-0,19: no hay encaje". */
@@ -355,9 +374,9 @@ export const TEMPLATES: readonly SyntheticTemplate[] = [
   },
 ];
 
-/** Public description of the templates (GET /synthetic/templates, the CLI help). */
-export function templateCatalog() {
-  return TEMPLATES.map((t) => ({
+/** Public description of the templates (GET /synthetic/templates, the CLI help). Opt-in templates (lead time) go apart: `optInTemplateCatalog`. */
+export function templateCatalog(templates: readonly SyntheticTemplate[] = TEMPLATES) {
+  return templates.map((t) => ({
     id: t.id,
     version: t.version,
     title: t.title,

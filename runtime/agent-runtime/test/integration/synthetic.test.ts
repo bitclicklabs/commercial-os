@@ -177,6 +177,11 @@ describe.skipIf(!dbAvailable)('synthetic environments (PostgreSQL)', () => {
     expect((listed.json() as { items: Array<{ split: string; curriculum_level: number }> }).items.every((c) => c.split === 'SYNTH' && c.curriculum_level >= 1)).toBe(true);
     const cat = await app.inject({ method: 'GET', url: '/synthetic/templates', headers });
     expect((cat.json() as { items: unknown[] }).items).toHaveLength(12);
+    // Tanda 18: the lead-time templates are listed apart (opt-in), never in the default build.
+    expect((cat.json() as { opt_in: Array<{ id: string; opt_in: boolean }> }).opt_in.map((t) => [t.id, t.opt_in])).toEqual([
+      ['lead_time_too_close', true],
+      ['lead_time_comfortable', true],
+    ]);
   });
 
   /** The PostgreSQL message behind a failed query (drizzle wraps it in `cause`). */

@@ -63,6 +63,42 @@ export const WORD_RANGE = { min: 120, max: 180 } as const;
 export const DEFAULT_COMPANY_DESCRIPTOR = 'expertos en merchandising para empresas';
 
 // ---------------------------------------------------------------------------
+// Lead time (tanda 18): how far the event is, computed by code for the prompt
+// ---------------------------------------------------------------------------
+
+const ISO_DATE_RE = /^(\d{4})-(\d{2})-(\d{2})/;
+
+/** Whole days from `today` to `eventDate` (both `YYYY-MM-DD…`; UTC calendar days). Null without a parsable date. */
+export function daysUntilEvent(eventDate: string | null | undefined, today: string): number | null {
+  const e = ISO_DATE_RE.exec(eventDate ?? '');
+  const t = ISO_DATE_RE.exec(today);
+  if (!e || !t) return null;
+  const utc = (m: RegExpExecArray) => Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
+  const days = Math.round((utc(e) - utc(t)) / 86_400_000);
+  return Number.isFinite(days) ? days : null;
+}
+
+/** The lead time in words: «12 días», «unas 6 semanas», «unos 3 meses» (null for a past event). */
+export function leadTimeLabel(days: number): string | null {
+  if (days < 0) return null;
+  if (days < 14) return days === 1 ? '1 día' : `${days} días`;
+  if (days < 60) return `unas ${Math.round(days / 7)} semanas`;
+  return `unos ${Math.round(days / 30.44)} meses`;
+}
+
+export interface DraftLeadTime {
+  days: number;
+  /** null when the event already took place. */
+  label: string | null;
+}
+
+/** Lead time for the drafter prompt; null when the signal has no usable date. */
+export function draftLeadTime(eventDate: string | null | undefined, today: string): DraftLeadTime | null {
+  const days = daysUntilEvent(eventDate, today);
+  return days === null ? null : { days, label: leadTimeLabel(days) };
+}
+
+// ---------------------------------------------------------------------------
 // Post-processing
 // ---------------------------------------------------------------------------
 

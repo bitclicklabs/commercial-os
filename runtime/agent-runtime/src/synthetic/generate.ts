@@ -16,6 +16,7 @@ import { caseContentHash } from '../datasets/core.js';
 import { DIFFICULTY_BY_LEVEL, type PlannedCase } from '../datasets/plan.js';
 import { dataLevel } from '../skills/compare.js';
 import { rngFor } from './prng.js';
+import { LEAD_TIME_TEMPLATES } from './lead-time-templates.js';
 import { TEMPLATES, type SyntheticExhibitor, type SyntheticTemplate } from './templates.js';
 import { CURRICULUM_LEVELS, type CurriculumLevel, type SyntheticExpected, type SyntheticTruth } from './truth.js';
 import { FAIR_KINDS, PLACES, slug, SYNTHETIC_TLD } from './vocab.js';
@@ -44,8 +45,20 @@ export interface GenerateOptions {
   perTemplate?: number;
   /** Keep only these curriculum levels (default all). */
   levels?: readonly CurriculumLevel[];
-  /** Keep only these templates (default all). */
+  /** Keep only these templates (default all the default ones; opt-in ids are accepted too). */
   templates?: readonly string[];
+  /**
+   * Tanda 18: add the opt-in lead-time templates (src/synthetic/lead-time-templates.ts) to the
+   * build. Without it (and without naming them in `templates`) the build is exactly the default one.
+   */
+  leadTime?: boolean;
+}
+
+/** Templates a build draws from: the default ones, then the opt-in ones requested (appended, so the default draws never change). */
+export function templatePool(opts: Pick<GenerateOptions, 'templates' | 'leadTime'> = {}): SyntheticTemplate[] {
+  const named = new Set(opts.templates ?? []);
+  const optIn = LEAD_TIME_TEMPLATES.filter((t) => opts.leadTime || named.has(t.id));
+  return [...TEMPLATES, ...optIn];
 }
 
 export interface GeneratedCase extends PlannedCase {
@@ -126,7 +139,7 @@ function assertReserved(ex: SyntheticExhibitor, event: SyntheticEvent, template:
   }
 }
 
-function makeCase(t: SyntheticTemplate, seed: number, index: number, exhibitor: SyntheticExhibitor, event: SyntheticEvent, checks: SyntheticTruth['checks'], attempt: number): GeneratedCase {
+function makeCase(t: SyntheticTemplate, seed: number, index: number, exhibitor: SyntheticExhibitor, event: SyntheticEvent, checks: SyntheticTruth['checks'], attempt: number, asOf?: string): GeneratedCase {
   const truth: SyntheticTruth = {
     template: t.id,
     template_version: t.version,
@@ -135,6 +148,7 @@ function makeCase(t: SyntheticTemplate, seed: number, index: number, exhibitor: 
     decision: t.decision,
     checks,
     rationale: t.rationale,
+    ...(asOf ? { as_of: asOf } : {}),
   };
   const expected: SyntheticExpected = { kind: 'synthetic', ground_truth: truth };
   const input = { event: { ...event }, exhibitor: { ...exhibitor } };
@@ -182,30 +196,33 @@ export function generateSyntheticCases(opts: GenerateOptions): { cases: Generate
   if (!Number.isInteger(perTemplate) || perTemplate < 1 || perTemplate > MAX_PER_TEMPLATE) throw new SyntheticGenerationError(`perTemplate debe estar entre 1 y ${MAX_PER_TEMPLATE}`);
   const levels = [...new Set(opts.levels ?? CURRICULUM_LEVELS)].sort();
   for (const l of levels) if (!CURRICULUM_LEVELS.includes(l)) throw new SyntheticGenerationError(`nivel de curriculum no válido: ${String(l)} (1, 2 o 3)`);
-  const unknown = (opts.templates ?? []).filter((id) => !TEMPLATES.some((t) => t.id === id));
-  if (unknown.length) throw new SyntheticGenerationError(`plantillas desconocidas: ${unknown.join(', ')} (hay: ${TEMPLATES.map((t) => t.id).join(', ')})`);
+  const known = [...TEMPLATES, ...LEAD_TIME_TEMPLATES];
+  const unknown = (opts.templates ?? []).filter((id) => !known.some((t) => t.id === id));
+  if (unknown.length) throw new SyntheticGenerationError(`plantillas desconocidas: ${unknown.join(', ')} (hay: ${known.map((t) => t.id).join(', ')})`);
+  const pool = templatePool(opts);
   const events = syntheticEvents(seed);
 
   const all: GeneratedCase[] = [];
   const names = new Set<string>();
   for (let index = 0; index < perTemplate; index++) {
-    for (const t of TEMPLATES) {
+    for (const t of pool) {
       let made: GeneratedCase | null = null;
       for (let attempt = 0; attempt < 50 && !made; attempt++) {
         const rng = rngFor(`${GENERATOR_ID}|v${GENERATOR_VERSION}|seed=${seed}|${t.id}@${t.version}|${index}|${attempt}`);
-        const event = events[rng.int(0, events.length - 1)]!;
-        const { exhibitor, checks } = t.build(rng);
+        const shared = events[rng.int(0, events.length - 1)]!;
+        const { exhibitor, checks, event: own, asOf } = t.build(rng);
+        const event = own ?? shared;
         const key = slug(exhibitor.name);
         if (names.has(key)) continue;
         assertReserved(exhibitor, event, t.id);
         names.add(key);
-        made = makeCase(t, seed, index, exhibitor, event, checks, attempt);
+        made = makeCase(t, seed, index, exhibitor, event, checks, attempt, asOf);
       }
       if (!made) throw new SyntheticGenerationError(`${t.id}: no hay nombres libres tras 50 intentos`);
       all.push(made);
     }
   }
-  const wanted = new Set(opts.templates?.length ? opts.templates : TEMPLATES.map((t) => t.id));
+  const wanted = new Set(opts.templates?.length ? opts.templates : pool.map((t) => t.id));
   const cases = all.filter((c) => levels.includes(c.curriculumLevel) && wanted.has(c.expected.ground_truth.template));
   const count = (key: (c: GeneratedCase) => string) => cases.reduce<Record<string, number>>((acc, c) => ((acc[key(c)] = (acc[key(c)] ?? 0) + 1), acc), {});
   return {
@@ -220,7 +237,8 @@ export function generateSyntheticCases(opts: GenerateOptions): { cases: Generate
       total: cases.length,
       by_template: count((c) => c.expected.ground_truth.template),
       by_curriculum_level: count((c) => String(c.curriculumLevel)),
-      events,
+      // The build's shared fairs, plus the own fair of each lead-time case kept (opt-in templates).
+      events: [...events, ...cases.map((c) => c.input.event as SyntheticEvent).filter((e) => !events.some((x) => x.source_url === e.source_url))],
     },
   };
 }

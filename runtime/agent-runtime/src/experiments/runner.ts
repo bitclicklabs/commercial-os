@@ -23,7 +23,8 @@
  * with markUsed (regenerable, P5 does not apply), never count for the accuracy (their kind is not
  * a label), run with the web tools refused (`offlineToolbox`) and their ground truth reaches only
  * the `synth.*` evaluators through the subject context. A dataset with only synthetic cases can
- * therefore give PASS_FORM at most, and TEST is never touched by them.
+ * therefore give PASS_FORM at most, and TEST is never touched by them. A synthetic case with
+ * `ground_truth.as_of` (lead-time templates) runs its fixture with that date as "today".
  *
  * It never activates anything and never writes to Twenty: the tools are whatever `makeTools`
  * returns (the CLI injects FakeTwenty).
@@ -292,6 +293,17 @@ export function pickSyntheticSample(cases: readonly EvaluationCase[], experiment
   return out;
 }
 
+/**
+ * Clock of one fixture: the `as_of` of its synthetic cases (lead-time templates, tanda 18: their
+ * truth holds for that "today") when they all agree on one; otherwise the experiment clock.
+ */
+export function fixtureClock(asOfs: ReadonlyArray<string | undefined>, now: () => Date): () => Date {
+  const dates = [...new Set(asOfs.filter((d): d is string => typeof d === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(d)))];
+  if (dates.length !== 1) return now;
+  const at = new Date(`${dates[0]}T08:00:00Z`);
+  return () => new Date(at.getTime());
+}
+
 /** Deterministic, unbiased pick of TRAIN cases nobody has used (order by hash of experiment + entity). */
 export function pickFormSample(train: readonly EvaluationCase[], experiment: string, n: number): EvaluationCase[] {
   if (n <= 0) return [];
@@ -459,7 +471,7 @@ export async function runExperiment(deps: RunnerDeps, opts: RunOptions): Promise
           makeTools,
           agentVersion: deps.agentVersion,
           repeat,
-          now,
+          now: fixtureClock(f.case_ids.map((id) => truths.get(id)?.as_of), now),
           tenantId: opts.tenantId,
           onProgress: (m) => log(`${phase} ${f.name}: ${m}`),
         }),

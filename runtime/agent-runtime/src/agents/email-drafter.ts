@@ -37,6 +37,7 @@ import {
   DEFAULT_SENDER,
   WORD_RANGE,
   buildDraftNoteMarkdown,
+  draftLeadTime,
   draftNoteTitle,
   finalizeDraft,
   parseEmailDraft,
@@ -278,6 +279,8 @@ export class EmailDrafterAgent implements AgentImplementation {
               timing: h.timing,
               differentiators: differentiatorsFromEvidence(h.evidence),
             },
+            // Tanda 18: the lead time to the event, computed by code (the draft argues it, never urgency).
+            leadTime: draftLeadTime(data.signal?.eventDate ?? null, today),
           }),
         },
       ],

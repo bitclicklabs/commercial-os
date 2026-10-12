@@ -413,6 +413,14 @@ describe('EmailDrafterAgent', () => {
     // Contact first (reserved test domain: nothing fetched, Research "Sin contacto público"), then the draft.
     expect(steps.filter((s) => s.type === 'TOOL').map((s) => s.tool)).toEqual(['get_hypothesis', 'find_contact', 'create_research', 'set_hypothesis_draft', 'create_note']);
 
+    // Tanda 18: the event date and today reach the prompt, with the lead time computed by code.
+    const w = world();
+    const p2 = new StubProvider({ responses: [JSON.stringify(ANSWER)] });
+    await new EmailDrafterAgent(() => new Date('2026-10-12T09:00:00Z')).run(ctxFor(w.fake, { hypothesis_id: w.hyp.id }, p2));
+    const prompt = p2.requests[0]!.messages.map((m) => m.content).join('\n');
+    expect(prompt.startsWith('Fecha de hoy: 2026-10-12\nAntelación hasta el evento (calculada por el sistema): unas 6 semanas (43 días).')).toBe(true);
+    expect(prompt).toContain('"date": "2026-11-24"');
+
     // Second delivery (another event, same hypothesis): same note, nothing new in Twenty.
     const again = await new EmailDrafterAgent().run(ctxFor(fake, eventTriggeredInput(envelope({ subjectId: hyp.id })), new StubProvider({ responses: [JSON.stringify(ANSWER)] })));
     expect(again.output).toMatchObject({ outcome: 'SUCCESS', note_created: false });

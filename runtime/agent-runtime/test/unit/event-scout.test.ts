@@ -487,6 +487,10 @@ describe('seed: weekly-event-scouting', () => {
       // Signals mode (tanda 15): one listing + up to 50 expirations per run.
       list_event_signals: 2,
       expire_signal: 50,
+      // Lead-time window (tanda 18): one hypothesis listing + up to 50 expirations + the signal note.
+      list_hypotheses_for_expiry: 2,
+      expire_hypothesis: 50,
+      create_signal_note: 2,
     });
     expect(cfg.scout).toMatchObject({ max_fetches: 18, max_pages_per_event: 3, max_renders: 4, max_pdfs_per_event: 2, max_exhibitors_per_event: 100, max_catalog_pages: 10, max_profile_lookups: 100, time_budget_ms: 1_200_000, capture_json: true });
     expect(readConfig(cfg).scout).toMatchObject({ maxExhibitorsPerEvent: 100, maxCatalogPages: 10, maxProfileLookups: 100, timeBudgetMs: 1_200_000, captureJson: true, profileConcurrency: 2 });

@@ -197,7 +197,9 @@ export function parseExhibitorDecision(text: string): Parsed<ExhibitorDecision> 
 /**
  * Tools the Prospector may use (all modes). `fetch_url` and `render_url` are READ and only used
  * by the scout mode; `list_event_signals` (READ) and `expire_signal` (LOW_WRITE, only to EXPIRED)
- * only by the signals mode.
+ * only by the signals mode. Lead-time window (tanda 18): `list_hypotheses_for_expiry` (READ) and
+ * `expire_hypothesis` (LOW_WRITE, only PROPOSED -> EXPIRED) in the signals mode;
+ * `create_signal_note` (LOW_WRITE) when a qualification falls outside the window.
  */
 export const PROSPECTOR_TOOLS = [
   'find_company',
@@ -210,6 +212,9 @@ export const PROSPECTOR_TOOLS = [
   'render_url',
   'list_event_signals',
   'expire_signal',
+  'list_hypotheses_for_expiry',
+  'expire_hypothesis',
+  'create_signal_note',
 ] as const;
 
 export interface ScoutConfig {

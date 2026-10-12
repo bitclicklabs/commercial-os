@@ -65,6 +65,19 @@ export interface DraftPromptData {
     timing: string | null;
     differentiators: string[];
   };
+  /**
+   * Lead time to the event, computed by code from `signal.date` and `today` (tanda 18). The
+   * prompt states it so the draft can say «a N semanas/meses de la feria» without the model
+   * counting days. Absent or null: no line (no event date).
+   */
+  leadTime?: { days: number; label: string | null } | null;
+}
+
+/** The lead-time line of the prompt (empty without a lead time). */
+export function leadTimeLine(leadTime: DraftPromptData['leadTime']): string {
+  if (!leadTime) return '';
+  if (leadTime.days < 0 || leadTime.label === null) return 'Antelación hasta el evento (calculada por el sistema): el evento ya se ha celebrado.';
+  return `Antelación hasta el evento (calculada por el sistema): ${leadTime.label} (${leadTime.days} días).`;
 }
 
 export const EMAIL_DRAFT_JSON_SCHEMA: Record<string, unknown> = {
@@ -89,7 +102,8 @@ export function buildDraftPrompt(data: DraftPromptData): string {
       diferenciales_aplicables: data.hypothesis.differentiators,
     },
   };
-  return `Fecha de hoy: ${data.today}
+  const lead = leadTimeLine(data.leadTime);
+  return `Fecha de hoy: ${data.today}${lead ? `\n${lead}` : ''}
 Remitente: ${data.sender.name}, de ${data.sender.company}${data.sender.descriptor ? `, ${data.sender.descriptor}` : ''}.
 
 Redacta el primer email de contacto para esta empresa.

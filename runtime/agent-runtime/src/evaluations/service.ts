@@ -122,6 +122,8 @@ export interface SubjectHistory {
   lastKnownStatus: string | null;
   /** An EDITED verdict while PROPOSED exists after the last status-changing verdict. */
   editedWhileProposed: boolean;
+  /** When the most recent verdict happened (null without verdicts). */
+  lastOccurredAt?: Date | null;
 }
 
 export async function subjectHistory(db: Db, tenantId: string, subjectType: string, subjectId: string): Promise<SubjectHistory> {
@@ -140,7 +142,7 @@ export async function subjectHistory(db: Db, tenantId: string, subjectType: stri
     }
     if (statusOf(row) !== 'PROPOSED') break;
   }
-  return { lastKnownStatus, editedWhileProposed };
+  return { lastKnownStatus, editedWhileProposed, lastOccurredAt: rows[0]?.occurredAt ?? null };
 }
 
 /** LLD v0.2 section 5.5 EvaluationResult for one stored evaluation. */

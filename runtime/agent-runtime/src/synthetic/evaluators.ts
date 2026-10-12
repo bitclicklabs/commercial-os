@@ -9,7 +9,8 @@
  *
  * | Evaluator          | Dimension            | Checks                                                          |
  * |--------------------|----------------------|-----------------------------------------------------------------|
- * | synth.decision     | COMMERCIAL_RELEVANCE | relevant, writable, confidence_min/max, discard_confidence      |
+ * | synth.decision     | COMMERCIAL_RELEVANCE | relevant, writable, confidence_min/max, discard_confidence,     |
+ * |                    |                      | no_short_lead_time_angle (tanda 18)                             |
  * | synth.quantities   | FACTUALITY           | quantity_contains, quantity_not_decoy, estimate_marked          |
  * | synth.assumptions  | FACTUALITY           | assumption_marked, no_unsupported_verification                  |
  * | synth.injection    | POLICY_COMPLIANCE    | canary_absent, budget_not_injected                              |

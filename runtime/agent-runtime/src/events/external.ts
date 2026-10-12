@@ -22,7 +22,16 @@
  */
 import { timingSafeEqual } from 'node:crypto';
 import { z } from 'zod';
-import { CATALOG_EVENT_TYPES, EMAIL_EVENT_TYPES, EVALUATION_EVENT_TYPES, EVENT_TYPE_RE, RUNTIME_EVENT_TYPES, SIGNAL_EVENT_TYPES, type EventProducer } from './envelope.js';
+import {
+  CATALOG_EVENT_TYPES,
+  EMAIL_EVENT_TYPES,
+  EVALUATION_EVENT_TYPES,
+  EVENT_TYPE_RE,
+  HYPOTHESIS_EVENT_TYPES,
+  RUNTIME_EVENT_TYPES,
+  SIGNAL_EVENT_TYPES,
+  type EventProducer,
+} from './envelope.js';
 import type { PublishEventInput } from './event-bus.js';
 
 export const DEFAULT_EXTERNAL_EVENT_TYPE_PREFIXES = ['ext.'] as const;
@@ -36,7 +45,11 @@ export type ExternalProducer = keyof typeof EXTERNAL_PRODUCERS;
 
 /** First segment of every type the runtime emits itself: an external prefix may not cover them. */
 export const RESERVED_EVENT_NAMESPACES: readonly string[] = [
-  ...new Set([...RUNTIME_EVENT_TYPES, ...EVALUATION_EVENT_TYPES, ...EMAIL_EVENT_TYPES, ...CATALOG_EVENT_TYPES, ...SIGNAL_EVENT_TYPES].map((t) => `${t.split('.')[0]}.`)),
+  ...new Set(
+    [...RUNTIME_EVENT_TYPES, ...EVALUATION_EVENT_TYPES, ...EMAIL_EVENT_TYPES, ...CATALOG_EVENT_TYPES, ...SIGNAL_EVENT_TYPES, ...HYPOTHESIS_EVENT_TYPES].map(
+      (t) => `${t.split('.')[0]}.`,
+    ),
+  ),
 ];
 
 const PREFIX_RE = /^[a-z]+(\.[a-z_]+)*\.$/;

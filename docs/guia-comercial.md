@@ -26,13 +26,13 @@ El sistema es un equipo de agentes automáticos que prepara el trabajo de prospe
 
 > **Activo desde el 2026-10-07.** La primera ejecución automática es el lunes siguiente a las 07:30.
 
-Cada lunes, el sistema busca ferias y eventos reales relevantes para PubliEXPE y deja en **Commercial OS → Signals** una **señal por cada feria descubierta**, en estado `NEW`, con su fecha y su fuente. Es tu cola de decisión: consulta [qué hacer con ella](#señales-de-feria-tu-cola-de-decisión). El lunes ya no es la única vía por la que llega material nuevo: lo que desencadena el trabajo sobre una feria es que tú la califiques, no el calendario.
+Cada lunes, el sistema busca ferias y eventos reales relevantes para PubliEXPE y deja en **Commercial OS → Signals** una **señal por cada feria descubierta**, en estado `NEW`, con su fecha y su fuente. No crea señales de ferias demasiado próximas ni demasiado lejanas ([por qué](#qué-ferias-calificar-las-del-próximo-trimestre)). Es tu cola de decisión: consulta [qué hacer con ella](#señales-de-feria-tu-cola-de-decisión). El lunes ya no es la única vía por la que llega material nuevo: lo que desencadena el trabajo sobre una feria es que tú la califiques, no el calendario.
 
 La ejecución tiene un límite de 20 minutos: si algo es muy grande, el resumen de la ejecución (*Agent run*) sale como `Partial` e indica en qué fase se cortó. Lo ya hecho se guarda igualmente.
 
 ### Cuando calificas una feria: al momento
 
-Cuando pones una señal en `QUALIFIED`, el agente **Prospector** investiga esa feria de inmediato: analiza sus expositores y, para cada uno, decide si PubliEXPE puede venderle merchandising con motivo de ese evento. Para cada expositor con encaje:
+Cuando pones una señal en `QUALIFIED` y la feria queda dentro del [plazo que necesita el merchandising](#qué-ferias-calificar-las-del-próximo-trimestre) (de 2 a 6 meses vista), el agente **Prospector** investiga esa feria de inmediato: analiza sus expositores y, para cada uno, decide si PubliEXPE puede venderle merchandising con motivo de ese evento. Para cada expositor con encaje:
 
 - Localiza o crea la **empresa** en Twenty.
 - Registra una **señal** (*Signal*) del expositor: el hecho que justifica el contacto, por ejemplo "expone en Expo Alimentaria el 24 de noviembre". Nace en estado `NEW`.
@@ -44,9 +44,10 @@ El sistema solo registra hipótesis con una confianza igual o superior a 0,50. L
 
 ### Cada mañana a las 08:00: sigue con tus ferias calificadas
 
-La tarea diaria reparte su presupuesto entre **todas las ferias que tienes en `QUALIFIED` y siguen vigentes**, empezando cada día por la que menos se ha trabajado. Así, una feria calificada sigue dando hipótesis nuevas los días siguientes sin que tengas que hacer nada más.
+La tarea diaria reparte su presupuesto entre **todas las ferias que tienes en `QUALIFIED`, siguen vigentes y quedan dentro del plazo de trabajo** (de 2 a 6 meses vista), empezando cada día por la que menos se ha trabajado. Así, una feria calificada sigue dando hipótesis nuevas los días siguientes sin que tengas que hacer nada más.
 
-- **Si no tienes ninguna feria calificada, no hace nada**: el resumen de la ejecución sale como `Skipped`, a coste 0. No es un fallo.
+- **Si no tienes ninguna feria calificada en plazo, no hace nada**: el resumen de la ejecución sale como `Skipped`, a coste 0. No es un fallo.
+- **Las hipótesis `Proposed` de ferias que ya quedan a menos de 45 días las pasa a `Expired`.** No cuentan como feedback tuyo. Las `Validated` no se tocan nunca.
 - Cuando la fecha de una feria pasa, su señal cambia sola a `EXPIRED` y sale del reparto. Es lo único que el sistema cambia por su cuenta en una señal.
 
 > **Nota:** la tarea diaria ya no trabaja con una lista fija de expositores de demostración. Si todavía ves registros cuyo dominio termina en `.example`, son de demostración de cuando existía esa lista: ignóralos o recházalos.
@@ -77,13 +78,28 @@ Una **señal** es un hecho que justifica un contacto. Las que más te importan s
 
 ### El gesto clave
 
-- **Calificar** (`QUALIFIED`): el agente investiga esa feria **al momento** y, además, la mantiene en el reparto de cada mañana mientras siga vigente. Las hipótesis llegan a **Hypotheses** como siempre, en `Proposed`.
+- **Calificar** (`QUALIFIED`): si la feria es del próximo trimestre, el agente la investiga **al momento** y, además, la mantiene en el reparto de cada mañana mientras siga vigente. Las hipótesis llegan a **Hypotheses** como siempre, en `Proposed`. Si la feria queda fuera de plazo, [verás una nota ⏳](#qué-ferias-calificar-las-del-próximo-trimestre) y no se trabajará todavía.
 - **Descartar** (`DISCARDED`): el sistema no vuelve a tocar esa feria.
 - **Dejar en `NEW`**: no pasa nada. Una feria sin decidir no consume presupuesto.
 
 Para calificar, abre la señal en **Commercial OS → Signals** y cambia el campo **Status** a `Qualified`. No hay ningún botón adicional.
 
 > **Importante:** calificar tiene coste: el agente usa un modelo de pago por uso sobre los expositores de esa feria. Califica las ferias que de verdad te interesen. Si ya has sacado de una feria lo que querías, **descártala** para que deje de recibir presupuesto cada día.
+
+### Qué ferias calificar: las del próximo trimestre
+
+**Califica ferias que se celebren dentro de 2 a 6 meses** (en concreto, entre 45 y 210 días desde hoy). El motivo es comercial: el merchandising necesita plazo. Entre las muestras, las pruebas de marcaje y la producción, un pedido no se puede servir para una feria que está a las puertas. Una feria de la semana que viene no es una oportunidad: es una puerta cerrada, aunque el expositor encaje de maravilla.
+
+Qué verás si calificas fuera de ese plazo:
+
+| La feria queda... | Qué pasa | Qué haces |
+|---|---|---|
+| **Demasiado cerca** (menos de 45 días) | Verás una **nota ⏳** en la señal que explica los días que faltan. La señal sigue en `Qualified`, pero no se trabajará. Cuando pase la fecha, cambia sola a `Expired`. | Nada. Puedes descartarla si no quieres tenerla pendiente. |
+| **Demasiado lejana** (más de 210 días) | Verás la misma nota ⏳. La señal sigue en `Qualified` y **se queda esperando su momento**: el día en que la feria entre en plazo, entra sola en el reparto de la mañana. | Nada. No hace falta volver a calificarla. |
+
+La nota ⏳ no es un fallo: es el sistema diciéndote «te he hecho caso, pero ahora no toca». Si no quieres que una feria lejana te quede pendiente, descártala.
+
+El lunes, el sistema ya no te deja en la cola ferias demasiado próximas ni demasiado lejanas: la cola de `New` son, en su mayoría, ferias del próximo trimestre.
 
 ### Dónde las ves
 
@@ -238,6 +254,8 @@ La empresa no publica un email en su web. Tienes dos opciones:
 
 Cuando validas una hipótesis, el sistema prepara un borrador del primer email para esa empresa. Esto ocurre tanto si la validas tal cual como si la editas antes de validarla: en ese segundo caso, el borrador usa los datos que has corregido (cantidades, presupuesto, productos o enfoque).
 
+**El ángulo del borrador.** Como solo se trabajan ferias del próximo trimestre, el correo habla de **tiempo para hacerlo bien**: a unas semanas de la feria es el momento ideal para resolver el merchandising con calma, con muestras, pruebas de marcaje y producción sin prisas. El borrador no debe presumir de plazos cortos ni de «adaptarse a las prisas»: si ves ese discurso, corrígelo o recházalo. El tono y el formato no cambian. (Esta redacción nueva depende de que se active la versión correspondiente de la skill del EmailDrafter; mientras tanto, revisa el ángulo tú.)
+
 El borrador es solo una propuesta de texto: **el sistema no envía nada por su cuenta, nunca**. El correo sale cuando tú lo revisas y lo lanzas, y puedes hacerlo de dos formas:
 
 | Forma | Cuándo la usas |
@@ -351,9 +369,9 @@ Cómo funciona por dentro, las garantías y el evento para n8n están en [Triaje
 | `PROPOSED` | Propuesta por el sistema, pendiente de tu revisión. | Lo pone el sistema. No lo pongas tú. |
 | `VALIDATED` | La has revisado y la vas a trabajar. | Cuando la hipótesis es buena, tal cual o tras editarla. |
 | `REJECTED` | La has revisado y no la vas a trabajar. | Cuando no encaja o no es el momento. |
-| `EXPIRED` | Ya no es vigente. | Cuando el evento ya pasó y nadie actuó, o la oportunidad se ha enfriado. |
+| `EXPIRED` | Ya no es vigente. | Normalmente lo pone el sistema (ver la nota). A mano, solo si la oportunidad se ha enfriado. |
 
-> **Nota:** hoy ningún proceso automático caduca las hipótesis. Marca `Expired` manualmente las que sigan en `Proposed` cuando el evento haya pasado.
+> **Nota:** desde la tanda 18, el sistema pasa solo a `Expired` las hipótesis `Proposed` cuya feria ha pasado o queda a menos de 45 días. Esa expiración no cuenta como feedback tuyo ni entra en las métricas. Las hipótesis `Validated` nunca se auto-expiran. Si quieres que tu decisión enseñe algo al sistema, usa `Validated` o `Rejected`: un `Expired` puesto a mano no cuenta como veredicto.
 
 ### Señales
 
@@ -363,7 +381,7 @@ Las señales de feria nacen en `NEW` y las gestionas tú: el estado que les pone
 |---|---|---|
 | `NEW` | Feria descubierta, sin decidir. | El sistema |
 | `REVIEWING` | La estás mirando. Opcional: no dispara nada. | Tú |
-| `QUALIFIED` | Trabájala: el agente la investiga al momento y la mantiene en el reparto diario. | Tú |
+| `QUALIFIED` | Trabájala: si es del próximo trimestre (de 2 a 6 meses vista), el agente la investiga al momento y la mantiene en el reparto diario. Fuera de plazo se queda esperando, con una nota ⏳. | Tú |
 | `DISCARDED` | Ya no: el sistema no la toca. | Tú |
 | `EXPIRED` | La fecha de la feria ya pasó. | Solo el sistema |
 
@@ -419,7 +437,7 @@ Distingue dos casos:
 
 Abre **Commercial OS → Agent runs** y mira la ejecución de hoy:
 
-- **Skipped:** no tienes ninguna feria en `QUALIFIED` vigente, así que no había nada que trabajar. Es lo esperado hasta que califiques alguna.
+- **Skipped:** no tienes ninguna feria en `QUALIFIED` vigente y dentro de plazo (de 2 a 6 meses vista), así que no había nada que trabajar. Es lo esperado hasta que califiques alguna. Si calificaste una y no pasó nada, mira si tiene la [nota ⏳](#qué-ferias-calificar-las-del-próximo-trimestre): está fuera de plazo.
 - **Success** y 0 hipótesis nuevas: las ferias calificadas no tenían expositores nuevos con encaje, o ya estaban registrados. El campo **Result** detalla cuántos se descartaron y por qué.
 - **Partial** o **Failed**: algo falló. Avisa al equipo técnico e indica la fecha.
 - **No hay ejecución de hoy:** avisa al equipo técnico.

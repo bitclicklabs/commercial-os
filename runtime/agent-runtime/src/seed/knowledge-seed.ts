@@ -8,6 +8,8 @@
  *   name written as a fact; criterion 3 met in part, 2/12 -> 8/12).
  * - `email` / `presentacion-primer-contacto`: direct user feedback of 2026-10-07 (CHANGELOG,
  *   tanda 6; LLD v0.3 EmailDrafter `company_descriptor`).
+ * - `prospeccion` / `lead-time-comercial`: direct user feedback of 2026-10-12 (tanda 18: the 6
+ *   Gastrónoma drafts rejected, fair 14 days away): window 45-210 days, argue calm production.
  *
  * NOT seeded on purpose: EXP-001's confidence ceiling (OP1): it caused the confidence-semantics
  * regression (non-relevant public bodies with 0.95) and the gate verdict was ITERATE.
@@ -30,7 +32,11 @@ export interface KnowledgeSeedEntry {
   source: KnowledgeSource;
 }
 
-const EXP001_DOC = 'docs/experimentos/EXP-001-prospector-v2.md';
+/** Tanda 18 (feedback of 2026-10-12): the commercial lead-time rule, injected into the Prospector (domain prospeccion). */
+export const LEAD_TIME_KNOWLEDGE_STATEMENT =
+  'Regla de lead time comercial: no prospectes ferias a menos de 45 días (no hay plazo de producción posible); la ventana de valor es de 45 a 210 días antes de la feria; el argumento correcto es producir con calma (muestras, pruebas de marcaje y producción sin prisas), nunca los plazos cortos.';
+
+const EXP001_DOC ='docs/experimentos/EXP-001-prospector-v2.md';
 const EXP001_EXECUTIONS: KnowledgeEvidence[] = [
   { type: 'execution', ref: 'e67cba89-4252-45bd-bb25-b15ca0268a6c', note: 'Scout de Gastrónoma 2026, primera página (datos de diseño de EXP-001)' },
   { type: 'execution', ref: '44e35e27-b991-467e-988a-6f0c591669cb', note: 'Scout de Gastrónoma con el atajo JSON (datos de diseño de EXP-001)' },
@@ -89,6 +95,27 @@ export const KNOWLEDGE_SEED: readonly KnowledgeSeedEntry[] = [
         ref: 'LLD-0.3 EmailDrafter company_descriptor',
         doc: 'docs/LLD-0.3-estado-real.md',
         note: 'Garantizado también por código (company_descriptor, corrección company_descriptor_added).',
+      },
+    ],
+    confidence: 0.95,
+    source: 'human',
+  },
+  {
+    domain: 'prospeccion',
+    topic: 'lead-time-comercial',
+    statement: LEAD_TIME_KNOWLEDGE_STATEMENT,
+    evidence: [
+      {
+        type: 'feedback',
+        ref: '2026-10-12',
+        doc: 'docs/CHANGELOG.md',
+        note: 'Feedback directo del usuario (tanda 18): rechazó los 6 borradores de Gastrónoma; la feria era a 14 días y los textos presumían de plazos cortos («podemos adaptarnos a estos plazos cortos»). Producir merchandising personalizado a 2 semanas es imposible.',
+      },
+      {
+        type: 'skill_version',
+        ref: 'prospector-event-exhibitors · candidata lead-time-v1',
+        doc: 'runtime/agent-runtime/src/skills/lead-time-candidates.ts',
+        note: 'Candidatas DRAFT del Prospector y del EmailDrafter con la misma regla (ventana 45-210 días, argumento «producir con calma»).',
       },
     ],
     confidence: 0.95,

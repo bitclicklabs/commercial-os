@@ -150,6 +150,9 @@ export async function evaluationRoutes(app: FastifyInstance, ctx: ApiContext): P
       if (outcome.status === 'ignored' && outcome.foreign_tenant) {
         req.log.warn({ event: req.body.eventName, recordId: req.body.record.id, tenant: outcome.foreign_tenant }, 'twenty webhook: record of another tenant ignored');
       }
+      if (outcome.status === 'ignored' && outcome.expiry) {
+        req.log.info({ event: req.body.eventName, recordId: req.body.record.id, marker: outcome.status_marker ?? null }, 'twenty webhook: hypothesis expiry discarded (not a human verdict)');
+      }
       // commercialSignal -> QUALIFIED (fair-level only): `signal.qualified`, once per signal per 24 h.
       let signal: SignalQualificationOutcome | null = null;
       if (isSignalPayload(req.body)) {

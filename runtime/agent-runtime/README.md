@@ -472,6 +472,7 @@ Todos los eventos viajan con este sobre. Los campos del sobre y de `data` usan `
 | `email.warmup_target_exceeded` | Email-ops, cuando los envíos del día superan el objetivo del warm-up (una vez por día local) | `date`, `timezone`, `phase`, `restDay`, `target`, `sendsToday`, `countedSource` |
 | `catalog.unavailable` | Gate del catálogo, con `CATALOG_ENABLED=true` y `/health` fallando antes de una ejecución (como mucho una vez al día por tenant, `idempotencyKey` `evt:catalog.unavailable:{tenant}:{día}`) | `day`, `reason`, `code`, `message`, `provider`, `checkedAt`, `executionId` |
 | `signal.qualified` | Webhook de Twenty, cuando una persona pasa una señal de feria (`commercialSignal` sin empresa, tipo `FAIR`, `CONGRESS` o `EVENT`, con URL) a `QUALIFIED`, o la crea ya calificada. Como mucho una vez por señal cada 24 h (`idempotencyKey` `evt:signal.qualified:{signal_id}:{evento_anterior\|first}`) | `signal_id`, `name` (sin el sufijo ` (feria)`), `event_url`, `event_date`, `signal_type`, `transition` (`updated_fields` o `status_only`), `twenty` (`webhook_id`, `workspace_id`, `event_date`), `chainDepth` 0 |
+| `hypothesis.status_changed` | Webhook de Twenty, cuando una `commercialHypothesis` pasa a `EXPIRED` (o se reabre a `PROPOSED` desde otro estado). Nunca es una evaluación: solo recuerda el estado para el siguiente cambio (`idempotencyKey` `evt:hypothesis.status_changed:{id}:{estado}:{updatedAt}`). Namespace `hypothesis.` reservado | `hypothesis_id`, `to_status`, `verdict` (`false`), `actor_human`, `updated_at`, `twenty_webhook_id` |
 | `experiment.revalidation_failed` | Revalidación de un `PASS_FORM` con veredicto `REFUTED` cuya versión sigue `ACTIVE` o en canario (una vez por revalidación nueva) | `revalidationId`, `experimentId`, `experimentName`, `subjectType`, `subjectName`, `baselineVersion`, `candidateVersion`, `verdict`, `baselineAccuracy`, `candidateAccuracy`, `labels`, `versionState` (`ACTIVE` o `CANARY`), `noteId` |
 
 Cada evento del runtime lleva una `idempotencyKey` (`evt:{type}:{task_run_id}`, `evt:task.started:{task_run_id}:{attempt}`, `evt:{type}:{execution_id}`, `evt:evaluation.recorded:{evaluation_id}`): publicar dos veces el mismo hecho devuelve la fila existente.
@@ -1570,9 +1571,43 @@ Entrada de la tarea diaria desde la tanda 15: `{ "mode": "signals" }`, sin feria
 
 1. Lee de Twenty (`list_event_signals`, READ) las `commercialSignal` **sin empresa** del tenant de la ejecución (y, para `DEFAULT_TENANT_ID`, las creadas a mano sin `tenantId`; consulta [Tenancy en Twenty](#tenancy-en-twenty)) en `NEW`, `REVIEWING` o `QUALIFIED`. Solo cuentan las de feria: tipo `FAIR`, `CONGRESS` o `EVENT` y `sourceUrl` http(s). Las señales por expositor ("<feria> — <empresa>") tienen empresa y nunca entran.
 2. **Envejecimiento primero**, también si la ejecución acaba `SKIPPED`: cada una cuya `eventDate` es anterior a hoy pasa a `EXPIRED` (`expire_signal`, LOW_WRITE: relee la señal y solo escribe `status`; nunca toca una fecha futura, una sin fecha ni una `DISCARDED`/`EXPIRED`). Máximo 50 por ejecución. Es el único cambio de estado que hace la máquina.
-3. De las `QUALIFIED` vigentes (fecha futura o sin fecha) elige la **trabajada hace más tiempo** (round-robin): primero las que ninguna ejecución ha trabajado; después, la de última pasada más antigua; empates por la fecha de feria más próxima. La memoria es la tabla `agent_executions` del mismo agente: `output.signal_id` (este modo) o `input.signal_id` (un scout dirigido que la lleve, como el disparo al calificar).
-4. Lanza el scout dirigido con `{ event_url, event_name, event_date, max_events: 1 }` y el presupuesto de tiempo del scout (`scout.time_budget_ms`, 20 min; la entrada `scout_time_budget_ms` lo baja). La salida lleva `signal_id`, `signal_name`, `event_name`, `event_url` y `signals` (caducadas, candidatas con su última pasada).
-5. Sin ninguna `QUALIFIED` vigente: `outcome = SKIPPED`, coste 0, sin llamadas al modelo y sin `agentRunSummary`.
+3. **Caducidad de hipótesis por lead time** (tanda 18): las hipótesis `PROPOSED` de ferias a menos de `LEADTIME_MIN_DAYS` días (o ya pasadas) pasan a `EXPIRED`. Consulta [Ventana de lead time](#ventana-de-lead-time).
+4. De las `QUALIFIED` vigentes **dentro de la ventana de lead time** elige la **trabajada hace más tiempo** (round-robin): primero las que ninguna ejecución ha trabajado; después, la de última pasada más antigua; empates por la fecha de feria más próxima. La memoria es la tabla `agent_executions` del mismo agente: `output.signal_id` (este modo) o `input.signal_id` (un scout dirigido que la lleve, como el disparo al calificar). Una ejecución que acabó `SKIPPED` no cuenta como pasada.
+5. Lanza el scout dirigido con `{ event_url, event_name, event_date, max_events: 1 }` y el presupuesto de tiempo del scout (`scout.time_budget_ms`, 20 min; la entrada `scout_time_budget_ms` lo baja). La salida lleva `signal_id`, `signal_name`, `event_name`, `event_url`, `signals` (caducadas, candidatas con su última pasada y sus días), `lead_time` e `hypothesis_expiry`.
+6. Sin ninguna `QUALIFIED` en ventana: `outcome = SKIPPED` (`reason`: `0 señales calificadas` o `0 señales calificadas en ventana de lead time`, con el desglose en `lead_time`), coste 0, sin llamadas al modelo y sin `agentRunSummary`.
+
+#### Ventana de lead time
+
+El merchandising necesita plazo de producción: una feria solo se prospecta si faltan entre `LEADTIME_MIN_DAYS` (por defecto **45**) y `LEADTIME_MAX_DAYS` (por defecto **210**) días, **ambos incluidos**. Los días se cuentan de fecha a fecha en Europe/Madrid (`src/signals/lead-time.ts`). Un valor no válido (no entero entre 0 y 3650, o mínimo mayor que máximo) vuelve a los valores por defecto.
+
+| Días hasta la feria | Estado | Reparto diario | Disparo al calificar |
+|---|---|---|---|
+| sin fecha | `no_date` | no se elige | `SKIPPED` + nota "⏳ Sin fecha de feria: añade la fecha a la señal para que entre al reparto" |
+| < 0 | `past` | la caduca el envejecimiento | `SKIPPED` + nota |
+| 0 a 44 | `too_close` | no se elige | `SKIPPED` + nota "⏳ Fuera de ventana: la feria es en N días…" |
+| 45 a 210 | `in_window` | candidata | prospecta |
+| > 210 | `too_far` | no se elige (entra sola cuando le toque) | `SKIPPED` + nota "…demasiado lejana" |
+
+- **La ventana filtra, el calendario caduca.** Una señal demasiado cercana conserva su estado: solo la fecha pasada la lleva a `EXPIRED`.
+- **Disparo al calificar** (`prospect-on-qualified`): `signal.qualified` se emite igual; el run comprueba `event_date` y, fuera de ventana o sin fecha, termina `SKIPPED` sin llamar al modelo ni descargar nada, y deja una nota en la señal (`create_signal_note`, idempotente por señal y título; el título lleva el día). La señal sigue `QUALIFIED`.
+- **Descubrimiento semanal** (`discover_only`): una feria propuesta fuera de ventana no crea señal (`counters.discarded_out_of_window`, `discarded_events[].reason` `fuera_de_ventana_lead_time_cercana` / `_lejana`). Una sin fecha se crea igual, con el hecho anotado en la descripción.
+- **Caducidad de hipótesis**: en el run diario, antes de repartir, `list_hypotheses_for_expiry` (READ) lee las `PROPOSED` y `VALIDATED` del tenant con la fecha de su señal (o, si no la tiene, la de la señal de feria con el mismo nombre de evento). Las `PROPOSED` a menos de `LEADTIME_MIN_DAYS` días o ya pasadas pasan a `EXPIRED` con `expire_hypothesis` (LOW_WRITE: relee la hipótesis y solo escribe `status`; rechaza lo que no sea `PROPOSED` y lo que la fecha de su propia señal deje en ventana). Máximo 50 por ejecución; el resto, en la siguiente. Las `VALIDATED` nunca se caducan: solo salen como aviso (`hypothesis_expiry.validated_warnings`).
+- **Sin contaminar métricas**: el PATCH a `EXPIRED` vuelve por el webhook de Twenty, pero una transición a `EXPIRED` nunca es un veredicto HUMAN (consulta [Webhook de Twenty](#webhook-de-twenty)).
+
+Salida (`output.lead_time` del modo señales):
+
+```json
+{
+  "window": { "min_days": 45, "max_days": 210, "today": "2026-10-12", "timezone": "Europe/Madrid" },
+  "in_window": 1,
+  "too_close": [{ "id": "…", "name": "Gastrónoma 2026 (feria)", "event_date": "2026-10-19", "days": 7 }],
+  "too_far": [{ "id": "…", "name": "Feria Lejana 2027 (feria)", "event_date": "2027-08-08", "days": 300 }],
+  "no_date": [],
+  "chosen": { "id": "…", "name": "Feria En Ventana 2027 (feria)", "event_date": "2027-01-20", "days": 100 }
+}
+```
+
+El `agentRunSummary` dice la ventana aplicada y los días de la feria elegida. `GET /dashboard` no tiene bloque de señales, así que no muestra la ventana.
 
 La deduplicación del pipeline (empresa por dominio, hipótesis por empresa y nombre) hace que repetir una feria ya peinada cueste poco y solo escriba expositores nuevos. No hay marca de "feria agotada": una feria calificada se sigue peinando por turno hasta que caduca o alguien la descarta.
 
@@ -2123,6 +2158,8 @@ Primera señal de calidad del MVP-0 (LLD v0.2 secciones 5.5 y 6.4, decisión D14
 | `PROPOSED` o `VALIDATED` a `REJECTED` | `DISCARDED` | 0.0 |
 
 Se ignoran (respuesta `200` con `status: "ignored"`): el paso a `EXPIRED` o de vuelta a `PROPOSED`, las transiciones desde `EXPIRED`, las ediciones de campos que no son de negocio y las ediciones después de validar.
+
+**`EXPIRED` nunca es un veredicto** (tanda 18). Lo caduque el runtime (envejecimiento por [ventana de lead time](#ventana-de-lead-time), actor `API`) o una persona a mano, el webhook se descarta antes del evaluador (`reason: "transition to EXPIRED is an expiry, not a human verdict"`, `expiry: true`, log `hypothesis expiry discarded`). Como Twenty no manda el estado anterior, la transición se recuerda como evento `hypothesis.status_changed` (tabla `events`, nunca `evaluations`; campo `status_marker` de la respuesta). Así un `EXPIRED` → `REJECTED` / `VALIDATED` posterior (alguien limpiando las caducadas) tampoco puntúa. Una reapertura (`EXPIRED` → `PROPOSED`) se recuerda igual, y el veredicto que la siga vuelve a contar. Antes de la tanda 18 el paso a `EXPIRED` ya se ignoraba, pero no se recordaba: un rechazo posterior de una hipótesis caducada contaba como `DISCARDED`.
 
 ### Webhook de Twenty
 

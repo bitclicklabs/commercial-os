@@ -177,6 +177,7 @@ describe('knowledge: lifecycle rules', () => {
       'prospeccion/cantidades-y-presupuesto',
       'prospeccion/suposiciones-por-nombre',
       'email/presentacion-primer-contacto',
+      'prospeccion/lead-time-comercial',
     ]);
     for (const e of KNOWLEDGE_SEED) {
       expect(e.evidence.length).toBeGreaterThan(0);
@@ -187,6 +188,10 @@ describe('knowledge: lifecycle rules', () => {
     expect(KNOWLEDGE_SEED[0]!.evidence[0]).toMatchObject({ type: 'experiment', ref: 'EXP-001' });
     expect(KNOWLEDGE_SEED[2]!.evidence[0]).toMatchObject({ type: 'feedback', ref: '2026-10-07' });
     expect(KNOWLEDGE_SEED[2]!.statement).toContain('expertos en merchandising para empresas');
+    // Tanda 18: the lead-time rule, from the user's feedback of 2026-10-12, in the Prospector's domain.
+    expect(KNOWLEDGE_SEED[3]!.evidence[0]).toMatchObject({ type: 'feedback', ref: '2026-10-12' });
+    expect(KNOWLEDGE_SEED[3]!.statement).toMatch(/45 días/);
+    expect(KNOWLEDGE_SEED[3]!.statement).toMatch(/45 a 210 días/);
   });
 });
 

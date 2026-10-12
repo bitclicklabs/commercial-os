@@ -1,0 +1,20 @@
+{
+  "event": {
+    "date": "2027-12-07",
+    "name": "Salón de Hostelería de Velandria 2027",
+    "type": "FAIR",
+    "location": "Velandria (recinto ferial)",
+    "source_url": "https://salon-de-hosteleria-velandria-brixezna.invalid/expositores"
+  },
+  "exhibitors": [
+    {
+      "name": "Quesos Brixezna Export S.L.",
+      "domain": "brixezna-quesos-export.invalid",
+      "sector": "Lácteos y quesos",
+      "description": "Fabricante de quesos curados de oveja con 110 empleados y exportación a 10 países. Presenta en la feria un queso madurado en bodega y ocupa un stand de 50 m² con 6 comerciales. Busca proveedor de regalo promocional para los visitantes del stand."
+    }
+  ],
+  "case_ids": [
+    "a96d8792-b88b-439d-b69b-4792432ba3b0"
+  ]
+}

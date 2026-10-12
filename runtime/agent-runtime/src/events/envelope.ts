@@ -60,6 +60,16 @@ export type CatalogEventType = (typeof CATALOG_EVENT_TYPES)[number];
 export const SIGNAL_EVENT_TYPES = ['signal.qualified'] as const;
 export type SignalEventType = (typeof SIGNAL_EVENT_TYPES)[number];
 
+/**
+ * Hypothesis status markers (src/evaluations/twenty-webhook.ts, tanda 18): `hypothesis.status_changed`
+ * when a `commercialHypothesis` moves to a status that is NOT a human verdict (EXPIRED, or back to
+ * PROPOSED). Never an evaluation; it only lets the HUMAN evaluator know the previous status of the
+ * next change (Twenty webhooks carry no previous values), so EXPIRED -> REJECTED / VALIDATED is
+ * never scored. Data: `{hypothesis_id, to_status, actor_human, updated_at}`.
+ */
+export const HYPOTHESIS_EVENT_TYPES = ['hypothesis.status_changed'] as const;
+export type HypothesisEventType = (typeof HYPOTHESIS_EVENT_TYPES)[number];
+
 export const EVENT_TYPE_RE = /^[a-z]+(\.[a-z_]+)+$/;
 /** `{type}.v{n}`; underscores allowed, as in EVENT_TYPE_RE (`email.blocked_suppressed.v1`). */
 const SCHEMA_VERSION_RE = /^[a-z._]+\.v[0-9]+$/;

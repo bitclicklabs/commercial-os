@@ -1,0 +1,20 @@
+{
+  "event": {
+    "date": "2027-06-13",
+    "name": "Expo Gastronómica de Valdecristal 2027",
+    "type": "FAIR",
+    "location": "Valdecristal (recinto ferial)",
+    "source_url": "https://expo-gastronomica-valdecristal-karvaqui.invalid/expositores"
+  },
+  "exhibitors": [
+    {
+      "name": "Quesos Karvaqui Export S.L.U.",
+      "domain": "karvaqui-quesos-export.invalid",
+      "sector": "Lácteos y quesos",
+      "description": "Productor de quesos curados de oveja con una plantilla de 300 personas y exportación a 23 países. Presenta en la feria un queso madurado en bodega y dispone de un stand de 60 m² atendido por 4 personas de su equipo comercial. Su equipo de marketing está pidiendo presupuestos de merchandising para la feria."
+    }
+  ],
+  "case_ids": [
+    "75f978c4-bdd4-4aab-a010-f8f0f2ba48a4"
+  ]
+}

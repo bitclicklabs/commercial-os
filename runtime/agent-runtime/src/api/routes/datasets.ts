@@ -24,6 +24,7 @@ import {
   type DatasetCounts,
 } from '../../datasets/service.js';
 import { SYNTHETIC_DOMAINS } from '../../synthetic/generate.js';
+import { optInTemplateCatalog } from '../../synthetic/lead-time-templates.js';
 import { templateCatalog } from '../../synthetic/templates.js';
 import type { ApiContext } from '../context.js';
 import { HttpError, IdParams, parse, serialize, tenantOf } from '../http.js';
@@ -171,7 +172,8 @@ export async function datasetRoutes(app: FastifyInstance, ctx: ApiContext): Prom
    * curriculum level, failure pattern, expected decision and the skill rule behind it. Building a
    * synthetic dataset is `pnpm synth:build` (no mutating route: generation is an operator step).
    */
-  app.get('/synthetic/templates', async () => ({ domains: SYNTHETIC_DOMAINS, items: templateCatalog() }));
+  // `opt_in` (tanda 18): lead-time templates, only in a build that asks for them (`leadTime` / `--lead-time`).
+  app.get('/synthetic/templates', async () => ({ domains: SYNTHETIC_DOMAINS, items: templateCatalog(), opt_in: optInTemplateCatalog() }));
 
   app.post('/datasets/:id/archive', async (req) => {
     const tenantId = tenantOf(req, ctx.config.defaultTenantId);

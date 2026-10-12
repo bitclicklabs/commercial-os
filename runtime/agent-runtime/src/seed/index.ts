@@ -6,7 +6,8 @@
  * an existing harness is never touched), then the skills migrated from the code constants
  * (v1 ACTIVE if missing; existing skills are never touched), then the first knowledge entries
  * (ACTIVE, with evidence; existing domain/topic pairs are never touched), the DRAFT candidate of the
- * Prospector skill with real catalog products (never activated), then the Prospector
+ * Prospector skill with real catalog products (never activated), the DRAFT lead-time candidates of
+ * the Prospector and EmailDrafter skills (tanda 18, never activated), then the Prospector
  * agent and its tasks `daily-event-prospecting` and
  * `weekly-event-scouting`, the EVENT task `prospect-on-qualified` (Prospector scout of a fair
  * signal qualified in Twenty, `signal.qualified`), and the EmailDrafter agent with its task
@@ -30,6 +31,7 @@ import { seedEmailDrafter } from './email-drafter-seed.js';
 import { seedHarnesses } from './harness-seed.js';
 import { seedInbox } from './inbox-seed.js';
 import { seedKnowledge } from './knowledge-seed.js';
+import { seedLeadTimeCandidates } from './lead-time-seed.js';
 import { seedProspectOnQualified } from './prospect-on-qualified-seed.js';
 import { seedProspector } from './prospector-seed.js';
 import { seedSkills } from './skills-seed.js';
@@ -58,6 +60,8 @@ if (isMain) {
     .then(async (harness) => ({ harness, skills: await seedSkills(handle.db, { tenantId, log }) }))
     // Catalog (tanda 14): one DRAFT candidate of the Prospector skill with real products; never activated here.
     .then(async (acc) => ({ ...acc, catalogSkill: await seedCatalogSkillCandidate(handle.db, { tenantId, log }) }))
+    // Lead time (tanda 18): DRAFT candidates of the Prospector and the EmailDrafter skills; never activated here.
+    .then(async (acc) => ({ ...acc, leadTimeSkills: await seedLeadTimeCandidates(handle.db, { tenantId, log }) }))
     .then(async (acc) => ({ ...acc, knowledge: await seedKnowledge(handle.db, { tenantId, log }) }))
     .then(async (r) => ({ ...r, prospector: await seedProspector(handle.db, { tenantId, ...(defaultInput ? { defaultInput } : {}), log }) }))
     .then(async (r) => ({ ...r, prospectOnQualified: await seedProspectOnQualified(handle.db, { tenantId, log }) }))

@@ -649,7 +649,9 @@ describe('ContactFinder agent and seed', () => {
     expect(agentVersionRole(v.configuration)).toBe('triage');
     const policy = parseToolPolicy(v.configuration);
     expect(policy.maxRiskLevel).toBe('LOW_WRITE');
-    expect([...policy.allow].sort()).toEqual(['create_research', 'find_contact', 'get_company', 'get_hypothesis', 'set_hypothesis_recipient']);
+    // upsert_person (tanda 19, additive): the published people become native Persons.
+    expect([...policy.allow].sort()).toEqual(['create_research', 'find_contact', 'get_company', 'get_hypothesis', 'set_hypothesis_recipient', 'upsert_person']);
+    expect(policy.maxCallsPerTool).toMatchObject({ upsert_person: 3 });
     expect(desiredContactFinderTask().schedule).toEqual({ type: 'MANUAL' });
   });
 
@@ -662,8 +664,31 @@ describe('ContactFinder agent and seed', () => {
     expect(skipped.output).toMatchObject({ outcome: 'SKIPPED', reason: expect.stringContaining('PROPOSED') });
     const { output, steps } = await new ContactFinderAgent().run(agentCtx(fake, desiredContactFinderVersion(), { hypothesis_id: hyp.id }, provider, deps));
     expect(output).toMatchObject({ outcome: 'SUCCESS', sends_email: false, contact: { status: 'done', email: 'maria.gomez@conservas-cantabrico.es', emailTo: 'written' } });
-    expect(steps.filter((s) => s.type === 'TOOL').map((s) => s.tool)).toEqual(['get_hypothesis', 'find_contact', 'set_hypothesis_recipient', 'create_research']);
+    expect(steps.filter((s) => s.type === 'TOOL').map((s) => s.tool)).toEqual(['get_hypothesis', 'find_contact', 'set_hypothesis_recipient', 'upsert_person', 'create_research']);
     expect(hyp).toMatchObject({ emailTo: 'maria.gomez@conservas-cantabrico.es', emailStatus: 'DRAFT' });
+    // Tanda 19: the chosen person (name + title published on the team page) is a native Person,
+    // linked to the company; Javier Pérez (no relevant title, not chosen) and info@/comercial@ are not.
+    expect(fake.tables.people).toEqual([
+      expect.objectContaining({
+        name: { firstName: 'María', lastName: 'Gómez Ruiz' },
+        emails: { primaryEmail: 'maria.gomez@conservas-cantabrico.es', additionalEmails: [] },
+        jobTitle: 'Directora de Marketing',
+        companyId: hyp.companyId,
+      }),
+    ]);
+    const personId = fake.tables.people[0]!.id as string;
+    expect(output).toMatchObject({ contact: { people: [{ email: 'maria.gomez@conservas-cantabrico.es', chosen: true, outcome: 'created', personId }] } });
+    // The Research references the person.
+    const research = fake.tables.researches.at(-1)!;
+    expect(research.structuredResult).toMatchObject({ chosen: { email: 'maria.gomez@conservas-cantabrico.es', person_id: personId }, people: [{ person_id: personId, outcome: 'created', chosen: true }] });
+    expect(research.summary).toContain(`Persona en Twenty: ${personId} (creada)`);
+    // A second run (backfill with force) dedupes by email: same person, nothing overwritten.
+    fake.tables.people[0]!.jobTitle = 'CMO';
+    hyp.emailTo = '';
+    const again = await new ContactFinderAgent().run(agentCtx(fake, desiredContactFinderVersion(), { hypothesis_id: hyp.id }, provider, deps));
+    expect(again.output).toMatchObject({ contact: { people: [{ outcome: 'unchanged', personId }] } });
+    expect(fake.tables.people).toHaveLength(1);
+    expect(fake.tables.people[0]).toMatchObject({ jobTitle: 'CMO' });
     expect(hyp.emailSubject).toBeUndefined();
     expect(provider.requests).toHaveLength(0);
   });

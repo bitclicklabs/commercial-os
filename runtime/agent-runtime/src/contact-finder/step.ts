@@ -1,7 +1,9 @@
 /**
  * The contact step shared by the EmailDrafter (before drafting, same run) and the
- * ContactFinder agent (backfill): find_contact -> [LLM tie-break] -> create_research ->
- * set_hypothesis_recipient.
+ * ContactFinder agent (backfill): find_contact -> [LLM tie-break] -> set_hypothesis_recipient ->
+ * upsert_person (tanda 19: the chosen / priority-1 candidates with a published person name become
+ * native Twenty Persons, deduped by email) -> create_research (which references the person ids).
+ * `upsert_person` is skipped when the agent's policy does not allow it (older seeded versions).
  *
  * HITL is untouched: the step only fills an EMPTY `emailTo` (never a value typed by a person,
  * never a reviewed/sent draft) and documents the choice in a Research with its sources. It
@@ -22,6 +24,7 @@ import {
   researchConfidence,
   type ResearchWriteState,
 } from './research.js';
+import { contactPeople } from './people.js';
 import { acceptTriage, buildContactTriagePrompt, CONTACT_TRIAGE_JSON_SCHEMA, CONTACT_TRIAGE_SYSTEM_PROMPT, parseContactTriage } from './triage.js';
 
 export interface ContactStepConfig {
@@ -56,10 +59,21 @@ export type ContactStepResult =
       researchId: string | null;
       researchError?: { code: string; message: string };
       triage: { email: string; reason: string } | null;
+      /** Native Persons written for this search (tanda 19). */
+      people: ContactPersonWrite[];
       candidates: number;
       enrich: FinderResult['enrich'];
     }
   | { status: 'error'; error: { code: string; message: string }; email: null };
+
+export interface ContactPersonWrite {
+  email: string;
+  chosen: boolean;
+  /** created | updated | unchanged | skipped | error */
+  outcome: string;
+  personId: string | null;
+  error?: { code: string; message: string };
+}
 
 export interface ContactStepSubject {
   hypothesis: NonNullable<GetHypothesisOutput['hypothesis']>;
@@ -116,7 +130,19 @@ export async function runContactStep(run: ProspectorRun, subject: ContactStepSub
       usable = out.emailTo;
     }
   }
-  const state: ResearchWriteState = { hypothesisName: h.name, emailTo, triage };
+  // 4. Native Persons (tanda 19): never fatal; skipped when the policy does not allow the tool.
+  const people: ContactPersonWrite[] = [];
+  const candidates = contactPeople(result);
+  if (candidates.length > 0 && run.tools.specs().some((t) => t.name === 'upsert_person')) {
+    for (const p of candidates) {
+      const up = await run.callTool('upsert_person', { email: p.email, fullName: p.name, jobTitle: p.jobTitle, companyId: company.id });
+      if (up.result.status === 'ok') {
+        const out = up.result.output as { outcome: string; person: { id: string } | null };
+        people.push({ email: p.email, chosen: p.chosen, outcome: out.outcome, personId: out.person?.id ?? null });
+      } else people.push({ email: p.email, chosen: p.chosen, outcome: 'error', personId: null, error: toolError(up) });
+    }
+  }
+  const state: ResearchWriteState = { hypothesisName: h.name, emailTo, triage, people };
   const research = await run.callTool('create_research', {
     companyId: company.id,
     ...(h.commercialSignalId ? { signalId: h.commercialSignalId } : {}),
@@ -139,6 +165,7 @@ export async function runContactStep(run: ProspectorRun, subject: ContactStepSub
     researchId,
     ...(researchId ? {} : { researchError: toolError(research) }),
     triage,
+    people,
     candidates: result.candidates.length,
     enrich: result.enrich,
   };

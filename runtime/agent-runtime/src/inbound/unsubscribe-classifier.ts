@@ -27,6 +27,12 @@ export interface ParsedInboundMessage {
   receivedAt: Date | null;
   /** Lowercased, validated address of the first `From` mailbox; null if missing or invalid. */
   fromEmail: string | null;
+  /**
+   * Display name of that `From` mailbox as written by the sender (UNTRUSTED, max 200 chars,
+   * control characters removed); null when absent. Only used to name a native Person
+   * (src/crm/people.ts cleans it again). Optional: older fixtures do not set it.
+   */
+  fromName?: string | null;
   subject: string;
   /** Every address found in To, Cc and the delivery headers (lowercased). */
   recipients: string[];
@@ -83,6 +89,22 @@ function firstFromAddress(from: AddressObject | undefined): string | null {
     if (entry.address) return normalizeEmail(entry.address);
     // Group syntax: first member.
     for (const member of entry.group ?? []) if (member.address) return normalizeEmail(member.address);
+  }
+  return null;
+}
+
+/** Display name of the first `From` mailbox (bounded, no control characters), or null. */
+function firstFromName(from: AddressObject | undefined): string | null {
+  for (const entry of from?.value ?? []) {
+    if (entry.address || (entry.group ?? []).length === 0) {
+      const name = (entry.name ?? '').replace(/[\u0000-\u001f\u007f]/g, ' ').replace(/\s+/g, ' ').trim();
+      return name.length > 0 ? name.slice(0, 200) : null;
+    }
+    for (const member of entry.group ?? []) {
+      if (!member.address) continue;
+      const name = (member.name ?? '').replace(/[\u0000-\u001f\u007f]/g, ' ').replace(/\s+/g, ' ').trim();
+      return name.length > 0 ? name.slice(0, 200) : null;
+    }
   }
   return null;
 }
@@ -310,6 +332,7 @@ function toInboundMessage(raw: RawMessage, parsed: ParsedMail): ParsedInboundMes
     messageId: parsed.messageId ? parsed.messageId.slice(0, 300) : null,
     receivedAt: raw.internalDate,
     fromEmail,
+    fromName: firstFromName(parsed.from),
     subject: (parsed.subject ?? '').replace(/\s+/g, ' ').trim().slice(0, SUBJECT_MAX),
     recipients: [...recipients].slice(0, 100),
     automated: automatedReason(parsed, fromEmail),

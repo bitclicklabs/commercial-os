@@ -18,6 +18,7 @@ import type { Db } from '../db/client.js';
 import { EMAIL_DRAFTER_TOOLS } from '../agents/email-drafter.js';
 import { EMAIL_DRAFTER_SKILL_ID } from '../agents/email-drafter-prompt.js';
 import { DEFAULT_COMPANY_DESCRIPTOR, DEFAULT_SENDER, WORD_RANGE } from '../agents/email-draft.js';
+import { MAX_PEOPLE_PER_SEARCH } from '../contact-finder/people.js';
 import { DEFAULT_USD_TO_EUR } from '../providers/gemini-pricing.js';
 import type { SkillRef } from '../db/schema.js';
 import { CATALOG_TOOL_IDS } from '../tools/catalog/catalog-tools.js';
@@ -38,15 +39,17 @@ export function desiredEmailDrafterVersion(): AgentVersionSpec {
       tool_policy: {
         // Catalog tools (READ): allowed so a future skill version can look products up; the drafter
         // code does not call them and its copy (confirmed by the user) does not change.
-        allow: [...EMAIL_DRAFTER_TOOLS, ...CATALOG_TOOL_IDS],
+        // upsert_person (tanda 19, additive): the contact step writes the published people as Persons.
+        allow: [...EMAIL_DRAFTER_TOOLS, ...CATALOG_TOOL_IDS, 'upsert_person'],
         max_risk_level: 'LOW_WRITE',
-        max_calls_per_execution: 15,
+        max_calls_per_execution: 15 + MAX_PEOPLE_PER_SEARCH,
         max_calls_per_tool: {
           create_note: 1,
           set_hypothesis_draft: 1,
           find_contact: 1,
           set_hypothesis_recipient: 1,
           create_research: 1,
+          upsert_person: MAX_PEOPLE_PER_SEARCH,
           catalog_search_products: 2,
           catalog_get_product: 3,
           catalog_estimate_customization: 2,

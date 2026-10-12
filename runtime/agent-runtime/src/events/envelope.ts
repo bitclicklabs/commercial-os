@@ -70,7 +70,17 @@ export type SignalEventType = (typeof SIGNAL_EVENT_TYPES)[number];
 export const HYPOTHESIS_EVENT_TYPES = ['hypothesis.status_changed'] as const;
 export type HypothesisEventType = (typeof HYPOTHESIS_EVENT_TYPES)[number];
 
-export const EVENT_TYPE_RE = /^[a-z]+(\.[a-z_]+)+$/;
+/**
+ * Native CRM events (src/crm/opportunities.ts, tanda 19): `opportunity.created` when the inbound
+ * triage (INTERESADO reply, `origin: 'reply'`) or a person (`POST /opportunities/promote`,
+ * `origin: 'manual'`) opens a NEW Opportunity in Twenty (a reused one emits nothing). For n8n.
+ * Data: `{opportunityId, name, stage, companyId, pointOfContactId, hypothesisId, taskId, origin}`;
+ * ids only, never an address.
+ */
+export const OPPORTUNITY_EVENT_TYPES = ['opportunity.created'] as const;
+export type OpportunityEventType = (typeof OPPORTUNITY_EVENT_TYPES)[number];
+
+export const EVENT_TYPE_RE =/^[a-z]+(\.[a-z_]+)+$/;
 /** `{type}.v{n}`; underscores allowed, as in EVENT_TYPE_RE (`email.blocked_suppressed.v1`). */
 const SCHEMA_VERSION_RE = /^[a-z._]+\.v[0-9]+$/;
 

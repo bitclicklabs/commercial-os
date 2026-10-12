@@ -28,6 +28,7 @@ import {
   EVALUATION_EVENT_TYPES,
   EVENT_TYPE_RE,
   HYPOTHESIS_EVENT_TYPES,
+  OPPORTUNITY_EVENT_TYPES,
   RUNTIME_EVENT_TYPES,
   SIGNAL_EVENT_TYPES,
   type EventProducer,
@@ -46,7 +47,7 @@ export type ExternalProducer = keyof typeof EXTERNAL_PRODUCERS;
 /** First segment of every type the runtime emits itself: an external prefix may not cover them. */
 export const RESERVED_EVENT_NAMESPACES: readonly string[] = [
   ...new Set(
-    [...RUNTIME_EVENT_TYPES, ...EVALUATION_EVENT_TYPES, ...EMAIL_EVENT_TYPES, ...CATALOG_EVENT_TYPES, ...SIGNAL_EVENT_TYPES, ...HYPOTHESIS_EVENT_TYPES].map(
+    [...RUNTIME_EVENT_TYPES, ...EVALUATION_EVENT_TYPES, ...EMAIL_EVENT_TYPES, ...CATALOG_EVENT_TYPES, ...SIGNAL_EVENT_TYPES, ...HYPOTHESIS_EVENT_TYPES, ...OPPORTUNITY_EVENT_TYPES].map(
       (t) => `${t.split('.')[0]}.`,
     ),
   ),

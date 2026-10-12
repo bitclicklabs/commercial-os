@@ -4,6 +4,9 @@
  * `field[eq]:"v"`, `field[ilike]:"%v%"`, `field[is]:NULL`, nested `a.b` paths, `and(...)` and `or(...)` (the tenant filter).
  * Mirrors observed server behaviour: strips the scheme from Company.domainName and
  * enforces its uniqueness, rejects unknown SELECT values and returns 404 for unknown ids.
+ * Standard objects of tanda 19: `opportunities` (stage SELECT = `opportunityStages`, served by
+ * `GET /rest/open-api/core` like the real server), `tasks` / `taskTargets`, and a unique
+ * `people.emails.primaryEmail` (case-insensitive) when `uniquePersonEmails` is on.
  */
 import { randomUUID } from 'node:crypto';
 import { TwentyClient } from '../../src/integrations/twenty/index.js';
@@ -19,9 +22,12 @@ const SINGULAR: Record<string, string> = {
   people: 'Person',
   notes: 'Note',
   noteTargets: 'NoteTarget',
+  opportunities: 'Opportunity',
   tasks: 'Task',
   taskTargets: 'TaskTarget',
 };
+/** `opportunity.stage` options of a default Twenty workspace, in order (GET /rest/open-api/core, tanda 19). */
+export const DEFAULT_OPPORTUNITY_STAGES = ['NEW', 'SCREENING', 'MEETING', 'PROPOSAL', 'CUSTOMER'];
 const SELECTS: Record<string, Record<string, string[]>> = {
   commercialSignals: {
     signalType: ['FAIR', 'CONGRESS', 'EVENT', 'NEW_PRODUCT', 'HIRING', 'EXPANSION', 'REBRANDING', 'SPONSORSHIP', 'CAMPAIGN', 'ANNIVERSARY', 'OTHER'],
@@ -74,7 +80,7 @@ function json(status: number, body: unknown): Response {
 
 export class FakeTwenty {
   readonly tables: Record<
-    'companies' | 'commercialSignals' | 'researches' | 'commercialHypotheses' | 'agentRunSummaries' | 'people' | 'notes' | 'noteTargets' | 'tasks' | 'taskTargets',
+    'companies' | 'commercialSignals' | 'researches' | 'commercialHypotheses' | 'agentRunSummaries' | 'people' | 'notes' | 'noteTargets' | 'opportunities' | 'tasks' | 'taskTargets',
     Rec[]
   > &
     Record<string, Rec[] | undefined> = {
@@ -86,9 +92,14 @@ export class FakeTwenty {
     people: [],
     notes: [],
     noteTargets: [],
+    opportunities: [],
     tasks: [],
     taskTargets: [],
   };
+  /** Options of `opportunity.stage`, in order (the first one is the entry stage). */
+  opportunityStages: string[] = [...DEFAULT_OPPORTUNITY_STAGES];
+  /** Twenty refuses a second person with the same primary email. */
+  uniquePersonEmails = true;
   /** Makes the next POST to `plural` fail with a non-retryable 400 (once). */
   failNextCreate: string | null = null;
   readonly requests: Array<{ method: string; path: string; body?: Rec }> = [];
@@ -108,6 +119,9 @@ export class FakeTwenty {
     const method = init?.method ?? 'GET';
     const body = init?.body ? (JSON.parse(String(init.body)) as Rec) : undefined;
     this.requests.push({ method, path: url.pathname, ...(body ? { body: structuredClone(body) } : {}) });
+    if (method === 'GET' && url.pathname === '/rest/open-api/core') {
+      return json(200, { openapi: '3.0.3', components: { schemas: { Opportunity: { type: 'object', properties: { name: { type: 'string' }, stage: { type: 'string', enum: [...this.opportunityStages] } } } } } });
+    }
     const [, rest, plural, id] = url.pathname.split('/');
     if (rest !== 'rest' || !plural || !this.tables[plural]) return json(404, { messages: ['Unknown object'] });
     const table = this.tables[plural]!;
@@ -148,6 +162,9 @@ export class FakeTwenty {
       this.failNextCreate = null;
       return json(400, { statusCode: 400, error: 'BadRequestException', messages: ['simulated failure'] });
     }
+    if ((method === 'POST' || method === 'PATCH') && body && plural === 'opportunities' && body.stage !== undefined && body.stage !== null && !this.opportunityStages.includes(String(body.stage))) {
+      return json(400, { statusCode: 400, error: 'BadRequestException', messages: [`Invalid value "${String(body.stage)}" for field "stage"`] });
+    }
     if (method === 'POST' && body) {
       for (const [field, allowed] of Object.entries(SELECTS[plural] ?? {})) {
         const v = body[field];
@@ -169,6 +186,12 @@ export class FakeTwenty {
           }
         }
       }
+      if (plural === 'people' && this.uniquePersonEmails) {
+        const email = String(getPath(body, 'emails.primaryEmail') ?? '').toLowerCase();
+        if (email && table.some((p) => String(getPath(p, 'emails.primaryEmail') ?? '').toLowerCase() === email)) {
+          return json(400, { statusCode: 400, error: 'BadRequestException', messages: ['A duplicate entry was detected: unique constraint person.emailsPrimaryEmail was violated'] });
+        }
+      }
       if (plural === 'notes' || plural === 'tasks') {
         const v2 = body.bodyV2 as Rec | undefined;
         // Twenty derives blocknote from markdown (transformRichTextValue).
@@ -180,10 +203,12 @@ export class FakeTwenty {
           : plural === 'taskTargets'
             ? { taskId: null, targetCompanyId: null, targetPersonId: null, targetOpportunityId: null, targetCommercialHypothesisId: null, targetCommercialSignalId: null }
             : plural === 'tasks'
-              ? { status: 'TODO', dueAt: null, assigneeId: null }
-              : plural === 'notes' || plural === 'people'
-                ? {}
-                : { companyId: null, commercialSignalId: null };
+              ? { title: null, bodyV2: null, dueAt: null, status: 'TODO', assigneeId: null }
+              : plural === 'opportunities'
+                ? { name: null, amount: { amountMicros: null, currencyCode: null }, closeDate: null, stage: this.opportunityStages[0] ?? null, companyId: null, pointOfContactId: null, ownerId: null }
+                : plural === 'notes' || plural === 'people'
+                  ? {}
+                  : { companyId: null, commercialSignalId: null };
       const rec = this.seed(plural, { ...defaults, ...body });
       return json(201, { data: { [`create${SINGULAR[plural]}`]: rec } });
     }

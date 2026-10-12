@@ -8,7 +8,9 @@
  * Understands the filters the tools generate: `field[eq]:"v"`, `field[ilike]:"%v%"`,
  * `field[is]:NULL`, nested `a.b` paths, `and(...)` and `or(...)` (the tenant filter). Strips the scheme from
  * Company.domainName and enforces its uniqueness, rejects unknown SELECT values and returns
- * 404 for unknown ids, like the server. No DELETE (the tools never delete).
+ * 404 for unknown ids, like the server. No DELETE (the tools never delete). Since tanda 19 it also
+ * holds the standard `opportunities` / `tasks` / `taskTargets` and serves the stage options of
+ * `GET /rest/open-api/core`.
  */
 import { randomUUID } from 'node:crypto';
 import { TwentyClient } from './client.js';
@@ -24,9 +26,12 @@ const SINGULAR: Record<string, string> = {
   people: 'Person',
   notes: 'Note',
   noteTargets: 'NoteTarget',
+  opportunities: 'Opportunity',
   tasks: 'Task',
   taskTargets: 'TaskTarget',
 };
+/** `opportunity.stage` options of a default Twenty workspace, in order (tanda 19). */
+const OPPORTUNITY_STAGES = ['NEW', 'SCREENING', 'MEETING', 'PROPOSAL', 'CUSTOMER'];
 const SELECTS: Record<string, Record<string, string[]>> = {
   commercialSignals: {
     signalType: ['FAIR', 'CONGRESS', 'EVENT', 'NEW_PRODUCT', 'HIRING', 'EXPANSION', 'REBRANDING', 'SPONSORSHIP', 'CAMPAIGN', 'ANNIVERSARY', 'OTHER'],
@@ -34,6 +39,7 @@ const SELECTS: Record<string, Record<string, string[]>> = {
   },
   commercialHypotheses: { status: ['PROPOSED', 'VALIDATED', 'REJECTED', 'EXPIRED'] },
   agentRunSummaries: { outcome: ['SUCCESS', 'PARTIAL', 'FAILED', 'CANCELLED'] },
+  opportunities: { stage: OPPORTUNITY_STAGES },
   tasks: { status: ['TODO', 'IN_PROGRESS', 'DONE'] },
 };
 
@@ -98,6 +104,9 @@ export class MemoryTwenty {
     const url = new URL(String(input));
     const method = init?.method ?? 'GET';
     const body = init?.body ? (JSON.parse(String(init.body)) as Rec) : undefined;
+    if (method === 'GET' && url.pathname === '/rest/open-api/core') {
+      return json(200, { components: { schemas: { Opportunity: { type: 'object', properties: { stage: { type: 'string', enum: OPPORTUNITY_STAGES } } } } } });
+    }
     const [, rest, plural, id] = url.pathname.split('/');
     if (rest !== 'rest' || !plural || !this.tables[plural]) return json(404, { messages: ['Unknown object'] });
     const table = this.tables[plural]!;
@@ -160,7 +169,9 @@ export class MemoryTwenty {
           : plural === 'taskTargets'
             ? { taskId: null, targetCompanyId: null, targetPersonId: null, targetOpportunityId: null, targetCommercialHypothesisId: null, targetCommercialSignalId: null }
             : plural === 'tasks'
-              ? { status: 'TODO', dueAt: null, assigneeId: null }
+              ? { title: null, bodyV2: null, dueAt: null, status: 'TODO', assigneeId: null }
+              : plural === 'opportunities'
+                ? { name: null, stage: OPPORTUNITY_STAGES[0], companyId: null, pointOfContactId: null, amount: { amountMicros: null, currencyCode: null } }
               : plural === 'notes' || plural === 'people'
                 ? {}
                 : { companyId: null, commercialSignalId: null };

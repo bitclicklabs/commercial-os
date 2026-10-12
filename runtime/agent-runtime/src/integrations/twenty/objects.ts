@@ -24,7 +24,8 @@ export const TWENTY_OBJECTS = {
   person: 'people',
   note: 'notes',
   noteTarget: 'noteTargets',
-  /** Standard `task` and its join rows (tanda 19: actionable alerts are Tasks, not notes). */
+  /** Standard Twenty objects used since tanda 19 (no `tenantId` field: shared by the workspace). */
+  opportunity: 'opportunities',
   task: 'tasks',
   taskTarget: 'taskTargets',
 } as const;
@@ -181,7 +182,11 @@ export interface TwentyAgentRunSummary extends TwentySystemFields {
   companyId: string | null;
 }
 
-/** Standard `person` (decision maker of a hypothesis). Only the fields the runtime reads. */
+/**
+ * Standard `person` (decision maker of a hypothesis; since tanda 19 also the contacts the
+ * ContactFinder publishes and the senders of interested replies). Only the fields the runtime
+ * reads. Twenty stores an unfilled text as '' (`jobTitle: ''`, `name.lastName: ''`). No `tenantId`.
+ */
 export interface TwentyPerson extends TwentySystemFields {
   name: { firstName: string | null; lastName: string | null } | null;
   jobTitle?: string | null;
@@ -224,6 +229,22 @@ export interface TwentyNoteTarget extends TwentySystemFields {
   targetAgentRunSummaryId?: string | null;
 }
 
+/**
+ * Standard `opportunity` (Twenty 2.45, verified read-only against GET /rest/open-api/core):
+ * `stage` is a SELECT whose options, in order, are NEW, SCREENING, MEETING, PROPOSAL, CUSTOMER
+ * (the runtime reads them at run time: src/crm/opportunities.ts); `amount` is CURRENCY;
+ * `pointOfContactId` points to a person. No `tenantId`.
+ */
+export interface TwentyOpportunity extends TwentySystemFields {
+  name: string | null;
+  amount?: TwentyCurrency | null;
+  closeDate?: string | null;
+  stage: string | null;
+  companyId: string | null;
+  pointOfContactId: string | null;
+  ownerId?: string | null;
+}
+
 /** Standard `task.status` values (Twenty 2.45, verified in GET /rest/open-api/core). */
 export const TASK_STATUSES = ['TODO', 'IN_PROGRESS', 'DONE'] as const;
 export type TaskStatus = (typeof TASK_STATUSES)[number];
@@ -257,6 +278,7 @@ export interface TwentyTaskTarget extends TwentySystemFields {
   targetCommercialHypothesisId?: string | null;
   targetResearchId?: string | null;
   targetAgentRunSummaryId?: string | null;
+
 }
 
 export function links(url: string, label = ''): TwentyLinks {

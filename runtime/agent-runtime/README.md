@@ -26,6 +26,7 @@ runtime/agent-runtime/
 │   ├── inbound/              Inbound: lector IMAP de solo lectura, clasificador de bajas, reglas de triaje (rebotes, autorrespuestas), clasificador LLM de respuestas, lista de supresión, enlace con email_sends, cursor (inbound_state) y triaje (inbound_triage)
 │   ├── integrations/twenty/  TwentyClient REST tipado, mapeo de objetos de la App y MemoryTwenty (CRM en memoria para los experimentos del optimizador)
 │   ├── integrations/catalog/ Catalog Service (contrato v1.1): tipos zod, cliente REST con exención SSRF de un solo origen, stub fiel, caché TTL en memoria y CatalogService
+│   ├── crm/                  Objetos estándar de Twenty (tanda 19): Personas (nombres, dedupe por email), Oportunidades (primera etapa real, una abierta por empresa, promoción manual) y tareas «📬 Responder a …»
 │   ├── tools/                Interfaz Tool, registry, tool_policy, executor, tools de Twenty y web/ (fetch_url con texto de PDF, render_url y guarda SSRF)
 │   ├── db/                   Esquema Drizzle, cliente y migrador
 │   ├── events/               Event bus: sobre event.envelope.v1, EventBus, payloads, triggers EVENT y GET /events; puente externo (POST /events/external, event_subscriptions y webhooks firmados con guarda SSRF)
@@ -294,6 +295,8 @@ Cabecera opcional `x-tenant-id` en todas las rutas. Las respuestas usan `snake_c
 | `GET /optimizer/runs`, `GET /optimizer/runs/:id` | Runs del optimizador (filtros `skill`, `status`, `limit`); el detalle incluye los fallos cosechados |
 | `POST /optimizer/runs/:id/close` | Cierre humano: `PROMOTED` (solo si la candidata ya es la `ACTIVE`) o `DISCARDED`. No hay `DELETE` |
 | `GET /optimizer/schedule` | Estado del optimizador [programado](#programado), solo lectura: activado, CRON, zona horaria, skills, último y próximo disparo |
+| `POST /contacts/backfill` | Encola el ContactFinder para las hipótesis `VALIDATED` sin **Email to**. Consulta [ContactFinder](#contactfinder-destinatario-de-los-borradores) |
+| `POST /opportunities/promote` | Promociona **a mano** una hipótesis a Oportunidad nativa de Twenty `{ hypothesis_id, by? }`: `201` nueva (emite `opportunity.created`), `200` si la empresa ya tenía una abierta. Auditada como `opportunity.promote`. Consulta [Personas y Oportunidades nativas](#personas-y-oportunidades-nativas-de-twenty) |
 
 ### Idempotencia
 
@@ -473,7 +476,9 @@ Todos los eventos viajan con este sobre. Los campos del sobre y de `data` usan `
 | `catalog.unavailable` | Gate del catálogo, con `CATALOG_ENABLED=true` y `/health` fallando antes de una ejecución (como mucho una vez al día por tenant, `idempotencyKey` `evt:catalog.unavailable:{tenant}:{día}`) | `day`, `reason`, `code`, `message`, `provider`, `checkedAt`, `executionId` |
 | `signal.qualified` | Webhook de Twenty, cuando una persona pasa una señal de feria (`commercialSignal` sin empresa, tipo `FAIR`, `CONGRESS` o `EVENT`, con URL) a `QUALIFIED`, o la crea ya calificada. Como mucho una vez por señal cada 24 h (`idempotencyKey` `evt:signal.qualified:{signal_id}:{evento_anterior\|first}`) | `signal_id`, `name` (sin el sufijo ` (feria)`), `event_url`, `event_date`, `signal_type`, `transition` (`updated_fields` o `status_only`), `twenty` (`webhook_id`, `workspace_id`, `event_date`), `chainDepth` 0 |
 | `hypothesis.status_changed` | Webhook de Twenty, cuando una `commercialHypothesis` pasa a `EXPIRED` (o se reabre a `PROPOSED` desde otro estado). Nunca es una evaluación: solo recuerda el estado para el siguiente cambio (`idempotencyKey` `evt:hypothesis.status_changed:{id}:{estado}:{updatedAt}`). Namespace `hypothesis.` reservado | `hypothesis_id`, `to_status`, `verdict` (`false`), `actor_human`, `updated_at`, `twenty_webhook_id` |
-| `experiment.revalidation_failed` | Revalidación de un `PASS_FORM` con veredicto `REFUTED` cuya versión sigue `ACTIVE` o en canario (una vez por revalidación nueva) | `revalidationId`, `experimentId`, `experimentName`, `subjectType`, `subjectName`, `baselineVersion`, `candidateVersion`, `verdict`, `baselineAccuracy`, `candidateAccuracy`, `labels`, `versionState` (`ACTIVE` o `CANARY`), `noteId` |
+| `opportunity.created` | Triaje del buzón (respuesta `INTERESADO`, `origin: "reply"`) o `POST /opportunities/promote` (`origin: "manual"`), solo cuando se **crea** una Oportunidad nativa en Twenty (reutilizar una abierta no emite nada). `idempotencyKey` `evt:opportunity.created:{opportunityId}`. Namespace `opportunity.` reservado | `opportunityId`, `name`, `stage`, `companyId`, `pointOfContactId`, `hypothesisId`, `taskId` (`null`), `origin`. Nunca una dirección |
+| `experiment.revalidation_failed` | Revalidación de un `PASS_FORM` con veredicto `REFUTED` cuya versión sigue `ACTIVE` o en canario (una vez por revalidación nueva) | `revalidationId`, `experimentId`, `experimentName`, `subjectType`, `subjectName`, `baselineVersion`, `candidateVersion`, `verdict`, `baselineAccuracy`, `candidateAccuracy`, `labels`, `versionState` (`ACTIVE` o `CANARY`), `taskId` (tanda 19; `noteId` sigue en el payload, siempre `null`) |
+
 
 Cada evento del runtime lleva una `idempotencyKey` (`evt:{type}:{task_run_id}`, `evt:task.started:{task_run_id}:{attempt}`, `evt:{type}:{execution_id}`, `evt:evaluation.recorded:{evaluation_id}`): publicar dos veces el mismo hecho devuelve la fila existente.
 
@@ -1091,7 +1096,7 @@ Veredicto, con el criterio de accuracy del gate del propio experimento (`config.
 
 Registro: tabla `experiment_revalidations` (migración `0016`). El experimento terminado no se toca (es inmutable): cada revalidación es una fila nueva enlazada con `experiment_id`, las etiquetas usadas (`label_case_ids`, `evaluation_ids` y el detalle en `labels`), las excluidas con su motivo (`excluded`), la accuracy por brazo (`accuracy`, `baseline_accuracy`, `candidate_accuracy`), `criteria`, `summary`, el estado de la versión (`version_state`), `outputs_source` (`metrics` o `artifact`), `consequence`, `cost_eur` (siempre 0), `source`, `requested_by` y `created_at`. `labels_hash` identifica el conjunto de etiquetas y criterios: repetir la petición con las mismas etiquetas devuelve la fila existente (`200`, `created: false`); con etiquetas nuevas, fila nueva (`201`).
 
-**Consecuencia.** Si el veredicto es `REFUTED` y la versión del experimento está hoy `ACTIVE` o en un canario `ACTIVE`, deja en Twenty la nota «⚠️ Revalidación fallida — `<skill>` v`<N>`» con los números y las opciones (rollback, canario, iterar) y emite `experiment.revalidation_failed`. **No desactiva ni hace rollback**: decide el humano. La nota y el evento quedan en `consequence` (una sola vez). Sin `TWENTY_API_KEY`, `consequence.note` dice `skipped`.
+**Consecuencia.** Si el veredicto es `REFUTED` y la versión del experimento está hoy `ACTIVE` o en un canario `ACTIVE`, deja en Twenty la **tarea** (desde la tanda 19; antes, una nota) «⚠️ Revalidación fallida — `<skill>` v`<N>`», en estado TODO, con vencimiento al día siguiente y sin registro CRM vinculado (el sujeto es una versión de skill), con los números y las opciones (rollback, canario, iterar), y emite `experiment.revalidation_failed`. **No desactiva ni hace rollback**: decide el humano. La tarea y el evento quedan en `consequence` (una sola vez; las filas anteriores a la tanda 19 conservan `consequence.note`). Sin `TWENTY_API_KEY`, `consequence.task` dice `skipped`.
 
 **Efecto en el Release Gate.** Desde la tanda 13, la revalidación **más reciente** del experimento que apoya una activación, un canario o un promote decide encima de su `PASS_FORM`: `REFUTED` bloquea (`409 release_gate_blocked`, `reason: "revalidation_refuted"`), `CONFIRMED` deja pasar con `revalidated: true` e `INSUFFICIENT` no cambia nada. Consulta [Candado en la activación](#candado-en-la-activación).
 
@@ -1118,7 +1123,7 @@ curl -s -X POST localhost:4020/experiments/EXP-007/revalidate -H 'x-tenant-id: p
   "warnings": [],
   "dry_run": false,
   "created": true,
-  "revalidation": { "id": "…", "verdict": "REFUTED", "label_case_ids": ["…"], "evaluation_ids": ["…"], "labels": [], "excluded": [{ "exhibitor": "…", "reason": "design", "detail": "caso de diseño: OPT-1a2b3c4d design (…)" }], "consequence": { "note": { "id": "…", "title": "⚠️ Revalidación fallida — prospector-event-exhibitors v4", "created": true }, "event": { "id": "…", "type": "experiment.revalidation_failed", "dispatched": true }, "at": "…" }, "cost_eur": 0, "created_at": "…" }
+  "revalidation": { "id": "…", "verdict": "REFUTED", "label_case_ids": ["…"], "evaluation_ids": ["…"], "labels": [], "excluded": [{ "exhibitor": "…", "reason": "design", "detail": "caso de diseño: OPT-1a2b3c4d design (…)" }], "consequence": { "task": { "id": "…", "title": "⚠️ Revalidación fallida — prospector-event-exhibitors v4", "created": true, "due_at": "…" }, "event": { "id": "…", "type": "experiment.revalidation_failed", "dispatched": true }, "at": "…" }, "cost_eur": 0, "created_at": "…" }
 }
 ```
 
@@ -1295,7 +1300,7 @@ Los mismos datos están por HTTP en `GET /metrics/model-costs?since=&until=&at=2
 
 ## Skill Optimizer
 
-El Skill Optimizer (LLD v0.1 §18, MVP-3) recorre solo el ciclo de mejora de una skill: cosecha sus fallos en producción, los agrupa por patrón, propone una candidata acotada, la pasa por un experimento contra la versión `ACTIVE` y deja la decisión del Release Gate. **Nunca activa nada:** si el gate da `PASS` o `PASS_FORM`, deja en Twenty una nota «Propuesta de promoción — `<skill>` v`<N>`», y la activación sigue siendo una decisión humana por `POST /skills/:id/versions/:v/activate`, que vuelve a comprobar el gate. El código está en `src/optimizer/`.
+El Skill Optimizer (LLD v0.1 §18, MVP-3) recorre solo el ciclo de mejora de una skill: cosecha sus fallos en producción, los agrupa por patrón, propone una candidata acotada, la pasa por un experimento contra la versión `ACTIVE` y deja la decisión del Release Gate. **Nunca activa nada:** si el gate da `PASS` o `PASS_FORM`, deja en Twenty una tarea (desde la tanda 19; antes, una nota) «Propuesta de promoción — `<skill>` v`<N>`», en estado TODO y con vencimiento a 3 días, y la activación sigue siendo una decisión humana por `POST /skills/:id/versions/:v/activate`, que vuelve a comprobar el gate. El código está en `src/optimizer/`.
 
 Hoy solo hay optimizador para `prospector-event-exhibitors` (la única skill con runner de experimentos), con el dominio de datasets `prospeccion`.
 
@@ -1324,7 +1329,7 @@ Cada transición es un `UPDATE … WHERE status IN (<orígenes válidos>)`: dos 
 1. **Candidata:** el modelo propone como mucho 5 operaciones (`ADD`, `REMOVE`, `REPLACE`, `MOVE`, `REORDER`) sobre el texto `ACTIVE`, cada una con su `why` y los clusters que ataca. `src/skills/edit-ops.ts` las aplica con los topes de 35 % borrado y 50 % añadido, y la regla de contenido web no confiable debe quedar intacta. Si los topes la rechazan, reintenta una vez pidiendo ser más conservador; si vuelve a fallar, `ERROR` con los dos intentos en `details.proposal_attempts`. La versión se crea `DRAFT` con el servicio de skills, con un `change_reason` que cita el run y los clusters, y `metadata` con las operaciones, su tamaño y los datos de diseño.
 1. **Dataset y P5:** construye la versión siguiente del dataset (los casos quemados siguen quemados y van a `TRAIN`) y marca con `markUsed` como `design` (experimento `OPT-xxxxxxxx`) los casos de las entidades de los fallos **antes** del experimento. Vuelve a contar `VALIDATION` y, si no llega al mínimo, `BLOCKED_NO_DATA`.
 1. **Experimento:** el runner de `pnpm experiment:run`, con la `ACTIVE` como baseline y la candidata, sobre ese dataset (por uuid) y con un CRM en memoria (`MemoryTwenty`: nada llega a Twenty). Registra `experiment_id` y el veredicto.
-1. **Gate:** `PASS` o `PASS_FORM` → `GATE_PASS` y nota en Twenty (idempotente por título) con los clusters que ataca, el Δ del composite, el coste y los comandos de activación, de cierre del run y de rollback. `FAIL` o `INCONCLUSIVE` → `GATE_FAIL`. Un fallo al escribir la nota no deshace el `GATE_PASS`: queda en `details.note.error`.
+1. **Gate:** `PASS` o `PASS_FORM` → `GATE_PASS` y tarea en Twenty (TODO, vence a 3 días, idempotente por título) con los clusters que ataca, el Δ del composite, el coste y los comandos de activación, de cierre del run y de rollback. `FAIL` o `INCONCLUSIVE` → `GATE_FAIL`. Un fallo al escribir la tarea no deshace el `GATE_PASS`: queda en `details.task.error` (los runs anteriores a la tanda 19 guardan `details.note`).
 
 ### API y CLI
 
@@ -1360,7 +1365,7 @@ Con `OPTIMIZER_SCHEDULE_ENABLED=true`, el rol `scheduler` (también `RUNTIME_ROL
 - **Recuperación limitada.** Si el proceso estaba parado a la hora del disparo, dispara al arrancar si no han pasado más de 12 horas. Pasado ese margen, espera a la ventana siguiente: activar el job un viernes no dispara la ventana del miércoles anterior.
 - **Run abierto:** se salta con un log `INFO`, sin `ERROR` ni auditoría. Si dos réplicas compiten, el índice único de run abierto deja pasar una y la otra lo registra como saltado.
 - **Auditoría:** cada encolado real deja una fila en `audit_log` con `action: optimizer.scheduled_run`, `actor: system`, `method: JOB`, `route: job:optimizer-schedule` y en `payload` la skill, el id del run, la versión base, el CRON y el inicio de la ventana. Un tick que no dispara no audita.
-- **`BLOCKED_NO_DATA` es lo normal muchas semanas** (sin fallos nuevos o sin `VALIDATION` sin quemar): el worker cierra el run antes de llamar a ningún modelo, sin coste, con un log `INFO`. No escribe nada en Twenty: la nota «Propuesta de promoción» solo aparece con `GATE_PASS`.
+- **`BLOCKED_NO_DATA` es lo normal muchas semanas** (sin fallos nuevos o sin `VALIDATION` sin quemar): el worker cierra el run antes de llamar a ningún modelo, sin coste, con un log `INFO`. No escribe nada en Twenty: la tarea «Propuesta de promoción» solo aparece con `GATE_PASS`.
 - **Nada se promueve solo.** El job solo encola. La activación por el Release Gate y el cierre del run siguen siendo humanos.
 - Con un CRON o una skill no válidos, el job no arranca y el log dice por qué (`GET /optimizer/schedule` lo muestra en `errors`).
 
@@ -1437,6 +1442,9 @@ Las de Twenty usan `TWENTY_BASE_URL` y `TWENTY_API_KEY` y tienen `outputTrust = 
 | `get_note` | `READ` | No | — (título y markdown de una nota; salida `untrusted`) |
 | `update_note` | `LOW_WRITE` | Sí | Solo añade líneas al final; las que ya están (coincidencia exacta) se omiten. Nunca edita ni borra contenido |
 | `revert_hypothesis_draft_status` | `LOW_WRITE` | Sí | Pone `emailStatus = DRAFT` solo si sigue en `READY` (relee antes de escribir) y el `PATCH` lleva solo ese campo. Solo puede hacer el envío menos probable. Ningún agente la tiene en su política: la usa email-ops |
+| `upsert_person` | `LOW_WRITE` | Sí | Por email (`emails.primaryEmail`, sin distinguir mayúsculas): una Persona existente solo se **completa** (nombre, cargo o empresa vacíos), nunca se pisa. `info@`, `comercial@`, `rrhh@`, `noreply@`... se omiten sin escribir: no son personas |
+| `upsert_opportunity` | `LOW_WRITE` | Sí | Por empresa: reutiliza su Oportunidad **abierta** (etapa que no sea de cierre); si no hay, la crea en la primera etapa del pipeline, sin importe. Engancha la nota de la respuesta. Solo el InboxAgent |
+| `create_reply_task` | `LOW_WRITE` | Sí | Título «📬 Responder a <persona/empresa>» + oportunidad (o empresa): una tarea abierta igual se reutiliza; adopta una huérfana. Solo el InboxAgent |
 | `fetch_url` | `READ` | No | — (consulta [Seguridad del contenido web](#seguridad-del-contenido-web)) |
 | `render_url` | `READ` | No | — (consulta [Render de JavaScript](#render-de-javascript-render_url)) |
 | `catalog_search_products` | `READ` | No | — (consulta [Catálogo](#catálogo-catalog-service); salida `untrusted`) |
@@ -1522,7 +1530,7 @@ Hay un solo workspace de Twenty y en él escriben también los tenants de test (
 
 #### Limitaciones
 
-- Los objetos estándar de Twenty **no tienen `tenantId`**: `companies`, `people`, `notes` y `noteTargets` son comunes a todos los tenants del workspace. `find_company`, `upsert_company`, `get_company` (la empresa en sí), `create_note`, `get_note` y `update_note` no pueden filtrar por tenant; una empresa o una nota creada por un tenant de test la ve cualquier otro. El triaje de entrada busca la empresa por dominio (`find_company`) con este mismo alcance. No se añade el campo a esos objetos desde el runtime: es un cambio de la App.
+- Los objetos estándar de Twenty **no tienen `tenantId`**: `companies`, `people`, `opportunities`, `tasks`, `notes`, `noteTargets` y `taskTargets` son comunes a todos los tenants del workspace. Desde la tanda 19 también `upsert_person`, `upsert_opportunity` y `create_reply_task`: una Persona, Oportunidad o Tarea creada por un tenant de test la ve (y la deduplica) cualquier otro; por ejemplo, la Oportunidad abierta de una empresa es una sola para todos los tenants. Solo la hipótesis que da nombre a la oportunidad se lee con filtro de tenant. `find_company`, `upsert_company`, `get_company` (la empresa en sí), `create_note`, `get_note` y `update_note` no pueden filtrar por tenant; una empresa o una nota creada por un tenant de test la ve cualquier otro. El triaje de entrada busca la empresa por dominio (`find_company`) con este mismo alcance. No se añade el campo a esos objetos desde el runtime: es un cambio de la App.
 - El filtro por tenant no protege de un `id` de otro tenant que se pase a un `create_*` como relación (`signalId`, `decisionMakerId`): la relación se escribe tal cual.
 - Twenty no tiene escritura condicional: entre la relectura y el `PATCH` queda la ventana de una petición REST.
 
@@ -1533,7 +1541,7 @@ Lado Commercial OS del [contrato del conector v1.1](../../docs/catalog-connector
 - `src/integrations/catalog/`: tipos zod del contrato (`types.ts`; todo importe es `basis: "INDICATIVE"` o la respuesta se rechaza), cliente REST (`client.ts`: Bearer `pxcat_`, timeout de 10 s, reintentos suaves, `429` con `Retry-After` hasta 3 veces, cursor, rechazo de un `MAJOR` de contrato distinto de 1), stub fiel (`stub.ts`, fixtures en `fixtures/catalog/`: seis operaciones, lápida `REMOVED` incluida), caché en memoria (`cache.ts`: familias y `describe` 1 h, ficha 10 min, búsqueda 5 min; la estimación no se cachea; nada en base de datos) y `CatalogService` (`service.ts`).
 - **Red:** el cliente queda exento del guard anti-SSRF **solo** para el origen exacto de `CATALOG_BASE_URL` (`egress.ts`); cualquier otro host, también tras una redirección, pasa el guard general, y el token nunca sale de ese origen. `fetch_url`, `render_url` y los webhooks no cambian.
 - **Confianza:** las tools son `outputTrust: untrusted`. Los textos de proveedor (nombres, descripciones, materiales) llegan al LLM solo dentro de un bloque `<<<DATOS_NO_CONFIABLES …>>>` (`catalogCandidatesPrompt` en `prompt.ts`); ids, SKU, importes y cantidades van fuera.
-- **Gate de salud y modo degradado** (`src/worker/catalog-gate.ts`): antes de una ejecución cuya política incluye tools de catálogo, el worker lee `/health` (caché de 60 s). Fallo = sin respuesta, error de red, `503`, `401`/`403` o `MAJOR` desconocido; `degraded` no es fallo. Si falla, la ejecución sigue **sin catálogo** (las tools responden `CATALOG_UNAVAILABLE`) y, como mucho una vez al día por tenant (día de Madrid), deja una nota ⚠️ «Catálogo no disponible» en Twenty y el evento `catalog.unavailable`. Nunca correo. El trace lleva un paso `THINK` con la decisión del gate.
+- **Gate de salud y modo degradado** (`src/worker/catalog-gate.ts`): antes de una ejecución cuya política incluye tools de catálogo, el worker lee `/health` (caché de 60 s). Fallo = sin respuesta, error de red, `503`, `401`/`403` o `MAJOR` desconocido; `degraded` no es fallo. Si falla, la ejecución sigue **sin catálogo** (las tools responden `CATALOG_UNAVAILABLE`) y, como mucho una vez al día por tenant (día de Madrid), deja una tarea ⚠️ «Catálogo no disponible» en Twenty (desde la tanda 19; antes, una nota), en estado TODO y con vencimiento el mismo día, y el evento `catalog.unavailable`. Nunca correo. El trace lleva un paso `THINK` con la decisión del gate.
 - **Hipótesis con productos reales** (`src/agents/prospector-catalog.ts`): solo si la skill resuelta lleva la marca `[[capacidad:catalogo]]`. El Prospector busca con `catalog_search_products` (una búsqueda por producto genérico, como mucho 3), una segunda llamada al LLM elige de 0 a 3 candidatos, el código descarta lo que no sea un candidato real (productId **y** sku) y confirma la ficha (`ACTIVE`). La salida lleva `results[].recommended_products` `[{ productId, sku, name, priceHint }]`; en Twenty van al campo existente `recommendedProducts` (`Nombre · ref. SKU · id productId`, antes que las familias genéricas) y a la evidencia con el precio como orden de magnitud («en torno a X-Y €/ud antes de personalización, orientativo, sin IVA»). Cualquier fallo deja la hipótesis como antes.
 - **Skill candidata:** `pnpm seed` crea una versión **DRAFT** de `prospector-event-exhibitors` con la sección «Productos reales del catálogo» (`src/seed/catalog-skill-seed.ts`). Nunca se activa sola: pasa por el Release Gate y una persona.
 - **API:** `GET /catalog/health[?fresh=true]` (solo lectura): lo que ve el gate; `200` disponible o apagado, `503` encendido y caído.
@@ -1582,14 +1590,14 @@ El merchandising necesita plazo de producción: una feria solo se prospecta si f
 
 | Días hasta la feria | Estado | Reparto diario | Disparo al calificar |
 |---|---|---|---|
-| sin fecha | `no_date` | no se elige | `SKIPPED` + nota "⏳ Sin fecha de feria: añade la fecha a la señal para que entre al reparto" |
-| < 0 | `past` | la caduca el envejecimiento | `SKIPPED` + nota |
-| 0 a 44 | `too_close` | no se elige | `SKIPPED` + nota "⏳ Fuera de ventana: la feria es en N días…" |
+| sin fecha | `no_date` | no se elige | `SKIPPED` + tarea "⏳ Sin fecha de feria: añade la fecha a la señal para que entre al reparto" (vence a 7 días) |
+| < 0 | `past` | la caduca el envejecimiento | `SKIPPED` + tarea (vence hoy) |
+| 0 a 44 | `too_close` | no se elige | `SKIPPED` + tarea "⏳ Fuera de ventana: la feria es en N días…" (vence hoy) |
 | 45 a 210 | `in_window` | candidata | prospecta |
-| > 210 | `too_far` | no se elige (entra sola cuando le toque) | `SKIPPED` + nota "…demasiado lejana" |
+| > 210 | `too_far` | no se elige (entra sola cuando le toque) | `SKIPPED` + tarea "…demasiado lejana" (vence el día en que entra en ventana) |
 
 - **La ventana filtra, el calendario caduca.** Una señal demasiado cercana conserva su estado: solo la fecha pasada la lleva a `EXPIRED`.
-- **Disparo al calificar** (`prospect-on-qualified`): `signal.qualified` se emite igual; el run comprueba `event_date` y, fuera de ventana o sin fecha, termina `SKIPPED` sin llamar al modelo ni descargar nada, y deja una nota en la señal (`create_signal_note`, idempotente por señal y título; el título lleva el día). La señal sigue `QUALIFIED`.
+- **Disparo al calificar** (`prospect-on-qualified`): `signal.qualified` se emite igual; el run comprueba `event_date` y, fuera de ventana o sin fecha, termina `SKIPPED` sin llamar al modelo ni descargar nada, y deja una **tarea** en la señal (`create_crm_task`, tanda 19: estado TODO, `taskTarget` a la señal, idempotente por título y día; el título lleva el día). Vence el día en que la feria entra en ventana si está demasiado lejos, a 7 días si no tiene fecha y hoy si está demasiado cerca o ya pasó. Una versión del Prospector sembrada antes de la tanda 19 (sin `create_crm_task` en su política) sigue dejando la nota de antes con `create_signal_note`; `pnpm seed` crea la versión nueva. La señal sigue `QUALIFIED`.
 - **Descubrimiento semanal** (`discover_only`): una feria propuesta fuera de ventana no crea señal (`counters.discarded_out_of_window`, `discarded_events[].reason` `fuera_de_ventana_lead_time_cercana` / `_lejana`). Una sin fecha se crea igual, con el hecho anotado en la descripción.
 - **Caducidad de hipótesis**: en el run diario, antes de repartir, `list_hypotheses_for_expiry` (READ) lee las `PROPOSED` y `VALIDATED` del tenant con la fecha de su señal (o, si no la tiene, la de la señal de feria con el mismo nombre de evento). Las `PROPOSED` a menos de `LEADTIME_MIN_DAYS` días o ya pasadas pasan a `EXPIRED` con `expire_hypothesis` (LOW_WRITE: relee la hipótesis y solo escribe `status`; rechaza lo que no sea `PROPOSED` y lo que la fecha de su propia señal deje en ventana). Máximo 50 por ejecución; el resto, en la siguiente. Las `VALIDATED` nunca se caducan: solo salen como aviso (`hypothesis_expiry.validated_warnings`).
 - **Sin contaminar métricas**: el PATCH a `EXPIRED` vuelve por el webhook de Twenty, pero una transición a `EXPIRED` nunca es un veredicto HUMAN (consulta [Webhook de Twenty](#webhook-de-twenty)).
@@ -2019,7 +2027,8 @@ El resto va al modelo ([src/inbound/reply-classifier.ts](src/inbound/reply-class
 |---|---|
 | `BAJA` | Línea `email — AAAA-MM-DD — baja solicitada (asunto: "...")` en la lista de supresión (igual que el BajasAgent) |
 | `NO_INTERESADO` | Línea `email — AAAA-MM-DD — no interesado (respuesta) (asunto: "...")` en la lista de supresión **y** nota de respuesta |
-| `INTERESADO`, `PREGUNTA` | Nota `📬 Respuesta recibida — <Interesado/Pregunta> (AAAA-MM-DD HH:mm)` |
+| `INTERESADO` | Nota `📬 Respuesta recibida — Interesado (AAAA-MM-DD HH:mm)` + (tanda 19) Persona del remitente, Oportunidad de la empresa y Tarea «📬 Responder a …» |
+| `PREGUNTA` | Nota `📬 Respuesta recibida — Pregunta (AAAA-MM-DD HH:mm)` + (tanda 19) Persona del remitente si el `From` trae nombre y Tarea «📬 Responder a …». **Sin** Oportunidad |
 | `REBOTE` duro | Nota `⚠️ Rebote: el email no existe (AAAA-MM-DD HH:mm)`; la lista de supresión no se toca |
 | `AUTO_REPLY`, rebote blando, `OTRO` | Solo registro |
 
@@ -2032,6 +2041,14 @@ Las notas se crean con `create_note` sobre la empresa y la hipótesis del envío
 1. Sin envío, una respuesta se enlaza a la empresa de Twenty con ese dominio (`find_company`, solo si hay exactamente una). Sin empresa no hay nota (`no_company_match`, contador `unmatched`).
 
 El extracto de la nota es texto plano: sin el mensaje citado, sin enlaces (`[enlace]`), sin sintaxis markdown o HTML, máximo 500 caracteres. El título lleva la hora local de recepción: cada respuesta tiene su nota y `create_note` (idempotente por empresa + título) no la duplica al reintentar.
+
+Registros nativos de Twenty (tanda 19), después de la nota y solo si la respuesta quedó enlazada a una empresa:
+
+1. **Persona** del remitente (`upsert_person`): nombre del `From` saneado (sin comillas ni direcciones, mayúsculas normalizadas, separado en nombre y apellidos) + dirección, en la empresa. Deduplicada por email; una Persona existente solo se completa. En `PREGUNTA`, solo si el `From` trae nombre. Un buzón genérico o de función (`info@`, `comercial@`) no crea Persona: la señal `sender_not_a_person:<tipo>` lo deja en `signals`.
+1. **Oportunidad** (`upsert_opportunity`, solo `INTERESADO` con confianza ≥ `triage.min_confidence`): «<Empresa> — <feria>» (la feria sale de la hipótesis del envío, si se conoce), `companyId`, `pointOfContactId` = la Persona (vacío con un remitente genérico), etapa = la **primera** opción del select `stage` del workspace (se lee de `GET /rest/open-api/core`; por defecto `NEW`), sin importe. Si la empresa ya tiene una Oportunidad abierta, se reutiliza y la nota se le engancha (`noteTargets` de la oportunidad y de la persona). Al crearla emite `opportunity.created`.
+1. **Tarea** (`create_reply_task`): «📬 Responder a <persona o, sin nombre, empresa>», `TODO`, vence a los 2 días laborables a las 09:00 locales, con el extracto y los enlaces a la nota y a la oportunidad en el cuerpo, enlazada (`taskTargets`) a la oportunidad, la empresa y la persona. La nota 📬 se conserva: la nota es el registro con el extracto; la tarea, lo accionable.
+
+Todo es idempotente: un fallo de Twenty a mitad para la ejecución (`FAILED`, el mensaje no se marca como triado) y la siguiente lo completa sin duplicar Persona, Oportunidad, Tarea ni evento. Una versión del agente sembrada antes de la tanda 19 (sin estas tools en su política) solo deja la nota. `NO_INTERESADO`, rebotes y respuestas sin empresa no crean nada nativo. Contadores nuevos: `people_created`, `people_existing`, `opportunities_created`, `opportunities_reused`, `reply_tasks`; cada mensaje de `triaged` lleva `person_id`, `opportunity_id`, `opportunity_created` y `task_id`.
 
 La hipótesis **no se marca**. El único campo de estado de email (`emailStatus`: `DRAFT`, `READY`, `SENDING`, `SENT`) es el del flujo de envío y no tiene un valor de "respondido"; cambiarlo rompería el workflow de Twenty, y no se añaden campos a la Twenty App.
 
@@ -2057,7 +2074,7 @@ El Commercial OS no responde ni envía nada: la respuesta es tuya.
 
 ### Evento `email.reply_received`
 
-Se emite uno por mensaje triado (para n8n y los triggers `EVENT`), con `idempotencyKey` derivada del Message-ID. Campos de `data`: `class`, `confidence`, `method` (`RULES` | `LLM`), `signals`, `fromDomain`, `companyId`, `hypothesisId`, `sendId`, `matchBy` (`email` | `domain` | `company_domain`), `noteId`, `suppressionAdded`, `receivedAt` y, en los rebotes, `bouncedDomain` y `hardBounce`. Como los demás eventos `email.*`, lleva dominios, nunca direcciones. Para filtrar por clase, usa `filter: {"class": {"in": ["INTERESADO", "PREGUNTA"]}}`.
+Se emite uno por mensaje triado (para n8n y los triggers `EVENT`), con `idempotencyKey` derivada del Message-ID. Campos de `data`: `class`, `confidence`, `method` (`RULES` | `LLM`), `signals`, `fromDomain`, `companyId`, `hypothesisId`, `sendId`, `matchBy` (`email` | `domain` | `company_domain`), `noteId`, `suppressionAdded`, `receivedAt`, desde la tanda 19 `personId`, `opportunityId` y `taskId` (en `INTERESADO` y `PREGUNTA` con empresa) y, en los rebotes, `bouncedDomain` y `hardBounce`. Como los demás eventos `email.*`, lleva dominios, nunca direcciones. Para filtrar por clase, usa `filter: {"class": {"in": ["INTERESADO", "PREGUNTA"]}}`.
 
 ### Idempotencia, cursor y presupuestos
 
@@ -2463,18 +2480,43 @@ docker exec pxos-postgres psql -U agentos -d postgres -c "create database agento
 pnpm vitest run test/integration/metrics.test.ts test/unit/metrics-local.test.ts
 ```
 
+## Tareas de Twenty para las alertas accionables (tanda 19)
+
+Las alertas que piden a una persona hacer algo son **tareas** nativas de Twenty (estado `TODO`, con vencimiento), no notas. Aparecen en **Tasks** (kanban **By Status** de serie) y se cierran al resolverlas. Las notas informativas siguen siendo notas (por ejemplo, la lista de supresión, que es un libro de solo añadir).
+
+| Alerta | Vence | Vinculada a |
+|---|---|---|
+| ⚠️ Revalidación fallida — `<skill>` v`<N>` | Al día siguiente | Ningún registro CRM (el sujeto es una versión de skill) |
+| Propuesta de promoción — `<skill>` v`<N>` | A 3 días | Ningún registro CRM; una por versión |
+| ⚠️ Catálogo no disponible — `<día>` (`<tenant>`) | Hoy | Ninguno; como mucho una por tenant y día |
+| ⏳ Fuera de ventana / Sin fecha de feria | El día en que entra en ventana; a 7 días sin fecha; hoy si está cerca o ya pasó | La señal (`taskTarget`) |
+
+Formato de Twenty 2.45 (verificado en solo lectura contra `GET /rest/open-api/core`):
+
+```http
+POST /rest/tasks        { "title": "...", "bodyV2": { "markdown": "..." }, "status": "TODO", "dueAt": "2026-10-13T07:00:00.000Z" }
+POST /rest/taskTargets  { "taskId": "<task>", "targetCommercialSignalId": "<signal>" }
+```
+
+- `status` admite `TODO`, `IN_PROGRESS` y `DONE`. Un vencimiento dado como día es las 09:00 de Europe/Madrid.
+- `taskTarget` tiene una columna por objeto: `targetCompanyId`, `targetPersonId`, `targetOpportunityId` y, para los objetos de la App, `targetCommercialSignalId`, `targetCommercialHypothesisId`, `targetResearchId`, `targetAgentRunSummaryId` y `targetAgentOsDailyMetricId`.
+- El helper es `createCrmTask` (`src/integrations/twenty/tasks.ts`): idempotente por título y día local de creación (o por título, `scope: 'ever'`), crea solo los `taskTargets` que falten y adopta una tarea huérfana con ese título. Nunca edita ni borra.
+- La tool `create_crm_task` (`LOW_WRITE`) es la misma operación para los agentes; relee la señal o la hipótesis con el tenant del run antes de escribir.
+- `task` es un objeto estándar: **no tiene `tenantId`**, como las notas. Las tareas son comunes a todo el workspace; los títulos que deben ser por tenant lo llevan en el texto.
+
 ## Borradores de email
 
 > **Importante:** el sistema **no envía emails**. No hay dependencia SMTP, ni API de correo, ni tool de envío en el registro. Solo genera **borradores** que el comercial revisa y envía a mano desde su buzón (modelo HITL del LLD v0.1, sección 10, y *human gates* de la sección 15: las notas internas son automáticas; enviar un email exige a una persona).
 
-Cuando un comercial valida una hipótesis, el agente `EmailDrafter` prepara un borrador del primer email y lo deja en Twenty como nota sobre la empresa y sobre la hipótesis.
+Cuando un comercial valida una hipótesis, el agente `EmailDrafter` prepara un borrador del primer email y lo deja en Twenty: en los campos de borrador de la hipótesis (`emailTo`, `emailSubject`, `emailBody`, `emailStatus`) si el envío desde Twenty está activo, o como nota sobre la empresa y sobre la hipótesis si no lo está o si esos campos no se pueden escribir.
 
 ```
 veredicto ACCEPTED (webhook de Twenty o POST /evaluations/human)
   -> evaluation.recorded
   -> tarea draft-email-on-validated (trigger EVENT)
-  -> EmailDrafter: get_hypothesis -> 1 llamada a Gemini {asunto, cuerpo} -> create_note
-  -> Note "Borrador email — {hipótesis}" en la empresa y en la hipótesis
+  -> EmailDrafter: get_hypothesis -> 1 llamada a Gemini {asunto, cuerpo}
+  -> set_hypothesis_draft (campos de la hipótesis; send_from_twenty activo)
+  -> create_note "Borrador email — {hipótesis}" SOLO si los campos no son el borrador de referencia
 ```
 
 ### Tarea y agente
@@ -2490,7 +2532,7 @@ veredicto ACCEPTED (webhook de Twenty o POST /evaluations/human)
 1. Hace **una** llamada a Gemini con la necesidad, el porqué ahora, el evento, los productos recomendados y los diferenciales que anotó el Prospector. Los datos del CRM entran en un bloque `DATOS_NO_CONFIABLES`. La respuesta se valida con zod (`{asunto, cuerpo}`); si no es válida, el run termina con `outcome = FAILED` y sin nota (no hay ronda de reparación).
 1. Post-procesa el texto por código (`finalizeDraft`).
 1. Solo con `configuration.send_from_twenty.enabled = true` (en el seed, `false`): escribe el mismo borrador en los campos `emailTo`, `emailSubject`, `emailBody` de la hipótesis con `emailStatus = DRAFT` (`set_hypothesis_draft`). Un fallo aquí no falla el run.
-1. Guarda la nota con `create_note`.
+1. Guarda la nota con `create_note` **solo** si los campos de la hipótesis no son el borrador de referencia: `send_from_twenty` apagado o `set_hypothesis_draft` con error (por ejemplo, la App sin sincronizar). Desde la tanda 19, con los campos disponibles no hay nota: el workflow de envío solo lee los campos y la nota era una copia. La salida lo indica con `note_skipped` (`draft_in_hypothesis_fields`, o `hypothesis_fields_draft_exists` / `hypothesis_fields_human_owned` si los campos ya tenían un borrador o lo está trabajando una persona). El texto generado queda siempre en la salida de la ejecución.
 
 ### Envío desde Twenty (opcional, lo hace una persona)
 
@@ -2511,7 +2553,7 @@ El remitente, los buzones (`jesus.abril@publiexpe.info` y `j.abril@publiexpe.inf
 
 ### La nota en Twenty
 
-Título `Borrador email — {nombre de la hipótesis}`. El cuerpo empieza con la cabecera **BORRADOR — revísalo y envíalo desde tu correo; el sistema no envía nada.**, sigue con `De`, `Para` (el decision maker si existe; si no, un aviso para que el comercial ponga una dirección corporativa de rol) y `Asunto`, el cuerpo listo para copiar y un pie con la hipótesis, el veredicto y la ejecución.
+Solo cuando los campos de la hipótesis no son el borrador de referencia (consulta el flujo). Título `Borrador email — {nombre de la hipótesis}`. El cuerpo empieza con la cabecera **BORRADOR — revísalo y envíalo desde tu correo; el sistema no envía nada.**, sigue con `De`, `Para` (el decision maker si existe; si no, un aviso para que el comercial ponga una dirección corporativa de rol) y `Asunto`, el cuerpo listo para copiar y un pie con la hipótesis, el veredicto y la ejecución.
 
 Formato de Twenty 2.45 (verificado contra la API REST):
 
@@ -2575,6 +2617,8 @@ Migración `0007_email_sends`: `id`, `tenant_id`, `hypothesis_id`, `company_id`,
 - `sends`: `today`, `week` (lunes a domingo), `total`, `last_hour`, `last_sent_at`.
 - `warmup`: fase del calendario de [docs/email-warmup.md](../../docs/email-warmup.md#calendario-de-4-semanas) por fecha local desde el 2026-10-06 (`src/email-ops/warmup.ts`), `target_today` (total de ambos buzones por día laborable; fines de semana 0), `target_per_mailbox`, `status` (`ok`, `exceeded`, `no_target`) y si ya se emitió el aviso del día. Las semanas 1 y 3 son rampas: los objetivos diarios las interpolan sin subir más de un 30 % de un día laborable al siguiente (salvo la cifra que fija el plan, «15 por buzón el martes» de la semana 3). Las semanas 2 y 4 usan el máximo del rango. Desde el 2026-11-03: `post_warmup`, sin tope blando.
 - `ionos_limit` (informativo): 50 por hora los primeros 7 días del buzón, 50 por prudencia entre el día 8 y el 30 (IONOS no publica cifra) y 500 después, frente a `last_hour`.
+
+`sends.in_window` es `null` cuando la consulta no lleva `since`/`until`. La sincronización con la página nativa de métricas pide cada día con su ventana local, así que la fila `emailSends` de cada día lleva los envíos de **ese** día (tanda 19, `emailSendsOfDay`): si alguna vez llegara sin ventana, solo la fila de hoy toma `sends.today`. La página se actualiza en el siguiente ciclo de la sincronización (`METRICS_TWENTY_SYNC_INTERVAL_MS`, 15 minutos por defecto): un envío recién hecho puede tardar ese tiempo en aparecer.
 
 Solo cuenta los envíos desde Twenty: los del webmail van aparte. El dashboard muestra el bloque **Email** con la tarjeta de hoy en ámbar si se supera el objetivo y la del límite de IONOS en rojo si se alcanza.
 
@@ -2692,6 +2736,27 @@ Rellena **Email to** de las hipótesis validadas con la dirección que la propia
 - **Fase 2** (apagada por defecto, `ENRICH_*`): solo hipótesis `VALIDATED` sin contacto publicado. Con confianza menor de 0,7 la dirección queda en el Research y no se escribe.
 - **Escritura:** `set_hypothesis_recipient` escribe solo `emailTo` y solo si está vacío y el borrador no está `READY`, `SENDING` ni `SENT`. Cada búsqueda deja un Research `CONTACT_DISCOVERY` «Contacto — <empresa>» o «Sin contacto público — <empresa>» con los candidatos, la URL exacta de cada uno, los descartados y el porqué del elegido.
 - **Backfill** de las hipótesis `VALIDATED` ya existentes sin **Email to** (filtradas por `tenantId`): `pnpm contacts:backfill [--limit=25] [--force] [--dry-run]` o `POST /contacts/backfill` (auditada como `contact.backfill`). Encola un run del agente ContactFinder (tarea MANUAL `find-contact`) por hipótesis. Es idempotente: omite las que ya tienen destinatario, un borrador de una persona o un Research de contacto.
+- **Personas nativas (tanda 19).** Antes del Research, el elegido y los candidatos de prioridad 1 con **nombre de persona** publicado se escriben como Persona de Twenty (`upsert_person`, máximo 3 por búsqueda): nombre y apellidos, `emails.primaryEmail`, `jobTitle` (el cargo publicado) y `companyId`. Solo buzones personales, del dominio, con MX y fuera de la supresión; en fase 2, solo con confianza ≥ 0,7 **y** cargo. `info@`/`comercial@` nunca crean Persona. El Research las referencia (`structuredResult.people[]`, `chosen.person_id` y la línea «Persona en Twenty: <id>»). **Email to** sigue igual. Consulta [Personas y Oportunidades nativas](#personas-y-oportunidades-nativas-de-twenty).
+
+## Personas y Oportunidades nativas de Twenty
+
+Desde la tanda 19 el runtime usa los objetos **estándar** de Twenty (no necesitan la App): `person` (timeline y asociación automática de correos por dirección), `opportunity` (embudo kanban por `stage`) y `task`. Código en [src/crm/](src/crm/).
+
+Formas verificadas en solo lectura contra el Twenty vivo (`GET /rest/people`, `/rest/opportunities`, `/rest/tasks`, `/rest/taskTargets` y `GET /rest/open-api/core`; la API de metadatos REST responde `403` con la key del runtime):
+
+| Objeto | Campos que usa el runtime |
+|---|---|
+| `person` | `name { firstName, lastName }`, `emails { primaryEmail, additionalEmails }`, `jobTitle`, `companyId`. Un texto vacío se guarda como `''` |
+| `opportunity` | `name`, `stage` (SELECT, opciones en orden: `NEW`, `SCREENING`, `MEETING`, `PROPOSAL`, `CUSTOMER`), `amount { amountMicros, currencyCode }` (se deja vacío), `closeDate`, `companyId`, `pointOfContactId`, `ownerId` |
+| `task` | `title`, `bodyV2 { markdown }`, `dueAt`, `status` (`TODO`, `IN_PROGRESS`, `DONE`), `assigneeId` |
+| `taskTarget` | `taskId` + una columna por objeto: `targetCompanyId`, `targetPersonId`, `targetOpportunityId`, `targetCommercialHypothesisId`... |
+
+- **Personas:** desde el ContactFinder y desde el remitente de una respuesta `INTERESADO`/`PREGUNTA`. Dedupe por email antes de crear (y, si Twenty rechaza un duplicado por carrera, se adopta el ganador). Nunca se pisa un dato existente: solo se rellenan nombre, cargo o empresa vacíos. Un buzón genérico, de función o de rol no es una persona.
+- **Oportunidades, solo por promoción, nunca por volcado:** una respuesta `INTERESADO` del triaje o una persona con `POST /opportunities/promote`. Las hipótesis sin tracción nunca generan Oportunidad y no cambian de forma. Una por empresa mientras esté abierta (una etapa de cierre, `CUSTOMER`, `WON`, `LOST`, `CLOSED*`..., la cierra). La etapa de entrada es la primera opción real del select `stage` (caché de 10 minutos; si no se puede leer, el orden por defecto y `stage_source: "default"`).
+- **`POST /opportunities/promote`** `{ hypothesis_id, by? }` (cabecera `x-tenant-id`): lee la hipótesis con filtro de tenant (otro tenant o inexistente: `404`; `REJECTED` o sin empresa: `409`), toma como punto de contacto el decisor de la hipótesis o la Persona de su **Email to** si es un buzón personal (la crea o la completa; un genérico no da punto de contacto) y abre o reutiliza la Oportunidad de la empresa. `201` si la crea (con `event_id` de `opportunity.created`, `origin: "manual"`), `200` si reutiliza. `503` sin Twenty, `502` si Twenty falla. Auditada como `opportunity.promote` (también los rechazos).
+- **Tareas «📬 Responder a …»:** las crea el triaje ([Triaje del buzón](#acciones)). Se escriben por REST directo (`src/crm/reply-task.ts`) a la espera de unificarlas con el helper genérico de tareas.
+- **Sin `tenantId`:** Person, Opportunity y Task son objetos estándar sin ese campo (límite de la tanda 16, [Limitaciones](#limitaciones)). No se añade desde el runtime.
+- **Permisos de la key:** el rol «Agent runtime» lee estos objetos (verificado). La escritura sobre `people`, `opportunities`, `tasks` y `taskTargets` no se ha probado en vivo: si el rol se definió objeto a objeto, hay que darle escritura en ellos (sin borrado).
 
 ## Pendiente
 

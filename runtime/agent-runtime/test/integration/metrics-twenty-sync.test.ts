@@ -158,3 +158,49 @@ describe.skipIf(!dbAvailable)('metrics sync to Twenty (PostgreSQL)', () => {
     expect(fake.tables[DAILY_METRICS_OBJECT]).toHaveLength(2);
   });
 });
+
+// Tanda 19: the user sent ONE email from Twenty on 2026-10-12 at 22:47 Madrid and the native page
+// showed 0. The row of that day must carry the send of that day (per-day count from email_sends).
+describe.skipIf(!dbAvailable)('metrics sync to Twenty: sends of the day (tanda 19, PostgreSQL)', () => {
+  const tenant = `ms19-${randomUUID().slice(0, 8)}`;
+  let handle: DbHandle;
+
+  beforeAll(async () => {
+    handle = createDb(DATABASE_URL);
+    await runMigrations(handle.db);
+    await handle.db.insert(emailSends).values({
+      tenantId: tenant,
+      hypothesisId: randomUUID(),
+      companyId: null,
+      toEmail: 'buyer@example.com',
+      toDomain: 'example.com',
+      subject: 'Hola',
+      sentAt: new Date('2026-10-12T20:47:53.331Z'),
+      workspaceMemberId: null,
+    });
+  });
+
+  afterAll(async () => {
+    await handle?.close();
+  });
+
+  it('one send today -> the row of today carries 1 (and yesterday 0), on the first tick after the send', async () => {
+    const fake = new FakeTwenty();
+    fake.tables[DAILY_METRICS_OBJECT] = [];
+    const sync = new TwentyMetricsSync(handle.db, fake.client(), { tenantId: tenant, now: () => new Date('2026-10-12T20:53:44Z') });
+    expect(await sync.syncOnce()).toMatchObject({ ok: true, days: [{ date: '2026-10-11' }, { date: '2026-10-12' }] });
+    const byDay = Object.fromEntries(fake.tables[DAILY_METRICS_OBJECT]!.map((row) => [row.day as string, row]));
+    expect(byDay['2026-10-12']).toMatchObject({ dayKey: `${tenant}:2026-10-12`, emailSends: 1 });
+    expect(byDay['2026-10-11']).toMatchObject({ emailSends: 0 });
+  });
+
+  it('backfill by days: each row counts the sends of ITS local day, not today\'s', async () => {
+    const fake = new FakeTwenty();
+    fake.tables[DAILY_METRICS_OBJECT] = [];
+    // Three days later: the 2026-10-12 row still says 1, the others 0.
+    const sync = new TwentyMetricsSync(handle.db, fake.client(), { tenantId: tenant, now: () => new Date('2026-10-15T10:00:00Z'), days: 5 });
+    await sync.syncOnce();
+    const byDay = Object.fromEntries(fake.tables[DAILY_METRICS_OBJECT]!.map((row) => [row.day as string, row.emailSends]));
+    expect(byDay).toEqual({ '2026-10-11': 0, '2026-10-12': 1, '2026-10-13': 0, '2026-10-14': 0, '2026-10-15': 0 });
+  });
+});

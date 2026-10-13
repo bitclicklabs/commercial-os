@@ -388,7 +388,7 @@ Reglas:
 - Es el **mismo webhook** del feedback (`pxos-runtime:human-feedback`): `register:webhook` lo amplía en el sitio; no crees uno duplicado salvo que lo prefieras separado.
 - Twenty no tiene estado "inactivo" para los webhooks: para pausar el disparo inmediato, vacía **Operations**. No borres el webhook.
 - Twenty no reintenta entregas fallidas. Un disparo perdido no se recupera, pero el run diario recoge la señal calificada.
-- Desde la tanda 18, el disparo solo prospecta si la feria está dentro de la [ventana de lead time](prospeccion-por-senales.md#ventana-de-lead-time). Fuera de ella, el webhook llega igual pero el resultado es una nota ⏳ en la señal y ninguna prospección.
+- Desde la tanda 18, el disparo solo prospecta si la feria está dentro de la [ventana de lead time](prospeccion-por-senales.md#ventana-de-lead-time). Fuera de ella, el webhook llega igual pero el resultado es una tarea ⏳ en la señal (una nota antes de la tanda 19) y ninguna prospección.
 
 Detalle del ciclo, de la idempotencia y de las limitaciones: [Prospección guiada por señales](prospeccion-por-senales.md).
 
@@ -468,6 +468,55 @@ Para comprobar el resultado:
 1. Abre `http://localhost:3020/settings/applications#developer` y verifica que aparece `publiexpe-commercial-os`.
 2. Abre la barra lateral y verifica la carpeta **Commercial OS** con **Signals**, **Research**, **Hypotheses** y **Agent runs**.
 3. En **Settings → Data model**, verifica que existen los cuatro objetos.
+
+### Sincronizar con el rol restringido del runtime
+
+Desde la tanda 9, la API key del runtime tiene el rol **Agent runtime**, sin permisos de administración ([Rol de la API key de Twenty](#rol-de-la-api-key-de-twenty)). El `apply` de la App necesita una key de rol **Admin**. Este paso lo ejecuta la persona que opera Twenty; ningún agente lo lanza.
+
+**Quién:** el PM o el usuario, con acceso a **Settings** de Twenty.
+
+1. Previsualiza lo que cambiará, con la key Admin temporal en la sesión (no la guardes en `deployments/.env`):
+
+   ```powershell
+   $env:TWENTY_API_KEY = '<key Admin temporal>'
+   .\scripts\sync-twenty-app.ps1 -Action plan
+   ```
+
+   Revisa la salida. Si aparece algún **borrado**, detente: ninguna tanda reciente borra objetos, campos ni vistas.
+
+1. Aplica:
+
+   ```powershell
+   .\scripts\sync-twenty-app.ps1
+   Remove-Item Env:TWENTY_API_KEY
+   ```
+
+1. Revierte el permiso. Elige una de estas opciones:
+   - Si creaste una key temporal, revócala en **Settings → APIs & Webhooks**.
+   - Si diste el rol **Admin** a la key del runtime, devuélvele el rol **Agent runtime** en esa misma pantalla.
+1. Verifica que el runtime no ve las tools de correo. Ejecuta el comando de [Rol de la API key de Twenty](#rol-de-la-api-key-de-twenty) con la key del runtime. El resultado esperado es `0` (`send_email=0`).
+1. Verifica el cambio de la tanda en la UI (siguiente sección).
+
+> **Precaución:** no dejes la key del runtime con rol **Admin**. Con un buzón conectado, cualquiera con esa key podría enviar correo desde Twenty.
+
+### Qué añade la sincronización de la tanda 19
+
+Solo una **vista**. No cambia objetos ni campos, así que el `plan` no debe mostrar borrados ni cambios de esquema.
+
+| Vista | Objeto | Tipo | Dónde verla |
+|---|---|---|---|
+| **Señales · Cola** | Signals | Kanban por `status` (New, Reviewing, Qualified, Discarded, Expired) | **Commercial OS → Signals**, selector de vistas |
+
+Las demás vistas de fábrica ya existen y no se duplican (comprobado en solo lectura contra la instancia el 2026-10-12):
+
+| Vista | Origen |
+|---|---|
+| Hypotheses → **By status** (kanban por estado) | Twenty App, tanda 9 |
+| Opportunities → **By Stage** (kanban por etapa) | Twenty, de serie |
+| Tasks → **By Status** (kanban por estado) y **Assigned to Me** | Twenty, de serie. Es la bandeja de las alertas accionables, que desde la tanda 19 son tareas |
+
+> **Nota:** desde la tanda 19, el runtime crea **tareas** (objeto estándar `task`) para las alertas accionables. El rol **Agent runtime** debe poder leer y escribir `tasks` y `taskTargets`. Si el rol se creó con permisos por objeto en lugar de «todos los objetos», añádelos. Las tareas, como las notas, no tienen `tenantId`: son comunes a todo el workspace.
+
 
 ## Rotar la API key de Twenty
 
@@ -786,6 +835,9 @@ ORDER BY created_at DESC;
 | Tras arrancar hay muchas ejecuciones de tasks que no reconoces, o el gasto de LLM se dispara | El scheduler registró tasks de tenants de test (`it-*`, `e2e-*`…): `SCHEDULER_TENANTS=*` o un runtime anterior a la tanda 16 | Archiva las tasks de test por patrón de tenant (con `--dry-run` primero: [Limpiar tenants de test](#limpiar-tenants-de-test-con---dry-run)), comprueba `SCHEDULER_TENANTS` y marca como descartado lo que haya llegado a Twenty (no lo borres). Detalle en el [postmortem del 2026-10-12](incidentes/2026-10-12-catchup-tenants-test.md) |
 | `pnpm test:integration` se niega a ejecutarse y menciona la base compartida | El guard de la tanda 16: `DATABASE_URL` apunta a la base `agentos` | Usa una base aislada ([Tests de integración](#tests-de-integración-base-aislada)). `ALLOW_SHARED_TEST_DB=1` solo si ningún scheduler lee esa base |
 | Un cambio de webhook hecho por SQL en Twenty no tiene efecto | El servidor de Twenty cachea la lista de webhooks | `docker compose restart pxos-twenty`. Prefiere la interfaz o `pnpm register:webhook` |
+| La página nativa de métricas muestra 0 envíos justo después de enviar | El sync hacia Twenty corre cada 15 minutos (`METRICS_TWENTY_SYNC_INTERVAL_MS`): el contador aparece en la siguiente pasada. Comprobado el 2026-10-12: envío a las 20:47, contador en Twenty a las 20:53 | Espera a la siguiente pasada o compara con el bloque Email de `GET /metrics/summary`, que es inmediato. Desde la tanda 19 el sync además rellena correctamente el conteo por día en el backfill |
+| Faltan las vistas **Señales · Cola**, **Hipótesis · Por estado**, **Oportunidades · Pipeline** o **Tareas · Bandeja** | La App no se ha sincronizado desde la tanda 19 | [Sincronizar las vistas de fábrica](#sincronizar-las-vistas-de-fábrica) (lo ejecuta el usuario con una key Admin temporal) |
+| Se validan hipótesis con persona publicada y no aparece nada en **Personas**, o un interesado no genera oportunidad ni tarea | El rol «Agent runtime» no tiene permisos de escritura sobre Person, Opportunity o Task (`403` o error de permisos en el trace del run), o el runtime es anterior a la tanda 19 | Comprueba el rol en **Settings → APIs & Webhooks** y concede lectura y escritura sobre esos objetos sin darle tools; las personas de hipótesis ya validadas solo se crean si el [backfill](#backfill-de-contactos) las cubre `[POR VERIFICAR]`. No uses la key Admin para el runtime |
 | Una hipótesis `Validated` no tiene **Email to** | La web de la empresa no publica ningún email del dominio (Research «Sin contacto público»); la hipótesis se validó antes de la tanda 17 y no se ha pasado el backfill; la fase 2 está apagada (`ENRICH_PROVIDER` vacío), sin cupo (`ENRICH_MAX_LOOKUPS_PER_DAY`) o devolvió confianza menor de 0,7 | Abre el Research «Contacto — empresa» o «Sin contacto público» de esa empresa para ver qué pasó. Si es anterior a la tanda 17, ejecuta el [backfill](#backfill-de-contactos). Si no hay nada publicado, que el comercial escriba la dirección a mano o activa la fase 2 ([variables](#variables-del-runtime)). |
 
 | Hipótesis duplicadas en Twenty | Fallo de idempotencia | Conserva los datos, anota las `idempotencyKey` afectadas y abre una incidencia. No borres registros sin revisión. |

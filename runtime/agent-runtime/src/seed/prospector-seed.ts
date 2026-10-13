@@ -108,7 +108,7 @@ export function desiredProspectorVersion() {
           expire_signal: MAX_EXPIRATIONS_PER_RUN,
           list_hypotheses_for_expiry: 2,
           expire_hypothesis: MAX_HYPOTHESIS_EXPIRATIONS_PER_RUN,
-          create_signal_note: 2,
+          create_crm_task: 2,
         },
       },
       // Knowledge layer (LLD 6.4): ACTIVE entries of these domains go into the per-exhibitor decision prompt.

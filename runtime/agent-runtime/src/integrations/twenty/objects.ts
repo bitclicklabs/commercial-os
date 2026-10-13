@@ -24,6 +24,10 @@ export const TWENTY_OBJECTS = {
   person: 'people',
   note: 'notes',
   noteTarget: 'noteTargets',
+  /** Standard Twenty objects used since tanda 19 (no `tenantId` field: shared by the workspace). */
+  opportunity: 'opportunities',
+  task: 'tasks',
+  taskTarget: 'taskTargets',
 } as const;
 
 /**
@@ -178,7 +182,11 @@ export interface TwentyAgentRunSummary extends TwentySystemFields {
   companyId: string | null;
 }
 
-/** Standard `person` (decision maker of a hypothesis). Only the fields the runtime reads. */
+/**
+ * Standard `person` (decision maker of a hypothesis; since tanda 19 also the contacts the
+ * ContactFinder publishes and the senders of interested replies). Only the fields the runtime
+ * reads. Twenty stores an unfilled text as '' (`jobTitle: ''`, `name.lastName: ''`). No `tenantId`.
+ */
 export interface TwentyPerson extends TwentySystemFields {
   name: { firstName: string | null; lastName: string | null } | null;
   jobTitle?: string | null;
@@ -219,6 +227,58 @@ export interface TwentyNoteTarget extends TwentySystemFields {
   targetCommercialSignalId?: string | null;
   targetResearchId?: string | null;
   targetAgentRunSummaryId?: string | null;
+}
+
+/**
+ * Standard `opportunity` (Twenty 2.45, verified read-only against GET /rest/open-api/core):
+ * `stage` is a SELECT whose options, in order, are NEW, SCREENING, MEETING, PROPOSAL, CUSTOMER
+ * (the runtime reads them at run time: src/crm/opportunities.ts); `amount` is CURRENCY;
+ * `pointOfContactId` points to a person. No `tenantId`.
+ */
+export interface TwentyOpportunity extends TwentySystemFields {
+  name: string | null;
+  amount?: TwentyCurrency | null;
+  closeDate?: string | null;
+  stage: string | null;
+  companyId: string | null;
+  pointOfContactId: string | null;
+  ownerId?: string | null;
+}
+
+/** Standard `task.status` values (Twenty 2.45, verified in GET /rest/open-api/core). */
+export const TASK_STATUSES = ['TODO', 'IN_PROGRESS', 'DONE'] as const;
+export type TaskStatus = (typeof TASK_STATUSES)[number];
+
+/**
+ * Standard `task` (Twenty 2.45, verified read-only against GET /rest/open-api/core):
+ * `{ title, bodyV2: { markdown, blocknote }, dueAt (DATE_TIME), status, assigneeId, position }`.
+ * Like notes, it has NO `tenantId` (standard object, shared by every tenant of the workspace).
+ */
+export interface TwentyTask extends TwentySystemFields {
+  title: string | null;
+  bodyV2: { markdown: string | null; blocknote: string | null } | null;
+  dueAt: string | null;
+  status: TaskStatus | null;
+  assigneeId?: string | null;
+}
+
+/**
+ * Standard `taskTarget`: join row between a task and ONE record, one nullable column per
+ * target object. Verified in the live OpenAPI: `targetCompanyId`, `targetPersonId`,
+ * `targetOpportunityId` and, for the App objects, `targetCommercialSignalId`,
+ * `targetCommercialHypothesisId`, `targetResearchId`, `targetAgentRunSummaryId`,
+ * `targetAgentOsDailyMetricId` (custom objects are task-targetable).
+ */
+export interface TwentyTaskTarget extends TwentySystemFields {
+  taskId: string | null;
+  targetCompanyId?: string | null;
+  targetPersonId?: string | null;
+  targetOpportunityId?: string | null;
+  targetCommercialSignalId?: string | null;
+  targetCommercialHypothesisId?: string | null;
+  targetResearchId?: string | null;
+  targetAgentRunSummaryId?: string | null;
+
 }
 
 export function links(url: string, label = ''): TwentyLinks {

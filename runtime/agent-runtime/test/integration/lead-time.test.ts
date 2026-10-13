@@ -230,13 +230,16 @@ describe.skipIf(!dbAvailable)('lead-time window: daily run, hypothesis expiry wi
     for (const { job } of runQueue.drain()) await processor.process(job);
     const run = await handle.db.query.taskRuns.findFirst({ where: eq(taskRuns.id, runId) });
     expect(run!.status).toBe('COMPLETED');
-    expect(run!.output).toMatchObject({ outcome: 'SKIPPED', signal_id: close.id, lead_time: { status: 'too_close', days: 10 }, note: { created: true } });
+    expect(run!.output).toMatchObject({ outcome: 'SKIPPED', signal_id: close.id, lead_time: { status: 'too_close', days: 10 }, task: { created: true } });
     expect(provider.requests).toHaveLength(0);
     expect(web.requests.length).toBe(fetchesBefore);
     expect(fake.tables.commercialSignals.find((s) => s.id === close.id)!.status).toBe('QUALIFIED');
-    const target = fake.tables.noteTargets.find((t) => t.targetCommercialSignalId === close.id);
+    // Tanda 19: a Twenty Task (TODO) linked to the signal through taskTargets; no note.
+    expect(fake.tables.noteTargets.find((t) => t.targetCommercialSignalId === close.id)).toBeUndefined();
+    const target = fake.tables.taskTargets.find((t) => t.targetCommercialSignalId === close.id);
     expect(target).toBeDefined();
-    const note = fake.tables.notes.find((n) => n.id === target!.noteId)!;
-    expect(String((note.bodyV2 as { markdown: string }).markdown)).toContain('⏳ Fuera de ventana: la feria es en 10 días');
+    const task = fake.tables.tasks.find((n) => n.id === target!.taskId)!;
+    expect(task).toMatchObject({ status: 'TODO', dueAt: expect.any(String) });
+    expect(String((task.bodyV2 as { markdown: string }).markdown)).toContain('⏳ Fuera de ventana: la feria es en 10 días');
   });
 });

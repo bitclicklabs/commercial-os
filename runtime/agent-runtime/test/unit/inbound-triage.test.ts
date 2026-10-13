@@ -526,7 +526,9 @@ describe('InboxAgent', () => {
     expect(md).toContain('> ¡Hola Jesús! Sí, nos interesa. ¿Me pasas precios de bolsas tote para 500 uds?');
     expect(md).not.toContain('Os escribo por la feria');
     // On the company AND the hypothesis of the send.
-    expect(s.targetsOf(interested.id).map((t) => t.targetCompanyId ?? t.targetCommercialHypothesisId).sort()).toEqual([s.company.id, s.hypothesisId].sort());
+    expect(s.targetsOf(interested.id).map((t) => t.targetCompanyId ?? t.targetCommercialHypothesisId).filter(Boolean).sort()).toEqual([s.company.id, s.hypothesisId].sort());
+    // Tanda 19: also on the native Opportunity and on the sender's Person.
+    expect(s.targetsOf(interested.id).filter((t) => t.targetOpportunityId || t.targetPersonId)).toHaveLength(2);
     // Colleague on the same domain: linked by domain to the same send.
     const question = s.notes().find((n) => String(n.title).includes('Pregunta'))!;
     expect((question.bodyV2 as { markdown: string }).markdown).toContain('(coincide el dominio de la empresa)');
@@ -540,10 +542,12 @@ describe('InboxAgent', () => {
     expect(after).not.toContain('noexiste@cliente.example');
 
     // Events: one per message, with the class; domains only.
-    expect(s.events.emitted.every((e) => e.type === REPLY_RECEIVED_EVENT)).toBe(true);
-    expect(s.events.emitted.map((e) => e.data.class)).toEqual(['BAJA', 'INTERESADO', 'PREGUNTA', 'NO_INTERESADO', 'OTRO', 'AUTO_REPLY', 'REBOTE', 'AUTO_REPLY', 'OTRO']);
-    expect(JSON.stringify(s.events.emitted)).not.toMatch(/carmen@|marta@|luis@/);
-    expect(s.events.emitted[1]!.data).toMatchObject({ method: 'LLM', confidence: 0.93, hypothesisId: s.hypothesisId, matchBy: 'email', sendId: '9e1c2d3a-0000-4000-8000-000000000001' });
+    // (+ tanda 19: one `opportunity.created`, the interested reply opened the company's Opportunity.)
+    const replyEvents = s.events.emitted.filter((e) => e.type === REPLY_RECEIVED_EVENT);
+    expect(s.events.emitted.filter((e) => e.type !== REPLY_RECEIVED_EVENT).map((e) => e.type)).toEqual(['opportunity.created']);
+    expect(replyEvents.map((e) => e.data.class)).toEqual(['BAJA', 'INTERESADO', 'PREGUNTA', 'NO_INTERESADO', 'OTRO', 'AUTO_REPLY', 'REBOTE', 'AUTO_REPLY', 'OTRO']);
+    expect(JSON.stringify(s.events.emitted)).not.toMatch(/carmen@|marta@|luis@|jefe@/);
+    expect(replyEvents[1]!.data).toMatchObject({ method: 'LLM', confidence: 0.93, hypothesisId: s.hypothesisId, matchBy: 'email', sendId: '9e1c2d3a-0000-4000-8000-000000000001' });
 
     // inbound_triage rows and cursor.
     expect(s.triageStore.rows.map((row) => [row.uid, row.class, row.method])).toEqual([
@@ -674,5 +678,113 @@ describe('inbox seed and configuration', () => {
 
   it('formats local minutes in Europe/Madrid', () => {
     expect(localMinute(new Date('2026-10-08T08:30:00Z'), 'Europe/Madrid')).toBe('2026-10-08 10:30');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Tanda 19: native Person / Opportunity / Task of INTERESADO and PREGUNTA replies
+// ---------------------------------------------------------------------------
+
+describe('InboxAgent: native CRM records (tanda 19)', () => {
+  const question = (from: string, uid = 12) => raw(uid, eml({ From: from, Subject: 'Re: Material para vuestro stand' }, `¿Cuál es el plazo de entrega para 300 tazas?\n\n${QUOTED}`), new Date('2026-10-08T08:40:00Z'));
+
+  it('INTERESADO: Person of the sender, Opportunity at the first stage, Task «📬 Responder a …», event', async () => {
+    const s = setup({ messages: [raw(11, F.interested, D1)], responses: [ans('INTERESADO', 0.93)] });
+    const r = await s.run();
+    expect(r.output.counters).toMatchObject({ interesados: 1, people_created: 1, opportunities_created: 1, reply_tasks: 1 });
+    // Person: From name + address, on the company of the send.
+    expect(s.fake.tables.people).toEqual([expect.objectContaining({ name: { firstName: 'Carmen', lastName: '' }, emails: { primaryEmail: 'carmen@cliente.example', additionalEmails: [] }, companyId: s.company.id })]);
+    const person = s.fake.tables.people[0]!;
+    // Opportunity: company name (the hypothesis is not in Twenty here: no fair), first stage, no amount.
+    expect(s.fake.tables.opportunities).toEqual([
+      expect.objectContaining({ name: 'Cliente SA', stage: 'NEW', companyId: s.company.id, pointOfContactId: person.id, amount: { amountMicros: null, currencyCode: null } }),
+    ]);
+    const opp = s.fake.tables.opportunities[0]!;
+    // The 📬 note stays (record with the excerpt) and is attached to the opportunity and the person.
+    const note = s.notes().find((n) => String(n.title).includes('Interesado ('))!;
+    expect(s.targetsOf(note.id).map((t) => t.targetOpportunityId ?? t.targetPersonId).filter(Boolean).sort()).toEqual([opp.id, person.id].sort());
+    // Task: actionable, TODO, due in 2 working days (Thursday 10:30 -> Monday 09:00 Madrid).
+    expect(s.fake.tables.tasks).toEqual([expect.objectContaining({ title: '📬 Responder a Carmen', status: 'TODO', dueAt: '2026-10-12T07:00:00.000Z' })]);
+    const task = s.fake.tables.tasks[0]!;
+    const md = (task.bodyV2 as { markdown: string }).markdown;
+    expect(md).toContain('> ¡Hola Jesús! Sí, nos interesa. ¿Me pasas precios de bolsas tote para 500 uds?');
+    expect(md).toContain(`/object/note/${note.id}`);
+    expect(md).toContain(`/object/opportunity/${opp.id}`);
+    expect(s.fake.tables.taskTargets.filter((t) => t.taskId === task.id).map((t) => t.targetOpportunityId ?? t.targetCompanyId ?? t.targetPersonId).sort()).toEqual([opp.id, s.company.id, person.id].sort());
+    // Event for n8n: ids only, origin reply.
+    const created = s.events.emitted.filter((e) => e.type === 'opportunity.created');
+    expect(created).toHaveLength(1);
+    expect(created[0]!.data).toMatchObject({ opportunityId: opp.id, origin: 'reply', companyId: s.company.id, pointOfContactId: person.id, hypothesisId: s.hypothesisId, taskId: null, stage: 'NEW' });
+    expect(JSON.stringify(created)).not.toContain('carmen@');
+    expect(s.events.emitted.find((e) => e.type === REPLY_RECEIVED_EVENT)!.data).toMatchObject({ opportunityId: opp.id, personId: person.id, taskId: task.id });
+    expect(r.output.triaged).toEqual([expect.objectContaining({ uid: 11, opportunity_id: opp.id, opportunity_created: true, person_id: person.id, task_id: task.id })]);
+    expect(s.triageStore.rows[0]!.signals).toContain('opportunity_created');
+  });
+
+  it('a second interested reply of the same company reuses its open Opportunity (no event) and the Person', async () => {
+    const s = setup({ messages: [raw(11, F.interested, D1)], responses: [ans('INTERESADO', 0.93), ans('INTERESADO', 0.9)] });
+    await s.run();
+    s.mailbox.messages = [...s.mailbox.messages, raw(20, eml({ From: 'Carmen <carmen@cliente.example>', Subject: 'Re: Material' }, 'Y también 200 tazas, por favor.'), new Date('2026-10-09T09:00:00Z'))];
+    const r = await s.run();
+    expect(r.output.counters).toMatchObject({ interesados: 1, people_created: 0, people_existing: 1, opportunities_created: 0, opportunities_reused: 1, reply_tasks: 1 });
+    expect(s.fake.tables.opportunities).toHaveLength(1);
+    expect(s.fake.tables.people).toHaveLength(1);
+    // The open task «📬 Responder a Carmen» on that opportunity is reused, not duplicated.
+    expect(s.fake.tables.tasks).toHaveLength(1);
+    // The new note is attached to the existing opportunity.
+    const notes = s.notes().filter((n) => String(n.title).includes('Interesado ('));
+    expect(notes).toHaveLength(2);
+    for (const n of notes) expect(s.targetsOf(n.id).some((t) => t.targetOpportunityId === s.fake.tables.opportunities[0]!.id)).toBe(true);
+    expect(s.events.emitted.filter((e) => e.type === 'opportunity.created')).toHaveLength(1);
+  });
+
+  it('PREGUNTA: Person only when the From header carries a name, the Task, and NO Opportunity', async () => {
+    const s = setup({ messages: [question('jefe@cliente.example'), question('"MARTA LÓPEZ" <marta.lopez@cliente.example>', 13)], responses: [ans('PREGUNTA', 0.88), ans('PREGUNTA', 0.9)] });
+    const r = await s.run();
+    expect(r.output.counters).toMatchObject({ preguntas: 2, opportunities_created: 0, reply_tasks: 2, people_created: 1 });
+    expect(s.fake.tables.opportunities).toHaveLength(0);
+    expect(s.fake.tables.people).toEqual([expect.objectContaining({ name: { firstName: 'Marta', lastName: 'López' }, emails: { primaryEmail: 'marta.lopez@cliente.example', additionalEmails: [] } })]);
+    // Without a name: task named after the company; with a name: after the person.
+    expect(s.fake.tables.tasks.map((t) => t.title).sort()).toEqual(['📬 Responder a Cliente SA', '📬 Responder a Marta López']);
+    expect(s.events.emitted.some((e) => e.type === 'opportunity.created')).toBe(false);
+  });
+
+  it('INTERESADO from a generic mailbox: Opportunity without point of contact, no Person', async () => {
+    const s = setup({ messages: [raw(11, eml({ From: 'Info Cliente <info@cliente.example>', Subject: 'Re: Material' }, 'Nos interesa, enviadnos presupuesto.'), D1)], responses: [ans('INTERESADO', 0.9)] });
+    const r = await s.run();
+    expect(s.fake.tables.people).toHaveLength(0);
+    expect(s.fake.tables.opportunities).toEqual([expect.objectContaining({ companyId: s.company.id, pointOfContactId: null, stage: 'NEW' })]);
+    expect(s.fake.tables.tasks).toEqual([expect.objectContaining({ title: '📬 Responder a Cliente SA' })]);
+    expect(s.triageStore.rows[0]!.signals).toContain('sender_not_a_person:generic');
+    expect(r.output.triaged).toEqual([expect.objectContaining({ person_id: null })]);
+  });
+
+  it('NO_INTERESADO, bounces and replies without a company create nothing native; a policy without the CRM tools neither', async () => {
+    const s = setup({
+      messages: [raw(13, eml({ From: 'Marta <marta@dominio.example>', Subject: 'Re: Material' }, 'No nos interesa, gracias.'), D1), raw(16, F.eximHard, D1), raw(30, eml({ From: 'Pepe <pepe@desconocida.example>', Subject: 'Re: x' }, 'Nos interesa mucho.'), D1)],
+      responses: [ans('NO_INTERESADO', 0.95), ans('INTERESADO', 0.95)],
+    });
+    await s.run();
+    expect([s.fake.tables.people.length, s.fake.tables.opportunities.length, s.fake.tables.tasks.length]).toEqual([0, 0, 0]);
+    const old = setup({
+      messages: [raw(11, F.interested, D1)],
+      responses: [ans('INTERESADO', 0.93)],
+      configuration: { tool_policy: { allow: ['get_note', 'update_note', 'create_note', 'find_company'], max_risk_level: 'LOW_WRITE' } },
+    });
+    const r = await old.run();
+    expect(r.output).toMatchObject({ outcome: 'SUCCESS', counters: { notes_created: 1, opportunities_created: 0, reply_tasks: 0 } });
+    expect([old.fake.tables.people.length, old.fake.tables.opportunities.length, old.fake.tables.tasks.length]).toEqual([0, 0, 0]);
+  });
+
+  it('a Twenty failure in the CRM step stops the run; the retry completes it without duplicates', async () => {
+    const s = setup({ messages: [raw(11, F.interested, D1)], responses: [ans('INTERESADO', 0.93), ans('INTERESADO', 0.93)] });
+    s.fake.failNextCreate = 'tasks';
+    const r1 = await s.run();
+    expect(r1.output).toMatchObject({ outcome: 'FAILED', cursor: { to_uid: 0 } });
+    expect(s.triageStore.rows).toHaveLength(0);
+    const r2 = await s.run();
+    expect(r2.output).toMatchObject({ outcome: 'SUCCESS', cursor: { to_uid: 11 } });
+    expect([s.fake.tables.people.length, s.fake.tables.opportunities.length, s.fake.tables.tasks.length, s.notes().length]).toEqual([1, 1, 1, 1]);
+    expect(s.events.emitted.filter((e) => e.type === 'opportunity.created')).toHaveLength(1);
   });
 });

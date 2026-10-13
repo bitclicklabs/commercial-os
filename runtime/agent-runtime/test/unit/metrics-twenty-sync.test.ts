@@ -8,6 +8,7 @@ import {
   addDays,
   computeDailyMetric,
   DAILY_METRICS_OBJECT,
+  emailSendsOfDay,
   localDayWindow,
   localMidnight,
   metricsSyncSettingsFromEnv,
@@ -110,6 +111,21 @@ describe('computeDailyMetric', () => {
     const day = { ...slice({ total: 1 }), email: null };
     const rec = await computeDailyMetric(async () => day, { tenantId: 't', date: '2026-10-07' });
     expect(rec.emailSends).toBe(0);
+  });
+
+  it('tanda 19: sends of the DAY of the row; a summary without window (in_window null) falls back to sends.today only for today', async () => {
+    const now = new Date('2026-10-12T20:53:44Z'); // 22:53 Madrid
+    // Per-day window count (what metricsSummary returns with since/until): used as is, any day.
+    expect(emailSendsOfDay({ ...slice(), email: { sends: { in_window: 1, today: 1 } } }, '2026-10-12', '2026-10-12')).toBe(1);
+    expect(emailSendsOfDay({ ...slice(), email: { sends: { in_window: 0, today: 1 } } }, '2026-10-11', '2026-10-12')).toBe(0);
+    // in_window null + today 1 (what GET /metrics/summary showed): today's row takes it, older rows 0.
+    const noWindow = { ...slice(), email: { sends: { in_window: null, today: 1 } } };
+    expect(emailSendsOfDay(noWindow, '2026-10-12', '2026-10-12')).toBe(1);
+    expect(emailSendsOfDay(noWindow, '2026-10-11', '2026-10-12')).toBe(0);
+    const today = await computeDailyMetric(async () => noWindow, { tenantId: 't', date: '2026-10-12', now });
+    expect(today.emailSends).toBe(1);
+    const yesterday = await computeDailyMetric(async () => noWindow, { tenantId: 't', date: '2026-10-11', now });
+    expect(yesterday.emailSends).toBe(0);
   });
 });
 

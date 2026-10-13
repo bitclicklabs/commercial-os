@@ -5,8 +5,10 @@ import { ToolRegistry } from './registry.js';
 import { createFindCompanyTool, createGetCompanyTool, createUpsertCompanyTool } from './twenty/company-tools.js';
 import { createGetHypothesisTool, createRevertHypothesisDraftStatusTool, createSetHypothesisDraftTool } from './twenty/hypothesis-tools.js';
 import { createCreateNoteTool, createGetNoteTool, createUpdateNoteTool } from './twenty/note-tools.js';
+import { createCreateReplyTaskTool, createUpsertOpportunityTool, createUpsertPersonTool } from './twenty/crm-tools.js';
 import { createCreateSignalNoteTool, createExpireSignalTool, createListEventSignalsTool } from './twenty/signal-tools.js';
 import { createExpireHypothesisTool, createListHypothesesForExpiryTool } from './twenty/hypothesis-expiry-tools.js';
+import { createCreateCrmTaskTool } from './twenty/task-tools.js';
 import {
   createCreateAgentRunSummaryTool,
   createCreateHypothesisTool,
@@ -29,6 +31,8 @@ export * from './twenty/hypothesis-tools.js';
 export * from './twenty/note-tools.js';
 export * from './twenty/signal-tools.js';
 export * from './twenty/hypothesis-expiry-tools.js';
+export * from './twenty/task-tools.js';
+export * from './twenty/crm-tools.js';
 export * from './web/fetch-url.js';
 export * from './web/ip-guard.js';
 export * from './web/html-text.js';
@@ -58,6 +62,11 @@ export function registerTwentyTools(registry: ToolRegistry, twenty: TwentyClient
   registry.register(createCreateSignalNoteTool(deps));
   registry.register(createListHypothesesForExpiryTool(deps));
   registry.register(createExpireHypothesisTool(deps));
+  // Native tasks for actionable alerts + Person / Opportunity (tanda 19).
+  registry.register(createCreateCrmTaskTool(deps));
+  registry.register(createUpsertPersonTool(deps));
+  registry.register(createUpsertOpportunityTool(deps));
+  registry.register(createCreateReplyTaskTool(deps));
   return registry;
 }
 

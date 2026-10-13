@@ -185,16 +185,25 @@ describe.skipIf(!dbAvailable)('ContactFinder: drafter contact step and backfill 
     expect(String(research.summary)).toContain('Contacto elegido: maria.gomez@conservas-cantabrico.es (María Gómez Ruiz, Directora de Marketing)');
     expect(String(research.summary)).toContain('Fuente: https://conservas-cantabrico.es/nuestro-equipo/ (protección Cloudflare)');
     expect(research.sources).toContain('https://conservas-cantabrico.es/nuestro-equipo/');
-    // The note tells the commercial where the address comes from.
-    const note = fake.tables.notes.find((n) => String(n.title).startsWith('Borrador email'))!;
-    expect((note.bodyV2 as { markdown: string }).markdown).toContain('<maria.gomez@conservas-cantabrico.es> (encontrado por el sistema en https://conservas-cantabrico.es/nuestro-equipo/');
+    // Tanda 19: the draft lives in the hypothesis fields (no duplicate «Borrador email» note); the
+    // Research above tells the commercial where the address comes from.
+    expect(fake.tables.notes.find((n) => String(n.title).startsWith('Borrador email'))).toBeUndefined();
+    expect(done!.output).toMatchObject({ note_created: false, note_skipped: 'draft_in_hypothesis_fields' });
     // Order in the trace: contact first, draft after.
     const exec = await handle.db.query.agentExecutions.findFirst({ where: eq(agentExecutions.id, done!.executionId!) });
     const trace = await handle.db.query.traces.findFirst({ where: eq(traces.executionId, exec!.id) });
     const tools = (await handle.db.query.traceSteps.findMany({ where: eq(traceSteps.traceId, trace!.id), orderBy: asc(traceSteps.sequence) }))
       .filter((s) => s.type === 'TOOL')
       .map((s) => s.tool);
-    expect(tools).toEqual(['get_hypothesis', 'find_contact', 'set_hypothesis_recipient', 'create_research', 'set_hypothesis_draft', 'create_note']);
+    // Tandas 19 combinadas: upsert_person entra y la nota-borrador ya no se crea (campos OK).
+    expect(tools).toEqual(['get_hypothesis', 'find_contact', 'set_hypothesis_recipient', 'upsert_person', 'create_research', 'set_hypothesis_draft']);
+    // Tanda 19: the chosen person is a native Person linked to the company; the Research references it.
+    const maria = fake.tables.people.filter((p) => (p.emails as { primaryEmail: string }).primaryEmail === 'maria.gomez@conservas-cantabrico.es');
+    expect(maria).toEqual([expect.objectContaining({ name: { firstName: 'María', lastName: 'Gómez Ruiz' }, jobTitle: 'Directora de Marketing', companyId: cantabrico.id })]);
+    expect(research.structuredResult).toMatchObject({ chosen: { person_id: maria[0]!.id }, people: [{ email: 'maria.gomez@conservas-cantabrico.es', person_id: maria[0]!.id, outcome: 'created', chosen: true }] });
+    expect(String(research.summary)).toContain(`Persona en Twenty: ${maria[0]!.id} (creada)`);
+    // Generic / function mailboxes of the same page never become people.
+    expect(fake.tables.people.some((p) => /^(info|comercial)@/.test((p.emails as { primaryEmail: string }).primaryEmail))).toBe(false);
     expect(stub.calls).toEqual([]); // the web had the answer: no enrichment
   });
 
@@ -228,6 +237,11 @@ describe.skipIf(!dbAvailable)('ContactFinder: drafter contact step and backfill 
     expect(String(rEnrich.summary)).toContain('j.soto@conservas-ejemplo.example — prioridad 4');
     expect(String(rEnrich.summary)).toContain('confianza < 0,70: no se escribe en Email to');
     expect(String(rEnrich.query)).toContain(hEnrich.id);
+    // Phase 2 person with name + title and confidence >= 0.70 -> native Person; the 0.52 one, no.
+    const laura = fake.tables.people.find((p) => (p.emails as { primaryEmail: string }).primaryEmail === 'laura.marin@conservas-ejemplo.example');
+    expect(laura).toMatchObject({ name: { firstName: 'Laura', lastName: 'Marín' }, jobTitle: 'Responsable de Marketing', companyId: ejemplo.id });
+    expect(fake.tables.people.some((p) => (p.emails as { primaryEmail: string }).primaryEmail === 'j.soto@conservas-ejemplo.example')).toBe(false);
+    expect(rEnrich.structuredResult).toMatchObject({ chosen: { person_id: laura!.id } });
     // Nobody knows: nothing invented.
     expect(hNothing.emailTo).toBeNull();
     const rNothing = fake.tables.researches.find((r) => r.companyId === sinCorreo.id)!;

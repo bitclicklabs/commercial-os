@@ -6,11 +6,13 @@
  * still without a recipient. New validations do not need it: the EmailDrafter runs the same
  * contact step before drafting.
  *
- * Risk ceiling LOW_WRITE: it reads the web and Twenty, writes an EMPTY `emailTo` and one
- * Research per run. No mail tool exists in the registry.
+ * Risk ceiling LOW_WRITE: it reads the web and Twenty, writes an EMPTY `emailTo`, the native
+ * Persons of the published people (tanda 19, at most 3, deduped by email) and one Research per
+ * run. No mail tool exists in the registry.
  */
 import type { Db } from '../db/client.js';
 import { CONTACT_FINDER_AGENT_TOOLS, CONTACT_FINDER_IMPLEMENTATION } from '../agents/contact-finder-agent.js';
+import { MAX_PEOPLE_PER_SEARCH } from '../contact-finder/people.js';
 import { DEFAULT_USD_TO_EUR } from '../providers/gemini-pricing.js';
 import { upsertAgent, upsertTask, type AgentVersionSpec, type TaskSpec } from './prospector-seed.js';
 
@@ -26,10 +28,11 @@ export function desiredContactFinderVersion(): AgentVersionSpec {
       implementation: CONTACT_FINDER_IMPLEMENTATION,
       stage: 'CONTACT_FINDER',
       tool_policy: {
-        allow: [...CONTACT_FINDER_AGENT_TOOLS],
+        // upsert_person (tanda 19, additive): the published people become native Twenty Persons.
+        allow: [...CONTACT_FINDER_AGENT_TOOLS, 'upsert_person'],
         max_risk_level: 'LOW_WRITE',
-        max_calls_per_execution: 8,
-        max_calls_per_tool: { find_contact: 1, set_hypothesis_recipient: 1, create_research: 1 },
+        max_calls_per_execution: 8 + MAX_PEOPLE_PER_SEARCH,
+        max_calls_per_tool: { find_contact: 1, set_hypothesis_recipient: 1, create_research: 1, upsert_person: MAX_PEOPLE_PER_SEARCH },
       },
       // LLM only to break real ties between equally ranked candidates (model role triage).
       contact_finder: { enabled: true, llm_triage: true, enrich: true },

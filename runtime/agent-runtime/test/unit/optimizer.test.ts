@@ -26,7 +26,7 @@ import {
   sourcesOf,
   TERMINAL_STATUSES,
   TRANSITIONS,
-  upsertPromotionNote,
+  upsertPromotionTask,
   type FailureCase,
   type FailureCluster,
   type PromotionNoteInput,
@@ -238,13 +238,16 @@ describe('promotion note', () => {
     expect(md).not.toMatch(/C2 · Horquillas/);
     expect(md).toMatch(/0,2100 €/);
   });
-  it('is idempotent on the CRM: the same title is reused', async () => {
+  it('is a Twenty Task (TODO, due in 3 days), not a note, and idempotent: the same title is reused (any day)', async () => {
     const crm = new MemoryTwenty();
-    const a = await upsertPromotionNote(crm.client(), input);
-    const b = await upsertPromotionNote(crm.client(), input);
+    const now = new Date('2026-10-12T10:00:00Z');
+    const a = await upsertPromotionTask(crm.client(), input, { now });
+    const b = await upsertPromotionTask(crm.client(), input, { now: new Date('2026-10-20T10:00:00Z') });
     expect(a.created).toBe(true);
-    expect(b).toMatchObject({ created: false, noteId: a.noteId });
-    expect(crm.tables.notes).toHaveLength(1);
-    expect((crm.tables.notes![0]!.bodyV2 as { markdown: string }).markdown).toMatch(/Propuesta|propone/);
+    expect(b).toMatchObject({ created: false, taskId: a.taskId });
+    expect(crm.tables.tasks).toHaveLength(1);
+    expect(crm.tables.notes).toHaveLength(0);
+    expect(crm.tables.tasks![0]).toMatchObject({ title: 'Propuesta de promoción — prospector-event-exhibitors v5', status: 'TODO', dueAt: '2026-10-15T07:00:00.000Z' });
+    expect((crm.tables.tasks![0]!.bodyV2 as { markdown: string }).markdown).toMatch(/Propuesta|propone/);
   });
 });

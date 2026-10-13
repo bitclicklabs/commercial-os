@@ -364,8 +364,9 @@ function envelope(data: Record<string, unknown>): EventEnvelope {
   });
 }
 
-function ctxFor(fake: FakeTwenty, input: Record<string, unknown>, provider: StubProvider): AgentContext {
-  const v = desiredEmailDrafterVersion();
+function ctxFor(fake: FakeTwenty, input: Record<string, unknown>, provider: StubProvider, configuration?: Record<string, unknown>): AgentContext {
+  const desired = desiredEmailDrafterVersion();
+  const v = configuration ? { ...desired, configuration: { ...desired.configuration, ...configuration } } : desired;
   return {
     tenantId: 'publiexpe',
     executionId: `exec-${randomUUID().slice(0, 8)}`,
@@ -390,28 +391,28 @@ describe('EmailDrafterAgent', () => {
     // + the five catalog tools (READ, tanda 14): allowed for a future skill, never called by the drafter code.
     // + the contact step (tanda 17): find_contact (READ), set_hypothesis_recipient and create_research (LOW_WRITE).
     expect([...policy.allow].sort()).toEqual(
-      [...CATALOG_TOOL_IDS, 'create_note', 'find_company', 'get_company', 'get_hypothesis', 'set_hypothesis_draft', 'find_contact', 'set_hypothesis_recipient', 'create_research'].sort(),
+      // + upsert_person (tanda 19, LOW_WRITE): the contact step writes the published people as Persons.
+      [...CATALOG_TOOL_IDS, 'create_note', 'find_company', 'get_company', 'get_hypothesis', 'set_hypothesis_draft', 'find_contact', 'set_hypothesis_recipient', 'create_research', 'upsert_person'].sort(),
     );
     expect(policy.maxRiskLevel).toBe('LOW_WRITE');
     expect(policy.allow.some((t) => /mail|send/.test(t))).toBe(false);
   });
 
-  it('event -> one LLM call -> note on company and hypothesis, with header and unsubscribe line (model omitted it)', async () => {
+  it('event -> one LLM call -> draft in the hypothesis fields and NO duplicate note (tanda 19: the fields are the draft of record)', async () => {
     const { fake, company, hyp } = world();
     const provider = new StubProvider({ responses: [JSON.stringify(ANSWER)], usage: { inputTokens: 900, outputTokens: 250, cachedTokens: 0 }, costPerCall: 0.0012 });
     const ev = envelope({ subjectId: hyp.id, companyId: company.id });
     const { output, steps } = await new EmailDrafterAgent().run(ctxFor(fake, eventTriggeredInput(ev), provider));
-    expect(output).toMatchObject({ outcome: 'SUCCESS', status: 'ok', note_created: true, sends_email: false, company_id: company.id, cost: { llm_calls: 1 } });
+    expect(output).toMatchObject({ outcome: 'SUCCESS', status: 'ok', note_id: null, note_created: false, note_skipped: 'draft_in_hypothesis_fields', sends_email: false, company_id: company.id, cost: { llm_calls: 1 } });
     expect(provider.requests).toHaveLength(1);
-    expect(fake.tables.notes).toHaveLength(1);
-    const note = fake.tables.notes[0] as { title: string; bodyV2: { markdown: string } };
-    expect(note.title).toBe(`Borrador email — ${hyp.name as string}`);
-    expect(note.bodyV2.markdown.startsWith(`> **${DRAFT_NOTE_HEADER}**`)).toBe(true);
-    expect(note.bodyV2.markdown).toContain('baja@publiexpe.info');
+    expect(fake.tables.notes).toHaveLength(0);
+    expect(fake.tables.noteTargets).toHaveLength(0);
+    const h = fake.tables.commercialHypotheses[0] as { emailStatus: string; emailBody: string };
+    expect(h.emailStatus).toBe('DRAFT');
+    expect(h.emailBody.endsWith(unsubscribeLine(DEFAULT_SENDER))).toBe(true);
     expect((output.draft as { body: string }).body.endsWith(unsubscribeLine(DEFAULT_SENDER))).toBe(true);
-    expect(fake.tables.noteTargets.map((t) => t.targetCompanyId ?? t.targetCommercialHypothesisId)).toEqual([company.id, hyp.id]);
-    // Contact first (reserved test domain: nothing fetched, Research "Sin contacto público"), then the draft.
-    expect(steps.filter((s) => s.type === 'TOOL').map((s) => s.tool)).toEqual(['get_hypothesis', 'find_contact', 'create_research', 'set_hypothesis_draft', 'create_note']);
+    // Contact first (reserved test domain: nothing fetched, Research "Sin contacto público"), then the draft; no create_note.
+    expect(steps.filter((s) => s.type === 'TOOL').map((s) => s.tool)).toEqual(['get_hypothesis', 'find_contact', 'create_research', 'set_hypothesis_draft']);
 
     // Tanda 18: the event date and today reach the prompt, with the lead time computed by code.
     const w = world();
@@ -421,16 +422,34 @@ describe('EmailDrafterAgent', () => {
     expect(prompt.startsWith('Fecha de hoy: 2026-10-12\nAntelación hasta el evento (calculada por el sistema): unas 6 semanas (43 días).')).toBe(true);
     expect(prompt).toContain('"date": "2026-11-24"');
 
-    // Second delivery (another event, same hypothesis): same note, nothing new in Twenty.
+    // Second delivery (another event, same hypothesis): the fields already hold a draft; still no note.
     const again = await new EmailDrafterAgent().run(ctxFor(fake, eventTriggeredInput(envelope({ subjectId: hyp.id })), new StubProvider({ responses: [JSON.stringify(ANSWER)] })));
+    expect(again.output).toMatchObject({ outcome: 'SUCCESS', note_created: false, note_skipped: 'hypothesis_fields_draft_exists' });
+    expect(fake.tables.notes).toHaveLength(0);
+  });
+
+  it('send_from_twenty OFF: the note on company and hypothesis is still the draft of record, with header and unsubscribe line', async () => {
+    const { fake, company, hyp } = world();
+    const off = { send_from_twenty: { enabled: false } };
+    const ev = envelope({ subjectId: hyp.id, companyId: company.id });
+    const { output, steps } = await new EmailDrafterAgent().run(ctxFor(fake, eventTriggeredInput(ev), new StubProvider({ responses: [JSON.stringify(ANSWER)] }), off));
+    expect(output).toMatchObject({ outcome: 'SUCCESS', note_created: true, sends_email: false });
+    expect(fake.tables.notes).toHaveLength(1);
+    const note = fake.tables.notes[0] as { title: string; bodyV2: { markdown: string } };
+    expect(note.title).toBe(`Borrador email — ${hyp.name as string}`);
+    expect(note.bodyV2.markdown.startsWith(`> **${DRAFT_NOTE_HEADER}**`)).toBe(true);
+    expect(note.bodyV2.markdown).toContain('baja@publiexpe.info');
+    expect(fake.tables.noteTargets.map((t) => t.targetCompanyId ?? t.targetCommercialHypothesisId)).toEqual([company.id, hyp.id]);
+    expect(steps.filter((s) => s.type === 'TOOL').map((s) => s.tool)).toEqual(['get_hypothesis', 'find_contact', 'create_research', 'create_note']);
+    // Second delivery: same note, nothing new in Twenty.
+    const again = await new EmailDrafterAgent().run(ctxFor(fake, eventTriggeredInput(envelope({ subjectId: hyp.id })), new StubProvider({ responses: [JSON.stringify(ANSWER)] }), off));
     expect(again.output).toMatchObject({ outcome: 'SUCCESS', note_created: false });
     expect(fake.tables.notes).toHaveLength(1);
   });
-
   it('manual input { hypothesis_id } works too', async () => {
     const { fake, hyp } = world();
     const { output } = await new EmailDrafterAgent().run(ctxFor(fake, { hypothesis_id: hyp.id }, new StubProvider({ responses: [JSON.stringify(ANSWER)] })));
-    expect(output).toMatchObject({ outcome: 'SUCCESS', note_created: true, evaluation_id: null });
+    expect(output).toMatchObject({ outcome: 'SUCCESS', note_created: false, note_skipped: 'draft_in_hypothesis_fields', evaluation_id: null });
   });
 
   it('skips without calling the LLM: DISCARDED verdict, non-hypothesis subject, rejected hypothesis', async () => {
@@ -532,7 +551,7 @@ describe('evaluation.recorded + draft-email-on-validated trigger', () => {
     const provider = new StubProvider({ responses: [JSON.stringify(ANSWER)] });
     const ev = envelope({ subjectId: hyp.id, companyId: company.id, feedback: 'EDITED', score: 0.5, toStatus: 'VALIDATED' });
     const { output } = await new EmailDrafterAgent().run(ctxFor(fake, eventTriggeredInput(ev), provider));
-    expect(output).toMatchObject({ outcome: 'SUCCESS', note_created: true });
+    expect(output).toMatchObject({ outcome: 'SUCCESS', note_skipped: 'draft_in_hypothesis_fields' });
     const prompt = JSON.stringify(provider.requests[0]!.messages);
     expect(prompt).toContain('Lanyards y acreditaciones corregidos por el comercial');
     expect(prompt).toContain('Feria adelantada al 10/11');

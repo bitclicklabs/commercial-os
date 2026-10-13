@@ -24,7 +24,7 @@ apps/twenty-app/
 │   ├── objects/                    # los 4 objetos custom (defineObject)
 │   ├── fields/                     # lado ONE_TO_MANY de las relaciones en Company y Person
 │   ├── navigation-menu-items/      # carpeta "Commercial OS" + 4 entradas
-│   ├── views/                      # vistas adicionales (kanban de hipótesis, señales recientes)
+│   ├── views/                      # vistas adicionales (kanban de hipótesis y de señales, señales recientes)
 │   ├── logic-functions/            # health check (generado por el scaffold)
 │   └── __tests__/                  # tests unitarios e integración (plantilla oficial)
 └── locales/en.json
@@ -147,6 +147,8 @@ No está en el LLD. Un registro por tenant y día local (Europe/Madrid) con las 
 - Vistas adicionales, disponibles en el selector de vistas de cada objeto:
   - Hypotheses → **By status**: kanban agrupado por `status`, para la validación humana (HITL) del MVP-0.
   - Signals → **Recent signals**: tabla ordenada por `detectedAt` descendente.
+  - Signals → **Señales · Cola** (tanda 19): kanban agrupado por `status` (New, Reviewing, Qualified, Discarded, Expired), para calificar o descartar señales.
+- No se duplican las vistas que Twenty trae de serie: Opportunities → **By Stage** (pipeline) y Tasks → **By Status** (bandeja de tareas; las alertas accionables del runtime son tareas desde la tanda 19).
 - **Métricas** (en la carpeta Commercial OS): página nativa `STANDALONE_PAGE` «Agent OS · Métricas» (`src/page-layouts/`). Ocho KPI (runs y coste de hoy y de 7 días, tasa de aceptación, envíos de hoy, objetivo de warm-up de hoy, envíos de 7 días), cuatro gráficos de barras por día (envíos, objetivo de warm-up, coste y runs de los últimos 14 días) y la tabla **Últimos runs** (`agentRunSummary`, más recientes primero, sin los `[TEST]`). La tabla usa la vista `Latest agent runs (metrics widget)`, de tipo `TABLE_WIDGET`: no aparece en el selector de vistas.
 - **Agent OS (detalle técnico)**: enlace a `http://127.0.0.1:4020/dashboard` (tabla por agente y versión, latencias y trazas JSON). Solo funciona desde el equipo donde corre el runtime.
 

@@ -622,6 +622,24 @@ export function outOfWindowNote(args: {
   return { title: `⏳ Fuera de ventana (${today}): ${signalName}`, body: lines.join('\n\n') };
 }
 
+/** Days until the due date of the "⏳ Sin fecha" task (a person adds the date). */
+export const NO_DATE_TASK_DUE_DAYS = 7;
+
+/**
+ * Due date (`YYYY-MM-DD`, 09:00 Europe/Madrid) of the out-of-window task: a too-far fair is due
+ * the day it ENTERS the window (event date minus the window maximum); an undated one in 7 days
+ * (add the date); a too-close or past fair never enters it, so today (decide now).
+ */
+export function outOfWindowTaskDue(args: { status: Exclude<LeadTimeStatus, 'in_window'>; eventDate: string | null; today: string; window: LeadTimeWindow }): string {
+  const { status, eventDate, today, window } = args;
+  if (status === 'no_date' || !eventDate) return addDays(today, NO_DATE_TASK_DUE_DAYS);
+  if (status === 'too_far') {
+    const enters = addDays(eventDate, -window.maxDays);
+    return enters > today ? enters : today;
+  }
+  return today;
+}
+
 export interface QualifiedGateResult {
   /** True: the run must stop SKIPPED with `output`. */
   skip: boolean;
@@ -634,8 +652,10 @@ export interface QualifiedGateResult {
 /**
  * Lead-time gate of the trigger on qualification. Inside the window: the run goes on (the block
  * is added to its output). Outside it (too close, too far, past) or without a date: no
- * prospecting, a note on the signal explains why (`create_signal_note`), and the signal keeps
- * its QUALIFIED status (a too-far one enters the daily round-robin on its own later).
+ * prospecting, a Twenty Task on the signal explains why (`create_crm_task`, tanda 19; before, a
+ * note), and the signal keeps its QUALIFIED status (a too-far one enters the daily round-robin
+ * on its own later). A Prospector version without `create_crm_task` in its allowlist (seeded
+ * before tanda 19) falls back to the note (`create_signal_note`).
  */
 export async function qualifiedLeadTimeGate(run: ProspectorRun, input: Record<string, unknown>, opts: SignalsLeadTimeOptions = {}): Promise<QualifiedGateResult> {
   const window = opts.window ?? leadTimeWindowFromEnv();
@@ -650,8 +670,17 @@ export async function qualifiedLeadTimeGate(run: ProspectorRun, input: Record<st
     return { skip: false, output: {}, lines: [`Ventana de lead time: ${windowLabel(window)}; la feria es en ${v.days} días.`], leadTime };
   }
   const note = outOfWindowNote({ signalName: eventName ?? signalId, status: v.status, days: v.days, eventDate, today, window });
-  const noted = await run.callTool('create_signal_note', { signalId, title: note.title, bodyMarkdown: note.body });
-  const noteInfo = noted.result.status === 'ok' ? { note: noted.result.output } : { note_error: toolError(noted) };
+  // Tanda 19: a Twenty Task (TODO) on the signal instead of a note, due when the person can act.
+  const dueAt = outOfWindowTaskDue({ status: v.status, eventDate, today, window });
+  const tasked = await run.callTool('create_crm_task', { title: note.title, bodyMarkdown: note.body, dueAt, targets: { signalId } });
+  let noteInfo: Record<string, unknown>;
+  if (tasked.result.status === 'ok') noteInfo = { task: tasked.result.output };
+  else if (toolError(tasked).code === 'TOOL_NOT_ALLOWED') {
+    // A Prospector version seeded before tanda 19 (no create_crm_task in its allowlist): keep the
+    // old note so the alert is not lost until `pnpm seed` creates the new version.
+    const noted = await run.callTool('create_signal_note', { signalId, title: note.title, bodyMarkdown: note.body });
+    noteInfo = noted.result.status === 'ok' ? { note: noted.result.output, task_error: toolError(tasked) } : { note_error: toolError(noted), task_error: toolError(tasked) };
+  } else noteInfo = { task_error: toolError(tasked) };
   const reason =
     v.status === 'no_date'
       ? 'feria sin fecha: no se puede juzgar la ventana de lead time'
@@ -662,7 +691,7 @@ export async function qualifiedLeadTimeGate(run: ProspectorRun, input: Record<st
           : `feria demasiado cercana (a ${v.days} días; mínimo ${window.minDays})`;
   return {
     skip: true,
-    lines: [`Calificación fuera de ventana de lead time: ${reason}. No se ha prospectado; nota en la señal.`],
+    lines: [`Calificación fuera de ventana de lead time: ${reason}. No se ha prospectado; tarea en la señal.`],
     leadTime,
     output: {
       mode: 'scout',

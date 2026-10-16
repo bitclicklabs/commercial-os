@@ -191,3 +191,12 @@ Integración de `feat/mvp0-bootstrap` en `main` (PR #1).
 - Métricas: el 0 del 2026-10-12 era la latencia del tick de 15 min (Twenty ya tenía emailSends=1 a las 20:53; el envío fue a las 20:47); el sync además pasa a contar correctamente por día local en el backfill.
 - Límite explícito: Person/Opportunity/Task sin tenantId (compartidos por el workspace). Deuda anotada: unificar reply-task con createCrmTask.
 - Integración PM: 7 conflictos de ficheros compartidos resueltos a mano y validados por la suite (1210 tests); sin migraciones.
+
+## 2026-10-16 — Tanda 20 (cerrada)
+
+- Resolver de Dominios (diseño cerrado; implementación en curso): los catálogos de expositores suelen listar empresas por nombre sin web, y el Prospector las descartaba como `skipped_no_domain` (caso del 2026-10-16: HIP 2026 con 98 descartes, y ~110 bloqueados más en las ferias calificadas: 85 Anuga, 16 Madrid Fusión, 9 BWW). Ahora, antes de descartar, intenta resolver nombre → web oficial.
+- Procedimiento determinista y verificado: búsqueda con grounding (la del scout) y verificación obligatoria, descargando la portada candidata para corroborar la marca (title, h1 o aviso legal). Denylist dura: redes sociales, marketplaces, directorios tipo europages/kompass, prensa, wikipedia y el dominio de la propia feria. En duda o empate no se resuelve (`domain_ambiguous`): nunca se adivina.
+- Presupuesto: `DOMAIN_RESOLVER_ENABLED` (por defecto `true`) y `DOMAIN_RESOLVER_MAX_PER_RUN` (por defecto 25 búsquedas por run). Al agotarse, el resto queda `skipped_no_domain` y entra en el siguiente turno del reparto; el coste de las búsquedas se contabiliza en el run. Coste esperado: ~1-2 € para pasar la mina actual.
+- Estados nuevos en el output: `domain_resolved` (sigue a la evaluación normal), `domain_ambiguous` y `domain_not_found`, con la URL fuente de la verificación registrada para poder auditar cada dominio. La empresa solo se crea en Twenty (con su dominio y el tenant `publiexpe`) si la evaluación la considera relevante.
+- Sin cambios en el HITL: el resolver solo alimenta hipótesis `PROPOSED`; el humano sigue validando y el sistema sigue sin enviar nada. Sin migraciones; sin LLM en la resolución en v1 (solo heurísticas).
+- Docs: nuevo [resolver-dominios.md](resolver-dominios.md); las dos variables y un problema frecuente nuevo en el [runbook](runbook-local.md#variables-del-runtime); el ciclo de [prospección por señales](prospeccion-por-senales.md) y la [guía comercial](guia-comercial.md#más-hipótesis-nuevas-cuando-se-desbloquean-expositores-sin-web) lo mencionan.

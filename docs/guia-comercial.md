@@ -56,6 +56,14 @@ La tarea diaria reparte su presupuesto entre **todas las ferias que tienes en `Q
 
 > **Nota:** la tarea diaria ya no trabaja con una lista fija de expositores de demostración. Si todavía ves registros cuyo dominio termina en `.example`, son de demostración de cuando existía esa lista: ignóralos o recházalos.
 
+### Más hipótesis nuevas cuando se desbloquean expositores sin web
+
+Muchas ferias publican a sus expositores solo por nombre, sin web, y hasta ahora el sistema los descartaba porque sin web no podía evaluarlos. Ahora intenta **encontrar la web oficial de cada uno** antes de descartarlo, y la comprueba contra la propia portada de la empresa; si no está seguro, la deja sin resolver en lugar de adivinar.
+
+Qué notarás: en **Commercial OS → Hypotheses** aparecerán más hipótesis `Proposed` de las ferias que ya tenías calificadas, sobre todo las de catálogos grandes (Anuga, Madrid Fusión, BWW), repartidas en varios días porque el sistema resuelve un número limitado de webs por ejecución. **Tu trabajo no cambia**: validas, editas o rechazas como siempre. Las empresas nacen con su web ya verificada y con la fuente de la comprobación registrada, y el sistema sigue sin enviar nada por su cuenta.
+
+> **Nota:** si una empresa que esperabas no aparece, puede ser que su web no se haya podido confirmar (nombre muy genérico, varias empresas con el mismo nombre o sin web propia). Es intencionado: el sistema prefiere no proponerla a proponerte una empresa equivocada. Más detalle en [Resolver de Dominios](resolver-dominios.md).
+
 ### Lo que el sistema no hace
 
 - **No envía emails ni mensajes por su cuenta.** Un correo solo sale cuando tú revisas el borrador y pulsas el envío.

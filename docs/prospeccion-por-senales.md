@@ -4,7 +4,7 @@ Hasta la tanda 14, la tarea diaria de las 08:00 evaluaba siempre la misma lista 
 
 Este documento es técnico-operativo: describe el ciclo, cómo decide cada pieza y cómo se configura. Lo que ve y hace el comercial está en la [guía del equipo comercial](guia-comercial.md#señales-de-feria-tu-cola-de-decisión).
 
-> **Nota:** este documento describe la especificación de las tandas 15 (el ciclo) y 18 (la [ventana de lead time](#ventana-de-lead-time)). Los nombres exactos de tareas, eventos y variables son los del código y del [README del runtime](../runtime/agent-runtime/README.md); si alguno difiere, manda el README.
+> **Nota:** este documento describe la especificación de las tandas 15 (el ciclo), 18 (la [ventana de lead time](#ventana-de-lead-time)) y 20 (el [Resolver de Dominios](resolver-dominios.md)). Los nombres exactos de tareas, eventos y variables son los del código y del [README del runtime](../runtime/agent-runtime/README.md); si alguno difiere, manda el README.
 
 ## Contenido
 
@@ -91,6 +91,12 @@ El presupuesto del run es el que ya limitaba la prospección (tiempo y número d
 ### Por qué round-robin por la menos trabajada
 
 Con una sola feria calificada, el comportamiento es el de siempre sobre esa feria. Con varias, evita que la primera de la lista consuma todo el presupuesto: cada día avanza la que va más atrasada, y ninguna se queda sin atender mientras haya otra que sí lo recibe.
+
+### Expositores sin web: ya no se descartan a la primera
+
+Los catálogos de las ferias suelen listar a los expositores por nombre, sin enlace a su web. Hasta la tanda 19, un expositor sin dominio acababa como `skipped_no_domain` en el primer pase (el caso del 2026-10-16: unos 110 bloqueados entre Anuga, Madrid Fusión y BWW). Desde la tanda 20, el Prospector **intenta resolver su web oficial antes de descartarlo**: busca el nombre, comprueba que la portada candidata corrobora la marca y descarta redes sociales, marketplaces y directorios. Si hay duda o empate, no resuelve (`domain_ambiguous`); si no hay web real, `domain_not_found`.
+
+Un dominio resuelto devuelve al expositor a la evaluación normal: solo si resulta relevante se crea la empresa en Twenty, y siempre como hipótesis `PROPOSED` para que la valides tú. La resolución tiene un tope de búsquedas por run (`DOMAIN_RESOLVER_MAX_PER_RUN`, 25 por defecto): lo que no cabe queda `skipped_no_domain` y entra en el siguiente turno del reparto. Detalle, reglas y límites en [Resolver de Dominios](resolver-dominios.md).
 
 ## Prospectar al calificar: el trigger inmediato
 
@@ -238,6 +244,7 @@ Pasos:
 - **El webhook no reintenta.** Un fallo de entrega pierde el disparo inmediato (el reparto de las 08:00 lo cubre al día siguiente).
 - **Los umbrales del lead time son una regla comercial, no una medida.** Los 45 y 210 días recogen el criterio del equipo (muestras, pruebas de marcaje y producción); si cambia, se ajustan por variable de entorno ([las dos variables](#las-dos-variables)).
 - **El envejecimiento y la ventana dependen de la fecha.** Una señal sin fecha, o con una fecha errónea, no caduca cuando debería.
+- **Los expositores sin web se resuelven con un tope por run.** Un catálogo con muchos expositores sin dominio se desbloquea en varios runs, no en uno ([detalle](resolver-dominios.md#qué-pasa-al-agotar-el-presupuesto)).
 - **El presupuesto diario es finito.** Con muchas ferias calificadas a la vez, cada una avanza más despacio: es el efecto del round-robin.
 
 ## Qué no hace
@@ -254,4 +261,5 @@ Pasos:
 - [README del runtime: webhook de Twenty](../runtime/agent-runtime/README.md#webhook-de-twenty): firma, cabeceras y `register:webhook`.
 - [Integración de eventos con n8n](n8n-integracion.md): el evento `signal.qualified` también puede consumirse desde n8n.
 - [Ciclo de mejora de skills](ciclo-mejora-skills.md#caso-canónico-el-rechazo-de-los-6-borradores-del-2026-10-12): cómo el rechazo de los primeros borradores se convirtió en la regla de lead time.
+- [Resolver de Dominios](resolver-dominios.md): cómo se resuelve la web de los expositores que el catálogo lista sin ella.
 - [Roadmap](ROADMAP.md): lugar de las tandas 15 y 18 en el plan.

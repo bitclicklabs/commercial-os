@@ -146,6 +146,8 @@ Requisitos: Node.js 22, pnpm, y los contenedores `pxos-postgres` (127.0.0.1:5440
 | `ENRICH_API_KEY` | vacío | API key de Hunter.io. Sin ella, `hunter` vuelve al stub |
 | `ENRICH_MAX_LOOKUPS_PER_DAY` | `25` | Tope diario (día local de Madrid) de consultas de enriquecimiento por proceso, contador en memoria |
 | `ENRICH_COST_PER_LOOKUP_EUR` | `0.10` | Coste que se anota por consulta real (el stub cuesta 0) |
+| `DOMAIN_RESOLVER_ENABLED` | `true` | Resolución nombre → web oficial del Prospector (tanda 20) para los expositores relevantes sin dominio: una búsqueda con grounding y verificación de la portada o el aviso legal. `false` la apaga (vuelve `skipped_no_domain` como antes). Consulta [Resolución de dominios](#resolución-de-dominios-por-nombre) |
+| `DOMAIN_RESOLVER_MAX_PER_RUN` | `25` | Búsquedas de web por ejecución del Prospector (0 a 50). Al agotarse, el resto queda `skipped_no_domain` en el orden del catálogo y entra en el siguiente turno |
 | `TRACE_RETENTION_DAYS` | `90` | Antigüedad (días) por defecto de `pnpm traces:archive`. Consulta [Retención de trazas](#retención-de-trazas-sin-pérdida-pnpm-tracesarchive) |
 | `TRACE_ARCHIVE_DIR` | `./data/trace-archive` | Directorio del archivo de trazas (`<tenant>/<YYYY-MM>.jsonl.gz`); en Docker, un volumen persistente |
 | `TRACE_ARCHIVE_ENABLED` | `false` | `true` activa el archivado programado de trazas en el rol `scheduler`. Consulta [Archivado programado](#archivado-programado) |
@@ -1694,6 +1696,22 @@ Flujo:
 
 El catálogo JavaScript de Gastrónoma lista nombres, sector y país, pero no la web de cada expositor: está en su ficha (`/exhibitors/{id}`, etiqueta "Website"). Hasta la tanda 4 el scout solo leía la primera página (20 de 91) y los relevantes acababan como `skipped_no_domain`. La tanda 5 leía 3 páginas (60) y 20 fichas. Ahora lee el catálogo entero (o su API JSON) y abre las fichas de los relevantes mientras quede tiempo.
 
+#### Resolución de dominios por nombre
+
+Desde la tanda 20, un expositor **relevante** (decisión del LLM con confianza suficiente) que sigue sin dominio después de su ficha pasa por el resolvedor (`src/agents/domain-resolver.ts`) antes de descartarse. También en el modo directo. Es determinista: no hay ninguna llamada LLM que decida.
+
+1. Si en Twenty ya hay una empresa del tenant con ese nombre exacto, se reutiliza (`existing_company`, sin búsqueda).
+1. Una búsqueda con grounding de Google (la misma del scout; su coste entra en el del run). El nombre llega al modelo dentro de un bloque `DATOS_NO_CONFIABLES`, con el lugar de la feria si se conoce.
+1. Candidatos: los dominios de las **fuentes de grounding**. Una fuente que solo trae la URL de redirección (`vertexaisearch.cloud.google.com/grounding-api-redirect/…`) se resuelve a su dominio final antes de nada: por el título del fragmento si es un dominio, o con `fetch_url`, que sigue los 3xx. Si la búsqueda se ejecutó pero no devolvió ninguna fuente utilizable (Gemini a veces ejecuta la herramienta y no manda `groundingMetadata`; caso real de Madrid Fusión, 2026-10-16), la web que propone el modelo también es candidata (`origin: search_unsourced`), con la misma verificación. Si el modelo no llegó a buscar, su propuesta nunca se usa. A todos se les quita la denylist del código (redes sociales, marketplaces, directorios como europages o kompass, prensa, Wikipedia, calendarios de ferias, plataformas genéricas) ni los sitios de la propia feria.
+1. Verificación: el dominio tiene que llevar el nombre normalizado de la empresa (sin mayúsculas, tildes, signos ni formas societarias como S.L., S.A. o GmbH) y su portada, o su aviso legal enlazado desde ella, tiene que corroborar la marca en el título o el texto. Todas las lecturas pasan por `fetch_url` (guardas SSRF); `render_url` solo si la portada es un esqueleto JavaScript. Máximo 3 candidatos y 4 lecturas por búsqueda.
+1. Un único dominio verificado: `domain_resolution.status = domain_resolved`, con `source_url` (la portada o el aviso legal que corroboró la marca) y el expositor sigue el pipeline normal; la hipótesis cita esa URL. Dos o más, o un nombre que coincide sin que la web lo corrobore: `domain_ambiguous`. Nada: `domain_not_found`. En los dos casos `domain_resolution.domain_candidates` lista lo visto para decidir a mano, y no es un veto: la siguiente ejecución lo vuelve a intentar.
+
+Presupuesto: `DOMAIN_RESOLVER_MAX_PER_RUN` búsquedas por ejecución (25 por defecto), en el orden del catálogo. Al agotarse, el resto queda `skipped_no_domain` y entra en el siguiente turno. Contadores: `domain_lookups`, `domains_resolved` (ficha + búsqueda; el desglose en `domains_resolved_by_profile` y `domains_resolved_by_search`), `domain_ambiguous`, `domain_not_found`, y el bloque `domain_resolver` de la salida. `DOMAIN_RESOLVER_ENABLED=false` devuelve el comportamiento anterior.
+
+#### Catálogo de una edición anterior
+
+Si la ejecución trae la fecha de la señal (`event_date`: reparto diario y disparo por calificación) y la lista de expositores leída es de una edición ya celebrada, la feria termina por código **antes** de evaluar expositores: `status = catalog_previous_edition`, con `previous_edition` (fecha o año del catálogo, fecha de la señal y la prueba), `exhibitors_skipped_previous_edition` y una razón que cita la URL del catálogo. No escribe nada en Twenty ni marca la ejecución `PARTIAL`: el catálogo nuevo se peinará cuando se publique. La prueba es la fecha de la edición que la extracción ya lee en las páginas de las que salen los expositores (todas pasadas y al menos 90 días antes de la señal) o, sin fecha en la página (lista de la API JSON), los años de la URL o el título de esas páginas, todos anteriores al de la señal. Contadores: `events_previous_edition` y `exhibitors_skipped_previous_edition`. Caso real: HIP 2027 (2026-10-16), donde expohip.com servía los 98 expositores de HIP 2026.
+
 #### Atajo de la API JSON
 
 Muchos catálogos SPA descargan la lista completa como JSON y la paginan en el navegador. En Feria Valencia es `POST https://apps.feriavalencia.com/api/puisearch` (sesión anónima de la propia app): devuelve los 91 expositores de Gastrónoma en una respuesta de 52 KB con `name`, `exhibitor` (id), `country`, `province` y `sectorsname`, sin web.
@@ -1802,7 +1820,7 @@ Cada llamada al LLM es un paso `MODEL` con `model` (el modelo real que respondi�
 | Clave de `configuration` | Por defecto | Uso |
 |---|---|---|
 | `implementation` | — | `prospector` |
-| `tool_policy` | — | `find_company`, `upsert_company`, `create_signal`, `create_hypothesis`, `create_agent_run_summary`, `fetch_url` (máximo 230 llamadas: páginas, PDF, redirecciones, fichas y comprobación de dominios) y `render_url` (máximo 115: catálogo y fichas), `list_event_signals` (máximo 2) y `expire_signal` (máximo 50; modo señales); techo `LOW_WRITE`; 1 500 llamadas por ejecución (el límite real de una ejecución scout es su presupuesto de tiempo) |
+| `tool_policy` | — | `find_company`, `upsert_company`, `create_signal`, `create_hypothesis`, `create_agent_run_summary`, `fetch_url` (máximo 430 llamadas: páginas, PDF, redirecciones, fichas, comprobación de dominios y resolución de dominios por nombre) y `render_url` (máximo 115: catálogo y fichas), `list_event_signals` (máximo 2) y `expire_signal` (máximo 50; modo señales); techo `LOW_WRITE`; 1 500 llamadas por ejecución (el límite real de una ejecución scout es su presupuesto de tiempo) |
 | `min_confidence` | `0.5` | Umbral para escribir en Twenty |
 | `usd_to_eur` | `0.86` | Conversión del coste para Twenty |
 | `model_options` | `{}` | `thinking_level` (Gemini 3.x), `thinking_budget` (Gemini 2.5), `temperature` |
@@ -1850,6 +1868,8 @@ La versión de la tanda 5 sube `max_exhibitors_per_event` a 60, añade `max_cata
 La versión de la tanda 6 (catálogo completo) sube `max_catalog_pages` a 10, `max_profile_lookups` a 60 y `max_exhibitors_per_event` a 100, añade `time_budget_ms` (20 min), `profile_concurrency` (2) y `capture_json` (`true`), amplía la tool policy (`fetch_url` 230, `render_url` 115, 1 500 llamadas) y sube la skill `event-source-discovery` a v4. Para el atajo JSON y más de 5 páginas necesita pxos-renderer 0.2 (imagen reconstruida desde esta rama); con uno anterior, el scout lee 5 páginas y extrae el texto.
 
 > **Importante:** ejecuta el seed después de desplegar este código. Un runtime anterior trataría la entrada de `weekly-event-scouting` como entrada directa no válida y cerraría la ejecución del lunes como `FAILED`.
+
+La versión de la tanda 20 sube `fetch_url` a 430 llamadas y el techo a 3 012 por ejecución para el resolvedor de dominios (50 búsquedas como máximo × 4 lecturas, más un `find_company` por expositor relevante sin dominio). Ejecuta `pnpm seed` después de desplegar: la versión anterior queda `DEPRECATED`. Sin el seed, el resolvedor funciona con los límites antiguos y, si se agotan, las lecturas devuelven `TOOL_CALL_LIMIT` y el expositor queda dudoso o sin dominio.
 
 La versión MVP-1 del seed deja `system_prompt` vacío y referencia las skills de la BD por nombre y sin versión (`[{"name": "prospector-event-exhibitors"}, {"name": "event-source-discovery"}, {"name": "exhibitor-list-extraction"}]`; en el EmailDrafter, `[{"name": "email-first-contact-draft"}]`): al ejecutar el seed se crea una versión nueva de los dos agentes. El texto que recibe el modelo no cambia.
 

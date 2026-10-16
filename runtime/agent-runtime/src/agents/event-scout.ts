@@ -31,8 +31,11 @@
  *     its website taken ("Web/Website" label, only external link or only www. domain),
  *     refusing the fair's own sites and social networks (kept as metadata); the domain
  *     must resolve to public addresses (fetch_url of its home page, same guards);
+ *  e2) tanda 20: the relevant exhibitors still without a domain, in catalog order, go to the
+ *     domain resolver (`domain-resolver.ts`: grounded search + verification of the home page /
+ *     legal notice, up to DOMAIN_RESOLVER_MAX_PER_RUN searches per run);
  *  f) the existing pipeline writes company -> signal -> hypothesis (no domain after the
- *     lookup: `skipped_no_domain`, as before).
+ *     lookup and the resolver: `skipped_no_domain`, `domain_ambiguous` or `domain_not_found`).
  * Time budget (`scout.time_budget_ms`, input `scout_time_budget_ms`; 20 min by default):
  * checked before every page, render, extraction, evaluation and profile. When it runs out
  * the run stops cleanly where it is: what was evaluated is still written (writes are not
@@ -98,7 +101,8 @@ import { PROSPECTOR_SKILL_ID, PROSPECTOR_SYSTEM_PROMPT } from './prospector-prom
 import { useSkill } from '../skills/resolver.js';
 import { useKnowledge } from '../knowledge/resolver.js';
 import { hostOf, normalizeUrl, scrubUnknownUrls, SourceLedger } from './source-ledger.js';
-import { classifyLeadTime, leadTimeWindowFromEnv, madridToday, windowInfo, type LeadTimeWindow } from '../signals/lead-time.js';
+import { classifyLeadTime, daysUntil, leadTimeWindowFromEnv, madridToday, windowInfo, type LeadTimeWindow } from '../signals/lead-time.js';
+import { domainResolverConfigFromEnv, DomainResolverSession, resolveExhibitorDomain, type DomainResolverConfig, type ResolverPageRead } from './domain-resolver.js';
 
 // ---------------------------------------------------------------------------
 // Input
@@ -358,6 +362,50 @@ function decodeURIComponentSafe(s: string): string {
   }
 }
 
+/** Minimum gap between the catalog's edition date and the signal's date to call it a previous edition. */
+export const PREVIOUS_EDITION_MIN_GAP_DAYS = 90;
+
+export type PreviousEditionCheck =
+  | { previous: false }
+  | { previous: true; catalogDate: string | null; catalogYear: number | null; evidence: 'page_date' | 'url_year'; reason: string };
+
+/**
+ * Is the exhibitor catalog that of an edition already held, while the signal is for the next
+ * one? Pure, no LLM (tanda 20; knowledge entry `catalogo-edicion-anterior`):
+ * - `page_date`: the edition dates read in the pages that brought the exhibitors (the extraction
+ *   already asks for them) are ALL past (before `today`) and at least 90 days before the signal;
+ * - `url_year` (only without page dates, e.g. the JSON API list): the years written in those
+ *   pages' URL / title are all before the signal's year and not after today's year.
+ */
+export function catalogPreviousEdition(a: { signalDate: string; today: string; catalogDates: readonly string[]; pages: ReadonlyArray<{ url: string; title: string | null }> }): PreviousEditionCheck {
+  const signalYear = Number(a.signalDate.slice(0, 4));
+  if (!Number.isFinite(signalYear) || a.signalDate < a.today) return { previous: false };
+  const dates = a.catalogDates.filter((d) => isoDate(d) !== null);
+  if (dates.length > 0) {
+    const old = dates.every((d) => d < a.today && (daysUntil(a.signalDate, d) ?? 0) >= PREVIOUS_EDITION_MIN_GAP_DAYS);
+    if (!old) return { previous: false };
+    const latest = [...dates].sort().at(-1)!;
+    return {
+      previous: true,
+      catalogDate: latest,
+      catalogYear: Number(latest.slice(0, 4)),
+      evidence: 'page_date',
+      reason: `el catálogo de expositores es de la edición del ${latest}, ya celebrada, y la señal es de la edición del ${a.signalDate}: el catálogo de la edición objetivo aún no está publicado; no se evalúan expositores`,
+    };
+  }
+  const years = a.pages.flatMap((p) => [...`${decodeURIComponentSafe(p.url)} ${p.title ?? ''}`.matchAll(/(?<!\d)(20\d{2})(?!\d)/g)].map((m) => Number(m[1])));
+  if (years.length === 0) return { previous: false };
+  const maxYear = Math.max(...years);
+  if (maxYear >= signalYear || maxYear > Number(a.today.slice(0, 4))) return { previous: false };
+  return {
+    previous: true,
+    catalogDate: null,
+    catalogYear: maxYear,
+    evidence: 'url_year',
+    reason: `el catálogo de expositores es de la edición ${maxYear} (según su dirección o título) y la señal es de la edición del ${a.signalDate}: el catálogo de la edición objetivo aún no está publicado; no se evalúan expositores`,
+  };
+}
+
 export function addMonths(day: string, months: number): string {
   const d = new Date(`${day}T00:00:00Z`);
   d.setUTCMonth(d.getUTCMonth() + months);
@@ -470,7 +518,11 @@ export interface ScoutEventResult {
   exhibitors_url: string | null;
   source_url: string | null;
   /** `time_budget_exhausted`: the time budget ran out before any exhibitor was read (nothing written). */
-  status: 'exhibitors_processed' | 'event_signal' | 'event_signal_error' | 'unreachable' | 'time_budget_exhausted';
+  status: 'exhibitors_processed' | 'event_signal' | 'event_signal_error' | 'unreachable' | 'time_budget_exhausted' | 'catalog_previous_edition';
+  /** `catalog_previous_edition` (tanda 20): what proved the catalog is of a past edition. Nothing is evaluated nor written. */
+  previous_edition?: { catalog_date: string | null; catalog_year: number | null; signal_date: string; evidence: 'page_date' | 'url_year' };
+  /** Exhibitors read from that catalog and not evaluated. */
+  exhibitors_skipped_previous_edition?: number;
   verification: 'operator_url' | 'grounding_domain' | 'fetch_corroboration';
   reason?: string;
   pages: PageAttempt[];
@@ -521,6 +573,8 @@ export interface ScoutRunOptions {
    * Default: LEADTIME_MIN_DAYS / LEADTIME_MAX_DAYS.
    */
   leadTime?: LeadTimeWindow;
+  /** Domain resolver (tanda 20); default DOMAIN_RESOLVER_ENABLED / DOMAIN_RESOLVER_MAX_PER_RUN. */
+  domainResolver?: DomainResolverConfig;
 }
 
 export async function runScout(run: ProspectorRun, rawInput: Record<string, unknown>, today: string, opts: ScoutRunOptions = {}): Promise<ScoutRunOutput> {
@@ -768,6 +822,25 @@ export async function runScout(run: ProspectorRun, rawInput: Record<string, unkn
     return { info: { url: profile.finalUrl, ...urlSource, status: 'domain_resolved', via, domain: w.domain, domain_source: w.source ?? 'unknown', ...social }, domain: w.domain, profileUrl: profile.finalUrl };
   };
 
+  // ------------------------------------------------- domain resolver (tanda 20)
+  /** fetch_url for the resolver: own text cap, every page registered in the ledger (citable as the verification source). */
+  const resolverFetch = async (url: string, maxChars: number): Promise<ResolverPageRead> => {
+    const out = await run.callTool('fetch_url', { url, maxChars });
+    if (out.result.status !== 'ok') return { ok: false, code: toolError(out).code };
+    const page = out.result.output as FetchUrlOutput;
+    ledger.addVisited(url, page.finalUrl, ...page.redirects);
+    return { ok: true, page: { finalUrl: page.finalUrl, title: page.title, text: page.text, links: page.links, jsAppLikely: page.js_app_likely } };
+  };
+  const domainResolver = new DomainResolverSession(run, opts.domainResolver ?? domainResolverConfigFromEnv(), {
+    fetch: resolverFetch,
+    // Same criterion as the contact-finder: rendered only when the home HTML is a JavaScript shell (profile-like render, no retry).
+    render: async (url) => {
+      const r = await renderPage(url, { profile: true });
+      return r.ok ? { ok: true, page: { finalUrl: r.page.finalUrl, title: r.page.title, text: r.page.text, links: r.page.links, jsAppLikely: false } } : { ok: false, code: r.code };
+    },
+    outOfTime: () => outOfTime('domains'),
+  });
+
   // ------------------------------------------------------------- a) candidates
   const candidates: Candidate[] = [];
   const discarded: Array<{ name: string; reason: string; url?: string | null; days?: number | null }> = [];
@@ -909,6 +982,8 @@ export async function runScout(run: ProspectorRun, rawInput: Record<string, unkn
     let corroborationFailed = false;
     let renderBlocked: string | null = null;
     const triedPdfs = new Set<string>();
+    /** Edition dates read in the pages that brought exhibitors (previous-edition check, tanda 20). */
+    const catalogDates: string[] = [];
     /** JSON shortcut: profile URLs built from the catalog's link template (folded name -> URL). */
     let inferredProfiles = new Map<string, string>();
 
@@ -986,6 +1061,8 @@ export async function runScout(run: ProspectorRun, rawInput: Record<string, unkn
       ev.location = x.event.city ?? ev.location;
       const added = addVerified(page, attempt, x.exhibitors);
       if (added > 0 && page.content_kind !== 'pdf') ev.catalog_source ??= 'pages';
+      const editionDate = added > 0 ? isoDate(x.event.start_date) : null;
+      if (editionDate) catalogDates.push(editionDate);
       return { added, next: pickPageLink(x.exhibitors_page_url, page), kind: x.page_kind };
     };
 
@@ -1236,6 +1313,22 @@ export async function runScout(run: ProspectorRun, rawInput: Record<string, unkn
       continue;
     }
 
+    // Tanda 20: catalog of an edition already held while the signal is for the next one (HIP 2027 served
+    // HIP 2026's 98 exhibitors): stop here, by code, before paying one evaluation per exhibitor.
+    const previous =
+      batches.length > 0 && input.event_date
+        ? catalogPreviousEdition({ signalDate: input.event_date, today: leadTimeToday, catalogDates, pages: batches.map((b) => ({ url: b.page.finalUrl, title: b.page.title })) })
+        : null;
+    if (previous?.previous) {
+      ev.status = 'catalog_previous_edition';
+      ev.source_url = batches[0]!.page.finalUrl;
+      ev.date = input.event_date ?? ev.date;
+      ev.previous_edition = { catalog_date: previous.catalogDate, catalog_year: previous.catalogYear, signal_date: input.event_date!, evidence: previous.evidence };
+      ev.exhibitors_skipped_previous_edition = batches.reduce((n, b) => n + b.exhibitors.length, 0);
+      ev.reason = scrubUnknownUrls(`${previous.reason} (${ev.source_url})`, ledger);
+      continue;
+    }
+
     if (batches.length > 0) {
       ev.status = 'exhibitors_processed';
       ev.source_url = batches[0]!.page.finalUrl;
@@ -1279,6 +1372,22 @@ export async function runScout(run: ProspectorRun, rawInput: Record<string, unkn
         }
       };
       await Promise.all(Array.from({ length: Math.min(cfg.profileConcurrency, work.length) }, worker));
+      // 2b. Tanda 20: website by grounded search + verification for the writable exhibitors still without a
+      //     domain, in CATALOG order (not by confidence): when DOMAIN_RESOLVER_MAX_PER_RUN runs out, the rest
+      //     stay skipped_no_domain in that order and come back in a later run.
+      if (domainResolver.active) {
+        const place = ev.location ?? input.region ?? null;
+        const queue = items.filter((it) => it.decided.writable && !normalizeDomain(it.exhibitor.domain));
+        const resolveWorker = async (): Promise<void> => {
+          for (let it = queue.shift(); it; it = queue.shift()) {
+            run.ctx.signal.throwIfAborted();
+            const r = await resolveExhibitorDomain(domainResolver, it.exhibitor, it.decided.result, { eventName: it.event.name, place, fairDomains });
+            it.exhibitor = r.exhibitor;
+            it.evidence.push(...r.evidence);
+          }
+        };
+        await Promise.all(Array.from({ length: Math.min(cfg.profileConcurrency, queue.length) }, resolveWorker));
+      }
       // 3. CRM writes of everything evaluated (same pipeline as before; still no domain: skipped_no_domain).
       //    Not cut by the time budget: the evaluations are already paid for.
       for (const it of items) {
@@ -1379,13 +1488,19 @@ export async function runScout(run: ProspectorRun, rawInput: Record<string, unkn
     catalog_pages: events.reduce((n, e) => n + e.catalog_pages, 0),
     json_lists_used: jsonListsUsed,
     extraction_calls: extractionCalls,
-    exhibitors_read: events.reduce((n, e) => n + e.results.length + e.exhibitors_not_evaluated, 0),
+    exhibitors_read: events.reduce((n, e) => n + e.results.length + e.exhibitors_not_evaluated + (e.exhibitors_skipped_previous_edition ?? 0), 0),
+    // Tanda 20: fairs whose catalog is of a past edition (cut by code, no evaluation).
+    events_previous_edition: events.filter((e) => e.status === 'catalog_previous_edition').length,
+    exhibitors_skipped_previous_edition: events.reduce((n, e) => n + (e.exhibitors_skipped_previous_edition ?? 0), 0),
     exhibitors_not_evaluated: exhibitorsNotEvaluated,
     profile_lookups: profileLookups,
     profile_renders: profileRenders,
     profiles_skipped_time_budget: profilesSkippedForTime,
     domain_checks: domainChecks,
-    domains_resolved: domainsResolved,
+    // Profile + search (tanda 20); the split is in domains_resolved_by_profile / domains_resolved_by_search.
+    domains_resolved: domainsResolved + domainResolver.resolved,
+    domains_resolved_by_profile: domainsResolved,
+    domain_lookups: domainResolver.lookups,
     llm_calls: run.llmCalls,
     grounding_calls: run.groundingCalls,
     grounding_queries: searchInfo?.queries.length ?? 0,
@@ -1430,6 +1545,11 @@ export async function runScout(run: ProspectorRun, rawInput: Record<string, unkn
       ? [`Ventana de lead time: ${leadTime.minDays}–${leadTime.maxDays} días (hoy ${leadTimeToday}, Europe/Madrid); ferias propuestas fuera de ventana (sin señal): ${discardedOutOfWindow}.`]
       : []),
     `Páginas de catálogo leídas: ${counters.catalog_pages}${jsonListsUsed > 0 ? ` (lista tomada de la API JSON del catálogo en ${jsonListsUsed} feria(s))` : ''}; expositores leídos: ${counters.exhibitors_read}, evaluados: ${counters.evaluated}${exhibitorsNotEvaluated > 0 ? `, sin evaluar por tiempo: ${exhibitorsNotEvaluated}` : ''}; fichas de expositor abiertas: ${profileLookups} (de ${maxProfileLookups} posibles${profilesSkippedForTime > 0 ? `, ${profilesSkippedForTime} sin abrir por tiempo` : ''}), dominios obtenidos de la ficha: ${domainsResolved}.`,
+    ...(domainResolver.active
+      ? [
+          `Búsqueda de webs por nombre: ${domainResolver.lookups} búsquedas (máximo ${domainResolver.cfg.maxPerRun} por ejecución${domainResolver.skippedBudget > 0 ? `, ${domainResolver.skippedBudget} pendientes para el siguiente turno` : ''}); webs verificadas ${domainResolver.resolved}, dudosas ${domainResolver.ambiguous}, no encontradas ${domainResolver.notFound}${domainResolver.existing > 0 ? `, ya en el CRM ${domainResolver.existing}` : ''}.`,
+        ]
+      : []),
     `Totales: relevantes ${counters.relevant}, hipótesis nuevas ${counters.hypotheses_created}, ya existentes ${counters.hypotheses_existing}, research ${counters.research_created}${counters.research_errors > 0 ? ` (${counters.research_errors} sin registrar)` : ''}, descartados ${counters.discarded_irrelevant + counters.discarded_low_confidence}, sin dominio verificado ${counters.skipped_no_domain}, errores ${errors}.`,
     `Coste del modelo: ${formatEur(run.costEur())} (${run.llmCalls} llamadas, ${run.groundingCalls} con búsqueda: ${formatEur(groundingEur)} de búsqueda; ${run.usage.inputTokens} tokens de entrada y ${run.usage.outputTokens} de salida). Tiempo: ${minutes(counters.elapsed_ms)} min de ${minutes(timeBudgetMs)} min de presupuesto.`,
     ...(partialReasons.length > 0 ? [`Motivos: ${partialReasons.join(' | ')}`] : []),
@@ -1439,6 +1559,8 @@ export async function runScout(run: ProspectorRun, rawInput: Record<string, unkn
           ? `${e.results.length} expositores evaluados desde ${e.source_url}${e.catalog_source === 'json_api' ? ' (lista de la API JSON del catálogo)' : ''}`
           : e.status === 'event_signal'
             ? `señal de evento creada (${e.reason})`
+            : e.status === 'catalog_previous_edition'
+              ? `catálogo de una edición anterior: ${e.exhibitors_skipped_previous_edition ?? 0} expositores sin evaluar (${e.reason})`
             : `sin registrar (${e.reason ?? e.error?.code ?? 'error'})`
       }.`,
       ...e.results.map(resultLine),
@@ -1470,6 +1592,7 @@ export async function runScout(run: ProspectorRun, rawInput: Record<string, unkn
         domain_checks: domainChecks,
         max_catalog_pages: maxCatalogPages,
       },
+      domain_resolver: domainResolver.summary(),
       time_budget: { budget_ms: timeBudgetMs, elapsed_ms: counters.elapsed_ms, exhausted: cut !== null, ...(cut ? { phase: cut.phase, exhausted_at_ms: cut.elapsed_ms } : {}) },
       errors_by_status: ERROR_STATUSES.reduce<Record<string, number>>((acc, s) => ({ ...acc, [s]: results.filter((r) => r.status === s).length }), {}),
     },
@@ -1483,4 +1606,5 @@ const TIME_PHASE_ES: Record<string, string> = {
   extraction: 'extracción de expositores',
   evaluation: 'evaluación de expositores',
   profiles: 'fichas de expositor',
+  domains: 'búsqueda de webs',
 };

@@ -15,6 +15,7 @@ import { buildExhibitorResearch, type ExhibitorResearchArgs } from './exhibitor-
 import { scrubUnknownUrls, type SourceLedger } from './source-ledger.js';
 import { priceHintText, recommendedProductLabel, type RecommendedProduct } from '../integrations/catalog/index.js';
 import { pickCatalogProducts, type CatalogPickSummary } from './prospector-catalog.js';
+import { resolveExhibitorDomain, type DomainResolution, type DomainResolverSession, type ResolveContext } from './domain-resolver.js';
 
 // ---------------------------------------------------------------------------
 // Input (direct mode)
@@ -499,6 +500,10 @@ export type ExhibitorStatus =
   | 'discarded_irrelevant'
   | 'discarded_low_confidence'
   | 'skipped_no_domain'
+  /** Tanda 20: the domain resolver searched and found several candidates or could not prove one (listed in `domain_resolution`). */
+  | 'domain_ambiguous'
+  /** Tanda 20: the domain resolver searched and found no website carrying the company name. */
+  | 'domain_not_found'
   | 'skipped_unverified_source'
   | 'llm_error'
   | 'llm_invalid'
@@ -511,6 +516,8 @@ export const STATUS_LABELS_ES: Record<ExhibitorStatus, string> = {
   discarded_irrelevant: 'descartado (sin encaje)',
   discarded_low_confidence: 'descartado (confianza baja)',
   skipped_no_domain: 'omitido (sin dominio verificado)',
+  domain_ambiguous: 'omitido (web dudosa: varias candidatas o sin verificar)',
+  domain_not_found: 'omitido (web no encontrada en la búsqueda)',
   skipped_unverified_source: 'omitido (fuente no verificada)',
   llm_error: 'error del modelo',
   llm_invalid: 'respuesta del modelo no válida',
@@ -559,6 +566,12 @@ export interface ExhibitorResult {
     /** Social network pages found in the profile: metadata, never used as the company domain. */
     social?: Record<string, string>;
   };
+  /**
+   * Tanda 20: name -> website resolution (grounded search + verification of the home page /
+   * legal notice), only for writable exhibitors without a domain. `status: 'domain_resolved'`
+   * means the exhibitor went on with `domain` and `source_url` is the page that proved it.
+   */
+  domain_resolution?: DomainResolution;
 }
 
 export interface EvaluateOptions {
@@ -569,12 +582,26 @@ export interface EvaluateOptions {
    * source of the ledger and free text is scrubbed of URLs foreign to it.
    */
   ledger?: SourceLedger;
+  /** Direct mode (tanda 20): resolver of the website of writable exhibitors without a domain. */
+  domainResolver?: { session: DomainResolverSession; context: ResolveContext };
 }
 
-/** classification (LLM) -> company -> signal -> hypothesis, for one exhibitor. Never throws on business errors. */
+/** classification (LLM) -> [domain resolution] -> company -> signal -> hypothesis, for one exhibitor. Never throws on business errors. */
 export async function evaluateExhibitor(run: ProspectorRun, event: ProspectorEvent, exhibitor: ExhibitorInput, opts: EvaluateOptions): Promise<ExhibitorResult> {
   const decided = await decideExhibitor(run, event, exhibitor, opts);
-  return decided.writable ? writeExhibitor(run, event, exhibitor, decided, opts) : decided.result;
+  if (!decided.writable) return decided.result;
+  const resolver = opts.domainResolver;
+  if (resolver?.session.active && !normalizeDomain(exhibitor.domain)) {
+    const r = await resolveExhibitorDomain(resolver.session, exhibitor, decided.result, resolver.context);
+    return writeExhibitor(run, event, r.exhibitor, decided, { ...opts, extraEvidence: r.evidence });
+  }
+  return writeExhibitor(run, event, exhibitor, decided, opts);
+}
+
+/** Final status of a writable exhibitor left without a domain: what the resolver said, else `skipped_no_domain`. */
+function noDomainStatus(result: ExhibitorResult): 'skipped_no_domain' | 'domain_ambiguous' | 'domain_not_found' {
+  const s = result.domain_resolution?.status;
+  return s === 'domain_ambiguous' || s === 'domain_not_found' ? s : 'skipped_no_domain';
 }
 
 /** Outcome of the LLM step of one exhibitor. `writable`: relevant with enough confidence (the CRM steps come next). */
@@ -661,7 +688,7 @@ export async function writeExhibitor(
     const companies = (found.result.output as { companies: Array<{ id: string; name: string; domain: string | null }> }).companies;
     const exact = companies.filter((c) => c.name.trim().toLowerCase() === exhibitor.name.trim().toLowerCase());
     // Skill rule: never create a company without a verified domain.
-    if (exact.length !== 1) return Object.assign(result, { status: 'skipped_no_domain' as const });
+    if (exact.length !== 1) return Object.assign(result, { status: noDomainStatus(result) });
     companyId = exact[0]!.id;
     companyName = exact[0]!.name;
     companyDomain = exact[0]!.domain;
@@ -671,7 +698,7 @@ export async function writeExhibitor(
 
   // 4. Signal: the event.
   const sourceUrl = event.source_url ?? (companyDomain ? `https://${companyDomain}` : null);
-  if (!sourceUrl) return Object.assign(result, { status: 'skipped_no_domain' as const });
+  if (!sourceUrl) return Object.assign(result, { status: noDomainStatus(result) });
   const sig = await run.callTool('create_signal', {
     companyId,
     title: clean(`${event.name} — ${companyName}`).slice(0, 255),
@@ -700,7 +727,15 @@ export async function writeExhibitor(
     signalId,
     companyName,
     companyDomain,
-    domainSource: domain ? (result.profile?.status === 'domain_resolved' && result.profile.domain === domain ? 'profile' : 'input') : companyDomain ? 'crm' : null,
+    domainSource: domain
+      ? result.profile?.status === 'domain_resolved' && result.profile.domain === domain
+        ? 'profile'
+        : result.domain_resolution?.status === 'domain_resolved' && result.domain_resolution.domain === domain
+          ? 'search'
+          : 'input'
+      : companyDomain
+        ? 'crm'
+        : null,
     signalTitle: clean(`${event.name} — ${companyName}`).slice(0, 255),
     ledger,
     extraSources: extraEvidence.map((e) => e.sourceUrl).filter((u): u is string => typeof u === 'string'),
@@ -786,6 +821,7 @@ async function writeResearch(
     event.source_url,
     ...w.extraSources,
     result.profile?.url ?? undefined,
+    result.domain_resolution?.status === 'domain_resolved' ? (result.domain_resolution.source_url ?? undefined) : undefined,
     w.companyDomain && (!ledger || result.profile?.status === 'domain_resolved') ? `https://${w.companyDomain}/` : undefined,
   ].filter((u): u is string => typeof u === 'string' && u.length > 0);
   const sources = ledger ? candidates.filter((u) => ledger.isKnownSource(u)) : candidates.slice(0, event.source_url ? 1 : 2);
@@ -839,6 +875,9 @@ export function exhibitorCounters(results: ExhibitorResult[]) {
     discarded_irrelevant: count('discarded_irrelevant'),
     discarded_low_confidence: count('discarded_low_confidence'),
     skipped_no_domain: count('skipped_no_domain'),
+    domain_ambiguous: count('domain_ambiguous'),
+    domain_not_found: count('domain_not_found'),
+    domains_resolved_by_search: results.filter((r) => r.domain_resolution?.status === 'domain_resolved').length,
     companies_created: results.filter((r) => r.company_created === true).length,
     research_created: results.filter((r) => r.research_created === true).length,
     research_existing: results.filter((r) => r.research_created === false).length,

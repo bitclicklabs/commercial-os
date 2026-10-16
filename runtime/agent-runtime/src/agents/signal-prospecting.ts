@@ -47,6 +47,7 @@ import {
   type LeadTimeWindow,
 } from '../signals/lead-time.js';
 import { runScout, type ScoutRunOutput } from './event-scout.js';
+import type { DomainResolverConfig } from './domain-resolver.js';
 import { issues, SCOUT_TIME_BUDGET_CAP_MS, toolError, type ProspectorRun, type RunOutcome } from './prospector-core.js';
 
 // ---------------------------------------------------------------------------
@@ -319,6 +320,8 @@ export interface SignalsLeadTimeOptions {
   window?: LeadTimeWindow;
   /** Madrid day the window is measured from; default the run start in Europe/Madrid. */
   today?: string;
+  /** Domain resolver of the directed scout (tanda 20); default DOMAIN_RESOLVER_* env. */
+  domainResolver?: DomainResolverConfig;
 }
 
 /** Shortest list of names for a summary line. */
@@ -544,7 +547,7 @@ export async function runSignals(
     max_events: 1,
     ...(input.scout_time_budget_ms !== undefined ? { scout_time_budget_ms: input.scout_time_budget_ms } : {}),
   };
-  const scout: ScoutRunOutput = await runScout(run, scoutInput, today, { leadTime: window });
+  const scout: ScoutRunOutput = await runScout(run, scoutInput, today, { leadTime: window, ...(leadTime.domainResolver ? { domainResolver: leadTime.domainResolver } : {}) });
   const outcome: RunOutcome = scout.outcome === 'SUCCESS' && (expireErrors.length > 0 || hyp.errors > 0) ? 'PARTIAL' : scout.outcome;
 
   return {

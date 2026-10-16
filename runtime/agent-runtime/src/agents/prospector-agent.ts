@@ -19,6 +19,8 @@ import { useKnowledge } from '../knowledge/resolver.js';
 import type { Db } from '../db/client.js';
 import { DrizzleSignalHistory, isQualifiedTriggerInput, isSignalsInput, qualifiedLeadTimeGate, runSignals, type SignalHistory } from './signal-prospecting.js';
 import { leadTimeWindowFromEnv, type LeadTimeWindow } from '../signals/lead-time.js';
+import { domainResolverConfigFromEnv, DomainResolverSession, toolFetcher, type DomainResolverConfig } from './domain-resolver.js';
+import { hostOf } from './source-ledger.js';
 
 export interface ProspectorAgentDeps {
   /** Runtime database: round-robin memory of the signals mode (`agent_executions`). */
@@ -27,6 +29,8 @@ export interface ProspectorAgentDeps {
   history?: SignalHistory;
   /** Lead-time window (tanda 18); default LEADTIME_MIN_DAYS / LEADTIME_MAX_DAYS (45 / 210). */
   leadTime?: LeadTimeWindow;
+  /** Domain resolver (tanda 20); default DOMAIN_RESOLVER_ENABLED / DOMAIN_RESOLVER_MAX_PER_RUN. */
+  domainResolver?: DomainResolverConfig;
 }
 
 export {
@@ -98,8 +102,9 @@ export class ProspectorAgent implements AgentImplementation {
     let taskName: string;
 
     const leadTime = this.deps.leadTime ?? leadTimeWindowFromEnv();
+    const domainResolver = this.deps.domainResolver ?? domainResolverConfigFromEnv();
     if (isSignalsInput(ctx.input)) {
-      const signals = await runSignals(run, ctx.input, today, this.deps.history ?? (this.deps.db ? new DrizzleSignalHistory(this.deps.db) : null), { window: leadTime });
+      const signals = await runSignals(run, ctx.input, today, this.deps.history ?? (this.deps.db ? new DrizzleSignalHistory(this.deps.db) : null), { window: leadTime, domainResolver });
       if (signals.outcome === 'SKIPPED') return this.finishSkipped(run, signals.output);
       ({ outcome, lines, body } = { outcome: signals.outcome, lines: signals.lines, body: signals.output });
       taskName = cfg.taskName;
@@ -107,13 +112,13 @@ export class ProspectorAgent implements AgentImplementation {
       // Trigger on qualification: outside the lead-time window the run stops SKIPPED with a note on the signal.
       const gate = isQualifiedTriggerInput(ctx.input) ? await qualifiedLeadTimeGate(run, ctx.input, { window: leadTime }) : null;
       if (gate?.skip) return this.finishSkipped(run, gate.output);
-      const scout = await runScout(run, ctx.input, today, { leadTime });
+      const scout = await runScout(run, ctx.input, today, { leadTime, domainResolver });
       ({ outcome, lines } = scout);
       lines = [...(gate?.lines ?? []), ...lines];
       body = gate ? { ...scout.output, lead_time: gate.leadTime } : scout.output;
       taskName = cfg.scout.taskName;
     } else {
-      ({ outcome, lines, body } = await this.runDirect(run, today));
+      ({ outcome, lines, body } = await this.runDirect(run, today, domainResolver));
       taskName = cfg.taskName;
     }
 
@@ -140,7 +145,7 @@ export class ProspectorAgent implements AgentImplementation {
     return { output, steps: run.steps, usage: run.usage, modelCost, toolCost: run.toolCost };
   }
 
-  private async runDirect(run: ProspectorRun, today: string): Promise<{ outcome: RunOutcome; lines: string[]; body: Record<string, unknown> }> {
+  private async runDirect(run: ProspectorRun, today: string, domainResolverCfg: DomainResolverConfig): Promise<{ outcome: RunOutcome; lines: string[]; body: Record<string, unknown> }> {
     const { ctx, cfg } = run;
     const parsedInput = ProspectorInput.safeParse(ctx.input);
     run.steps.push({
@@ -169,21 +174,27 @@ export class ProspectorAgent implements AgentImplementation {
 
     const { event, exhibitors } = parsedInput.data;
     const system = useKnowledge(ctx, useSkill(ctx, PROSPECTOR_SKILL_ID, ctx.version.systemPrompt.trim().length > 0 ? ctx.version.systemPrompt : PROSPECTOR_SYSTEM_PROMPT));
+    // Tanda 20: website of the writable exhibitors without a domain (grounded search + verification), in list order.
+    const session = new DomainResolverSession(run, domainResolverCfg, { fetch: toolFetcher(run) });
+    const eventHost = event.source_url ? hostOf(event.source_url) : null;
+    const domainResolver = { session, context: { eventName: event.name, place: event.location ?? null, fairDomains: eventHost ? [eventHost] : [] } };
     const results: ExhibitorResult[] = [];
     for (const exhibitor of exhibitors) {
       ctx.signal.throwIfAborted();
-      results.push(await evaluateExhibitor(run, event, exhibitor, { today, system }));
+      results.push(await evaluateExhibitor(run, event, exhibitor, { today, system, domainResolver }));
     }
 
-    const counters = { ...exhibitorCounters(results), llm_calls: run.llmCalls };
+    const base = exhibitorCounters(results);
+    const counters = { ...base, domains_resolved: base.domains_resolved_by_search, domain_lookups: session.lookups, llm_calls: run.llmCalls };
     const outcome: RunOutcome = counters.errors === 0 ? 'SUCCESS' : counters.errors === counters.exhibitors ? 'FAILED' : 'PARTIAL';
     const lines = [
       `Evento: ${event.name}${event.date ? ` (${event.date})` : ''}.`,
       `Expositores: ${counters.exhibitors} · evaluados: ${counters.evaluated} · relevantes: ${counters.relevant} · hipótesis nuevas: ${counters.hypotheses_created} · ya existentes: ${counters.hypotheses_existing} · research: ${counters.research_created}${counters.research_errors > 0 ? ` (${counters.research_errors} sin registrar)` : ''}.`,
-      `Descartados: ${counters.discarded_irrelevant} sin encaje, ${counters.discarded_low_confidence} por confianza < ${cfg.minConfidence}, ${counters.skipped_no_domain} sin dominio verificado. Errores: ${counters.errors}.`,
+      `Descartados: ${counters.discarded_irrelevant} sin encaje, ${counters.discarded_low_confidence} por confianza < ${cfg.minConfidence}, ${counters.skipped_no_domain} sin dominio verificado${session.active ? `, ${counters.domain_ambiguous} con web dudosa, ${counters.domain_not_found} con web no encontrada` : ''}. Errores: ${counters.errors}.`,
+      ...(session.active ? [`Búsqueda de webs: ${session.lookups} búsquedas (máximo ${session.cfg.maxPerRun} por ejecución), ${counters.domains_resolved} webs verificadas.`] : []),
       `Coste del modelo: ${formatEur(run.costEur())} (${run.llmCalls} llamadas, ${run.usage.inputTokens} tokens de entrada y ${run.usage.outputTokens} de salida).`,
       ...results.map(resultLine),
     ];
-    return { outcome, lines, body: { mode: 'direct', event, counters, results } };
+    return { outcome, lines, body: { mode: 'direct', event, counters, results, domain_resolver: session.summary() } };
   }
 }

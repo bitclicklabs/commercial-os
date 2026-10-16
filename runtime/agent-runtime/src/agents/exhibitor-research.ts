@@ -32,7 +32,7 @@ export interface ExhibitorResearchArgs {
   companyName: string;
   companyDomain: string | null;
   /** Where the domain came from (`input`, the profile lookup, an existing CRM company). */
-  domainSource: 'input' | 'profile' | 'crm' | null;
+  domainSource: 'input' | 'profile' | 'search' | 'crm' | null;
   profile?: ExhibitorResult['profile'];
   /** URLs really visited (scout: known sources of the ledger), event page first. */
   sources: string[];
@@ -83,7 +83,9 @@ export function buildExhibitorResearch(a: ExhibitorResearchArgs): ExhibitorResea
     const origin =
       a.domainSource === 'profile'
         ? 'tomada de su ficha en el catálogo de la feria'
-        : a.domainSource === 'input'
+        : a.domainSource === 'search'
+          ? 'localizada por búsqueda web y verificada en su propia web'
+          : a.domainSource === 'input'
           ? a.mode === 'scout'
             ? 'indicada en el catálogo'
             : 'indicada en la lista de expositores'

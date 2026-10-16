@@ -24,6 +24,11 @@ if (existsSync(envPath)) {
 // "not configured" instead of trying to reach http://pxos-renderer:3000.
 process.env.RENDERER_URL ??= 'off';
 
+// Hermetic Prospector tests (tanda 20): the suites script the StubProvider answers one by one, so
+// the domain resolver (one extra grounded call per relevant exhibitor without a domain) is off
+// unless a test turns it on (ProspectorAgentDeps.domainResolver / DOMAIN_RESOLVER_ENABLED).
+process.env.DOMAIN_RESOLVER_ENABLED ??= 'false';
+
 // Shared-database guard (incident 2026-10-12): no test may connect to the database named
 // `agentos` (the DATABASE_URL default) unless ALLOW_SHARED_TEST_DB=1. Installed after the .env
 // load on purpose: a DATABASE_URL coming from .env is checked too. See helpers/shared-db-guard.ts.

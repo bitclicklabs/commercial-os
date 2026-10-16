@@ -74,7 +74,7 @@ El resolver es **determinista** en esta versión: usa heurísticas, no un modelo
 ### Paso 1: buscar candidatos
 
 1. Lanza una **búsqueda con grounding de Google Search**, la misma que usa el scout de ferias (y con la misma contabilidad de coste), con el nombre del expositor —que viaja envuelto como contenido no confiable— y el país o la localidad que traiga la feria (o la región del scout) para acotar los homónimos.
-1. De las **fuentes** de los resultados extrae los **dominios candidatos** (máximo 3; la web, no la página concreta). Lo que el modelo escribe solo sirve para ordenarlos, nunca para inventar un dominio.
+1. De las **fuentes** de los resultados extrae los **dominios candidatos** (máximo 3; la web, no la página concreta). Las fuentes que llegan como redirecciones de Google se resuelven a su dominio final antes de nada. Si la búsqueda se ejecutó pero no trajo fuentes (un fallo conocido e intermitente del proveedor), la web que propone el modelo entra como candidato `search_unsourced`: sin privilegios, sometida a la misma verificación que cualquier otro.
 1. Descarta los candidatos de la [denylist](#denylist-dominios-que-nunca-se-aceptan). Cada búsqueda tiene además un tope de 4 lecturas de página para verificar.
 
 ### Paso 2: verificar la portada
@@ -150,7 +150,9 @@ El output del run añade tres estados por expositor, además de los que ya exist
 | `domain_ambiguous` | Hay varios candidatos válidos o la verificación no es concluyente (estado final) | No se escribe nada en Twenty |
 | `domain_not_found` | Ningún candidato sobrevive a la denylist y a la verificación (estado final) | No se escribe nada en Twenty |
 
-Ninguno de los tres cuenta como error ni convierte el run en `PARTIAL`. Cada expositor resuelto lleva en `domain_resolution` la **URL fuente de la verificación** (de dónde se corroboró la marca), de modo que cualquier dominio resuelto es auditable; en los casos sin resolver, `domain_resolution.domain_candidates` lista los candidatos encontrados. Si la empresa ya existía en Twenty con ese nombre, el caso se marca `existing_company` y no gasta búsqueda.
+Además, a nivel de **feria** existe `catalog_previous_edition`: si las fechas del catálogo (o los años de su URL o título) demuestran que pertenece a una edición ya celebrada frente a la fecha de la señal, la feria se corta por código **antes** del bucle por expositor — una sola extracción de coste, cero evaluaciones, contadores `events_previous_edition` y `exhibitors_skipped_previous_edition`, y la razón citando la URL del catálogo en el resumen del run. Es la versión por código de la regla de knowledge «catálogo de edición anterior» (nacida del caso HIP del 2026-10-16). Solo actúa cuando el run trae la fecha de la señal (reparto diario y disparo por calificación); el scout semanal no corta nada.
+
+Ninguno de los estados cuenta como error ni convierte el run en `PARTIAL`. Cada expositor resuelto lleva en `domain_resolution` la **URL fuente de la verificación** (de dónde se corroboró la marca), de modo que cualquier dominio resuelto es auditable; en los casos sin resolver, `domain_resolution.domain_candidates` lista los candidatos encontrados. Si la empresa ya existía en Twenty con ese nombre, el caso se marca `existing_company` y no gasta búsqueda.
 
 El resumen del run (el campo **Result** del *Agent run* en Twenty) incluye los contadores de los tres estados, además del número de búsquedas gastadas frente al tope.
 

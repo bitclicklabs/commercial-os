@@ -476,7 +476,8 @@ describe('seed: weekly-event-scouting', () => {
     const cfg = desiredProspectorVersion().configuration as { scout: Record<string, unknown>; tool_policy: { max_calls_per_tool: Record<string, number> } };
     expect(cfg.scout).toMatchObject({ task_name: 'weekly-event-scouting', max_events: 3 });
     expect(cfg.tool_policy.max_calls_per_tool).toEqual({
-      fetch_url: 230,
+      // + domain resolver (tanda 20): 50 searches x 4 page reads.
+      fetch_url: 430,
       render_url: 115,
       // Catalog tools (tanda 14): only used when the skill asks for real products.
       catalog_search_products: 300,

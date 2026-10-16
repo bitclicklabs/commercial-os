@@ -10,8 +10,11 @@
  *  2. One grounded search (the same Google Search grounding as the scout, its cost counted in
  *     the run). The query carries the name and, when known, the fair's place. The exhibitor
  *     name is web data: it reaches the model only inside a DATOS_NO_CONFIABLES block.
- *  3. Candidates = domains of the GROUNDING SOURCES only (never a domain the model wrote and
- *     the search did not return), minus a hard denylist (social networks, marketplaces,
+ *  3. Candidates = domains of the GROUNDING SOURCES (redirect URIs resolved to their final
+ *     domain first: by the chunk title when it is a domain, else by fetch_url, which follows the
+ *     3xx). Only when the search ran but returned no usable source (Gemini sometimes runs the
+ *     tool and sends no groundingMetadata) the site the model proposed is a candidate too
+ *     (`search_unsourced`), like the scout's `verify_unsourced_by_fetch`; minus a hard denylist (social networks, marketplaces,
  *     directories, press, encyclopedias, fair aggregators, generic platforms) and the fair's
  *     own sites.
  *  4. Deterministic verification, no LLM judgement: a candidate is accepted only when its
@@ -182,7 +185,16 @@ export function domainMatchesName(domain: string, name: string): boolean {
   const all = tokens.join('');
   if (label === all || label === cd) return true;
   if (cd.length >= 4 && label.includes(cd)) return true;
-  return label.length >= 4 && all.includes(label) && label.length >= 0.6 * cd.length && distinctive.some((t) => label.includes(t));
+  if (label.length >= 4 && all.includes(label) && label.length >= 0.6 * cd.length && distinctive.some((t) => label.includes(t))) return true;
+  // Leading words spelled out + initials of the rest: `1001saboresrm.es` for «1001 Sabores, Región de Murcia».
+  for (let k = distinctive.length - 1; k >= 1; k--) {
+    const head = distinctive.slice(0, k).join('');
+    if (head.length < 6 || !label.startsWith(head)) continue;
+    const rest = label.slice(head.length);
+    const initials = distinctive.slice(k).map((t) => t[0]).join('');
+    if (rest.length >= 1 && rest === initials) return true;
+  }
+  return false;
 }
 
 /**
@@ -221,8 +233,13 @@ export function legalNoticeLink(links: ReadonlyArray<{ url: string; text: string
 
 export interface DomainCandidate {
   domain: string;
-  /** Where the candidate comes from: a grounding source (domain reported) or a grounding redirect resolved by fetch. */
-  origin: 'grounding' | 'redirect';
+  /**
+   * Where the candidate comes from: a grounding source (domain reported), a grounding redirect
+   * resolved by fetch, or (`search_unsourced`) the site the model proposed after a search that
+   * ran but returned no usable sources (observed 2026-10-16 with Gemini: toolCalls without
+   * groundingMetadata). The same verification applies to all of them.
+   */
+  origin: 'grounding' | 'redirect' | 'search_unsourced';
   status:
     | 'verified'
     | 'name_not_in_domain'
@@ -252,7 +269,8 @@ export function groundingCandidates(
   const withoutDomain: GroundingSource[] = [];
   for (const s of sources) {
     const d = normalizeDomain(s.domain);
-    if (!d) {
+    // A redirect host (vertexaisearch...) is not the page's domain: resolved by fetch instead.
+    if (!d || isGroundingRedirectHost(d)) {
       withoutDomain.push(s);
       continue;
     }
@@ -270,6 +288,12 @@ export function groundingCandidates(
     }
   }
   return { domains, excluded: [...excluded], withoutDomain };
+}
+
+/** Hosts of the grounding redirects (`vertexaisearch.cloud.google.com/grounding-api-redirect/...`). */
+export function isGroundingRedirectHost(host: string): boolean {
+  const h = host.toLowerCase().replace(/^www\./, '');
+  return h === 'vertexaisearch.cloud.google.com' || h.endsWith('.vertexaisearch.cloud.google.com');
 }
 
 export type ResolutionStatus =
@@ -459,18 +483,34 @@ export class DomainResolverSession {
     let pages = 0;
     const origins = new Map<string, DomainCandidate['origin']>(cands.domains.map((d) => [d, 'grounding']));
     const excluded = new Set(cands.excluded);
-    if (!cands.domains.some((d) => domainMatchesName(d, name))) {
+    const anyMatch = () => [...origins.keys()].some((d) => domainMatchesName(d, name));
+    if (!anyMatch()) {
       for (const s of cands.withoutDomain) {
         if (pages >= DOMAIN_RESOLVER_PAGES_PER_LOOKUP - 1) break;
-        pages += 1;
-        const r = await this.deps.fetch(s.uri, 2_000);
-        const host = r.ok ? hostOf(r.page.finalUrl) : null;
-        if (!host) continue;
+        // The title of a redirect chunk is often the page's domain: no fetch needed then.
+        const titled = s.title && /^[a-z0-9.-]+\.[a-z]{2,}$/i.test(s.title.trim()) ? normalizeDomain(s.title) : null;
+        let host: string | null = titled && !isGroundingRedirectHost(titled) ? titled : null;
+        if (!host) {
+          // fetch_url follows the 3xx of the redirect: its final URL is the real page.
+          pages += 1;
+          const r = await this.deps.fetch(s.uri, 2_000);
+          host = r.ok ? hostOf(r.page.finalUrl) : null;
+        }
+        if (!host || isGroundingRedirectHost(host)) continue;
         const reg = registrableDomain(host);
         if (isDeniedForResolver(host, ctx.fairDomains)) excluded.add(reg);
         else if (!origins.has(reg)) origins.set(reg, 'redirect');
         if (domainMatchesName(reg, name)) break;
       }
+    }
+    // The search ran but brought no usable source (Gemini 2026-10-16: toolCalls without groundingMetadata):
+    // the model's proposal is a candidate too, under the same verification (name in the domain + brand on
+    // its own page, fetched through the SSRF guard), as the scout does for fairs (verify_unsourced_by_fetch).
+    const searched = grounding.queries.length > 0 || (grounding.diagnostics?.toolCalls ?? 0) > 0;
+    const proposedReg = proposed && !isGroundingRedirectHost(proposed) ? registrableDomain(proposed) : null;
+    if (searched && proposedReg && !anyMatch() && !origins.has(proposedReg)) {
+      if (isDeniedForResolver(proposedReg, ctx.fairDomains)) excluded.add(proposedReg);
+      else origins.set(proposedReg, 'search_unsourced');
     }
 
     // 4. Verification of the name-matching candidates, best first.

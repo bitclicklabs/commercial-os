@@ -101,7 +101,7 @@ import { PROSPECTOR_SKILL_ID, PROSPECTOR_SYSTEM_PROMPT } from './prospector-prom
 import { useSkill } from '../skills/resolver.js';
 import { useKnowledge } from '../knowledge/resolver.js';
 import { hostOf, normalizeUrl, scrubUnknownUrls, SourceLedger } from './source-ledger.js';
-import { classifyLeadTime, leadTimeWindowFromEnv, madridToday, windowInfo, type LeadTimeWindow } from '../signals/lead-time.js';
+import { classifyLeadTime, daysUntil, leadTimeWindowFromEnv, madridToday, windowInfo, type LeadTimeWindow } from '../signals/lead-time.js';
 import { domainResolverConfigFromEnv, DomainResolverSession, resolveExhibitorDomain, type DomainResolverConfig, type ResolverPageRead } from './domain-resolver.js';
 
 // ---------------------------------------------------------------------------
@@ -362,6 +362,50 @@ function decodeURIComponentSafe(s: string): string {
   }
 }
 
+/** Minimum gap between the catalog's edition date and the signal's date to call it a previous edition. */
+export const PREVIOUS_EDITION_MIN_GAP_DAYS = 90;
+
+export type PreviousEditionCheck =
+  | { previous: false }
+  | { previous: true; catalogDate: string | null; catalogYear: number | null; evidence: 'page_date' | 'url_year'; reason: string };
+
+/**
+ * Is the exhibitor catalog that of an edition already held, while the signal is for the next
+ * one? Pure, no LLM (tanda 20; knowledge entry `catalogo-edicion-anterior`):
+ * - `page_date`: the edition dates read in the pages that brought the exhibitors (the extraction
+ *   already asks for them) are ALL past (before `today`) and at least 90 days before the signal;
+ * - `url_year` (only without page dates, e.g. the JSON API list): the years written in those
+ *   pages' URL / title are all before the signal's year and not after today's year.
+ */
+export function catalogPreviousEdition(a: { signalDate: string; today: string; catalogDates: readonly string[]; pages: ReadonlyArray<{ url: string; title: string | null }> }): PreviousEditionCheck {
+  const signalYear = Number(a.signalDate.slice(0, 4));
+  if (!Number.isFinite(signalYear) || a.signalDate < a.today) return { previous: false };
+  const dates = a.catalogDates.filter((d) => isoDate(d) !== null);
+  if (dates.length > 0) {
+    const old = dates.every((d) => d < a.today && (daysUntil(a.signalDate, d) ?? 0) >= PREVIOUS_EDITION_MIN_GAP_DAYS);
+    if (!old) return { previous: false };
+    const latest = [...dates].sort().at(-1)!;
+    return {
+      previous: true,
+      catalogDate: latest,
+      catalogYear: Number(latest.slice(0, 4)),
+      evidence: 'page_date',
+      reason: `el catálogo de expositores es de la edición del ${latest}, ya celebrada, y la señal es de la edición del ${a.signalDate}: el catálogo de la edición objetivo aún no está publicado; no se evalúan expositores`,
+    };
+  }
+  const years = a.pages.flatMap((p) => [...`${decodeURIComponentSafe(p.url)} ${p.title ?? ''}`.matchAll(/(?<!\d)(20\d{2})(?!\d)/g)].map((m) => Number(m[1])));
+  if (years.length === 0) return { previous: false };
+  const maxYear = Math.max(...years);
+  if (maxYear >= signalYear || maxYear > Number(a.today.slice(0, 4))) return { previous: false };
+  return {
+    previous: true,
+    catalogDate: null,
+    catalogYear: maxYear,
+    evidence: 'url_year',
+    reason: `el catálogo de expositores es de la edición ${maxYear} (según su dirección o título) y la señal es de la edición del ${a.signalDate}: el catálogo de la edición objetivo aún no está publicado; no se evalúan expositores`,
+  };
+}
+
 export function addMonths(day: string, months: number): string {
   const d = new Date(`${day}T00:00:00Z`);
   d.setUTCMonth(d.getUTCMonth() + months);
@@ -474,7 +518,11 @@ export interface ScoutEventResult {
   exhibitors_url: string | null;
   source_url: string | null;
   /** `time_budget_exhausted`: the time budget ran out before any exhibitor was read (nothing written). */
-  status: 'exhibitors_processed' | 'event_signal' | 'event_signal_error' | 'unreachable' | 'time_budget_exhausted';
+  status: 'exhibitors_processed' | 'event_signal' | 'event_signal_error' | 'unreachable' | 'time_budget_exhausted' | 'catalog_previous_edition';
+  /** `catalog_previous_edition` (tanda 20): what proved the catalog is of a past edition. Nothing is evaluated nor written. */
+  previous_edition?: { catalog_date: string | null; catalog_year: number | null; signal_date: string; evidence: 'page_date' | 'url_year' };
+  /** Exhibitors read from that catalog and not evaluated. */
+  exhibitors_skipped_previous_edition?: number;
   verification: 'operator_url' | 'grounding_domain' | 'fetch_corroboration';
   reason?: string;
   pages: PageAttempt[];
@@ -934,6 +982,8 @@ export async function runScout(run: ProspectorRun, rawInput: Record<string, unkn
     let corroborationFailed = false;
     let renderBlocked: string | null = null;
     const triedPdfs = new Set<string>();
+    /** Edition dates read in the pages that brought exhibitors (previous-edition check, tanda 20). */
+    const catalogDates: string[] = [];
     /** JSON shortcut: profile URLs built from the catalog's link template (folded name -> URL). */
     let inferredProfiles = new Map<string, string>();
 
@@ -1011,6 +1061,8 @@ export async function runScout(run: ProspectorRun, rawInput: Record<string, unkn
       ev.location = x.event.city ?? ev.location;
       const added = addVerified(page, attempt, x.exhibitors);
       if (added > 0 && page.content_kind !== 'pdf') ev.catalog_source ??= 'pages';
+      const editionDate = added > 0 ? isoDate(x.event.start_date) : null;
+      if (editionDate) catalogDates.push(editionDate);
       return { added, next: pickPageLink(x.exhibitors_page_url, page), kind: x.page_kind };
     };
 
@@ -1261,6 +1313,22 @@ export async function runScout(run: ProspectorRun, rawInput: Record<string, unkn
       continue;
     }
 
+    // Tanda 20: catalog of an edition already held while the signal is for the next one (HIP 2027 served
+    // HIP 2026's 98 exhibitors): stop here, by code, before paying one evaluation per exhibitor.
+    const previous =
+      batches.length > 0 && input.event_date
+        ? catalogPreviousEdition({ signalDate: input.event_date, today: leadTimeToday, catalogDates, pages: batches.map((b) => ({ url: b.page.finalUrl, title: b.page.title })) })
+        : null;
+    if (previous?.previous) {
+      ev.status = 'catalog_previous_edition';
+      ev.source_url = batches[0]!.page.finalUrl;
+      ev.date = input.event_date ?? ev.date;
+      ev.previous_edition = { catalog_date: previous.catalogDate, catalog_year: previous.catalogYear, signal_date: input.event_date!, evidence: previous.evidence };
+      ev.exhibitors_skipped_previous_edition = batches.reduce((n, b) => n + b.exhibitors.length, 0);
+      ev.reason = scrubUnknownUrls(`${previous.reason} (${ev.source_url})`, ledger);
+      continue;
+    }
+
     if (batches.length > 0) {
       ev.status = 'exhibitors_processed';
       ev.source_url = batches[0]!.page.finalUrl;
@@ -1420,7 +1488,10 @@ export async function runScout(run: ProspectorRun, rawInput: Record<string, unkn
     catalog_pages: events.reduce((n, e) => n + e.catalog_pages, 0),
     json_lists_used: jsonListsUsed,
     extraction_calls: extractionCalls,
-    exhibitors_read: events.reduce((n, e) => n + e.results.length + e.exhibitors_not_evaluated, 0),
+    exhibitors_read: events.reduce((n, e) => n + e.results.length + e.exhibitors_not_evaluated + (e.exhibitors_skipped_previous_edition ?? 0), 0),
+    // Tanda 20: fairs whose catalog is of a past edition (cut by code, no evaluation).
+    events_previous_edition: events.filter((e) => e.status === 'catalog_previous_edition').length,
+    exhibitors_skipped_previous_edition: events.reduce((n, e) => n + (e.exhibitors_skipped_previous_edition ?? 0), 0),
     exhibitors_not_evaluated: exhibitorsNotEvaluated,
     profile_lookups: profileLookups,
     profile_renders: profileRenders,
@@ -1488,6 +1559,8 @@ export async function runScout(run: ProspectorRun, rawInput: Record<string, unkn
           ? `${e.results.length} expositores evaluados desde ${e.source_url}${e.catalog_source === 'json_api' ? ' (lista de la API JSON del catálogo)' : ''}`
           : e.status === 'event_signal'
             ? `señal de evento creada (${e.reason})`
+            : e.status === 'catalog_previous_edition'
+              ? `catálogo de una edición anterior: ${e.exhibitors_skipped_previous_edition ?? 0} expositores sin evaluar (${e.reason})`
             : `sin registrar (${e.reason ?? e.error?.code ?? 'error'})`
       }.`,
       ...e.results.map(resultLine),

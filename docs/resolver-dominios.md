@@ -1,10 +1,10 @@
 # Resolver de dominios: de un nombre de expositor a su web oficial
 
-Los catálogos de expositores de las ferias suelen listar las empresas por nombre, sin enlace a su web. Hasta la tanda 19, el Prospector descartaba a cualquier expositor sin dominio (`skipped_no_domain`) porque sin web no puede evaluar a la empresa, ni crearla en Twenty, ni buscarle después un contacto. Desde la tanda 20, **antes de descartar, intenta resolver el nombre a su web oficial** con un procedimiento determinista y verificado.
+Los catálogos de expositores de las ferias suelen listar las empresas por nombre, sin enlace a su web. Hasta la tanda 19, el Prospector descartaba a cualquier expositor sin dominio (`skipped_no_domain`) porque sin web no puede crear la empresa en Twenty ni buscarle después un contacto. Desde la tanda 20, **antes de descartar a un expositor que la evaluación ya consideró relevante, intenta resolver su nombre a su web oficial** con un procedimiento determinista y verificado.
 
 Este documento es técnico-operativo: describe qué resuelve, cómo decide, qué variables lo gobiernan y qué límites tiene. Lo que ve y hace el comercial está en la [guía del equipo comercial](guia-comercial.md#más-hipótesis-nuevas-cuando-se-desbloquean-expositores-sin-web).
 
-> **Nota:** este documento describe el **diseño cerrado** de la tanda 20 (Resolver de Dominios). Los nombres exactos de variables, estados y campos del output son los del código y del [README del runtime](../runtime/agent-runtime/README.md); si alguno difiere, manda el README. Los puntos marcados `[POR CONFIRMAR]` dependen de la implementación final de la tanda.
+> **Nota:** este documento está **reconciliado con la implementación** de la tanda 20. Los nombres exactos de variables, estados y campos del output son los del código y del [README del runtime](../runtime/agent-runtime/README.md); si alguno difiere, manda el README.
 
 ## Contenido
 
@@ -45,25 +45,27 @@ El resolver se intercala en el pipeline por expositor, justo en el punto donde a
 
 ```mermaid
 flowchart TD
-    exp["Expositor del catálogo"] --> dom{"¿Tiene dominio<br/>(catálogo o ficha)?"}
-    dom -->|"sí"| eval["Evaluación normal<br/>(relevancia, confianza)"]
-    dom -->|"no"| cfg{"¿Resolver activo y<br/>queda presupuesto?"}
+    exp["Expositor del catálogo"] --> eval{"Evaluación normal<br/>(relevancia, confianza)"}
+    eval -->|"no relevante"| desc["Descartado<br/>(no se crea nada en Twenty)"]
+    eval -->|"relevante, CON dominio<br/>(catálogo o ficha)"| tw["Empresa con su dominio en Twenty<br/>+ señal de expositor<br/>+ hipótesis PROPOSED"]
+    eval -->|"relevante, SIN dominio"| ya{"¿Empresa ya en Twenty<br/>con ese nombre?"}
+    ya -->|"sí"| tw
+    ya -->|"no"| cfg{"¿Resolver activo y<br/>queda presupuesto?"}
     cfg -->|"no"| skip["skipped_no_domain<br/>(entra en el siguiente<br/>turno del reparto)"]
     cfg -->|"sí"| busq["Búsqueda con grounding<br/>del nombre de la empresa"]
     busq --> ver{"Verificación de la<br/>portada candidata"}
-    ver -->|"marca corroborada,<br/>un único candidato"| res["domain_resolved"]
+    ver -->|"marca corroborada,<br/>un único candidato"| tw
     ver -->|"varios candidatos<br/>o dudas"| amb["domain_ambiguous"]
     ver -->|"ningún candidato válido"| nf["domain_not_found"]
-    res --> eval
-    eval -->|"relevante"| tw["Empresa con su dominio en Twenty<br/>+ señal de expositor<br/>+ hipótesis PROPOSED"]
-    eval -->|"no relevante"| desc["Descartado<br/>(no se crea nada en Twenty)"]
 ```
 
 Tres ideas sostienen el diseño:
 
-- **Resolver no es aprobar.** Un dominio resuelto solo devuelve al expositor al camino normal: la evaluación decide si es relevante, igual que con cualquier otro.
+- **Solo se busca lo que ya interesa.** La resolución va **después** de la evaluación de relevancia: la búsqueda solo se gasta en expositores que la evaluación ya consideró relevantes, y por eso un dominio resuelto desemboca directamente en la empresa y su hipótesis `PROPOSED` (que el comercial sigue validando, como siempre). Un expositor irrelevante nunca llega al resolver.
 - **El presupuesto es del run.** La búsqueda cuesta; por eso cada pasada tiene un tope de búsquedas y lo que no cabe espera al siguiente turno ([detalle](#variables-de-entorno)).
 - **Nunca se adivina.** Un dominio inventado o dudoso crea una empresa falsa en Twenty y, más tarde, un borrador a una dirección equivocada. Es peor que no resolver.
+
+> **Nota:** si Twenty ya tiene una empresa con el nombre exacto del expositor, se reutiliza sin gastar búsqueda. Esa es también la vía manual: si un caso `domain_ambiguous` te interesa de verdad, crea tú la empresa en Twenty con ese nombre y su web, y la siguiente pasada la engancha.
 
 ## Cómo resuelve: búsqueda y verificación
 
@@ -71,9 +73,9 @@ El resolver es **determinista** en esta versión: usa heurísticas, no un modelo
 
 ### Paso 1: buscar candidatos
 
-1. Lanza una **búsqueda con grounding de Google Search**, la misma que usa el scout de ferias, con el nombre del expositor y, si el catálogo los trae, su país o su localidad para acotar los homónimos `[POR CONFIRMAR]` (formato exacto de la consulta).
-1. De los resultados, extrae los **dominios candidatos** (la web, no la página concreta).
-1. Descarta los candidatos de la [denylist](#denylist-dominios-que-nunca-se-aceptan).
+1. Lanza una **búsqueda con grounding de Google Search**, la misma que usa el scout de ferias (y con la misma contabilidad de coste), con el nombre del expositor —que viaja envuelto como contenido no confiable— y el país o la localidad que traiga la feria (o la región del scout) para acotar los homónimos.
+1. De las **fuentes** de los resultados extrae los **dominios candidatos** (máximo 3; la web, no la página concreta). Lo que el modelo escribe solo sirve para ordenarlos, nunca para inventar un dominio.
+1. Descarta los candidatos de la [denylist](#denylist-dominios-que-nunca-se-aceptan). Cada búsqueda tiene además un tope de 4 lecturas de página para verificar.
 
 ### Paso 2: verificar la portada
 
@@ -85,7 +87,7 @@ La búsqueda sola **no basta**: un resultado puede ser de otra empresa con nombr
 | `<h1>` de la portada | Ídem |
 | Aviso legal o pie de página | La razón social o el nombre comercial coincide con el del catálogo |
 
-La comparación **normaliza** mayúsculas, tildes, signos y formas societarias antes de comparar `[POR CONFIRMAR]` (umbral exacto de coincidencia). Un candidato solo se acepta si al menos una de esas señales corrobora el nombre.
+La comparación **normaliza** mayúsculas, tildes, signos y formas societarias antes de comparar. El listón de la v1 es doble y estricto: **el propio dominio tiene que llevar el nombre normalizado** y, además, la portada (o el aviso legal enlazado desde ella) tiene que corroborar la marca. Una tienda de terceros que pone la marca en su título no basta: queda como duda. Si la portada es un esqueleto JavaScript, se reintenta con el renderer, dentro de los límites de render existentes.
 
 ### Paso 3: registrar la fuente
 
@@ -104,7 +106,7 @@ Hay dominios que aparecen en casi cualquier búsqueda de una empresa y **nunca s
 | Enciclopedias y agregadores | `wikipedia.org`, `wikidata.org` |
 | El dominio de la propia feria | El de la feria que se está peinando (por ejemplo, el de Anuga para un expositor de Anuga): un expositor aparece en el catálogo de la feria, pero la web de la feria no es la suya |
 
-`[POR CONFIRMAR]` la lista concreta y si es configurable por variable o solo por código. Las familias son las del diseño; los ejemplos son orientativos.
+La lista vive en el **código** (`runtime/agent-runtime/src/agents/domain-resolver.ts`), no en una variable: ajustarla es un cambio revisable con tests, no un ajuste de configuración. Las familias son las de la tabla; los dominios concretos del código mandan.
 
 > **Nota:** una empresa cuya única presencia es una página de Facebook o una ficha de Europages **no tiene dominio resoluble**. Es el caso `domain_not_found`: no se acepta una red social como si fuera su web.
 
@@ -117,14 +119,14 @@ La regla de oro del resolver es que **un falso positivo cuesta más que un falso
 - **Nombre demasiado genérico** (por ejemplo, «Alimentos del Norte»): la búsqueda devuelve decenas de empresas parecidas y ninguna destaca → `domain_ambiguous`.
 - **La portada no se puede leer** (error de red, bloqueo, contenido que no carga) → no se acepta; no se resuelve «a ciegas».
 
-> **Importante:** el resolver no desempata con un modelo de lenguaje. En `domain_ambiguous` el expositor no pasa a evaluación y no se crea nada en Twenty. Si interesa de verdad, un humano puede pasar el dominio a mano `[POR CONFIRMAR]` (vía para reintroducir un dominio resuelto manualmente).
+> **Importante:** el resolver no desempata con un modelo de lenguaje. En `domain_ambiguous` no se crea nada en Twenty, y el output lista los candidatos que empataron (`domain_resolution.domain_candidates`) para que un humano pueda decidir. La vía manual: crea tú la empresa en Twenty con el nombre exacto del expositor y su web — la siguiente pasada la reutiliza sin buscar.
 
 ## Variables de entorno
 
 | Variable | Defecto | Significado |
 |---|---|---|
 | `DOMAIN_RESOLVER_ENABLED` | `true` | Interruptor del resolver. Con `false`, todo expositor sin dominio vuelve a quedar en `skipped_no_domain` como antes de la tanda 20. |
-| `DOMAIN_RESOLVER_MAX_PER_RUN` | `25` | Máximo de **búsquedas** de resolución por run. Al agotarse, los expositores que quedan sin intentar siguen como `skipped_no_domain` y entran en el siguiente turno del reparto. |
+| `DOMAIN_RESOLVER_MAX_PER_RUN` | `25` (rango 0–50) | Máximo de **búsquedas** de resolución por run. Al agotarse, los expositores que quedan sin intentar siguen como `skipped_no_domain` y entran en el siguiente turno del reparto. |
 
 Ambas se configuran como el resto del runtime ([lista de variables](runbook-local.md#variables-del-runtime)): en `deployments/.env`, pasadas por el bloque `environment` de `pxos-runtime`, y se aplican recreando el servicio (`docker compose up -d pxos-runtime`).
 
@@ -136,7 +138,7 @@ El tope existe para que un catálogo con cientos de expositores sin web no dispa
 - Como la tarea diaria reparte su presupuesto por turnos entre las ferias calificadas ([round-robin](prospeccion-por-senales.md#prospectar-a-diario-en-modo-señales)), esa feria vuelve a recibir una pasada en un turno posterior. Los expositores ya resueltos (o ya clasificados como ambiguos o no encontrados) no se repiten; los que seguían sin intentar, sí.
 - Por eso un catálogo de ~85 expositores sin web (Anuga) se completa **en varios runs**, no en uno. Es lo esperado, no un fallo.
 
-`[POR CONFIRMAR]` cómo se decide cuáles quedan sin intentar al agotar el tope (orden del catálogo) y si el resultado `domain_not_found` o `domain_ambiguous` se reintenta en pasadas posteriores o se da por definitivo para esa feria.
+Al agotar el tope, los expositores quedan sin intentar **en el orden del catálogo** (sin barajar). Un `domain_not_found` o `domain_ambiguous` **no es definitivo**: no se persiste veto alguno, así que una pasada posterior puede reintentarlo (con su coste); el tope por run contiene el gasto total.
 
 ## Estados del output
 
@@ -144,11 +146,11 @@ El output del run añade tres estados por expositor, además de los que ya exist
 
 | Estado | Significado | Qué ocurre después |
 |---|---|---|
-| `domain_resolved` | Se encontró un dominio y su portada corrobora la marca | El expositor **sigue a la evaluación normal**, con ese dominio. Si es relevante, se crea la empresa en Twenty |
-| `domain_ambiguous` | Hay varios candidatos válidos o la verificación no es concluyente | No se evalúa ni se escribe nada en Twenty |
-| `domain_not_found` | Ningún candidato sobrevive a la denylist y a la verificación | No se evalúa ni se escribe nada en Twenty |
+| `domain_resolved` | Se encontró un dominio y su portada corrobora la marca | El expositor —ya relevante— sigue el camino normal: empresa en Twenty e hipótesis `PROPOSED`. **No es un estado final**: va en `domain_resolution.status`, y el estado final del expositor es el de siempre (`hypothesis_created`…) |
+| `domain_ambiguous` | Hay varios candidatos válidos o la verificación no es concluyente (estado final) | No se escribe nada en Twenty |
+| `domain_not_found` | Ningún candidato sobrevive a la denylist y a la verificación (estado final) | No se escribe nada en Twenty |
 
-Cada expositor resuelto lleva en el output la **URL fuente de la verificación** (de dónde se corroboró la marca), de modo que cualquier dominio resuelto es auditable. Para `domain_ambiguous`, el output lista los candidatos que empataron `[POR CONFIRMAR]` (nombre exacto del campo).
+Ninguno de los tres cuenta como error ni convierte el run en `PARTIAL`. Cada expositor resuelto lleva en `domain_resolution` la **URL fuente de la verificación** (de dónde se corroboró la marca), de modo que cualquier dominio resuelto es auditable; en los casos sin resolver, `domain_resolution.domain_candidates` lista los candidatos encontrados. Si la empresa ya existía en Twenty con ese nombre, el caso se marca `existing_company` y no gasta búsqueda.
 
 El resumen del run (el campo **Result** del *Agent run* en Twenty) incluye los contadores de los tres estados, además del número de búsquedas gastadas frente al tope.
 
@@ -168,12 +170,12 @@ El coste de las búsquedas se **contabiliza en el run**: aparece en el campo **C
 
 ## Qué pasa con la empresa en Twenty
 
-Resolver el dominio **no crea nada por sí solo**. La empresa se crea en Twenty únicamente si, ya con el dominio resuelto, la evaluación considera relevante al expositor. En ese caso se escribe lo mismo que para cualquier otro expositor:
+El resolver solo actúa sobre expositores que la evaluación **ya consideró relevantes** — los irrelevantes se descartan antes y nunca gastan búsqueda. Para un dominio resuelto se escribe lo mismo que para cualquier otro expositor relevante:
 
 - La **empresa** con su dominio y el tenant `publiexpe`, deduplicada por dominio.
-- La **señal de expositor** y la **hipótesis `PROPOSED`**, con la evidencia de la web y de la fuente de la verificación.
+- La **señal de expositor** y la **hipótesis `PROPOSED`**, que cita la URL de la verificación en su evidencia.
 
-Un `domain_resolved` que la evaluación descarta por no encajar, o un `domain_ambiguous` o `domain_not_found`, **no dejan empresa ni hipótesis**. Así los 110 expositores desbloqueados no inundan el CRM de empresas que no interesan.
+Un `domain_ambiguous` o `domain_not_found` **no deja empresa ni hipótesis**. Así los ~110 expositores desbloqueados no inundan el CRM de empresas que no interesan: solo entran los relevantes con web verificada.
 
 El flujo posterior es el de siempre: el comercial valida o rechaza la hipótesis; al validar, el sistema [busca el contacto](contactos.md) de la empresa y prepara el borrador.
 
@@ -189,7 +191,8 @@ El flujo posterior es el de siempre: el comercial valida o rechaza la hipótesis
 
 - **Homónimos → ambiguo.** Varias empresas con el mismo nombre (o nombres muy genéricos) no se resuelven: el resolver prefiere no responder a elegir mal. Es el motivo más habitual de `domain_ambiguous`.
 - **Empresas sin web real → `not_found`.** Un expositor cuya única presencia es una red social, un marketplace o un directorio no tiene dominio que resolver. Es un resultado correcto, no un error.
-- **La verificación depende de que la portada sea legible.** Una web que carga todo con JavaScript, o que bloquea las descargas automáticas, puede no corroborar la marca aunque sea la correcta. `[POR CONFIRMAR]` si usa el renderer para esos casos o los deja en no resuelto.
+- **La verificación depende de que la portada sea legible.** Si la portada es un esqueleto JavaScript, se reintenta con el renderer (mismos límites de render que el resto del runtime); una web que bloquea las descargas queda sin resolver, no se acepta a ciegas.
+- **Dominios que no llevan el nombre** (siglas o marcas abreviadas, tipo `incarlopa.es` para «Industrias Cárnicas Loriente Piqueras»): la v1 los deja en `domain_ambiguous` a propósito — es el precio del listón estricto contra falsos positivos.
 - **Marcas distintas de la razón social.** Si el catálogo lista la razón social y la web muestra solo el nombre comercial (o al revés), la corroboración puede fallar. El aviso legal ayuda, pero no cubre todos los casos.
 - **Sin modelo de lenguaje en v1.** El resolver no «razona» sobre el empate ni lee entre líneas: aplica heurísticas fijas. Es más predecible y más barato, a costa de resolver menos casos difíciles. Un desempate asistido por modelo, con verificación igualmente obligatoria, sería una ampliación futura.
 - **El tope por run retrasa, no pierde.** Un catálogo grande se completa en varios runs.

@@ -1,6 +1,6 @@
 # Roadmap — LLD 0.1 frente a lo construido
 
-Actualizado: 2026-10-12 (tanda 19). Contrasta la visión completa del [LLD v0.1](LLD-0.1-publiexpe-commercial-os.md) con el estado real. El detalle fino por decisión está en el [LLD v0.3 (estado real)](LLD-0.3-estado-real.md) y la bitácora por tandas en [ESTADO.md](ESTADO.md).
+Actualizado: 2026-10-16 (tanda 20 — Resolver de Dominios: los expositores relevantes sin web en el catálogo ya no se descartan; búsqueda verificada nombre→web oficial, ver [resolver-dominios.md](resolver-dominios.md)). Contrasta la visión completa del [LLD v0.1](LLD-0.1-publiexpe-commercial-os.md) con el estado real. El detalle fino por decisión está en el [LLD v0.3 (estado real)](LLD-0.3-estado-real.md) y la bitácora por tandas en [ESTADO.md](ESTADO.md).
 
 
 **Leyenda:** ✅ hecho · 🟡 parcial · 🔄 en curso (tanda 19) · ⬜ pendiente · ⛔ bloqueado por decisión externa

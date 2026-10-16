@@ -209,7 +209,7 @@ Origen: el usuario rechazó los 6 primeros borradores listos (Gastrónoma, feria
 | Docs: ventana en prospeccion-por-senales, regla en la guía comercial, runbook, ROADMAP | `docs/tanda18` | Sonnet | ✅ entregado (decisiones de PM fijadas en vuelo al agente de ventana: señales sin fecha excluidas con nota, límites inclusivos 45≤d≤210) |
 | Integración, e2e y PR | `feat/tanda18` (worktree wt18-integracion) | PM | ✅ 1155 tests (BD aislada); constantes de ventana unificadas en signals/lead-time (acuerdo entre ramas aplicado); compose con LEADTIME_*; desplegado + seed (Prospector v6 DRAFT, EmailDrafter v2 DRAFT, knowledge) + estreno de auto-expiración + experimento sintético real |
 
-## Tanda 19 — Twenty nativo 🔄 (en curso, 2026-10-12)
+## Tanda 19 — Twenty nativo ✅ (cerrada, 2026-10-12; PR #19 fusionado, App sincronizada el 2026-10-15)
 
 Origen: feedback del usuario — "mucho potencial desaprovechado, reinventamos la rueda" (Personas vacía, Oportunidades sin usar, alertas perdidas en notas, sin tableros) + el envío real a FOSS (primer e2e completo: Anuga→validación→contacto→borrador v2→clic) no salía en la página nativa (causa raíz: el sync manda sends.in_window=null en vez del contador del día). Decisión: promoción con tracción (nunca volcar hipótesis a Oportunidades); descartado por ahora controlar tareas de agentes desde Twenty. Límite explícito: Person/Opportunity/Task sin tenantId.
 

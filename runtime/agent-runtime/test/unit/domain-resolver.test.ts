@@ -52,6 +52,15 @@ describe('domain-resolver heuristics', () => {
     expect(domainMatchesName('moro.com', 'Bodegas Emilio Moro')).toBe(false);
     expect(domainMatchesName('vinoteca-online.es', 'Bodegas Emilio Moro')).toBe(false);
     expect(domainMatchesName('anything.es', 'Vinos de España')).toBe(false);
+    // Leading words spelled out + initials of the rest (real case, Madrid Fusión 2026-10-16).
+    expect(domainMatchesName('1001saboresrm.es', '1001 SABORES, REGIÓN DE MURCIA')).toBe(true);
+    expect(domainMatchesName('1001saboresxy.es', '1001 SABORES, REGIÓN DE MURCIA')).toBe(false);
+    expect(domainMatchesName('garagewine.es', '#garagewine')).toBe(true);
+  });
+
+  it('groundingCandidates: a source whose "domain" is the grounding redirect host is resolved like a redirect, never excluded nor used', () => {
+    const redirect: GroundingSource = { uri: 'https://vertexaisearch.cloud.google.com/grounding-api-redirect/AbC', title: null, domain: 'vertexaisearch.cloud.google.com' };
+    expect(groundingCandidates([redirect], null, [])).toEqual({ domains: [], excluded: [], withoutDomain: [redirect] });
   });
 
   it('pageCorroboratesBrand: distinctive words in the title, or the name as consecutive words in the text', () => {
@@ -251,6 +260,55 @@ describe('domain resolver: direct mode', () => {
     expect(web.requests.map((r) => r.url.toString()).sort()).toEqual(['https://ambigua.com/', 'https://ambigua.es/', 'https://emiliomoro.com/']);
     // Cost: every call (decisions + searches) is in the run.
     expect((result.output as { cost: { model: number } }).cost.model).toBeCloseTo(0.007, 6);
+  });
+
+  it('grounding chunks with REDIRECT URIs only: each redirect is followed by fetch_url to its final domain before the denylist and the name check', async () => {
+    const R = (id: string) => `https://vertexaisearch.cloud.google.com/grounding-api-redirect/${id}`;
+    const web = new FakeWeb()
+      .redirect(R('a1'), 'https://www.facebook.com/garagewine')
+      .redirect(R('b2'), 'https://www.garagewine.es/contacto')
+      .page('https://www.facebook.com/garagewine', home('#garagewine | Facebook', ''))
+      .page('https://www.garagewine.es/contacto', home('Contacto', ''))
+      .page('https://garagewine.es/', home('#garagewine · Bodega de garaje en Toledo', ''));
+    const sources: GroundingSource[] = [
+      { uri: R('a1'), title: null, domain: null },
+      { uri: R('b2'), title: null, domain: 'vertexaisearch.cloud.google.com' },
+    ];
+    const { fake, ctx, agent } = setup([relevant(), { text: '{"website_url": null}', grounding: { queries: ['garagewine toledo espana web oficial'], sources } }], {
+      web,
+      input: { event: EVENT, exhibitors: [{ name: '#garagewine' }] },
+    });
+    const out = (await agent.run(ctx)).output as unknown as Out;
+    expect(out.results[0]).toMatchObject({
+      status: 'hypothesis_created',
+      domain: 'garagewine.es',
+      domain_resolution: { status: 'domain_resolved', source_url: 'https://garagewine.es/', excluded: ['facebook.com'], domain_candidates: [{ domain: 'garagewine.es', origin: 'redirect', status: 'verified' }] },
+    });
+    expect(fake.tables.companies).toHaveLength(1);
+  });
+
+  it('search ran but returned NO sources (Gemini toolCalls without groundingMetadata): the proposed site is verified like any candidate', async () => {
+    const web = new FakeWeb()
+      .page('https://1001saboresrm.es/', home('1001 Sabores Región de Murcia', '<p>Productos de la Región de Murcia</p>'))
+      .page('https://bodegafantasma.es/', home('Dominio en venta', ''));
+    const unsourced = (proposed: string, searched = true): StubResponse => ({
+      text: JSON.stringify({ website_url: `https://www.${proposed}/` }),
+      grounding: { queries: searched ? ['nombre web oficial'] : [], sources: [], diagnostics: { metadata: false, toolCalls: searched ? 1 : 0, toolResponses: searched ? 1 : 0 } },
+    });
+    const { provider, ctx, agent } = setup(
+      [relevant(), unsourced('1001saboresrm.es'), relevant(), unsourced('bodegafantasma.es'), relevant(), unsourced('quesosinventados.es', false)],
+      { web, input: { event: EVENT, exhibitors: [{ name: '1001 SABORES, REGIÓN DE MURCIA' }, { name: 'Bodega Fantasma' }, { name: 'Quesos Inventados' }] } },
+    );
+    const out = (await agent.run(ctx)).output as unknown as Out;
+    expect(out.results.map((r) => [r.name, r.status, r.domain])).toEqual([
+      ['1001 SABORES, REGIÓN DE MURCIA', 'hypothesis_created', '1001saboresrm.es'],
+      // The proposed site exists but does not carry the brand: doubt, not accepted.
+      ['Bodega Fantasma', 'domain_ambiguous', null],
+      // The model did not search at all: its proposal is never used.
+      ['Quesos Inventados', 'domain_not_found', null],
+    ]);
+    expect(out.results[0]!.domain_resolution).toMatchObject({ source_url: 'https://1001saboresrm.es/', domain_candidates: [{ origin: 'search_unsourced', status: 'verified' }] });
+    expect(provider.requests).toHaveLength(6);
   });
 
   it('home without the brand: the legal notice linked from it corroborates it; a page that never shows the brand stays ambiguous', async () => {

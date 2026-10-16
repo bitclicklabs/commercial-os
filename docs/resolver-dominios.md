@@ -168,7 +168,7 @@ La búsqueda con grounding es lo único que cuesta; la verificación (descargar 
 
 El coste de las búsquedas se **contabiliza en el run**: aparece en el campo **Cost** del *Agent run* y en las [métricas](runbook-local.md#variables-del-runtime) junto al resto del gasto del Prospector. Sale de un presupuesto que ya está acotado por `DOMAIN_RESOLVER_MAX_PER_RUN`, así que el peor caso de un run es predecible.
 
-> **Nota:** las cifras son una estimación de diseño. El coste real por búsqueda depende del modelo y del precio vigente (consulta [model routing](model-routing.md)); la primera pasada real sobre Anuga, Madrid Fusión y BWW dará el dato medido `[POR CONFIRMAR]`.
+> **Nota:** dato medido en el estreno (2026-10-16, Anuga): un run con las 25 búsquedas del tope, 20 lecturas de verificación, 17 dominios resueltos y sus 17 hipótesis generadas costó **1,30 € en total** (resolución + evaluación + hipótesis). El coste por búsqueda depende del modelo y del precio vigente (consulta [model routing](model-routing.md)).
 
 ## Qué pasa con la empresa en Twenty
 

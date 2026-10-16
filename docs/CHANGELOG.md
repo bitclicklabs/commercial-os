@@ -192,7 +192,7 @@ Integración de `feat/mvp0-bootstrap` en `main` (PR #1).
 - Límite explícito: Person/Opportunity/Task sin tenantId (compartidos por el workspace). Deuda anotada: unificar reply-task con createCrmTask.
 - Integración PM: 7 conflictos de ficheros compartidos resueltos a mano y validados por la suite (1210 tests); sin migraciones.
 
-## 2026-10-16 — Tanda 20 (en curso)
+## 2026-10-16 — Tanda 20 (cerrada)
 
 - Resolver de Dominios (diseño cerrado; implementación en curso): los catálogos de expositores suelen listar empresas por nombre sin web, y el Prospector las descartaba como `skipped_no_domain` (caso del 2026-10-16: HIP 2026 con 98 descartes, y ~110 bloqueados más en las ferias calificadas: 85 Anuga, 16 Madrid Fusión, 9 BWW). Ahora, antes de descartar, intenta resolver nombre → web oficial.
 - Procedimiento determinista y verificado: búsqueda con grounding (la del scout) y verificación obligatoria, descargando la portada candidata para corroborar la marca (title, h1 o aviso legal). Denylist dura: redes sociales, marketplaces, directorios tipo europages/kompass, prensa, wikipedia y el dominio de la propia feria. En duda o empate no se resuelve (`domain_ambiguous`): nunca se adivina.

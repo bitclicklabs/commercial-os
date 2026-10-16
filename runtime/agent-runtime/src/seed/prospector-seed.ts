@@ -93,11 +93,14 @@ export function desiredProspectorVersion() {
         // + catalog: up to 3 searches + 3 sheets per written hypothesis (capped per tool below).
         // + signals mode: 1 listing + up to 50 expirations before the directed scout.
         // + lead time (tanda 18): 1 hypothesis listing + up to 50 hypothesis expirations + 1 signal note.
-        max_calls_per_execution: 2_512,
-        // fetch_url: 18 pages/PDFs + 3 grounding redirects (+1) + 100 profiles + 100 domain checks;
+        // + domain resolver (tanda 20): 1 find_company per relevant exhibitor without a domain (up to 300)
+        //   + up to 50 searches x 4 page reads (fetch_url / render_url).
+        max_calls_per_execution: 3_012,
+        // fetch_url: 18 pages/PDFs + 3 grounding redirects (+1) + 100 profiles + 100 domain checks
+        //   + domain resolver: DOMAIN_RESOLVER_MAX_PER_RUN_CAP (50) x DOMAIN_RESOLVER_PAGES_PER_LOOKUP (4);
         // render_url: 4 catalog renders (+1 retry, +1 older-renderer retry each) + 100 profiles.
         max_calls_per_tool: {
-          fetch_url: 230,
+          fetch_url: 430,
           render_url: 115,
           catalog_search_products: 300,
           catalog_get_product: 300,

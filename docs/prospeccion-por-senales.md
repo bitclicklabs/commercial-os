@@ -4,13 +4,16 @@ Hasta la tanda 14, la tarea diaria de las 08:00 evaluaba siempre la misma lista 
 
 Este documento es técnico-operativo: describe el ciclo, cómo decide cada pieza y cómo se configura. Lo que ve y hace el comercial está en la [guía del equipo comercial](guia-comercial.md#señales-de-feria-tu-cola-de-decisión).
 
-> **Nota:** este documento describe la especificación de las tandas 15 (el ciclo), 18 (la [ventana de lead time](#ventana-de-lead-time)) y 20 (el [Resolver de Dominios](resolver-dominios.md)). Los nombres exactos de tareas, eventos y variables son los del código y del [README del runtime](../runtime/agent-runtime/README.md); si alguno difiere, manda el README.
+> **Nota:** este documento describe la especificación de las tandas 15 (el ciclo), 18 (la [ventana de lead time](#ventana-de-lead-time)), 20 (el [Resolver de Dominios](resolver-dominios.md)) y 21 (los [caladeros](#caladeros-el-scout-cubre-varios-sectores) y las [señales de empresa](#señales-de-empresa-más-allá-de-las-ferias)). Los nombres exactos de tareas, eventos y variables son los del código y del [README del runtime](../runtime/agent-runtime/README.md); si alguno difiere, manda el README. Lo que depende de la implementación de la tanda 21 va marcado `[POR CONFIRMAR]`.
 
 ## Contenido
 
 1. [El ciclo en una imagen](#el-ciclo-en-una-imagen)
 1. [Estados de la señal y quién los cambia](#estados-de-la-señal-y-quién-los-cambia)
 1. [Descubrir: el scout semanal](#descubrir-el-scout-semanal)
+1. [Caladeros: el scout cubre varios sectores](#caladeros-el-scout-cubre-varios-sectores)
+1. [Señales de empresa: más allá de las ferias](#señales-de-empresa-más-allá-de-las-ferias)
+1. [Prospección directa de una empresa](#prospección-directa-de-una-empresa)
 1. [Prospectar a diario, en modo señales](#prospectar-a-diario-en-modo-señales)
 1. [Prospectar al calificar: el trigger inmediato](#prospectar-al-calificar-el-trigger-inmediato)
 1. [Envejecimiento: señales que pasan a `EXPIRED`](#envejecimiento-señales-que-pasan-a-expired)
@@ -66,6 +69,8 @@ Tres ideas sostienen el diseño:
 
 **Señal de feria frente a señal de expositor.** El ciclo trabaja con señales a **nivel de evento**: una feria o un congreso, **sin empresa asociada**. Las señales por expositor (las que lleva una empresa y se titulan «feria — empresa», como las que el scout creó hasta la tanda 14) no disparan nada, ni al cambiar de estado ni en el reparto diario, y el comercial no tiene que gestionarlas.
 
+> **Nota (tanda 21):** las [señales de empresa](#señales-de-empresa-más-allá-de-las-ferias) (apertura, ronda de financiación y aniversario) son una excepción a esa regla: llevan una empresa asociada **y sí** disparan la prospección al calificarlas. `[POR CONFIRMAR]` cómo las distingue el sistema de una señal por expositor (suposición: por su tipo de señal).
+
 ## Descubrir: el scout semanal
 
 La tarea `weekly-event-scouting` (lunes 07:30, `Europe/Madrid`) sigue buscando ferias reales del sector con grounding de Google Search. Lo que cambia en la tanda 15 es el resultado de lo que encuentra: **una señal de feria en estado `NEW` por cada feria descubierta**, con su fecha y su fuente, a la espera de que el comercial decida. Detalles del scout en [ADR-10](LLD-0.3-estado-real.md#adr-10) y [ADR-26](LLD-0.3-estado-real.md#adr-26).
@@ -73,6 +78,102 @@ La tarea `weekly-event-scouting` (lunes 07:30, `Europe/Madrid`) sigue buscando f
 Desde la tanda 18, el scout **no crea señales de ferias fuera de la [ventana de lead time](#ventana-de-lead-time)**: cuenta las que descarta en el output del run. Una feria sin fecha se crea igual.
 
 Cada lunes, por tanto, el scout deja de ser el único camino de material nuevo: alimenta la cola de decisión, y el trabajo sobre cada feria lo desencadena la calificación, no el calendario.
+
+## Caladeros: el scout cubre varios sectores
+
+Hasta la tanda 20, el scout semanal buscaba ferias de un solo sector: «alimentación y bebidas». Desde la tanda 21 **recorre una lista de sectores («caladeros»)**, configurable en el input de la task del seed (`weekly-event-scouting`).
+
+### Los sectores
+
+| Sector | Qué busca |
+|---|---|
+| Alimentación y bebidas | Ferias de producto alimentario y de bebidas (el caladero de siempre) |
+| Horeca y food service | Hostelería, restauración y servicios de alimentación |
+| Farmacia y salud | Ferias de farmacia, parafarmacia y salud |
+| Cosmética y belleza | Ferias de perfumería, cosmética y belleza |
+| Franquicias y retail | Ferias de franquicias, comercio y retail |
+| Industria y packaging | Ferias de industria, envase y embalaje |
+
+### Qué se mantiene igual en todos
+
+- **Solo España**, como hasta ahora.
+- **Modo `discover_only`**: el scout busca con grounding de Google Search y verifica una página de cada feria, pero no peina expositores. El gasto grande llega tras la calificación humana.
+- **La misma [ventana de lead time](#ventana-de-lead-time)** (45 a 210 días): no se crean señales de ferias fuera de ella, y el output las cuenta.
+- **El humano califica.** Cada feria nueva entra como señal `NEW` y espera tu decisión.
+
+### Qué cambia
+
+- **Deduplicación entre sectores.** Una misma feria puede aparecer en dos caladeros (una feria de alimentación y retail, por ejemplo): se crea **una sola señal**. `[POR CONFIRMAR]` el criterio de duplicado (suposición: la URL de la feria o el par nombre y fecha).
+- **Contadores por sector.** El output del run informa, por cada sector, de las ferias encontradas, las creadas, las descartadas por ventana y las duplicadas. `[POR CONFIRMAR]` los nombres exactos de los campos.
+- **Coste.** Aproximadamente **0,07 € por sector y semana**: con los seis sectores, unos 0,42 € a la semana. El coste de cada run aparece en el campo **Cost** del *Agent run*.
+- **Tiempo.** El scout mantiene su límite de 20 minutos por ejecución. Si un sector no cabe, el run sale `Partial` y lo ya hecho se guarda. `[POR CONFIRMAR]` si los sectores corren en serie o en paralelo y si la lista completa cabe en el límite.
+
+### Cómo cambiar la lista
+
+La lista vive en la task del seed, no en una variable de entorno. Para añadir o quitar un sector:
+
+1. Edita la lista de sectores en el input de `weekly-event-scouting` del seed (`runtime/agent-runtime/src/seed/prospector-seed.ts`). `[POR CONFIRMAR]` el nombre del campo (hoy el input lleva `sector`; pasa a ser una lista).
+1. Ejecuta `pnpm seed` desde `runtime/agent-runtime/`. El seed añade una **versión nueva** de la task; la anterior no se borra.
+1. Comprueba en el siguiente run del lunes que el output trae el contador del sector nuevo.
+
+> **Nota:** quitar un sector del seed no borra las señales que ya creó. Descártalas tú si no las quieres.
+
+## Señales de empresa: más allá de las ferias
+
+Una feria no es la única razón para escribir a una empresa. Desde la tanda 21, el scout también descubre **señales de empresa**: noticias que dicen que una empresa concreta está en un momento en que el merchandising encaja.
+
+| Tipo | Qué es | Por qué importa |
+|---|---|---|
+| **Apertura** | Una empresa abre un local, una fábrica o una sede, o lo va a hacer | Una apertura necesita regalo de inauguración, uniformes y material de marca |
+| **Ronda de financiación** | Una empresa anuncia que ha cerrado una ronda | Con caja nueva y un equipo que crece hay presupuesto de marca |
+| **Aniversario** | Una empresa cumple un aniversario redondo | Los aniversarios piden regalo corporativo y piezas conmemorativas |
+
+### Reglas de frescura y de verificación
+
+- **Solo noticias recientes.** La noticia debe ser de los **últimos 60 días**. La excepción es la **apertura futura**: una apertura anunciada para una fecha por venir también vale.
+- **Fuente verificada.** La señal solo se crea si el scout ha descargado (`fetch_url`) la URL de la noticia y ha comprobado que dice lo que se afirma. Sin fuente verificada, no hay señal.
+- **Caducidad a los 120 días.** Una señal de empresa pasa sola a `EXPIRED` cuando han pasado **120 días desde la fecha de la noticia**, igual que una feria cuando pasa su fecha. Es el mismo envejecimiento diario ([más abajo](#envejecimiento-señales-que-pasan-a-expired)). `[POR CONFIRMAR]` cómo se cuentan los 120 días en una apertura futura (suposición: desde la fecha de la noticia, no desde la de la apertura).
+- **La ventana de lead time no se aplica.** La ventana de 45 a 210 días mide la distancia a una feria; una empresa no tiene fecha de feria. Lo que acota la vida de la señal de empresa es su frescura y su caducidad. `[POR CONFIRMAR]`
+- **El humano califica.** Como con las ferias, el sistema descubre y tú decides. Nada se prospecta hasta que calificas la señal.
+
+### Cómo las reconoces
+
+El nombre de cada señal de empresa lleva un **sufijo de tipo**: por ejemplo, «Conservas del Norte — apertura», «Conservas del Norte — financiación» o «Conservas del Norte — aniversario». `[POR CONFIRMAR]` el mecanismo exacto de tipado: el sufijo del nombre es lo visible en cualquier caso; falta confirmar si el tipo viaja además en un campo propio de la señal (el `signal_type` del evento `signal.qualified`) o si exige añadir opciones a la Twenty App.
+
+> **Nota:** a diferencia de una señal de feria, que no tiene empresa asociada, la señal de empresa **sí la tiene**: es la empresa a la que luego se prospecta.
+
+## Prospección directa de una empresa
+
+Calificar una señal de empresa no peina ningún catálogo de expositores: **se prospecta directamente a esa empresa**.
+
+```mermaid
+flowchart TD
+    q["El comercial califica una<br/>señal de empresa"] -->|"webhook de Twenty"| ev["Evento signal.qualified"]
+    ev --> t["Task prospect-on-qualified<br/>modo empresa"]
+    t --> dom{"¿La noticia trae la web<br/>de la empresa?"}
+    dom -->|"sí"| ev2["Evaluar la empresa<br/>con el motivo de la señal"]
+    dom -->|"no"| res["Resolver de Dominios<br/>(búsqueda + verificación de portada)"]
+    res -->|"domain_resolved"| ev2
+    res -->|"domain_ambiguous o<br/>domain_not_found"| stop["Sin hipótesis: no se adivina"]
+    ev2 --> out["Empresa y hipótesis PROPOSED<br/>en Twenty"]
+    out --> hum["El comercial valida o rechaza"]
+```
+
+Qué hace el trigger, en orden:
+
+1. **Recoge la señal calificada**: la empresa, el tipo de señal y la URL de la noticia.
+1. **Obtiene el dominio de la empresa.** Si la noticia trae su web, la usa. Si no, **recurre al [Resolver de Dominios](resolver-dominios.md)**, con las mismas garantías de siempre: verifica la portada y, en caso de duda o empate, no resuelve.
+1. **Evalúa la empresa con el motivo de la señal** (la apertura, la ronda o el aniversario) en lugar de un expositor de feria.
+1. **Escribe en Twenty** la empresa (localizada o creada, con su web verificada) y una hipótesis `PROPOSED` enlazada a la señal. Deja el resumen de la ejecución (*Agent run*).
+1. **Deja la auditoría** del disparo. `[POR CONFIRMAR]` si reutiliza `prospect.on_qualified` (suposición) o usa una acción propia.
+
+Lo que **no** cambia:
+
+- **El humano valida.** La hipótesis nace `PROPOSED`; sin tu validación no hay contacto ni borrador.
+- **Una vez por señal** en la ventana de 24 h, como con las ferias ([idempotencia](#idempotencia-y-ventana-de-recalificación-de-24-h)).
+- **Nada se envía solo.**
+
+`[POR CONFIRMAR]` si las señales de empresa `QUALIFIED` entran también en el reparto diario de las 08:00 (suposición: no, porque una empresa se prospecta de una vez; el trigger inmediato es el único camino) y si la auto-expiración de hipótesis `PROPOSED` las alcanza.
 
 ## Prospectar a diario, en modo señales
 
@@ -151,6 +252,7 @@ Cada run diario, antes de repartir (herramienta `expire_signal`), revisa las se�
 - **Solo señales de feria con fecha.** Una señal sin fecha no caduca sola.
 - **Solo hacia `EXPIRED`.** Vuelve a leer el registro justo antes de escribir, no toca `DISCARDED` y nunca califica, descarta ni reabre nada.
 - **No borra nada.** La señal queda en Twenty con su historial. Una señal `EXPIRED` sale del reparto diario y deja de aparecer en la cola de decisión.
+- **Señales de empresa (tanda 21).** El mismo envejecimiento pasa a `EXPIRED` las [señales de empresa](#señales-de-empresa-más-allá-de-las-ferias) cuando han pasado **120 días desde la fecha de la noticia**. Sigue siendo la única escritura de estado de señal que hace la máquina. `[POR CONFIRMAR]` si lo hace la misma herramienta `expire_signal` con otra regla de fecha.
 
 ## Ventana de lead time
 
@@ -236,6 +338,13 @@ Pasos:
 1. Si no aparece nada, revisa el destino del webhook en **Settings → APIs & Webhooks**, los [logs](runbook-local.md#dónde-mirar-los-logs) del runtime (`401` firma o secreto, `503` sin `TWENTY_WEBHOOK_SECRET`) y la variable `OUTBOUND_HTTP_ALLOWED_INTERNAL_HOSTS` de Twenty.
 1. Sin señales calificadas, el run de las 08:00 de un día cualquiera debe terminar `SKIPPED`: es lo esperado, no un fallo.
 
+### Comprobar el scout multi-caladero y las señales de empresa
+
+1. Tras un lunes, abre **Commercial OS → Agent runs** y localiza el run de `weekly-event-scouting` de las 07:30. Su **Result** debe traer los contadores de cada sector de la lista. `[POR CONFIRMAR]` el formato.
+1. En **Commercial OS → Signals**, la columna `New` debe incluir ferias de varios sectores, sin la misma feria dos veces.
+1. Para una señal de empresa, comprueba que su nombre lleva el sufijo de tipo, que su fecha de noticia es de los últimos 60 días (o una apertura futura) y que la URL de la fuente abre la noticia.
+1. Califica una señal de empresa de prueba y busca el disparo en el `audit_log` (`GET /audit`, igual que arriba). Debe aparecer una empresa nueva o reutilizada y una hipótesis `Proposed` enlazada a la señal.
+
 ## Limitaciones
 
 - **Repetir una feria ya peinada solo recoge expositores nuevos.** El sistema deduplica por empresa y feria: una segunda pasada sobre la misma feria (el trigger y luego el reparto diario, o una recalificación) no repite lo ya escrito. Si el catálogo no ha cambiado, la pasada cuesta modelo y no aporta nada.
@@ -246,6 +355,9 @@ Pasos:
 - **El envejecimiento y la ventana dependen de la fecha.** Una señal sin fecha, o con una fecha errónea, no caduca cuando debería.
 - **Los expositores sin web se resuelven con un tope por run.** Un catálogo con muchos expositores sin dominio se desbloquea en varios runs, no en uno ([detalle](resolver-dominios.md#qué-pasa-al-agotar-el-presupuesto)).
 - **El presupuesto diario es finito.** Con muchas ferias calificadas a la vez, cada una avanza más despacio: es el efecto del round-robin.
+- **Más sectores, más señales `NEW`.** Con seis caladeros, la cola de decisión crece. Una feria que no te interesa se descarta, y un sector que no aporta se quita de la lista del seed ([cómo](#cómo-cambiar-la-lista)).
+- **Las señales de empresa dependen de que la noticia sea verificable.** Una noticia que el scout no consigue descargar no genera señal, aunque sea cierta. Y una empresa sin web resoluble no genera hipótesis ([Resolver de Dominios](resolver-dominios.md#límites)).
+- **La señal de empresa no sabe si ya escribiste a esa empresa por otra vía.** Una empresa que ya tiene hipótesis por una feria puede recibir otra por una apertura. Es normal: hay una hipótesis por empresa y motivo.
 
 ## Qué no hace
 
@@ -253,6 +365,8 @@ Pasos:
 - **No contacta con nadie.** Prospectar una feria deja empresas, señales de expositor e hipótesis `Proposed`; los correos siguen siendo cosa tuya ([borradores](guia-comercial.md#borradores-de-email)).
 - **No borra nada.** Ni señales, ni la feria de ejemplo del seed (que simplemente deja de formar parte de la tarea, en una versión nueva).
 - **No toca el canal de email** ni el [plan de warm-up](email-warmup.md).
+- **No califica las señales de empresa por su cuenta.** Descubre y verifica la noticia; calificar es tuyo.
+- **No inventa noticias.** Una señal de empresa sin URL fuente verificada por descarga no se crea.
 
 ## Documentos relacionados
 
@@ -262,4 +376,5 @@ Pasos:
 - [Integración de eventos con n8n](n8n-integracion.md): el evento `signal.qualified` también puede consumirse desde n8n.
 - [Ciclo de mejora de skills](ciclo-mejora-skills.md#caso-canónico-el-rechazo-de-los-6-borradores-del-2026-10-12): cómo el rechazo de los primeros borradores se convirtió en la regla de lead time.
 - [Resolver de Dominios](resolver-dominios.md): cómo se resuelve la web de los expositores que el catálogo lista sin ella.
+- [Seguimiento de leads enviados](seguimiento-leads.md): qué pasa con un lead después del clic (tanda 21).
 - [Roadmap](ROADMAP.md): lugar de las tandas 15 y 18 en el plan.

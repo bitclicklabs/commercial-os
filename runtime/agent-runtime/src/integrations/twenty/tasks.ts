@@ -54,6 +54,12 @@ export interface CreateCrmTaskInput {
   status?: TaskStatus;
   /** 'day' (default): same title created the same local day. 'ever': same title, any day. */
   scope?: 'day' | 'ever';
+  /**
+   * Target that identifies the task among same-title ones (default: the first of company, person,
+   * opportunity, signal, hypothesis that is given). The lead follow-up (tanda 21) anchors on the
+   * hypothesis: two hypotheses of one company get one task each.
+   */
+  anchor?: keyof CrmTaskTargets;
 }
 
 export interface CreateCrmTaskResult {
@@ -98,12 +104,15 @@ export function dueInDays(now: Date, days: number, timeZone = CRM_TASK_TIMEZONE)
   return crmTaskDueAt(addCalendarDays(crmTaskLocalDay(now, timeZone), days), timeZone)!;
 }
 
-function targetEntries(targets: CrmTaskTargets | undefined): Array<[keyof TwentyTaskTarget, string]> {
+function targetEntries(targets: CrmTaskTargets | undefined, anchor?: keyof CrmTaskTargets): Array<[keyof TwentyTaskTarget, string]> {
   const out: Array<[keyof TwentyTaskTarget, string]> = [];
   for (const [key, column] of Object.entries(TARGET_COLUMN) as Array<[keyof CrmTaskTargets, keyof TwentyTaskTarget]>) {
     const v = targets?.[key];
     if (typeof v === 'string' && v.length > 0) out.push([column, v]);
   }
+  // The anchor goes first: it is the target a same-title task must already point to.
+  const at = anchor ? out.findIndex(([column]) => column === TARGET_COLUMN[anchor]) : -1;
+  if (at > 0) out.unshift(...out.splice(at, 1));
   return out;
 }
 
@@ -127,7 +136,7 @@ export async function createCrmTask(
   const now = opts.now ?? new Date();
   const title = crmTaskTitle(input.title);
   if (title.length === 0) throw new Error('task title is empty');
-  const wanted = targetEntries(input.targets);
+  const wanted = targetEntries(input.targets, input.anchor);
   const today = crmTaskLocalDay(now, tz);
 
   // 1. Same title (today, or ever): reuse the one already on the first target, or adopt an orphan.

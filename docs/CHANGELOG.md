@@ -201,7 +201,7 @@ Integración de `feat/mvp0-bootstrap` en `main` (PR #1).
 - Sin cambios en el HITL: el resolver solo alimenta hipótesis `PROPOSED`; el humano sigue validando y el sistema sigue sin enviar nada. Sin migraciones; sin LLM en la resolución en v1 (solo heurísticas).
 - Docs: nuevo [resolver-dominios.md](resolver-dominios.md); las dos variables y un problema frecuente nuevo en el [runbook](runbook-local.md#variables-del-runtime); el ciclo de [prospección por señales](prospeccion-por-senales.md) y la [guía comercial](guia-comercial.md#más-hipótesis-nuevas-cuando-se-desbloquean-expositores-sin-web) lo mencionan.
 
-## 2026-10-22 — Tanda 21 (en curso)
+## 2026-10-22 — Tanda 21 (cerrada)
 
 - Scout multi-caladero (diseño cerrado; implementación en curso): el scout semanal pasa de un sector («alimentación y bebidas») a una lista configurable en la task del seed: alimentación y bebidas, horeca y food service, farmacia y salud, cosmética y belleza, franquicias y retail, e industria y packaging. Mantiene España, el modo `discover_only` y la misma ventana de lead time de 45 a 210 días; deduplica las ferias repetidas entre sectores y devuelve contadores por sector. Coste aproximado: 0,07 € por sector y semana.
 - Señales de empresa: además de ferias, el scout descubre aperturas, rondas de financiación y aniversarios. Solo se crean con una noticia de los últimos 60 días (o una apertura futura) y con la URL fuente verificada por descarga. Al calificarlas, se prospecta directamente a esa empresa, sin catálogo de expositores, y el Resolver de Dominios obtiene la web si la noticia no la trae. Caducan a los 120 días desde la noticia. Sus nombres llevan un sufijo de tipo `[POR CONFIRMAR el mecanismo exacto de tipado]`. El humano sigue calificando todo.

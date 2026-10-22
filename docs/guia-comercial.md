@@ -468,7 +468,7 @@ Cómo funciona por dentro, las garantías y el evento para n8n están en [Triaje
 
 ### Seguimiento de lo que has enviado
 
-Hasta ahora, un correo sin respuesta se perdía en silencio. Desde la tanda 21, **el sistema te avisa cuando un envío lleva 5 días laborables sin respuesta**: te deja una tarea en tu bandeja y tú decides qué hacer. `[POR CONFIRMAR]` fecha de activación en producción.
+Hasta ahora, un correo sin respuesta se perdía en silencio. Desde la tanda 21, **el sistema te avisa cuando un envío lleva 5 días laborables sin respuesta**: te deja una tarea en tu bandeja y tú decides qué hacer. Activo en producción desde el 2026-10-22.
 
 **Cuándo aparece la tarea.** Cada día a las 08:30 el sistema revisa las hipótesis con **Email status** = `Sent` y crea la tarea **🔔 Seguimiento — {empresa}** si se cumplen las tres condiciones:
 
@@ -496,7 +496,7 @@ Hasta ahora, un correo sin respuesta se perdía en silencio. Desde la tanda 21, 
 - **Una sola tarea por hipótesis, para siempre.** Si la cierras o la borras, no vuelve a aparecer. Si quieres insistir otra vez, lo decides tú.
 - **Si el cliente responde, el aviso se corta.** Si llega una respuesta (interesado, pregunta, no interesado o baja), no hay seguimiento y sigues el camino habitual de [respuestas de los clientes](#respuestas-de-los-clientes).
 - **Si la tarea es un falso aviso**, por ejemplo porque contestó otra persona desde otra dirección y el sistema no lo asoció, ciérrala sin más: no pasa nada.
-- **Las hipótesis enviadas antes de la tanda 21 pueden generar tareas de golpe** la primera vez que se activa el seguimiento. `[POR CONFIRMAR]` si el sistema limita la antigüedad. Si te llega una avalancha, avisa al equipo técnico.
+- **Las hipótesis enviadas antes de la tanda 21 pueden generar tareas la primera vez** que se activa el seguimiento, con un tope de 20 por día (las más antiguas primero). Si te molesta el lote, ciérralas: no vuelven a crearse.
 
 **Tu tablero de envíos.** La vista **Hipótesis · Envíos** (en **Commercial OS → Hypotheses**) muestra tus hipótesis en columnas por **Email status**: `Draft` (por revisar), `Reviewed` (listas para enviar), `Sending` (en curso) y `Sent` (ya enviadas). Úsala para ver de un vistazo qué te queda por revisar y qué has enviado ya; las enviadas con tarea 🔔 son las que no han contestado.
 

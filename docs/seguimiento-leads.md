@@ -48,8 +48,8 @@ Los tres primeros caminos ya existían y no cambian. El cuarto es lo nuevo de la
 Cada día a las **08:30** (`Europe/Madrid`), una tarea del scheduler revisa las hipótesis y crea la Task de seguimiento de las que cumplen **todas** estas condiciones:
 
 1. **`Email status` = `Sent`.** Solo cuentan los correos que salieron de verdad.
-1. **Han pasado al menos 5 días laborables desde el primer envío.** Los días laborables son de lunes a viernes. `[POR CONFIRMAR]` si el cálculo descuenta festivos (suposición: solo excluye sábados y domingos).
-1. **No hay respuesta registrada.** El triaje del buzón no ha asociado ningún correo entrante a esa empresa o a ese envío. `[POR CONFIRMAR]` qué clases cuentan como respuesta: la suposición es que cualquiera (interesado, pregunta, no interesado, baja o rebote) detiene el seguimiento.
+1. **Han pasado al menos 5 días laborables desde el primer envío.** Los días laborables son de lunes a viernes; el cálculo no descuenta festivos (un puente puede adelantar el aviso un día). Un reenvío reinicia el reloj desde el último envío.
+1. **No hay respuesta registrada.** El triaje del buzón no ha asociado ningún correo entrante a esa empresa o a ese envío. Cuenta como respuesta cualquier clase del triaje (interesado, pregunta, no interesado, baja u otro) **salvo la respuesta automática** (un «fuera de la oficina» no detiene el seguimiento). Un **rebote** sí lo detiene y además nunca genera Task: ese envío no llegó.
 1. **El destinatario no está en la lista de supresión.** Ni la dirección ni el dominio.
 1. **La hipótesis no tiene ya una Task de seguimiento.** Ver [idempotencia](#idempotencia-una-task-por-hipótesis-para-siempre).
 
@@ -60,7 +60,7 @@ El plazo sale de la variable [`FOLLOWUP_AFTER_BUSINESS_DAYS`](#configuración) (
 El sistema crea **como máximo una Task de seguimiento por hipótesis, de por vida**. Da igual lo que hagas con ella:
 
 - Si la cierras (`Done`), no se vuelve a crear.
-- Si la borras a mano, no se vuelve a crear. `[POR CONFIRMAR]` el mecanismo: la suposición es que la marca de «ya creada» vive en el `audit_log` o en la tabla `events` del Agent OS, no en la propia Task, y por eso sobrevive al borrado.
+- Si la borras a mano, no se vuelve a crear. El mecanismo: la marca de «ya creada» es la entrada `lead.followup_task` del `audit_log` del Agent OS (anclada a la hipótesis), no la propia Task, y por eso sobrevive al borrado.
 - Si el chequeo se ejecuta dos veces el mismo día, la segunda no crea nada.
 
 > **Importante:** el seguimiento es un único aviso por hipótesis, no una secuencia. Si pasado ese aviso quieres seguir insistiendo, lo decides tú y lo haces tú.
@@ -74,9 +74,9 @@ Es una **Task nativa de Twenty**, la misma que ya usas para **📬 Responder a�
 | **Título** | `🔔 Seguimiento — {empresa}` |
 | **Vencimiento** | El día en que se crea (el del chequeo de las 08:30) |
 | **Cuerpo** | Fecha y asunto del primer envío; destinatario; el ángulo de la hipótesis (qué se le propuso y por qué); y un **guion sugerido** para el seguimiento, sin urgencia |
-| **Enlace** | La Task cuelga de la empresa `[POR CONFIRMAR]` (y quizá de la hipótesis; comprueba a qué objeto se enlaza) |
+| **Enlace** | La Task cuelga de la empresa **y** de la hipótesis (si la hipótesis no tiene empresa, solo de la hipótesis) |
 
-El guion sugerido es una propuesta de texto, no un correo enviado. Su tono es el de «retomo el mensaje por si se perdió», nunca el de empujar: el ángulo comercial de PubliEXPE es el de ofrecer tiempo para hacerlo bien ([ventana de lead time](prospeccion-por-senales.md#ventana-de-lead-time)), no el de presionar. `[POR CONFIRMAR]` si el guion lo genera una plantilla fija o un modelo.
+El guion sugerido es una propuesta de texto, no un correo enviado. Su tono es el de «retomo el mensaje por si se perdió», nunca el de empujar: el ángulo comercial de PubliEXPE es el de ofrecer tiempo para hacerlo bien ([ventana de lead time](prospeccion-por-senales.md#ventana-de-lead-time)), no el de presionar. El guion es una plantilla fija por código, sin modelo; un test comprueba que nunca contiene «plazo», «urgente» ni «prisa».
 
 > **Nota:** como el resto de Tasks nativas, no lleva `tenantId` y la crea el runtime con el rol «Agent runtime» ([límite conocido](twenty-nativo.md#límites-conocidos)). El sistema nunca la cierra ni la borra.
 
@@ -103,7 +103,7 @@ La Twenty App añade en la tanda 21 una vista de **Hypotheses**: **Hipótesis ·
 | `Sending` | Envío en curso |
 | `Sent` | El correo ha salido; aquí vive el seguimiento |
 
-`[POR CONFIRMAR]` si el tablero trae una columna para los valores vacíos (hipótesis sin borrador todavía).
+El tablero trae las columnas del enum real (`Draft`, `Ready`, `Sending`, `Sent`) más una columna para los valores vacíos (hipótesis sin borrador todavía).
 
 La vista **no existe hasta que se sincroniza la App**. El sync lo hace la persona que opera Twenty con el procedimiento del runbook: [Qué añade la sincronización de la tanda 21](runbook-local.md#qué-añade-la-sincronización-de-la-tanda-21).
 
@@ -117,14 +117,14 @@ Como el resto de variables del runtime, se define en `deployments/.env`, debe ll
 
 > **Nota:** cambiar el plazo no reescribe nada. Si lo bajas de 5 a 3, la siguiente pasada crea las Tasks de las hipótesis que ya cumplen 3 días; las que ya tienen Task no se tocan.
 
-> **Precaución:** la primera vez que se activa el seguimiento, **todas las hipótesis `Sent` antiguas sin respuesta cumplen la condición** y pueden generar Task el mismo día (por ejemplo, los envíos de las primeras semanas). `[POR CONFIRMAR]` si el runtime limita la antigüedad máxima o la cantidad por pasada. Si quieres evitar una avalancha, activa el seguimiento en un momento en que tengas pocos envíos antiguos pendientes, o pide al equipo técnico que cierre ese lote.
+> **Precaución:** la primera vez que se activa el seguimiento, **todas las hipótesis `Sent` antiguas sin respuesta cumplen la condición** y pueden generar Task el mismo día (por ejemplo, los envíos de las primeras semanas). El runtime limita la pasada a **20 Tasks** (las más antiguas primero); el resto sale como `cap_reached` y entra en los días siguientes. No hay tope de antigüedad.
 
-La tarea se registra con el seed (`pnpm seed`), como el resto de tareas del Agent OS: `[POR CONFIRMAR]` nombre de la tarea y de su versión (suposición: una tarea `CRON` a las `30 8 * * *` en `Europe/Madrid`, sujeta a la allowlist `SCHEDULER_TENANTS`).
+La tarea se registra con el seed (`pnpm seed`), como el resto de tareas del Agent OS: La tarea es `lead-followup-check` (`CRON` `30 8 * * *` en `Europe/Madrid`, agente FollowUpAgent, sujeta a la allowlist `SCHEDULER_TENANTS`).
 
 ## Comprobar que funciona
 
 1. Localiza una hipótesis `Sent` con más de 5 días laborables y sin respuesta, o ajusta `FOLLOWUP_AFTER_BUSINESS_DAYS` en un entorno de prueba para que alguna cumpla la regla.
-1. Espera al chequeo de las 08:30 o lanza la tarea a mano: `curl -s -X POST http://127.0.0.1:4020/tasks/<TASK_ID>/run -H 'x-tenant-id: publiexpe' -H 'Content-Type: application/json' -d '{}'` `[POR CONFIRMAR]` el cuerpo de la petición. Obtén el `<TASK_ID>` con `GET /tasks`.
+1. Espera al chequeo de las 08:30 o lanza la tarea a mano: `curl -s -X POST http://127.0.0.1:4020/tasks/<TASK_ID>/run -H 'x-tenant-id: publiexpe' -H 'Content-Type: application/json' -d '{}'` Obtén el `<TASK_ID>` con `GET /tasks` (nombre `lead-followup-check`).
 1. Comprueba el `audit_log`: debe aparecer `lead.followup_task` con el identificador de la hipótesis.
 
    ```bash
@@ -135,7 +135,7 @@ La tarea se registra con el seed (`pnpm seed`), como el resto de tareas del Agen
 1. Repite el chequeo: no debe crearse una segunda Task para la misma hipótesis.
 1. Si no aparece nada, mira el *Agent run* de las 08:30 en **Commercial OS → Agent runs** y la fila «No se crean tasks de seguimiento» de los [problemas frecuentes](runbook-local.md#problemas-frecuentes).
 
-> **Nota:** un día sin hipótesis que cumplan la regla es normal. La tarea debe terminar `SKIPPED` o `SUCCESS` con cero creadas, y a coste 0 si no usa modelo `[POR CONFIRMAR]`.
+> **Nota:** un día sin hipótesis que cumplan la regla es normal. La tarea debe terminar con cero creadas y a coste 0: el chequeo no usa modelo (cada hipótesis examinada sale en el output con su motivo: `too_recent`, `replied`, `bounced`, `task_exists`, `suppressed`, `cap_reached` o `no_send_record`).
 
 ## Limitaciones y deuda anotada
 
@@ -143,7 +143,7 @@ La tarea se registra con el seed (`pnpm seed`), como el resto de tareas del Agen
 - **Deuda: hilo de email por hipótesis.** Hoy el sistema no guarda el hilo (`Message-ID`) del primer envío ligado a la hipótesis. Por eso el seguimiento se apoya en la tabla de envíos y en el triaje del buzón, y por eso el guion no puede continuar el hilo original: lo que enviaste y lo que respondieron no cuelga de la hipótesis. Está anotada como deuda para una tanda posterior.
 - **La detección de respuesta depende del triaje.** Si el buzón no sincroniza o el triaje no asocia una respuesta a su empresa (por ejemplo, contesta alguien desde otra dirección), el sistema creerá que no hay respuesta y creará la Task. Es un falso positivo inocuo: cierra la tarea.
 - **Una sola Task por hipótesis.** Si la hipótesis necesita un segundo seguimiento, lo decides tú.
-- **Los días laborables no son festivos.** `[POR CONFIRMAR]`: un puente largo puede adelantar un día el aviso.
+- **Los días laborables no descuentan festivos:** un puente largo puede adelantar un día el aviso.
 
 ## Documentos relacionados
 

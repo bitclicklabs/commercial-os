@@ -50,6 +50,11 @@ export type ListEventSignalsOutput = z.infer<typeof ListEventSignalsOutput>;
 
 const text = (v: unknown): string | null => (typeof v === 'string' && v.trim().length > 0 ? v : null);
 
+/** `day` (YYYY-MM-DD) plus `days` (negative: before). */
+function shiftDay(day: string, days: number): string {
+  return new Date(Date.parse(`${day}T00:00:00Z`) + days * 86_400_000).toISOString().slice(0, 10);
+}
+
 export function toEventSignal(s: TwentyCommercialSignal): EventSignal {
   return {
     id: s.id,
@@ -120,6 +125,11 @@ export const ExpireSignalInput = z.object({
   signalId: RecordId,
   /** The run's date (YYYY-MM-DD): the signal expires only if its event date is strictly before it. */
   today: z.iso.date(),
+  /**
+   * Tanda 21 (company signals): expire only when the event date (the news date) is more than this
+   * many days before `today`. Omitted: strictly before `today` (fairs, unchanged).
+   */
+  minAgeDays: z.number().int().min(1).max(3650).optional(),
 });
 
 export const ExpireSignalOutput = z.object({
@@ -136,7 +146,7 @@ export function createExpireSignalTool(deps: TwentyToolDeps) {
     name: 'Expire commercial signal',
     version: '1.0.0',
     description:
-      'Set a commercial signal to EXPIRED (only that field) when its event date is already past and it is still NEW, REVIEWING or QUALIFIED. Never changes any other status or field.',
+      'Set a commercial signal to EXPIRED (only that field) when its event date is already past (or, with minAgeDays, more than that many days old) and it is still NEW, REVIEWING or QUALIFIED. Never changes any other status or field.',
     inputSchema: ExpireSignalInput,
     outputSchema: ExpireSignalOutput,
     riskLevel: 'LOW_WRITE',
@@ -155,7 +165,8 @@ export function createExpireSignalTool(deps: TwentyToolDeps) {
         const base = { previousStatus: s.status ?? null, eventDate };
         if (!(EXPIRABLE_SIGNAL_STATUSES as readonly string[]).includes(s.status)) return { status: 'ok', output: { expired: false, reason: 'status_not_open', ...base } };
         if (!eventDate) return { status: 'ok', output: { expired: false, reason: 'no_event_date', ...base } };
-        if (!(eventDate < input.today)) return { status: 'ok', output: { expired: false, reason: 'event_not_past', ...base } };
+        const cutoff = input.minAgeDays ? shiftDay(input.today, -input.minAgeDays) : input.today;
+        if (!(eventDate < cutoff)) return { status: 'ok', output: { expired: false, reason: 'event_not_past', ...base } };
         await deps.twenty.update(TWENTY_OBJECTS.commercialSignal, input.signalId, { status: 'EXPIRED' }, { signal: ctx.signal });
         ctx.logger.info('commercial signal expired', { signalId: input.signalId, eventDate, previousStatus: s.status });
         return { status: 'ok', output: { expired: true, reason: 'expired', ...base } };

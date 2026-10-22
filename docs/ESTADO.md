@@ -229,3 +229,19 @@ Origen: el 2026-10-16, al peinar el catálogo de la edición 2026 de HIP, 98 exp
 | Resolver de Dominios en el flujo del Prospector: búsqueda con grounding + verificación de portada (title/h1/aviso legal), denylist (redes, marketplaces, directorios, prensa, wikipedia, dominio de la feria), estados `domain_resolved`/`domain_ambiguous`/`domain_not_found` con URL fuente, `DOMAIN_RESOLVER_ENABLED` y `DOMAIN_RESOLVER_MAX_PER_RUN`, coste contabilizado en el run | `feat/domain-resolver` `[POR CONFIRMAR]` | Opus | 🔄 en curso |
 | Docs: resolver-dominios.md (diseño, flujo, reglas, variables, estados, coste, límites), runbook (variables y problemas frecuentes), prospeccion-por-senales, guía comercial, ESTADO y CHANGELOG | `docs/tanda20` | Sonnet | ✅ entregado (diseño cerrado; los detalles que dependen de la implementación quedan marcados `[POR CONFIRMAR]` para reconciliar al integrar) |
 | Integración, e2e y PR | `feat/tanda20` (worktree wt20-integracion) `[POR CONFIRMAR]` | PM | ⬜ pendiente |
+
+## Tanda 21 — Scout multi-caladero y seguimiento de leads 🔄 (en curso, 2026-10-22)
+
+Origen: dos huecos del ciclo comercial. Arriba, el scout semanal solo mira alimentación y bebidas y solo descubre ferias: faltan sectores y otras razones para escribir a una empresa. Abajo, un correo enviado sin respuesta se pierde en silencio: nadie avisa al comercial. Diseño cerrado en las dos piezas; el humano sigue calificando y enviando, y el sistema sigue sin enviar nada por su cuenta. Sin migraciones previstas `[POR CONFIRMAR]`.
+
+| Pieza | Rama | Agente | Estado |
+|---|---|---|---|
+| **A. Scout multi-caladero y señales de empresa**: el scout semanal recorre una lista de sectores configurable en la task del seed (alimentación y bebidas, horeca y food service, farmacia y salud, cosmética y belleza, franquicias y retail, industria y packaging; España, `discover_only`, ventana de 45 a 210 días, dedupe entre sectores, contadores por sector, ~0,07 €/sector/semana). Además descubre señales de empresa (apertura, ronda de financiación, aniversario) con noticia de los últimos 60 días (o apertura futura) y URL verificada por descarga; al calificarlas se prospecta a esa empresa directamente, con el Resolver de Dominios si la noticia no trae web; caducan a los 120 días | `feat/scout-multi-caladero` `[POR CONFIRMAR]` | Opus | 🔄 en curso |
+| **B. Seguimiento de leads enviados**: chequeo diario (08:30 Madrid) de hipótesis `Sent` con 5 días laborables o más sin respuesta registrada y fuera de la lista de supresión → una única Task nativa «🔔 Seguimiento — {empresa}» (idempotente para siempre por hipótesis), sin segundo email automático; `FOLLOWUP_AFTER_BUSINESS_DAYS` (5; `0` desactiva); auditoría `lead.followup_task`; vista nueva de la App «Hipótesis · Envíos» (kanban por `emailStatus`) | `feat/lead-followup` `[POR CONFIRMAR]` | Opus | 🔄 en curso |
+| **C. Docs**: seguimiento-leads.md, caladeros y señales de empresa en prospeccion-por-senales.md, guía comercial, runbook (variable, sincronización de la vista, problemas frecuentes), ESTADO y CHANGELOG | `docs/tanda21` | Sonnet | ✅ entregado (todo lo que depende de la implementación queda marcado `[POR CONFIRMAR]` para reconciliar al integrar) |
+| Integración, e2e y PR | `feat/tanda21` (worktree wt21-integracion) `[POR CONFIRMAR]` | PM | ⬜ pendiente |
+
+Notas:
+- **Deuda anotada:** hilo de email por hipótesis (hoy el primer envío no deja ligado su hilo a la hipótesis). El seguimiento v1 solo avisa al comercial; un segundo email automático queda fuera.
+- **Pendiente del usuario tras integrar:** sincronizar la Twenty App para que exista la vista «Hipótesis · Envíos» ([procedimiento](runbook-local.md#qué-añade-la-sincronización-de-la-tanda-21)).
+- **Riesgo conocido al activar el seguimiento:** las hipótesis `Sent` antiguas sin respuesta pueden generar Tasks de golpe en la primera pasada.

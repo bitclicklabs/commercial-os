@@ -96,6 +96,7 @@ describe('ToolRegistry', () => {
       upsert_person: 'LOW_WRITE',
       upsert_opportunity: 'LOW_WRITE',
       create_reply_task: 'LOW_WRITE',
+      list_sent_hypotheses: 'READ',
       fetch_url: 'READ',
       render_url: 'READ',
       find_contact: 'READ',

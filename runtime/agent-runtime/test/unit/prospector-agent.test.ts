@@ -103,15 +103,16 @@ describe('ProspectorAgent', () => {
     expect(resolveAgentImplementation({ implementation: 'prospector' }).kind).toBe('prospector');
   });
 
-  it('seed tool policy: exactly the 13 Prospector tools (create_research, fetch_url, render_url, the signal and lead-time tools included) + the 5 catalog READ tools, LOW_WRITE ceiling', () => {
+  it('seed tool policy: exactly the 14 Prospector tools (create_research, fetch_url, render_url, the signal, lead-time and company-signal note tools included) + the 5 catalog READ tools, LOW_WRITE ceiling', () => {
     const policy = parseToolPolicy(desiredProspectorVersion().configuration);
     expect([...policy.allow].sort()).toEqual([...PROSPECTOR_TOOLS, ...CATALOG_TOOL_IDS].sort());
-    expect(policy.allow).toHaveLength(18);
+    expect(policy.allow).toHaveLength(19);
     expect(policy.allow).toContain('list_hypotheses_for_expiry');
     expect(policy.allow).toContain('expire_hypothesis');
-    // Tanda 19: the out-of-window alert is a Twenty Task; the note tool stays only for older versions.
+    // Tanda 19: the out-of-window alert is a Twenty Task. Tanda 21: the note tool is back, only for the
+    // qualified company signal whose company has no verified website (PM decision 10).
     expect(policy.allow).toContain('create_crm_task');
-    expect(policy.allow).not.toContain('create_signal_note');
+    expect(policy.allow).toContain('create_signal_note');
     expect(policy.allow).toContain('list_event_signals');
     expect(policy.allow).toContain('expire_signal');
     expect(policy.allow).toContain('create_research');

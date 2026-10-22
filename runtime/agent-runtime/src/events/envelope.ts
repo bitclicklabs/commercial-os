@@ -53,9 +53,10 @@ export type CatalogEventType = (typeof CATALOG_EVENT_TYPES)[number];
 
 /**
  * Commercial-signal events (src/signals/qualified.ts): `signal.qualified` when a person moves a
- * fair-level `commercialSignal` to QUALIFIED in Twenty (signed webhook), at most once per signal
- * every 24 h. Data: `{signal_id, name, event_url, event_date, signal_type, chainDepth: 0}`. Fires
- * the EVENT task `prospect-on-qualified` (targeted scout of that fair).
+ * fair-level or company-level (tanda 21) `commercialSignal` to QUALIFIED in Twenty (signed webhook),
+ * at most once per signal every 24 h. Data: `{signal_id, name, event_url, event_date, signal_type,
+ * signal_kind: 'fair' | 'company', chainDepth: 0}`. Fires the EVENT task `prospect-on-qualified`
+ * (targeted scout of that fair, or the evaluation of that company).
  */
 export const SIGNAL_EVENT_TYPES = ['signal.qualified'] as const;
 export type SignalEventType = (typeof SIGNAL_EVENT_TYPES)[number];

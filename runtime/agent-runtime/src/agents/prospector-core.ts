@@ -217,6 +217,8 @@ export const PROSPECTOR_TOOLS = [
   'list_hypotheses_for_expiry',
   'expire_hypothesis',
   'create_crm_task',
+  // Tanda 21: note on a qualified company signal whose company has no verified website (no hypothesis).
+  'create_signal_note',
 ] as const;
 
 export interface ScoutConfig {
@@ -259,6 +261,8 @@ export interface ScoutConfig {
    * URL only if the downloaded page corroborates the fair (default true; false = strict).
    */
   verifyUnsourcedByFetch: boolean;
+  /** Tanda 21: company signals (news) created per sector and run when the input asks for them (0 = never). */
+  maxCompanySignalsPerSector: number;
 }
 
 export interface ProspectorConfig {
@@ -315,6 +319,7 @@ export function readConfig(configuration: Record<string, unknown>): ProspectorCo
       maxRedirectResolutions: int(s.max_redirect_resolutions, 3, 5),
       eventSignalConfidence: Math.min(1, Math.max(0, num(s.event_signal_confidence, 0.5))),
       verifyUnsourcedByFetch: s.verify_unsourced_by_fetch !== false,
+      maxCompanySignalsPerSector: int(s.max_company_signals_per_sector, 3, 5),
     },
   };
 }

@@ -112,6 +112,8 @@ export function desiredProspectorVersion() {
           list_hypotheses_for_expiry: 2,
           expire_hypothesis: MAX_HYPOTHESIS_EXPIRATIONS_PER_RUN,
           create_crm_task: 2,
+          // Tanda 21: one note per qualified company signal without a verified website.
+          create_signal_note: 2,
         },
       },
       // Knowledge layer (LLD 6.4): ACTIVE entries of these domains go into the per-exhibitor decision prompt.
@@ -136,6 +138,8 @@ export function desiredProspectorVersion() {
         max_redirect_resolutions: 3,
         event_signal_confidence: 0.5,
         verify_unsourced_by_fetch: true,
+        // Tanda 21: company signals (news of openings, funding rounds, anniversaries) per sector and run.
+        max_company_signals_per_sector: 3,
       },
     } as Record<string, unknown>,
     skillRefs: [{ name: PROSPECTOR_SKILL_ID }, { name: SCOUT_SKILL_ID }, { name: SCOUT_EXTRACT_SKILL_ID }] as SkillRef[],
@@ -170,12 +174,30 @@ export const SCOUT_DEFAULT_INPUT = { sector: 'alimentación y bebidas', region: 
  * (URL and date) and never combs exhibitors: a person qualifies first, then the daily run or the
  * trigger on qualification comb the list.
  */
-export const SCOUT_WEEKLY_INPUT = { ...SCOUT_DEFAULT_INPUT, discover_only: true };
+/**
+ * Sectors of the weekly scouting (tanda 21, PM decision v1). Editable without code: it is the task's
+ * default input (a change through the seed is a new TaskDefinitionVersion; by hand, the task API).
+ * Without `sectors` the scout falls back to `sector`.
+ */
+export const SCOUT_SECTORS = [
+  'alimentación y bebidas',
+  'horeca y food service',
+  'farmacia y salud',
+  'cosmética y belleza',
+  'franquicias y retail',
+  'industria y packaging',
+] as const;
+
+/**
+ * Weekly scouting v3 (tanda 21): the six sectors in series (the start rotates every week) and, per
+ * sector, company signals (openings, funding rounds, anniversaries) besides the fairs. Discovery only.
+ */
+export const SCOUT_WEEKLY_INPUT = { sectors: [...SCOUT_SECTORS], region: 'España', horizon_months: 6, discover_only: true, company_signals: true };
 
 export function desiredScoutTask() {
   return {
     description:
-      'Descubrimiento semanal de ferias reales: el Prospector (modo scout, solo descubrimiento) busca con Google (grounding de Gemini) ferias próximas del sector, verifica una página de cada una y la registra en Twenty como señal FAIR (NEW) con su URL y fecha, sin peinar expositores; el catálogo se peina cuando la señal se califica.',
+      'Descubrimiento semanal de ferias reales y señales de empresa: el Prospector (modo scout, solo descubrimiento) recorre en serie la lista de sectores de la entrada (sectors; el inicio rota cada semana; si se agota el presupuesto de tiempo, los sectores restantes quedan sin correr y se cuentan), busca con Google (grounding de Gemini) ferias próximas de cada sector, verifica una página de cada una y la registra en Twenty como señal FAIR (NEW) con su URL y fecha, sin peinar expositores; por sector, además, busca noticias de los últimos 60 días de aperturas, rondas de financiación y aniversarios de empresas y crea señales NEW «<empresa>: <qué pasó> — apertura|financiación|aniversario» con la noticia verificada por descarga. Al calificarse, la feria se peina y la empresa se evalúa directamente.',
     defaultInput: { ...SCOUT_WEEKLY_INPUT },
     schedule: { type: 'CRON', expression: '30 7 * * 1' },
     timezone: 'Europe/Madrid',

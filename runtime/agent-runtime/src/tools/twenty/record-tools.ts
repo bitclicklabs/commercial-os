@@ -67,6 +67,12 @@ export const CreateSignalInput = z.object({
   detectedAt: IsoDateTime.optional(),
   confidence: Confidence,
   status: z.enum(SIGNAL_STATUSES).default('NEW'),
+  /**
+   * Tanda 21 (company signals of the weekly scout): the natural key is the exact source URL (the
+   * news article) instead of the event date + source domain. Two news of the same newspaper and day
+   * about different companies are two signals; the same article found again next week is the same one.
+   */
+  dedupeBySourceUrl: z.boolean().optional(),
 });
 
 export const CreateSignalOutput = CreatedRecord({
@@ -98,13 +104,20 @@ export function createCreateSignalTool(deps: TwentyToolDeps) {
       withTwenty(deps, async () => {
         const sourceDomain = normalizeDomain(input.sourceDomain ?? input.sourceUrl);
         if (!sourceDomain) return errorResult('INVALID_INPUT', 'sourceDomain could not be derived from sourceUrl');
-        const idempotencyKey = `publi:signal:create:${input.companyId ?? 'event'}:${input.signalType}:${input.eventDate ?? 'none'}:${sourceDomain}`;
-        const filter = `and(${[
-          input.companyId ? eq('companyId', input.companyId) : 'companyId[is]:NULL',
-          eq('signalType', input.signalType),
-          eq('sourceDomain', sourceDomain),
-          input.eventDate ? eq('eventDate', input.eventDate) : 'eventDate[is]:NULL',
-        ].join(',')})`;
+        const company = input.companyId ? eq('companyId', input.companyId) : 'companyId[is]:NULL';
+        const bareUrl = input.sourceUrl.replace(/^https?:\/\//i, '');
+        const idempotencyKey = input.dedupeBySourceUrl
+          ? `publi:signal:create:${input.companyId ?? 'event'}:${input.signalType}:url:${bareUrl}`
+          : `publi:signal:create:${input.companyId ?? 'event'}:${input.signalType}:${input.eventDate ?? 'none'}:${sourceDomain}`;
+        const filter = input.dedupeBySourceUrl
+          ? // Twenty may store a LINKS value with or without its scheme: both spellings are looked up.
+            `and(${[company, eq('signalType', input.signalType), `or(${eq('sourceUrl.primaryLinkUrl', input.sourceUrl)},${eq('sourceUrl.primaryLinkUrl', bareUrl)})`].join(',')})`
+          : `and(${[
+              company,
+              eq('signalType', input.signalType),
+              eq('sourceDomain', sourceDomain),
+              input.eventDate ? eq('eventDate', input.eventDate) : 'eventDate[is]:NULL',
+            ].join(',')})`;
         const toOutput = (s: TwentyCommercialSignal, created: boolean) => ({
           created,
           idempotencyKey,

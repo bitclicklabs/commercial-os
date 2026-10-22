@@ -19,7 +19,7 @@ import { agentExecutions, taskDefinitions, taskDefinitionVersions, taskRuns } fr
 import { DrizzleSignalHistory } from '../../src/agents/signal-prospecting.js';
 import { StubProvider } from '../../src/providers/index.js';
 import { MemoryRunQueue } from '../../src/queue/run-queue.js';
-import { PROSPECTOR_TASK_NAME, RETIRED_TASKS, SCOUT_TASK_NAME, seedProspector } from '../../src/seed/prospector-seed.js';
+import { PROSPECTOR_TASK_NAME, RETIRED_TASKS, SCOUT_SECTORS, SCOUT_TASK_NAME, seedProspector } from '../../src/seed/prospector-seed.js';
 import { requestTaskRun } from '../../src/services/task-runs.js';
 import { createDefaultToolRegistry } from '../../src/tools/index.js';
 import { RunProcessor } from '../../src/worker/processor.js';
@@ -121,7 +121,8 @@ describe.skipIf(!dbAvailable)('signal-driven daily prospecting (PostgreSQL)', ()
     // The v1 snapshot (with the fixture) is kept: versions are never deleted.
     expect((versions.find((v) => v.version === 1)!.definition as { default_input: Record<string, unknown> }).default_input).toMatchObject({ event: { name: 'Expo Alimentaria Ibérica 2026' } });
     const weekly = await handle.db.query.taskDefinitions.findFirst({ where: eq(taskDefinitions.id, v2.scoutTaskId) });
-    expect(weekly!.defaultInput).toEqual({ sector: 'alimentación y bebidas', region: 'España', horizon_months: 6, discover_only: true });
+    // Tanda 21: the six sectors in one run + company signals.
+    expect(weekly!.defaultInput).toEqual({ sectors: [...SCOUT_SECTORS], region: 'España', horizon_months: 6, discover_only: true, company_signals: true });
     const retired = await handle.db.query.taskDefinitions.findFirst({ where: eq(taskDefinitions.id, orphan!.id) });
     expect(retired).toMatchObject({ enabled: false, currentVersion: 2, status: orphan!.status });
     const retiredVersions = await handle.db.select().from(taskDefinitionVersions).where(eq(taskDefinitionVersions.taskDefinitionId, orphan!.id));

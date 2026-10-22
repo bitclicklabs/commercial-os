@@ -21,6 +21,10 @@
  * - FAIR-LEVEL signals only: no `companyId` (the per-exhibitor signals written by the Prospector
  *   always hang from a company), `signalType` FAIR / CONGRESS / EVENT and an http(s) URL in
  *   `sourceUrl`. Everything else is ignored with a reason (logged by the route).
+ * - tanda 21: COMPANY signals (event level, no `companyId`, typed by the name suffix "— apertura",
+ *   "— financiación", "— aniversario"; src/signals/company-signal.ts) are the one exception: they
+ *   fire too, with `signal_kind: 'company'` and the FULL signal name (suffix kept: the Prospector
+ *   reads the company and the kind from it). Per-exhibitor signals never fire anything.
  *
  * Idempotency, once per signal (`processSignalQualification`): the last `signal.qualified` of the
  * signal in `events` (append-only outbox) decides. Within 24 h of it nothing is emitted (qualify
@@ -35,6 +39,7 @@ import { events } from '../db/schema.js';
 import type { EventPublisher } from '../events/event-bus.js';
 import type { TwentyWebhookPayload } from '../evaluations/human-feedback.js';
 import { foreignTenantOf, foreignTenantReason } from '../evaluations/twenty-webhook.js';
+import { isCompanySignal } from './company-signal.js';
 
 export const SIGNAL_QUALIFIED_EVENT = 'signal.qualified';
 export const SIGNAL_OBJECT = 'commercialSignal';
@@ -57,6 +62,8 @@ export interface SignalQualifiedData {
   event_url: string;
   event_date: string | null;
   signal_type: string;
+  /** Tanda 21: `fair` (exhibitor catalog) or `company` (one company: opening, funding, anniversary). */
+  signal_kind: 'fair' | 'company';
   /** How the transition was established: `updated_fields` (status listed) or `status_only`. */
   transition: 'updated_fields' | 'status_only';
 }
@@ -118,6 +125,24 @@ export function classifySignalQualification(payload: TwentyWebhookPayload): Sign
   }
   if (str(record.companyId)) return { action: 'ignore', reason: 'per-exhibitor signal (has companyId)' };
   const signalType = str(record.signalType);
+  const rawName = str(record.name);
+  if (rawName && isCompanySignal({ signalType, name: rawName })) {
+    const url = eventUrlOf(record.sourceUrl);
+    if (!url) return { action: 'ignore', reason: 'company signal without an http(s) sourceUrl' };
+    const date = str(record.eventDate);
+    return {
+      action: 'emit',
+      data: {
+        signal_id: signalId,
+        name: rawName.slice(0, 255),
+        event_url: url,
+        event_date: date ? date.slice(0, 40) : null,
+        signal_type: signalType ?? 'OTHER',
+        signal_kind: 'company',
+        transition: updatedFields && updatedFields.length > 0 ? 'updated_fields' : 'status_only',
+      },
+    };
+  }
   if (!signalType || !(FAIR_LEVEL_SIGNAL_TYPES as readonly string[]).includes(signalType)) {
     return { action: 'ignore', reason: `signalType ${signalType ?? 'unknown'} is not fair-level (${FAIR_LEVEL_SIGNAL_TYPES.join(', ')})` };
   }
@@ -134,6 +159,7 @@ export function classifySignalQualification(payload: TwentyWebhookPayload): Sign
       event_url: eventUrl,
       event_date: eventDate ? eventDate.slice(0, 40) : null,
       signal_type: signalType,
+      signal_kind: 'fair',
       transition: updatedFields && updatedFields.length > 0 ? 'updated_fields' : 'status_only',
     },
   };

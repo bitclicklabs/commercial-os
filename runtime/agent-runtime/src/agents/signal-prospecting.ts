@@ -24,6 +24,14 @@
  *  4. None QUALIFIED inside the window: the run ends SKIPPED ("0 señales calificadas" or "0
  *     señales calificadas en ventana de lead time", with the breakdown), no model call, no CRM summary.
  *
+ * Company signals (tanda 21; src/signals/company-signal.ts, typed by the name suffix "— apertura" /
+ * "— financiación" / "— aniversario"): listed with the fairs (event level, no company) but with their
+ * own life: expired once their NEWS is more than 120 days old (`expire_signal` with `minAgeDays`),
+ * with their PROPOSED hypotheses; the lead-time window does not apply. The QUALIFIED ones enter the
+ * same round-robin pool (their tie-break date is their deadline, news + 120 days); one whose signal
+ * already has a hypothesis (PROPOSED / VALIDATED) is left out as `skipped_existing` (cost 0). A chosen
+ * company signal is prospected by `runCompanySignal` (one company, no catalog).
+ *
  * Round-robin memory: the runtime's own `agent_executions` of this agent. The last time a
  * signal was worked is the latest execution whose output (this mode) or input (a directed
  * scout run that carries `signal_id`, e.g. the trigger on qualification) names it. Executions
@@ -47,6 +55,8 @@ import {
   type LeadTimeWindow,
 } from '../signals/lead-time.js';
 import { runScout, type ScoutRunOutput } from './event-scout.js';
+import { runCompanySignal } from './company-signals.js';
+import { COMPANY_SIGNAL_EXPIRY_DAYS, companySignalDeadline, isCompanySignal, isExpiredCompanySignal, newsAgeDays } from '../signals/company-signal.js';
 import type { DomainResolverConfig } from './domain-resolver.js';
 import { issues, SCOUT_TIME_BUDGET_CAP_MS, toolError, type ProspectorRun, type RunOutcome } from './prospector-core.js';
 
@@ -90,6 +100,11 @@ const HttpUrl = z.url({ protocol: /^https?$/ }).max(2048);
  */
 export function isFairLevelSignal(s: Pick<EventSignal, 'signalType' | 'sourceUrl'>): boolean {
   return (EVENT_SIGNAL_TYPES as readonly string[]).includes(s.signalType) && s.sourceUrl !== null && HttpUrl.safeParse(s.sourceUrl).success;
+}
+
+/** A company signal of the event level (no company, guaranteed by `list_event_signals`) with an http(s) news URL. */
+export function isCompanyLevelSignal(s: Pick<EventSignal, 'signalType' | 'sourceUrl' | 'name'>): boolean {
+  return isCompanySignal(s) && s.sourceUrl !== null && HttpUrl.safeParse(s.sourceUrl).success;
 }
 
 /** Event name from the signal name: the scout names them "<feria> (feria)". */
@@ -220,6 +235,8 @@ export function planHypothesisExpiry(
   for (const s of fairSignals) if (s.eventDate) fairDates.set(foldName(eventNameOf(s.name)), s.eventDate.slice(0, 10));
   const plan: HypothesisExpiryPlan = { expire: [], validatedWarnings: [], unresolvedDate: 0 };
   for (const h of hypotheses) {
+    // Company-signal hypotheses (tanda 21) never follow the fair lead time: see planCompanyHypothesisExpiry.
+    if (h.signalName && isCompanySignal({ name: h.signalName })) continue;
     const eventName = hypothesisEventName(h);
     const byName = eventName ? (fairDates.get(foldName(eventName)) ?? null) : null;
     const date = h.signalEventDate ?? byName;
@@ -245,6 +262,20 @@ export function planHypothesisExpiry(
   plan.expire.sort(byDays);
   plan.validatedWarnings.sort(byDays);
   return plan;
+}
+
+/**
+ * Tanda 21: PROPOSED hypotheses of a company signal whose news is more than 120 days old expire
+ * with it (VALIDATED ones are never touched). Oldest news first.
+ */
+export function planCompanyHypothesisExpiry(hypotheses: HypothesisForExpiry[], today: string): HypothesisExpiryCandidate[] {
+  const out: HypothesisExpiryCandidate[] = [];
+  for (const h of hypotheses) {
+    if (h.status !== 'PROPOSED' || !h.signalName || !isCompanySignal({ name: h.signalName })) continue;
+    if (!isExpiredCompanySignal(h.signalEventDate, today)) continue;
+    out.push({ id: h.id, name: h.name, status: h.status, event_name: h.signalName, event_date: h.signalEventDate!, days: -(newsAgeDays(h.signalEventDate, today) ?? 0), date_source: 'signal' });
+  }
+  return out.sort((a, b) => a.days - b.days || (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
 }
 
 // ---------------------------------------------------------------------------
@@ -340,7 +371,7 @@ async function expireHypothesesByLeadTime(
   fairSignals: EventSignal[],
   today: string,
   window: LeadTimeWindow,
-): Promise<{ info: Record<string, unknown>; lines: string[]; errors: number }> {
+): Promise<{ info: Record<string, unknown>; lines: string[]; errors: number; hypotheses: HypothesisForExpiry[] | null }> {
   const listed = await run.callTool('list_hypotheses_for_expiry', { statuses: ['PROPOSED', 'VALIDATED'] });
   if (listed.result.status !== 'ok') {
     const error = toolError(listed);
@@ -348,6 +379,7 @@ async function expireHypothesesByLeadTime(
       info: { list_error: error, expired: [], errors: [] },
       lines: [`No se pudieron leer las hipótesis para la caducidad por lead time (${error.code}).`],
       errors: 1,
+      hypotheses: null,
     };
   }
   const out = listed.result.output as ListHypothesesForExpiryOutput;
@@ -366,7 +398,22 @@ async function expireHypothesesByLeadTime(
     if (o.expired) expired.push({ id: c.id, name: c.name, event_date: o.eventDate, days: o.days });
     else notExpired.push({ id: c.id, name: c.name, reason: o.reason });
   }
-  const deferred = Math.max(0, plan.expire.length - MAX_HYPOTHESIS_EXPIRATIONS_PER_RUN);
+  // Tanda 21: hypotheses of company signals expire with their signal (news > 120 days), same bound.
+  const companyPlan = planCompanyHypothesisExpiry(out.hypotheses, today);
+  const companyExpired: Array<{ id: string; name: string; event_date: string | null; days: number | null }> = [];
+  const room = Math.max(0, MAX_HYPOTHESIS_EXPIRATIONS_PER_RUN - plan.expire.length);
+  for (const c of companyPlan.slice(0, room)) {
+    run.ctx.signal.throwIfAborted();
+    const r = await run.callTool('expire_hypothesis', { hypothesisId: c.id, eventDate: c.event_date, today, minDays: window.minDays, minAgeDays: COMPANY_SIGNAL_EXPIRY_DAYS });
+    if (r.result.status !== 'ok') {
+      errors.push({ id: c.id, name: c.name, ...toolError(r) });
+      continue;
+    }
+    const o = r.result.output as ExpireHypothesisOutput;
+    if (o.expired) companyExpired.push({ id: c.id, name: c.name, event_date: o.eventDate, days: o.days });
+    else notExpired.push({ id: c.id, name: c.name, reason: o.reason });
+  }
+  const deferred = Math.max(0, plan.expire.length - MAX_HYPOTHESIS_EXPIRATIONS_PER_RUN) + Math.max(0, companyPlan.length - room);
   const warnings = plan.validatedWarnings.map((w) => ({ id: w.id, name: w.name, event_date: w.event_date, days: w.days }));
   const info: Record<string, unknown> = {
     checked: out.hypotheses.length,
@@ -375,6 +422,7 @@ async function expireHypothesesByLeadTime(
     max_per_run: MAX_HYPOTHESIS_EXPIRATIONS_PER_RUN,
     due: plan.expire.length,
     expired,
+    ...(companyPlan.length > 0 ? { company_signal_due: companyPlan.length, company_signal_expired: companyExpired } : {}),
     ...(notExpired.length > 0 ? { not_expired: notExpired } : {}),
     ...(errors.length > 0 ? { errors } : {}),
     ...(deferred > 0 ? { deferred } : {}),
@@ -385,13 +433,16 @@ async function expireHypothesesByLeadTime(
     ...(expired.length > 0
       ? [`Hipótesis caducadas por lead time (PROPOSED de ferias a menos de ${window.minDays} días → EXPIRED): ${expired.length} — ${namesWithDays(expired)}.`]
       : []),
+    ...(companyExpired.length > 0
+      ? [`Hipótesis de señales de empresa caducadas (noticia de hace más de ${COMPANY_SIGNAL_EXPIRY_DAYS} días → EXPIRED): ${companyExpired.length} — ${companyExpired.map((e) => e.name).slice(0, 10).join('; ')}.`]
+      : []),
     ...(deferred > 0 ? [`Quedan ${deferred} hipótesis por caducar (tope de ${MAX_HYPOTHESIS_EXPIRATIONS_PER_RUN} por ejecución): se caducan en la próxima.`] : []),
     ...(errors.length > 0 ? [`No se pudieron caducar ${errors.length} hipótesis: ${errors.map((e) => `${e.name} (${e.code})`).join('; ')}.`] : []),
     ...(warnings.length > 0
       ? [`Aviso: ${warnings.length} hipótesis VALIDATED de ferias a menos de ${window.minDays} días (no se caducan, decisión humana): ${namesWithDays(warnings)}.`]
       : []),
   ];
-  return { info, lines, errors: errors.length };
+  return { info, lines, errors: errors.length, hypotheses: out.hypotheses };
 }
 
 export async function runSignals(
@@ -436,7 +487,8 @@ export async function runSignals(
   }
   const { signals: open, truncated } = listed.result.output as ListEventSignalsOutput;
   const fair = open.filter(isFairLevelSignal);
-  const notFair = open.length - fair.length;
+  const companySignals = open.filter((s) => !isFairLevelSignal(s) && isCompanyLevelSignal(s));
+  const notFair = open.length - fair.length - companySignals.length;
 
   // 2. Ageing first: past events go to EXPIRED (the only signal state the machine changes).
   const past = fair.filter((s) => isPastEvent(s, today));
@@ -454,7 +506,22 @@ export async function runSignals(
     if (r.expired) expired.push({ id: s.id, name: s.name, event_date: r.eventDate, previous_status: r.previousStatus });
     else notExpired.push({ id: s.id, name: s.name, reason: r.reason });
   }
-  const expirationsDeferred = Math.max(0, past.length - MAX_EXPIRATIONS_PER_RUN);
+  // Tanda 21: company signals expire once their news is more than 120 days old (same bound per run).
+  const stale = companySignals.filter((s) => isExpiredCompanySignal(s.eventDate, madrid));
+  const companyRoom = Math.max(0, MAX_EXPIRATIONS_PER_RUN - past.length);
+  const expiredCompany: ExpiredEntry[] = [];
+  for (const s of stale.slice(0, companyRoom)) {
+    run.ctx.signal.throwIfAborted();
+    const out = await run.callTool('expire_signal', { signalId: s.id, today: madrid, minAgeDays: COMPANY_SIGNAL_EXPIRY_DAYS });
+    if (out.result.status !== 'ok') {
+      expireErrors.push({ id: s.id, name: s.name, ...toolError(out) });
+      continue;
+    }
+    const r = out.result.output as ExpireSignalOutput;
+    if (r.expired) expiredCompany.push({ id: s.id, name: s.name, event_date: r.eventDate, previous_status: r.previousStatus });
+    else notExpired.push({ id: s.id, name: s.name, reason: r.reason });
+  }
+  const expirationsDeferred = Math.max(0, past.length - MAX_EXPIRATIONS_PER_RUN) + Math.max(0, stale.length - companyRoom);
 
   // 2b. Lead-time maintenance of hypotheses (before choosing: it runs even when nothing is chosen).
   const hyp = await expireHypothesesByLeadTime(run, fair, madrid, window);
@@ -462,6 +529,11 @@ export async function runSignals(
   // 3. QUALIFIED and current (a past one is never prospected, even if its expiry failed), split by the window.
   const qualified = fair.filter((s) => s.status === 'QUALIFIED' && !isPastEvent(s, today));
   const split = partitionByLeadTime(qualified, madrid, window);
+  // Tanda 21: QUALIFIED company signals still alive; the ones whose signal already has a hypothesis are skipped (cost 0).
+  const withHypothesis = new Set((hyp.hypotheses ?? []).map((h) => h.commercialSignalId).filter((v): v is string => typeof v === 'string'));
+  const companyQualified = companySignals.filter((s) => s.status === 'QUALIFIED' && !isExpiredCompanySignal(s.eventDate, madrid));
+  const companySkippedExisting = companyQualified.filter((s) => withHypothesis.has(s.id)).map((s) => ({ id: s.id, name: s.name, news_date: s.eventDate }));
+  const companyPool = companyQualified.filter((s) => !withHypothesis.has(s.id));
   const leadTimeInfo = {
     window: windowInfo(window, madrid),
     in_window: split.inWindow.length,
@@ -476,6 +548,15 @@ export async function runSignals(
     ignored_not_fair_level: notFair,
     qualified_current: qualified.length,
     qualified_in_window: split.inWindow.length,
+    ...(companySignals.length > 0
+      ? {
+          company_level: companySignals.length,
+          company_qualified: companyQualified.length,
+          company_in_pool: companyPool.length,
+          company_skipped_existing: companySkippedExisting,
+          company_expired: expiredCompany,
+        }
+      : {}),
     expired,
     ...(notExpired.length > 0 ? { not_expired: notExpired } : {}),
     ...(expireErrors.length > 0 ? { expire_errors: expireErrors } : {}),
@@ -483,6 +564,12 @@ export async function runSignals(
   };
   const ageingLines = [
     ...(expired.length > 0 ? [`Señales caducadas (fecha pasada → EXPIRED): ${expired.length} — ${expired.map((e) => `${e.name} (${e.event_date})`).join('; ')}.`] : []),
+    ...(expiredCompany.length > 0
+      ? [`Señales de empresa caducadas (noticia de hace más de ${COMPANY_SIGNAL_EXPIRY_DAYS} días → EXPIRED): ${expiredCompany.length} — ${expiredCompany.map((e) => `${e.name} (${e.event_date})`).join('; ')}.`]
+      : []),
+    ...(companySkippedExisting.length > 0
+      ? [`Señales de empresa calificadas que ya tienen hipótesis (no se repiten, coste 0): ${companySkippedExisting.map((e) => e.name).slice(0, 10).join('; ')}.`]
+      : []),
     ...(expireErrors.length > 0 ? [`No se pudieron caducar ${expireErrors.length} señal(es): ${expireErrors.map((e) => `${e.name} (${e.code})`).join('; ')}.`] : []),
     ...hyp.lines,
   ];
@@ -493,7 +580,7 @@ export async function runSignals(
   ];
   const windowLine = `Ventana de lead time: ${windowLabel(window)} (hoy ${madrid}, Europe/Madrid).`;
 
-  if (split.inWindow.length === 0) {
+  if (split.inWindow.length === 0 && companyPool.length === 0) {
     const reason = qualified.length === 0 ? '0 señales calificadas' : '0 señales calificadas en ventana de lead time';
     return {
       outcome: 'SKIPPED',
@@ -519,20 +606,57 @@ export async function runSignals(
       historyError = err instanceof Error ? err.message : String(err);
     }
   }
-  const chosen = pickNextSignal(split.inWindow, lastWorked)!;
+  // One pool: fairs in window and alive company signals. Tie-break date: the fair date, or the company signal's deadline.
+  type PoolItem = { id: string; name: string; eventDate: string | null; kind: 'fair' | 'company'; days: number | null; signal: EventSignal };
+  const pool: PoolItem[] = [
+    ...split.inWindow.map((s) => ({ id: s.id, name: s.name, eventDate: s.eventDate, kind: 'fair' as const, days: s.days, signal: s })),
+    ...companyPool.map((s) => ({ id: s.id, name: s.name, eventDate: companySignalDeadline(s.eventDate), kind: 'company' as const, days: newsAgeDays(s.eventDate, madrid), signal: s })),
+  ];
+  const picked = pickNextSignal(pool, lastWorked)!;
+  const chosen = picked.signal;
   const previous = lastWorked.get(chosen.id) ?? null;
   const eventName = eventNameOf(chosen.name);
   const selection = {
     strategy: 'least_recently_worked',
     source: history ? 'agent_executions' : 'none',
     ...(historyError ? { history_error: historyError } : {}),
-    candidates: split.inWindow.map((s) => ({ id: s.id, name: s.name, event_date: s.eventDate, days: s.days, last_worked_at: lastWorked.get(s.id)?.toISOString() ?? null })),
+    candidates: pool.map((s) =>
+      s.kind === 'fair'
+        ? { id: s.id, name: s.name, event_date: s.eventDate, days: s.days, last_worked_at: lastWorked.get(s.id)?.toISOString() ?? null }
+        : { id: s.id, name: s.name, kind: 'company', news_date: s.signal.eventDate, news_age_days: s.days, last_worked_at: lastWorked.get(s.id)?.toISOString() ?? null },
+    ),
   };
+  if (picked.kind === 'company') {
+    run.steps.push({ type: 'THINK', timestamp: new Date(), output: { chosen_signal: { id: chosen.id, name: chosen.name, kind: 'company', news_date: chosen.eventDate, last_worked_at: previous?.toISOString() ?? null }, selection }, latencyMs: 0 });
+    const cs = await runCompanySignal(run, { signal_id: chosen.id, signal_name: chosen.name, source_url: chosen.sourceUrl!, news_date: chosen.eventDate }, today, leadTime.domainResolver ? { domainResolver: leadTime.domainResolver } : {});
+    const csOutcome: RunOutcome = cs.outcome === 'SKIPPED' ? 'SUCCESS' : cs.outcome === 'SUCCESS' && (expireErrors.length > 0 || hyp.errors > 0) ? 'PARTIAL' : cs.outcome;
+    return {
+      outcome: csOutcome,
+      lines: [
+        `Modo señales: señal de empresa calificada trabajada hoy: ${chosen.name}${chosen.eventDate ? ` (noticia del ${chosen.eventDate})` : ''} — última prospección: ${previous ? previous.toISOString().slice(0, 10) : 'nunca'}; en el reparto: ${split.inWindow.length} feria(s) en ventana y ${companyPool.length} señal(es) de empresa.`,
+        windowLine,
+        ...outOfWindowLines,
+        ...ageingLines,
+        ...cs.lines,
+      ],
+      output: {
+        ...cs.output,
+        mode: 'signals',
+        signals_input: input,
+        signal_id: chosen.id,
+        signal_name: chosen.name,
+        signal_kind: 'company',
+        lead_time: leadTimeInfo,
+        signals: { ...signalsInfo, selection },
+        hypothesis_expiry: hyp.info,
+      },
+    };
+  }
   run.steps.push({
     type: 'THINK',
     timestamp: new Date(),
     output: {
-      chosen_signal: { id: chosen.id, name: chosen.name, event_date: chosen.eventDate, days: chosen.days, last_worked_at: previous?.toISOString() ?? null },
+      chosen_signal: { id: chosen.id, name: chosen.name, event_date: chosen.eventDate, days: picked.days, last_worked_at: previous?.toISOString() ?? null },
       selection,
       lead_time: leadTimeInfo,
     },
@@ -553,7 +677,7 @@ export async function runSignals(
   return {
     outcome,
     lines: [
-      `Modo señales: feria calificada trabajada hoy: ${chosen.name}${chosen.eventDate ? ` (${chosen.eventDate}, a ${chosen.days} días)` : ''} — última prospección: ${previous ? previous.toISOString().slice(0, 10) : 'nunca'}; calificadas en ventana: ${split.inWindow.length} de ${qualified.length} vigentes.`,
+      `Modo señales: feria calificada trabajada hoy: ${chosen.name}${chosen.eventDate ? ` (${chosen.eventDate}, a ${picked.days} días)` : ''} — última prospección: ${previous ? previous.toISOString().slice(0, 10) : 'nunca'}; calificadas en ventana: ${split.inWindow.length} de ${qualified.length} vigentes.`,
       windowLine,
       ...outOfWindowLines,
       ...ageingLines,
@@ -567,7 +691,7 @@ export async function runSignals(
       signal_name: chosen.name,
       event_name: eventName,
       event_url: chosen.sourceUrl,
-      lead_time: { ...leadTimeInfo, chosen: { id: chosen.id, name: chosen.name, event_date: chosen.eventDate, days: chosen.days } },
+      lead_time: { ...leadTimeInfo, chosen: { id: chosen.id, name: chosen.name, event_date: chosen.eventDate, days: picked.days } },
       signals: { ...signalsInfo, selection },
       hypothesis_expiry: hyp.info,
     },

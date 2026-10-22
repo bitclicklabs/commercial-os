@@ -155,6 +155,7 @@ Requisitos: Node.js 22, pnpm, y los contenedores `pxos-postgres` (127.0.0.1:5440
 | `OPTIMIZER_SCHEDULE_ENABLED` | `false` | `true` activa el Skill Optimizer programado en el rol `scheduler`. Consulta [Programado](#programado) |
 | `OPTIMIZER_SCHEDULE_CRON` | `0 9 * * 3` | Cuándo se encola el run programado (CRON de 5 campos, hora de `Europe/Madrid`): miércoles a las 09:00 |
 | `OPTIMIZER_SCHEDULE_SKILLS` | `prospector-event-exhibitors` | Skills que optimiza el run programado, separadas por comas. Solo las que tienen runner de experimentos |
+| `FOLLOWUP_AFTER_BUSINESS_DAYS` | `5` | Días laborables (lunes a viernes, Europe/Madrid, sin festivos) desde el primer envío tras los que `lead-followup-check` crea la tarea «🔔 Seguimiento» si no hay respuesta. `0` desactiva el chequeo; un valor no válido (no entero entre 0 y 60) vuelve a 5. Consulta [Seguimiento de envíos sin respuesta](#seguimiento-de-envíos-sin-respuesta-tanda-21) |
 
 ## Migraciones
 
@@ -1447,6 +1448,7 @@ Las de Twenty usan `TWENTY_BASE_URL` y `TWENTY_API_KEY` y tienen `outputTrust = 
 | `upsert_person` | `LOW_WRITE` | Sí | Por email (`emails.primaryEmail`, sin distinguir mayúsculas): una Persona existente solo se **completa** (nombre, cargo o empresa vacíos), nunca se pisa. `info@`, `comercial@`, `rrhh@`, `noreply@`... se omiten sin escribir: no son personas |
 | `upsert_opportunity` | `LOW_WRITE` | Sí | Por empresa: reutiliza su Oportunidad **abierta** (etapa que no sea de cierre); si no hay, la crea en la primera etapa del pipeline, sin importe. Engancha la nota de la respuesta. Solo el InboxAgent |
 | `create_reply_task` | `LOW_WRITE` | Sí | Título «📬 Responder a <persona/empresa>» + oportunidad (o empresa): una tarea abierta igual se reutiliza; adopta una huérfana. Solo el InboxAgent |
+| `list_sent_hypotheses` | `READ` | No | — (hipótesis del tenant con `emailStatus = SENT`, con empresa, `need`, `whyNow`, destinatario y asunto; salida `untrusted`). Solo el FollowUpAgent |
 | `fetch_url` | `READ` | No | — (consulta [Seguridad del contenido web](#seguridad-del-contenido-web)) |
 | `render_url` | `READ` | No | — (consulta [Render de JavaScript](#render-de-javascript-render_url)) |
 | `catalog_search_products` | `READ` | No | — (consulta [Catálogo](#catálogo-catalog-service); salida `untrusted`) |
@@ -1858,6 +1860,7 @@ Es idempotente:
 - **Tareas retiradas** (`RETIRED_TASKS`, hoy `event-scouting-live-test-muxyo7gz`): `enabled = false` con una versión nueva; nunca se borran.
 - **Agente `BajasAgent` y tarea `process-unsubscribes`**: `CRON 0 */2 * * *` en `Europe/Madrid`, sin LLM (`model_provider = stub`), tool policy `get_note` + `update_note` (una escritura por ejecución). Desde la tanda 12 la tarea queda **desactivada** (`enabled = false`). Consulta [Inbound de bajas](#inbound-de-bajas).
 - **Agente `InboxAgent` y tarea `process-inbox`**: `CRON 0 */2 * * *` en `Europe/Madrid`, Gemini Flash solo para las respuestas que las reglas no deciden, tool policy `get_note` + `update_note` + `create_note` + `find_company`. Consulta [Triaje del buzón](#triaje-del-buzón).
+- **Agente `FollowUpAgent` y tarea `lead-followup-check`** (tanda 21): `CRON 30 8 * * *` en `Europe/Madrid`, sin LLM (`model_provider = stub`), tool policy `list_sent_hypotheses` + `get_note` (una cada una) + `create_crm_task` (20). Consulta [Seguimiento de envíos sin respuesta](#seguimiento-de-envíos-sin-respuesta-tanda-21).
 
 Las dos tareas usan la misma versión del agente. La versión del seed añade `fetch_url` a la tool policy, la configuración `scout` y la skill `event-source-discovery` v1, y sube la skill `prospector-event-exhibitors` a v2 (datos en bloques `DATOS_NO_CONFIABLES`): al ejecutar el seed sobre una BD existente se crea una versión nueva del agente.
 
@@ -2510,6 +2513,7 @@ Las alertas que piden a una persona hacer algo son **tareas** nativas de Twenty 
 | Propuesta de promoción — `<skill>` v`<N>` | A 3 días | Ningún registro CRM; una por versión |
 | ⚠️ Catálogo no disponible — `<día>` (`<tenant>`) | Hoy | Ninguno; como mucho una por tenant y día |
 | ⏳ Fuera de ventana / Sin fecha de feria | El día en que entra en ventana; a 7 días sin fecha; hoy si está cerca o ya pasó | La señal (`taskTarget`) |
+| 🔔 Seguimiento — `<empresa>` (tanda 21) | Hoy (el día del chequeo) | La empresa y la hipótesis; una por hipótesis, para siempre |
 
 Formato de Twenty 2.45 (verificado en solo lectura contra `GET /rest/open-api/core`):
 
@@ -2520,9 +2524,49 @@ POST /rest/taskTargets  { "taskId": "<task>", "targetCommercialSignalId": "<sign
 
 - `status` admite `TODO`, `IN_PROGRESS` y `DONE`. Un vencimiento dado como día es las 09:00 de Europe/Madrid.
 - `taskTarget` tiene una columna por objeto: `targetCompanyId`, `targetPersonId`, `targetOpportunityId` y, para los objetos de la App, `targetCommercialSignalId`, `targetCommercialHypothesisId`, `targetResearchId`, `targetAgentRunSummaryId` y `targetAgentOsDailyMetricId`.
-- El helper es `createCrmTask` (`src/integrations/twenty/tasks.ts`): idempotente por título y día local de creación (o por título, `scope: 'ever'`), crea solo los `taskTargets` que falten y adopta una tarea huérfana con ese título. Nunca edita ni borra.
+- El helper es `createCrmTask` (`src/integrations/twenty/tasks.ts`): idempotente por título y día local de creación (o por título, `scope: 'ever'`), crea solo los `taskTargets` que falten y adopta una tarea huérfana con ese título. Nunca edita ni borra. Una tarea con el mismo título solo se reutiliza si ya apunta al target ancla: por defecto el primero (empresa, persona, oportunidad, señal, hipótesis); `anchor` elige otro (el seguimiento ancla en la hipótesis).
 - La tool `create_crm_task` (`LOW_WRITE`) es la misma operación para los agentes; relee la señal o la hipótesis con el tenant del run antes de escribir.
 - `task` es un objeto estándar: **no tiene `tenantId`**, como las notas. Las tareas son comunes a todo el workspace; los títulos que deben ser por tenant lo llevan en el texto.
+
+## Seguimiento de envíos sin respuesta (tanda 21)
+
+La tarea `lead-followup-check` (`CRON 30 8 * * *`, `Europe/Madrid`, `max_concurrency = 1`) ejecuta el **FollowUpAgent** (`implementation = "lead_followup"`, `src/agents/followup-agent.ts`). Es determinista: **no llama a ningún modelo**. Recuerda al comercial los primeros emails que no han tenido respuesta; **nunca envía nada ni escribe en la hipótesis** (el workflow de envío lee `emailSubject`, `emailBody` y `emailTo`, y un segundo borrador pisaría el primero).
+
+### Qué revisa
+
+1. `list_sent_hypotheses` (READ): las hipótesis del tenant con `emailStatus = SENT`.
+2. En la base de datos del runtime (`src/crm/followup-store.ts`):
+   - **Fecha y asunto del envío**: `email_sends`, la fila que escribe email-ops al recibir el webhook `SENT` de Twenty. El reloj cuenta desde el último envío de la hipótesis; el cuerpo de la tarea muestra el primero.
+   - **Respuesta**: `inbound_triage`, la fila que el InboxAgent escribe por cada correo clasificado, con la hipótesis y la empresa del envío al que responde (por dirección, por dominio o por el dominio de la empresa en Twenty). Es el rastro del que salen la nota 📬, la Oportunidad y la tarea «📬 Responder a…», y es de solo añadir. Cuenta cualquier correo vinculado a la hipótesis **o a su empresa** recibido después del envío.
+   - **Ya hecho**: `audit_log` con `lead.followup_task` para la hipótesis.
+3. Por hipótesis, en orden de envío (el más antiguo primero), la primera razón que aplica queda en `output.examined` como `skipped`:
+
+| Razón | Cuándo |
+|---|---|
+| `task_exists` | La hipótesis ya tuvo su tarea de seguimiento (fila en `audit_log`). Sobrevive a que el comercial cierre o **borre** la tarea en Twenty |
+| `no_send_record` | `SENT` en Twenty pero sin fila en `email_sends` (el webhook no registró la fecha del envío). La salida lleva el `updatedAt` de la hipótesis, lo único que hay; no se adivina la fecha |
+| `too_recent` | Faltan días laborables: `due_day` dice cuándo vence |
+| `bounced` | Un rebote del envío. Un rebote **nunca** genera seguimiento |
+| `replied` | Cualquier otro correo clasificado (interesado, pregunta, no interesado, baja u otro). Las **respuestas automáticas** (`AUTO_REPLY`, fuera de la oficina) no cuentan como respuesta |
+| `cap_reached` | Ya se crearon 20 tareas en esta ejecución (constante `FOLLOWUP_MAX_TASKS_PER_RUN`); el resto, en los días siguientes |
+| `suppression_list_unavailable` | No se pudo leer la nota «Lista de supresión — NO contactar»: falla cerrado y la ejecución termina `FAILED` |
+| `suppressed` | Algún destinatario (del envío o el `emailTo` actual) está en la lista de supresión, por dirección o por `@dominio` |
+
+4. Si nada aplica, `create_crm_task` crea la tarea **«🔔 Seguimiento — `<empresa>`»** (`TODO`, vence hoy a las 09:00), con `taskTargets` a la empresa y a la hipótesis, idempotente con `scope: 'ever'` anclada en la hipótesis, y una fila `lead.followup_task` en `audit_log` (`actor = agent`, `subject_type = commercial_hypothesis`, `payload` con `task_id`, `first_sent_at` y `business_days`).
+
+### La tarea
+
+El cuerpo lleva la fecha y el asunto del primer envío, el destinatario, la hipótesis, su ángulo (`need` y `whyNow` ya guardados) y un **guion fijo por código** de tres viñetas, sin urgencia ni «plazos cortos»: retomar el primer email sin reproches, aportar una idea concreta ligada a la necesidad y cerrar con una pregunta abierta, ofreciéndose para más adelante si no es el momento. El comercial escribe y envía el seguimiento desde Twenty.
+
+**Una tarea por hipótesis, para siempre**: si el comercial la cierra sin actuar, o la borra, no se vuelve a crear. Si un intento murió entre crear la tarea y auditarla, el siguiente la encuentra por título y ancla (`created: false`, contador `tasks_reused`) y la audita.
+
+### Días laborables
+
+Lunes a viernes en `Europe/Madrid`, **sin festivos**, contados de día local a día local (`addBusinessDays` de `src/crm/reply-task.ts`). Con el valor por defecto (5), un envío del lunes vence el lunes siguiente, uno del viernes el viernes siguiente y uno del sábado también el viernes siguiente. `FOLLOWUP_AFTER_BUSINESS_DAYS=0` desactiva el chequeo: la ejecución termina `SKIPPED` sin tocar Twenty.
+
+### Tests
+
+`test/unit/lead-followup.test.ts` (reglas, ancla de `createCrmTask` y agente contra el Twenty simulado) y `test/integration/lead-followup.test.ts` (seed, `RunProcessor`, `email_sends`, `inbound_triage` y `audit_log` en PostgreSQL).
 
 ## Borradores de email
 
@@ -2780,6 +2824,7 @@ Formas verificadas en solo lectura contra el Twenty vivo (`GET /rest/people`, `/
 
 ## Pendiente
 
+- Seguimiento v2: hilo de email por hipótesis (borrador del segundo email sin pisar los campos del primero, que lee el workflow de envío), festivos en el cálculo de días laborables y cortar también por una Oportunidad creada a mano. Hoy el seguimiento es una tarea con guion (consulta [Seguimiento de envíos sin respuesta](#seguimiento-de-envíos-sin-respuesta-tanda-21)).
 - Triggers `DEPENDENCY` y `CONDITION` (hoy no registran nada).
 - Columna `trigger` (`SCHEDULE`, `MANUAL`...) en `task_runs` para distinguir el origen de cada run (LLD v0.2, AC-04).
 - Exponer `EntityLocks` a las tools (el helper está listo en `RunProcessor.locks`).

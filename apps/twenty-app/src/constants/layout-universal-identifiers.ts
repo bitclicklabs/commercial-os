@@ -103,3 +103,21 @@ export const RECENT_SIGNALS_VIEW_IDS = {
   fieldDetectedAt: '9044cbb4-71b5-4be1-8dbe-40e46bd5b83b',
   sortDetectedAt: '584b953a-0e37-4331-9a36-733d5faf9dd1',
 } as const;
+
+// Tanda 21: «Hipótesis · Envíos», kanban de hipótesis por emailStatus (seguimiento de envíos).
+export const HYPOTHESES_SENDS_VIEW_IDS = {
+  view: 'b5cb55d0-844e-4410-b658-5454768f08de',
+  fieldName: '9b4819a0-d47d-478b-97ac-cee2e86ff7d4',
+  fieldCompany: '232aae1d-9efc-4149-8732-78da56159036',
+  fieldEmailTo: 'c17fe5f4-fb9c-4f11-b909-b7cfd30028dc',
+  fieldEmailSubject: '9eb02d0d-10a5-4c24-8d46-d2c593483c29',
+  fieldEmailStatus: '9b8bad8d-d94b-4b8c-80e4-a5b3810efc59',
+  fieldStatus: 'b04e02f6-121a-4d18-8a02-b7fe4d3e30cb',
+  fieldUpdatedAt: '8993a43c-5e8f-4c06-9ceb-532bd444f83d',
+  fieldCreatedAt: '7cafbf8b-3a89-4044-a7a0-955eb88f325b',
+  groupNoValue: '38d0c65c-f4e9-4ce9-aa2b-f62d807729e3',
+  groupDraft: 'c3bc88aa-a2b7-4153-adc7-c9122967e2d6',
+  groupReady: 'ff66059e-5b38-4858-86b8-aa29b6da91db',
+  groupSending: '5c713c3c-b707-405d-88a4-c3d04c8322dc',
+  groupSent: 'df4b6b2d-2316-4ba3-be45-8e2110906af1',
+} as const;

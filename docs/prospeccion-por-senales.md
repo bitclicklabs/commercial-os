@@ -69,7 +69,7 @@ Tres ideas sostienen el diseño:
 
 **Señal de feria frente a señal de expositor.** El ciclo trabaja con señales a **nivel de evento**: una feria o un congreso, **sin empresa asociada**. Las señales por expositor (las que lleva una empresa y se titulan «feria — empresa», como las que el scout creó hasta la tanda 14) no disparan nada, ni al cambiar de estado ni en el reparto diario, y el comercial no tiene que gestionarlas.
 
-> **Nota (tanda 21):** las [señales de empresa](#señales-de-empresa-más-allá-de-las-ferias) (apertura, ronda de financiación y aniversario) son una excepción a esa regla: llevan una empresa asociada **y sí** disparan la prospección al calificarlas. `[POR CONFIRMAR]` cómo las distingue el sistema de una señal por expositor (suposición: por su tipo de señal).
+> **Nota (tanda 21):** las [señales de empresa](#señales-de-empresa-más-allá-de-las-ferias) (apertura, ronda de financiación y aniversario) son una excepción a esa regla: llevan una empresa asociada **y sí** disparan la prospección al calificarlas. El sistema las distingue por el sufijo de tipo del nombre (y el evento `signal.qualified` lleva `signal_kind`); las señales por expositor y las de feria con `companyId` siguen sin disparar nada jamás.
 
 ## Descubrir: el scout semanal
 
@@ -103,16 +103,16 @@ Hasta la tanda 20, el scout semanal buscaba ferias de un solo sector: «alimenta
 
 ### Qué cambia
 
-- **Deduplicación entre sectores.** Una misma feria puede aparecer en dos caladeros (una feria de alimentación y retail, por ejemplo): se crea **una sola señal**. `[POR CONFIRMAR]` el criterio de duplicado (suposición: la URL de la feria o el par nombre y fecha).
-- **Contadores por sector.** El output del run informa, por cada sector, de las ferias encontradas, las creadas, las descartadas por ventana y las duplicadas. `[POR CONFIRMAR]` los nombres exactos de los campos.
+- **Deduplicación entre sectores.** Una misma feria puede aparecer en dos caladeros (una feria de alimentación y retail, por ejemplo): se crea **una sola señal**. El criterio de duplicado es la URL de la feria o el par nombre y fecha; las noticias de empresa deduplican por la URL exacta del artículo.
+- **Contadores por sector.** El output del run informa, por cada sector, de las ferias encontradas, las creadas, las descartadas por ventana y las duplicadas. Los campos van en `output.sectors[]`: ferias propuestas/verificadas/creadas/existentes/fuera de ventana/duplicadas en otro sector, señales de empresa propuestas/creadas/existentes/descartadas y `cost_eur`.
 - **Coste.** Aproximadamente **0,07 € por sector y semana**: con los seis sectores, unos 0,42 € a la semana. El coste de cada run aparece en el campo **Cost** del *Agent run*.
-- **Tiempo.** El scout mantiene su límite de 20 minutos por ejecución. Si un sector no cabe, el run sale `Partial` y lo ya hecho se guarda. `[POR CONFIRMAR]` si los sectores corren en serie o en paralelo y si la lista completa cabe en el límite.
+- **Tiempo.** El scout mantiene su límite de 20 minutos por ejecución. Si un sector no cabe, el run sale `Partial` y lo ya hecho se guarda. Los sectores corren en serie; los que no caben salen como `skipped_time_budget` y el orden de inicio rota cada lunes, así ninguno se muere siempre al final.
 
 ### Cómo cambiar la lista
 
 La lista vive en la task del seed, no en una variable de entorno. Para añadir o quitar un sector:
 
-1. Edita la lista de sectores en el input de `weekly-event-scouting` del seed (`runtime/agent-runtime/src/seed/prospector-seed.ts`). `[POR CONFIRMAR]` el nombre del campo (hoy el input lleva `sector`; pasa a ser una lista).
+1. Edita la lista de sectores en el input de `weekly-event-scouting` del seed (`runtime/agent-runtime/src/seed/prospector-seed.ts`). El campo es `sectors` (lista); `sector` sigue valiendo como alternativa si falta.
 1. Ejecuta `pnpm seed` desde `runtime/agent-runtime/`. El seed añade una **versión nueva** de la task; la anterior no se borra.
 1. Comprueba en el siguiente run del lunes que el output trae el contador del sector nuevo.
 
@@ -132,13 +132,13 @@ Una feria no es la única razón para escribir a una empresa. Desde la tanda 21,
 
 - **Solo noticias recientes.** La noticia debe ser de los **últimos 60 días**. La excepción es la **apertura futura**: una apertura anunciada para una fecha por venir también vale.
 - **Fuente verificada.** La señal solo se crea si el scout ha descargado (`fetch_url`) la URL de la noticia y ha comprobado que dice lo que se afirma. Sin fuente verificada, no hay señal.
-- **Caducidad a los 120 días.** Una señal de empresa pasa sola a `EXPIRED` cuando han pasado **120 días desde la fecha de la noticia**, igual que una feria cuando pasa su fecha. Es el mismo envejecimiento diario ([más abajo](#envejecimiento-señales-que-pasan-a-expired)). `[POR CONFIRMAR]` cómo se cuentan los 120 días en una apertura futura (suposición: desde la fecha de la noticia, no desde la de la apertura).
-- **La ventana de lead time no se aplica.** La ventana de 45 a 210 días mide la distancia a una feria; una empresa no tiene fecha de feria. Lo que acota la vida de la señal de empresa es su frescura y su caducidad. `[POR CONFIRMAR]`
+- **Caducidad a los 120 días.** Una señal de empresa pasa sola a `EXPIRED` cuando han pasado **120 días desde la fecha de la noticia**, igual que una feria cuando pasa su fecha. Es el mismo envejecimiento diario ([más abajo](#envejecimiento-señales-que-pasan-a-expired)). Los 120 días cuentan desde la fecha de la noticia, también en una apertura futura.
+- **La ventana de lead time no se aplica.** La ventana de 45 a 210 días mide la distancia a una feria; una empresa no tiene fecha de feria. Lo que acota la vida de la señal de empresa es su frescura y su caducidad.
 - **El humano califica.** Como con las ferias, el sistema descubre y tú decides. Nada se prospecta hasta que calificas la señal.
 
 ### Cómo las reconoces
 
-El nombre de cada señal de empresa lleva un **sufijo de tipo**: por ejemplo, «Conservas del Norte — apertura», «Conservas del Norte — financiación» o «Conservas del Norte — aniversario». `[POR CONFIRMAR]` el mecanismo exacto de tipado: el sufijo del nombre es lo visible en cualquier caso; falta confirmar si el tipo viaja además en un campo propio de la señal (el `signal_type` del evento `signal.qualified`) o si exige añadir opciones a la Twenty App.
+El nombre de cada señal de empresa lleva un **sufijo de tipo**: por ejemplo, «Conservas del Norte — apertura», «Conservas del Norte — financiación» o «Conservas del Norte — aniversario». El mecanismo de tipado es el sufijo del nombre (acepta variantes de guion y «financiacion» sin tilde); el campo `signalType` existente lleva además un valor orientativo para la persona (EXPANSION, OTHER, ANNIVERSARY) y el evento `signal.qualified` viaja con `signal_kind`. No hay cambios de esquema en la Twenty App.
 
 > **Nota:** a diferencia de una señal de feria, que no tiene empresa asociada, la señal de empresa **sí la tiene**: es la empresa a la que luego se prospecta.
 
@@ -165,7 +165,7 @@ Qué hace el trigger, en orden:
 1. **Obtiene el dominio de la empresa.** Si la noticia trae su web, la usa. Si no, **recurre al [Resolver de Dominios](resolver-dominios.md)**, con las mismas garantías de siempre: verifica la portada y, en caso de duda o empate, no resuelve.
 1. **Evalúa la empresa con el motivo de la señal** (la apertura, la ronda o el aniversario) en lugar de un expositor de feria.
 1. **Escribe en Twenty** la empresa (localizada o creada, con su web verificada) y una hipótesis `PROPOSED` enlazada a la señal. Deja el resumen de la ejecución (*Agent run*).
-1. **Deja la auditoría** del disparo. `[POR CONFIRMAR]` si reutiliza `prospect.on_qualified` (suposición) o usa una acción propia.
+1. **Deja la auditoría** del disparo. Reutiliza `prospect.on_qualified`.
 
 Lo que **no** cambia:
 
@@ -173,7 +173,7 @@ Lo que **no** cambia:
 - **Una vez por señal** en la ventana de 24 h, como con las ferias ([idempotencia](#idempotencia-y-ventana-de-recalificación-de-24-h)).
 - **Nada se envía solo.**
 
-`[POR CONFIRMAR]` si las señales de empresa `QUALIFIED` entran también en el reparto diario de las 08:00 (suposición: no, porque una empresa se prospecta de una vez; el trigger inmediato es el único camino) y si la auto-expiración de hipótesis `PROPOSED` las alcanza.
+Las señales de empresa `QUALIFIED` entran también en el reparto diario, pero si ya tienen hipótesis `PROPOSED` o `VALIDATED` salen como `skipped_existing` a coste 0 (no gastan el turno de una feria). Sus hipótesis `PROPOSED` caducan cuando caduca la señal (120 días), nunca por la ventana de lead time.
 
 ## Prospectar a diario, en modo señales
 
@@ -252,7 +252,7 @@ Cada run diario, antes de repartir (herramienta `expire_signal`), revisa las se�
 - **Solo señales de feria con fecha.** Una señal sin fecha no caduca sola.
 - **Solo hacia `EXPIRED`.** Vuelve a leer el registro justo antes de escribir, no toca `DISCARDED` y nunca califica, descarta ni reabre nada.
 - **No borra nada.** La señal queda en Twenty con su historial. Una señal `EXPIRED` sale del reparto diario y deja de aparecer en la cola de decisión.
-- **Señales de empresa (tanda 21).** El mismo envejecimiento pasa a `EXPIRED` las [señales de empresa](#señales-de-empresa-más-allá-de-las-ferias) cuando han pasado **120 días desde la fecha de la noticia**. Sigue siendo la única escritura de estado de señal que hace la máquina. `[POR CONFIRMAR]` si lo hace la misma herramienta `expire_signal` con otra regla de fecha.
+- **Señales de empresa (tanda 21).** El mismo envejecimiento pasa a `EXPIRED` las [señales de empresa](#señales-de-empresa-más-allá-de-las-ferias) cuando han pasado **120 días desde la fecha de la noticia**. Sigue siendo la única escritura de estado de señal que hace la máquina. Lo hace la misma herramienta `expire_signal`, con una edad mínima de 120 días.
 
 ## Ventana de lead time
 
@@ -340,7 +340,7 @@ Pasos:
 
 ### Comprobar el scout multi-caladero y las señales de empresa
 
-1. Tras un lunes, abre **Commercial OS → Agent runs** y localiza el run de `weekly-event-scouting` de las 07:30. Su **Result** debe traer los contadores de cada sector de la lista. `[POR CONFIRMAR]` el formato.
+1. Tras un lunes, abre **Commercial OS → Agent runs** y localiza el run de `weekly-event-scouting` de las 07:30. Su **Result** debe traer los contadores de cada sector de la lista. El formato: un bloque `sectors[]` con los contadores por sector.
 1. En **Commercial OS → Signals**, la columna `New` debe incluir ferias de varios sectores, sin la misma feria dos veces.
 1. Para una señal de empresa, comprueba que su nombre lleva el sufijo de tipo, que su fecha de noticia es de los últimos 60 días (o una apertura futura) y que la URL de la fuente abre la noticia.
 1. Califica una señal de empresa de prueba y busca el disparo en el `audit_log` (`GET /audit`, igual que arriba). Debe aparecer una empresa nueva o reutilizada y una hipótesis `Proposed` enlazada a la señal.

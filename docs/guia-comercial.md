@@ -127,16 +127,16 @@ Además de ferias, desde la tanda 21 el sistema deja en tu cola **señales de em
 | **Financiación** | El nombre acaba en «— financiación» | La empresa ha cerrado una ronda de financiación |
 | **Aniversario** | El nombre acaba en «— aniversario» | La empresa cumple un aniversario redondo |
 
-`[POR CONFIRMAR]` el texto exacto de los sufijos de tipo.
+El nombre tiene el formato «Empresa: qué pasó — apertura», «— financiación» o «— aniversario».
 
 **Las calificas igual que una feria.** Abre la señal en **Commercial OS → Signals**, comprueba la noticia con su enlace y cambia **Status** a `Qualified` o `Discarded`. Lo que cambia es lo que ocurre después:
 
-- **No investiga una feria, sino a esa empresa.** El agente prospecta directamente a la empresa de la señal y te deja una hipótesis en `Proposed`, con el motivo de la noticia como razón del momento (**Why now**) `[POR CONFIRMAR]`. Si la noticia no trae la web de la empresa, el sistema intenta [encontrarla y verificarla](resolver-dominios.md); si no está seguro, no propone nada en lugar de adivinar.
+- **No investiga una feria, sino a esa empresa.** El agente prospecta directamente a la empresa de la señal y te deja una hipótesis en `Proposed`, con el motivo y la fecha de la noticia como arranque, garantizado por código, de la razón del momento (**Why now**). Si la noticia no trae la web de la empresa, el sistema intenta [encontrarla y verificarla](resolver-dominios.md); si no está seguro, no propone nada en lugar de adivinar.
 - **No hay «plazo de 2 a 6 meses».** Esa regla es de ferias. En una señal de empresa manda la frescura: solo se crean con noticias de los últimos 60 días (o una apertura futura) y con la fuente comprobada por el sistema.
 - **Caducan solas a los 120 días.** Si no la has calificado, la señal pasa sola a `Expired` cuando han pasado 120 días desde la noticia: una noticia vieja ya no es un buen motivo para escribir.
 - **Sigue siendo tu decisión.** El sistema no califica por ti y no envía nada. Validar una hipótesis de empresa, buscar el contacto y revisar el borrador funciona como en cualquier otra.
 
-> **Importante:** calificar una señal de empresa tiene coste, aunque menor que el de una feria con catálogo: el agente usa un modelo de pago por uso para evaluar a esa empresa. Califica las noticias que de verdad te cuadren. `[POR CONFIRMAR]` el coste medido por señal de empresa.
+> **Importante:** calificar una señal de empresa tiene coste, aunque menor que el de una feria con catálogo: el agente usa un modelo de pago por uso para evaluar a esa empresa. Califica las noticias que de verdad te cuadren. El coste es del orden de céntimos por señal (una sola empresa; el dato medido se anotará tras los primeros estrenos).
 
 ### Dónde las ves
 

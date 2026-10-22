@@ -534,7 +534,7 @@ Solo una **vista**, igual que en la tanda 19. No cambia objetos ni campos, así 
 
 Es el tablero de envíos del comercial. Las vistas anteriores (**Señales · Cola**, **Hipótesis · Por estado**, las de Oportunidades y Tareas) no cambian y no se duplican.
 
-> **Nota:** `[POR CONFIRMAR]` si el [tipado de las señales de empresa](prospeccion-por-senales.md#señales-de-empresa-más-allá-de-las-ferias) añade opciones a un campo de la señal. Si es así, el `plan` mostrará un cambio de esquema **aditivo** (opciones nuevas, ninguna eliminada); un borrado en el `plan` sigue siendo motivo para detenerse.
+> **Nota:** el tipado de las señales de empresa no toca el esquema: el `plan` de la App de esta tanda solo debe traer la vista nueva. Un borrado en el `plan` sigue siendo motivo para detenerse.
 
 **Quién:** el PM o el usuario, con acceso a **Settings** de Twenty. Ningún agente lo lanza.
 

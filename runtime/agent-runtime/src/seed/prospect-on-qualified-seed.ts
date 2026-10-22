@@ -33,12 +33,13 @@ export const PROSPECT_ON_QUALIFIED_AUDIT_ACTION = 'prospect.on_qualified';
 export function desiredProspectOnQualifiedTask(): TaskSpec {
   return {
     description:
-      'Cuando un comercial califica en Twenty una señal de feria (estado QUALIFIED), el Prospector explora esa feria concreta (modo scout dirigido, una feria) y registra empresa, señal, research e hipótesis (PROPOSED) de los expositores relevantes. Una vez por señal: recalificarla antes de 24 h no la relanza. Ventana de lead time (LEADTIME_MIN_DAYS–LEADTIME_MAX_DAYS, 45–210 días por defecto): si la feria está fuera de ventana o no tiene fecha, no se prospecta (SKIPPED) y queda una nota en la señal explicando por qué; la señal sigue QUALIFIED.',
+      'Cuando un comercial califica en Twenty una señal de feria (estado QUALIFIED), el Prospector explora esa feria concreta (modo scout dirigido, una feria) y registra empresa, señal, research e hipótesis (PROPOSED) de los expositores relevantes. Una vez por señal: recalificarla antes de 24 h no la relanza. Ventana de lead time (LEADTIME_MIN_DAYS–LEADTIME_MAX_DAYS, 45–210 días por defecto): si la feria está fuera de ventana o no tiene fecha, no se prospecta (SKIPPED) y queda una tarea en la señal explicando por qué; la señal sigue QUALIFIED. Señal de empresa (— apertura / — financiación / — aniversario): sin catálogo ni ventana de lead time; se evalúa esa empresa con la noticia como motivo y, si es relevante y su web se verifica, se registran empresa, research e hipótesis PROPOSED (sin web verificada: nota en la señal); una noticia de más de 120 días no se prospecta.',
     defaultInput: { mode: 'scout', max_events: 1 },
     schedule: {
       type: 'EVENT',
       event_type: SIGNAL_QUALIFIED_EVENT,
-      input_from_event: { event_url: 'event_url', event_name: 'name', event_date: 'event_date', signal_id: 'signal_id' },
+      // Tanda 21: signal_kind / signal_type tell a company signal (one company, no catalog) from a fair.
+      input_from_event: { event_url: 'event_url', event_name: 'name', event_date: 'event_date', signal_id: 'signal_id', signal_type: 'signal_type', signal_kind: 'signal_kind' },
       audit: { action: PROSPECT_ON_QUALIFIED_AUDIT_ACTION, subject_type: 'commercial_signal', subject_path: 'signal_id' },
     },
     timezone: 'Europe/Madrid',

@@ -464,9 +464,15 @@ describe('ProspectorAgent scout mode', () => {
 });
 
 describe('seed: weekly-event-scouting', () => {
-  it('adds the scout task (Monday 07:30 Madrid, discovery only since tanda 15) and the daily task in signals mode', () => {
+  it('adds the scout task (Monday 07:30 Madrid, discovery only since tanda 15, six sectors + company signals since tanda 21) and the daily task in signals mode', () => {
     expect(desiredScoutTask()).toMatchObject({
-      defaultInput: { sector: 'alimentación y bebidas', region: 'España', horizon_months: 6, discover_only: true },
+      defaultInput: {
+        sectors: ['alimentación y bebidas', 'horeca y food service', 'farmacia y salud', 'cosmética y belleza', 'franquicias y retail', 'industria y packaging'],
+        region: 'España',
+        horizon_months: 6,
+        discover_only: true,
+        company_signals: true,
+      },
       schedule: { type: 'CRON', expression: '30 7 * * 1' },
       timezone: 'Europe/Madrid',
       enabled: true,
@@ -492,6 +498,8 @@ describe('seed: weekly-event-scouting', () => {
       list_hypotheses_for_expiry: 2,
       expire_hypothesis: 50,
       create_crm_task: 2,
+      // Tanda 21: the note on a qualified company signal without a verified website.
+      create_signal_note: 2,
     });
     expect(cfg.scout).toMatchObject({ max_fetches: 18, max_pages_per_event: 3, max_renders: 4, max_pdfs_per_event: 2, max_exhibitors_per_event: 100, max_catalog_pages: 10, max_profile_lookups: 100, time_budget_ms: 1_200_000, capture_json: true });
     expect(readConfig(cfg).scout).toMatchObject({ maxExhibitorsPerEvent: 100, maxCatalogPages: 10, maxProfileLookups: 100, timeBudgetMs: 1_200_000, captureJson: true, profileConcurrency: 2 });

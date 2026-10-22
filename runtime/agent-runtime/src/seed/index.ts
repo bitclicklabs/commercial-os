@@ -13,7 +13,8 @@
  * signal qualified in Twenty, `signal.qualified`), and the EmailDrafter agent with its task
  * `draft-email-on-validated`, the BajasAgent with its task `process-unsubscribes` (kept
  * DISABLED since the inbound triage) and the InboxAgent with its task `process-inbox` (CRON
- * every 2 hours; all idempotent).
+ * every 2 hours), the ContactFinder and the FollowUpAgent with its task `lead-followup-check` (CRON
+ * 08:30, tanda 21: one «🔔 Seguimiento» task per first email without a reply; all idempotent).
  * The daily task default input is `{ mode: 'signals' }` (tanda 15: the fairs QUALIFIED in Twenty);
  * `--input` still accepts a direct-mode fixture (`{ event, exhibitors[] }`, e.g.
  * `test/fixtures/feria-ejemplo.json`) for a demo tenant.
@@ -28,6 +29,7 @@ import { seedBajas } from './bajas-seed.js';
 import { seedCatalogSkillCandidate } from './catalog-skill-seed.js';
 import { seedContactFinder } from './contact-finder-seed.js';
 import { seedEmailDrafter } from './email-drafter-seed.js';
+import { seedFollowUp } from './followup-seed.js';
 import { seedHarnesses } from './harness-seed.js';
 import { seedInbox } from './inbox-seed.js';
 import { seedKnowledge } from './knowledge-seed.js';
@@ -70,6 +72,8 @@ if (isMain) {
     .then(async (r) => ({ ...r, inbox: await seedInbox(handle.db, { tenantId, log }) }))
     // ContactFinder (tanda 17): MANUAL task `find-contact`, target of the contacts backfill.
     .then(async (r) => ({ ...r, contactFinder: await seedContactFinder(handle.db, { tenantId, log }) }))
+    // Lead follow-up (tanda 21): CRON task `lead-followup-check` (08:30), one 🔔 task per unanswered send.
+    .then(async (r) => ({ ...r, followUp: await seedFollowUp(handle.db, { tenantId, log }) }))
     .then((r) => console.log(JSON.stringify({ tenant: tenantId, ...r }, null, 2)))
     .catch((err: unknown) => {
       console.error('[seed] failed', err);

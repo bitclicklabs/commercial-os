@@ -4,6 +4,7 @@ import type { AgentContext, AgentImplementation, AgentResult, AgentStep } from '
 import { BAJAS_IMPLEMENTATION, BajasAgent } from './bajas-agent.js';
 import { CONTACT_FINDER_IMPLEMENTATION, ContactFinderAgent } from './contact-finder-agent.js';
 import { EmailDrafterAgent } from './email-drafter.js';
+import { FOLLOWUP_IMPLEMENTATION, FollowUpAgent } from './followup-agent.js';
 import { INBOX_IMPLEMENTATION, InboxAgent } from './inbox-agent.js';
 import { ProspectorAgent } from './prospector-agent.js';
 import { SmokeAgent } from './smoke-agent.js';
@@ -100,6 +101,9 @@ export function resolveAgentImplementation(configuration: Record<string, unknown
       return new BajasAgent(deps.db ? { db: deps.db } : {});
     case INBOX_IMPLEMENTATION:
       return new InboxAgent({ ...(deps.db ? { db: deps.db } : {}), ...(deps.events ? { events: deps.events } : {}) });
+    case FOLLOWUP_IMPLEMENTATION:
+      // Lead follow-up (tanda 21): email_sends, inbound_triage and audit_log live in the database.
+      return new FollowUpAgent(deps.db ? { db: deps.db } : {});
     default:
       throw new Error(`Unknown agent implementation: ${kind}`);
   }

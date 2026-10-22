@@ -8,7 +8,8 @@
  * tenant first (another tenant's record: `TWENTY_TENANT_MISMATCH`, nothing written); a missing
  * record is `TARGET_NOT_FOUND`. Never changes the targets, never sends anything to anybody.
  * Idempotent by title + local day (src/integrations/twenty/tasks.ts): a task with that title
- * created today on the first target is returned (`created: false`). The `task` object has no
+ * created today on the first target is returned (`created: false`). With `scope: 'ever'` (tanda 21,
+ * lead follow-up) a same-title task of any day on the `anchor` target is returned instead. The `task` object has no
  * `tenantId` (standard object): the targets carry the tenant.
  */
 import { z } from 'zod';
@@ -36,6 +37,10 @@ export const CreateCrmTaskInput = z.object({
     })
     .strict()
     .default({}),
+  /** 'day' (default): reuse a same-title task created today. 'ever': of any day (one task per anchor, forever). */
+  scope: z.enum(['day', 'ever']).optional(),
+  /** Target a same-title task must already point to (default: the first given, company first). */
+  anchor: z.enum(['companyId', 'personId', 'opportunityId', 'signalId', 'hypothesisId']).optional(),
 });
 
 export const CreateCrmTaskOutput = z.object({
@@ -54,7 +59,7 @@ export function createCreateCrmTaskTool(deps: TwentyToolDeps) {
     name: 'Create CRM task',
     version: '1.0.0',
     description:
-      'Create a to-do task (markdown body, optional due date) in the CRM linked to records of the current tenant (company, person, opportunity, commercial signal, commercial hypothesis). Idempotent per title and day. Never changes the linked records and never sends anything to anybody.',
+      'Create a to-do task (markdown body, optional due date) in the CRM linked to records of the current tenant (company, person, opportunity, commercial signal, commercial hypothesis). Idempotent per title and day (or, with scope "ever", per title and anchor target forever). Never changes the linked records and never sends anything to anybody.',
     inputSchema: CreateCrmTaskInput,
     outputSchema: CreateCrmTaskOutput,
     riskLevel: 'LOW_WRITE',
@@ -77,7 +82,12 @@ export function createCreateCrmTaskTool(deps: TwentyToolDeps) {
           const h = await twenty.get<TwentyCommercialHypothesis>(TWENTY_OBJECTS.commercialHypothesis, t.hypothesisId, { depth: 0, tenantId: ctx.tenantId, signal: ctx.signal });
           if (!h) return { status: 'error' as const, code: 'TARGET_NOT_FOUND', message: `commercial hypothesis ${t.hypothesisId} does not exist`, retryable: false };
         }
-        const task = await createCrmTask(twenty, { title: input.title, body: input.bodyMarkdown, dueAt: input.dueAt, targets: t }, { signal: ctx.signal });
+        if (input.anchor && !t[input.anchor]) return { status: 'error' as const, code: 'INVALID_ANCHOR', message: `anchor ${input.anchor} is not among the targets`, retryable: false };
+        const task = await createCrmTask(
+          twenty,
+          { title: input.title, body: input.bodyMarkdown, dueAt: input.dueAt, targets: t, ...(input.scope ? { scope: input.scope } : {}), ...(input.anchor ? { anchor: input.anchor } : {}) },
+          { signal: ctx.signal },
+        );
         ctx.logger.info('crm task', { taskId: task.taskId, created: task.created, adopted: task.adopted, targets: task.targetIds.length });
         return {
           status: 'ok' as const,

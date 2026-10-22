@@ -18,6 +18,7 @@ Desde la tanda 19, el trabajo se reparte entre las pestañas nativas de Twenty e
 1. [Personas y oportunidades](#personas-y-oportunidades)
 1. [Borradores de email](#borradores-de-email)
 1. [Respuestas de los clientes](#respuestas-de-los-clientes)
+1. [Seguimiento de lo que has enviado](#seguimiento-de-lo-que-has-enviado)
 1. [Estados: cuándo usar cada uno](#estados-cuándo-usar-cada-uno)
 1. [Por qué tu feedback importa](#por-qué-tu-feedback-importa)
 1. [Preguntas frecuentes](#preguntas-frecuentes)
@@ -33,6 +34,8 @@ El sistema es un equipo de agentes automáticos que prepara el trabajo de prospe
 Cada lunes, el sistema busca ferias y eventos reales relevantes para PubliEXPE y deja en **Commercial OS → Signals** una **señal por cada feria descubierta**, en estado `NEW`, con su fecha y su fuente. No crea señales de ferias demasiado próximas ni demasiado lejanas ([por qué](#qué-ferias-calificar-las-del-próximo-trimestre)). Es tu cola de decisión: consulta [qué hacer con ella](#señales-de-feria-tu-cola-de-decisión). El lunes ya no es la única vía por la que llega material nuevo: lo que desencadena el trabajo sobre una feria es que tú la califiques, no el calendario.
 
 La ejecución tiene un límite de 20 minutos: si algo es muy grande, el resumen de la ejecución (*Agent run*) sale como `Partial` e indica en qué fase se cortó. Lo ya hecho se guarda igualmente.
+
+> **Novedad (tanda 21):** el lunes el sistema ya no mira solo alimentación y bebidas. Recorre **seis sectores** (alimentación y bebidas, horeca y food service, farmacia y salud, cosmética y belleza, franquicias y retail, industria y packaging) y, además de ferias, deja **señales de empresa** de tipo apertura, ronda de financiación y aniversario. Tu cola de `New` tendrá más variedad; el gesto para decidir es el mismo. Consulta [señales de empresa](#señales-de-empresa-apertura-financiación-y-aniversario). `[POR CONFIRMAR]` fecha de activación en producción.
 
 ### Cuando calificas una feria: al momento
 
@@ -66,7 +69,7 @@ Qué notarás: en **Commercial OS → Hypotheses** aparecerán más hipótesis `
 
 ### Lo que el sistema no hace
 
-- **No envía emails ni mensajes por su cuenta.** Un correo solo sale cuando tú revisas el borrador y pulsas el envío.
+- **No envía emails ni mensajes por su cuenta.** Un correo solo sale cuando tú revisas el borrador y pulsas el envío. Tampoco envía un segundo correo de recordatorio a quien no contesta: te avisa con una [tarea de seguimiento](#seguimiento-de-lo-que-has-enviado) y decides tú.
 - **No contacta con decisores.** Busca una dirección de contacto publicada por la empresa, la deja en **Email to** y, si la web publica una persona con nombre y cargo, la crea en **Personas**; pero elegir a quién escribir y cuándo es cosa tuya.
 - **No mueve las oportunidades por el pipeline ni crea presupuestos.** Solo crea la oportunidad cuando [alguien responde con interés](#personas-y-oportunidades) o cuando tú lo pides; el avance de etapas es tuyo.
 - **No califica ni descarta ferias por ti.** Solo las pasa a `EXPIRED` cuando su fecha ya ha pasado.
@@ -114,6 +117,27 @@ La tarea ⏳ no es un fallo: es el sistema diciéndote «te he hecho caso, pero 
 
 El lunes, el sistema ya no te deja en la cola ferias demasiado próximas ni demasiado lejanas: la cola de `New` son, en su mayoría, ferias del próximo trimestre.
 
+### Señales de empresa: apertura, financiación y aniversario
+
+Además de ferias, desde la tanda 21 el sistema deja en tu cola **señales de empresa**: noticias que dicen que una empresa concreta está en un buen momento para el merchandising.
+
+| Tipo | Cómo lo reconoces | Qué significa |
+|---|---|---|
+| **Apertura** | El nombre acaba en «— apertura» | La empresa abre (o va a abrir) un local, una fábrica o una sede |
+| **Financiación** | El nombre acaba en «— financiación» | La empresa ha cerrado una ronda de financiación |
+| **Aniversario** | El nombre acaba en «— aniversario» | La empresa cumple un aniversario redondo |
+
+El nombre tiene el formato «Empresa: qué pasó — apertura», «— financiación» o «— aniversario».
+
+**Las calificas igual que una feria.** Abre la señal en **Commercial OS → Signals**, comprueba la noticia con su enlace y cambia **Status** a `Qualified` o `Discarded`. Lo que cambia es lo que ocurre después:
+
+- **No investiga una feria, sino a esa empresa.** El agente prospecta directamente a la empresa de la señal y te deja una hipótesis en `Proposed`, con el motivo y la fecha de la noticia como arranque, garantizado por código, de la razón del momento (**Why now**). Si la noticia no trae la web de la empresa, el sistema intenta [encontrarla y verificarla](resolver-dominios.md); si no está seguro, no propone nada en lugar de adivinar.
+- **No hay «plazo de 2 a 6 meses».** Esa regla es de ferias. En una señal de empresa manda la frescura: solo se crean con noticias de los últimos 60 días (o una apertura futura) y con la fuente comprobada por el sistema.
+- **Caducan solas a los 120 días.** Si no la has calificado, la señal pasa sola a `Expired` cuando han pasado 120 días desde la noticia: una noticia vieja ya no es un buen motivo para escribir.
+- **Sigue siendo tu decisión.** El sistema no califica por ti y no envía nada. Validar una hipótesis de empresa, buscar el contacto y revisar el borrador funciona como en cualquier otra.
+
+> **Importante:** calificar una señal de empresa tiene coste, aunque menor que el de una feria con catálogo: el agente usa un modelo de pago por uso para evaluar a esa empresa. Califica las noticias que de verdad te cuadren. El coste es del orden de céntimos por señal (una sola empresa; el dato medido se anotará tras los primeros estrenos).
+
 ### Dónde las ves
 
 En **Commercial OS → Signals**, con la vista **Señales · Cola**: un tablero con una columna por estado. La columna `New` es tu cola de decisión y `Qualified`, las ferias que el sistema está trabajando; arrastra la tarjeta de una columna a otra para calificar o descartar. Cada señal lleva la fecha de la feria y el enlace a su fuente, para que decidas con datos.
@@ -150,12 +174,13 @@ Abre Twenty (`http://localhost:3020` en el entorno local). Tu trabajo está repa
 
 ### Vistas de fábrica
 
-La App trae cuatro vistas pensadas para el trabajo diario. Existen cuando se ha [sincronizado la App](runbook-local.md#sincronizar-las-vistas-de-fábrica) tras la tanda 19; si todavía no las ves, usa las listas normales de cada pestaña.
+La App trae cinco vistas pensadas para el trabajo diario. Las cuatro primeras existen cuando se ha [sincronizado la App](runbook-local.md#sincronizar-las-vistas-de-fábrica) tras la tanda 19, y la quinta, tras la tanda 21 ([qué añade](runbook-local.md#qué-añade-la-sincronización-de-la-tanda-21)); si todavía no las ves, usa las listas normales de cada pestaña.
 
 | Vista | Qué muestra |
 |---|---|
 | **Señales · Cola** | Tablero de señales por estado. Tu cola de decisión está en `New`. |
 | **Hipótesis · Por estado** | Tablero de hipótesis con una columna por estado (`Proposed`, `Validated`, `Rejected`, `Expired`). Tu trabajo está en `Proposed`. Sustituye a la vista **By status**. |
+| **Hipótesis · Envíos** | Tablero de hipótesis con una columna por **Email status** (`Draft`, `Reviewed`, `Sending`, `Sent`). Es tu tablero de envíos: qué está por revisar, qué se está enviando y qué ya salió. Ver [Seguimiento](#seguimiento-de-lo-que-has-enviado). |
 | **Oportunidades · Pipeline** | Tablero de oportunidades por etapa. |
 | **Tareas · Bandeja** | Tablero de tareas por estado (*To do*, *In progress*, *Done*). |
 
@@ -176,6 +201,7 @@ Las alertas que piden una acción ya no se quedan enterradas en notas: el sistem
 | **📬 Responder a…** | Alguien ha contestado a tu correo con interés (o con una pregunta) | La que fija el sistema al crearla | Responde desde tu correo y márcala como hecha. Es la más importante |
 | **⚠️ Revalidación fallida** | Una versión de skill en uso ha dado peor resultado al medirla con tus veredictos | +1 día | Avisa al equipo técnico: decide si se revierte. Tú no tienes que hacer nada más |
 | **Propuesta de promoción** | El optimizador propone una skill mejor y ha pasado el Release Gate | +3 días | Avisa al equipo técnico para que la revise. Si no se hace nada, no pasa nada |
+| **🔔 Seguimiento — {empresa}** | Has enviado un correo a esa empresa hace 5 días laborables o más y no ha respondido (ni está en la lista de supresión) | El mismo día en que se crea | Lee el cuerpo (fecha y asunto del envío, destinatario, ángulo y guion sugerido), decide si escribes de nuevo, llamas o lo dejas, y márcala como hecha. **El sistema no envía nada**. Ver [Seguimiento](#seguimiento-de-lo-que-has-enviado) |
 | **⏳ Fuera de ventana / sin fecha** | Has calificado una feria demasiado cercana, demasiado lejana o sin fecha | La que fija el sistema | Nada urgente: [qué ferias calificar](#qué-ferias-calificar-las-del-próximo-trimestre) |
 | **⚠️ Catálogo no disponible** | El catálogo de productos no respondió | Como máximo una al día | Nada: las hipótesis de ese día llevan familias genéricas. Avisa al equipo técnico si se repite varios días |
 
@@ -238,7 +264,7 @@ Dos ejemplos:
 
 ## Tu rutina diaria de 10 minutos
 
-1. Abre Twenty y ve a **Tareas → Tareas · Bandeja**. Despacha primero las **📬 Responder a…** (alguien ha contestado con interés: responde hoy desde tu correo y márcala como hecha) y después el resto, empezando por las que vencen antes ([qué es cada una](#tu-bandeja-las-tareas)). Si hay una tarea ⚠️ de skill o de catálogo, no tienes que resolverla tú: avisa al equipo técnico.
+1. Abre Twenty y ve a **Tareas → Tareas · Bandeja**. Despacha primero las **📬 Responder a…** (alguien ha contestado con interés: responde hoy desde tu correo y márcala como hecha) y después el resto, empezando por las que vencen antes ([qué es cada una](#tu-bandeja-las-tareas)). Si hay una tarea 🔔 de seguimiento, decide si vuelves a escribir o llamas ([cómo](#seguimiento-de-lo-que-has-enviado)). Si hay una tarea ⚠️ de skill o de catálogo, no tienes que resolverla tú: avisa al equipo técnico.
 1. Ve a **Commercial OS → Agent runs** y comprueba que hay una ejecución de hoy. Si el resultado (*Outcome*) es `Failed` o `Partial`, avisa al equipo técnico (consulta [Preguntas frecuentes](#preguntas-frecuentes)). Un `Skipped` es normal si no tienes ninguna feria calificada.
 1. Ve a **Commercial OS → Signals** con la vista **Señales · Cola**. Si el lunes llegaron ferias nuevas (columna `New`), califica las que merecen trabajo y descarta el resto ([cómo](#señales-de-feria-tu-cola-de-decisión)).
 1. Ve a **Commercial OS → Hypotheses** con la vista **Hipótesis · Por estado**.
@@ -440,6 +466,44 @@ Qué debes saber:
 
 Cómo funciona por dentro, las garantías y el evento para n8n están en [Triaje del inbound](inbound-triaje.md).
 
+### Seguimiento de lo que has enviado
+
+Hasta ahora, un correo sin respuesta se perdía en silencio. Desde la tanda 21, **el sistema te avisa cuando un envío lleva 5 días laborables sin respuesta**: te deja una tarea en tu bandeja y tú decides qué hacer. Activo en producción desde el 2026-10-22.
+
+**Cuándo aparece la tarea.** Cada día a las 08:30 el sistema revisa las hipótesis con **Email status** = `Sent` y crea la tarea **🔔 Seguimiento — {empresa}** si se cumplen las tres condiciones:
+
+1. Han pasado **5 días laborables** (de lunes a viernes) desde el primer envío.
+1. **No hay ninguna respuesta registrada** de esa empresa.
+1. El destinatario **no está en la lista de supresión**.
+
+**Qué lleva la tarea.** Vence el mismo día en que aparece y su cuerpo incluye:
+
+- La **fecha y el asunto** del primer correo que enviaste.
+- El **destinatario**.
+- El **ángulo de la hipótesis**: qué le propusiste y por qué.
+- Un **guion sugerido**, sin urgencia. Es una idea de texto, no un correo enviado. Por ejemplo, en la línea de «retomo mi mensaje de hace unos días por si se te pasó; si el momento no es bueno, dímelo y no te molesto más».
+
+**Qué haces tú.**
+
+1. Abre **Tareas → Tareas · Bandeja** y localiza las que empiezan por 🔔.
+1. Lee el cuerpo y decide: escribir de nuevo con el guion (adáptalo), llamar, o dejarlo correr.
+1. Si vas a escribir, hazlo **a mano desde tu correo** o con un clic desde Twenty, **tras comprobar la [lista de supresión](#lista-de-supresión-qué-haces-antes-de-enviar)** como siempre.
+1. Marca la tarea como hecha (*Done*).
+
+**Qué debes saber.**
+
+- **El sistema no envía nada.** Ni un segundo correo automático ni un recordatorio. La tarea es solo un aviso para ti.
+- **Una sola tarea por hipótesis, para siempre.** Si la cierras o la borras, no vuelve a aparecer. Si quieres insistir otra vez, lo decides tú.
+- **Si el cliente responde, el aviso se corta.** Si llega una respuesta (interesado, pregunta, no interesado o baja), no hay seguimiento y sigues el camino habitual de [respuestas de los clientes](#respuestas-de-los-clientes).
+- **Si la tarea es un falso aviso**, por ejemplo porque contestó otra persona desde otra dirección y el sistema no lo asoció, ciérrala sin más: no pasa nada.
+- **Las hipótesis enviadas antes de la tanda 21 pueden generar tareas la primera vez** que se activa el seguimiento, con un tope de 20 por día (las más antiguas primero). Si te molesta el lote, ciérralas: no vuelven a crearse.
+
+**Tu tablero de envíos.** La vista **Hipótesis · Envíos** (en **Commercial OS → Hypotheses**) muestra tus hipótesis en columnas por **Email status**: `Draft` (por revisar), `Reviewed` (listas para enviar), `Sending` (en curso) y `Sent` (ya enviadas). Úsala para ver de un vistazo qué te queda por revisar y qué has enviado ya; las enviadas con tarea 🔔 son las que no han contestado.
+
+> **Nota:** la tarea de seguimiento cuenta como cualquier otra de tu bandeja: aparece en la vista **Tareas · Bandeja**, y el sistema nunca la cierra ni la borra.
+
+El detalle técnico está en [Seguimiento de leads enviados](seguimiento-leads.md).
+
 
 ## Estados: cuándo usar cada uno
 
@@ -533,7 +597,7 @@ Son estimaciones del sistema basadas en el tamaño de la empresa y del evento. �
 
 ### ¿Cuánto cuesta esto?
 
-El sistema usa un modelo de inteligencia artificial de pago por uso. Una ejecución del Prospector cuesta unos **0,006 €** por cada tres expositores analizados (cifra medida con un evento de ejemplo). El coste crece con el número de expositores y de ferias calificadas; si no hay ninguna, la tarea diaria no gasta nada. Puedes ver el coste real de cada ejecución en el campo **Cost** de **Commercial OS → Agent runs**.
+El sistema usa un modelo de inteligencia artificial de pago por uso. Una ejecución del Prospector cuesta unos **0,006 €** por cada tres expositores analizados (cifra medida con un evento de ejemplo). El coste crece con el número de expositores y de ferias calificadas; si no hay ninguna, la tarea diaria no gasta nada. El descubrimiento semanal de ferias cuesta unos **0,07 € por sector y semana**: con los seis sectores, unos 0,42 € a la semana. Puedes ver el coste real de cada ejecución en el campo **Cost** de **Commercial OS → Agent runs**.
 
 ### ¿Qué es la "traza" (*Trace*) de una ejecución?
 

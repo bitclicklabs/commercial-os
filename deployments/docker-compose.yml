@@ -197,6 +197,8 @@ services:
       SCHEDULER_TENANTS: ${SCHEDULER_TENANTS:-publiexpe}
       LEADTIME_MIN_DAYS: ${LEADTIME_MIN_DAYS:-45}
       LEADTIME_MAX_DAYS: ${LEADTIME_MAX_DAYS:-210}
+      # Seguimiento de envíos sin respuesta (tanda 21): días laborables; 0 desactiva el chequeo diario.
+      FOLLOWUP_AFTER_BUSINESS_DAYS: ${FOLLOWUP_AFTER_BUSINESS_DAYS:-5}
       CATCHUP_MAX_SLOTS: ${CATCHUP_MAX_SLOTS:-1}
       CATCHUP_MAX_AGE_MS: ${CATCHUP_MAX_AGE_MS:-172800000}
       ENRICH_PROVIDER: ${ENRICH_PROVIDER:-stub}

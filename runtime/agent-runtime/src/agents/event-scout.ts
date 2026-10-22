@@ -103,6 +103,8 @@ import { useKnowledge } from '../knowledge/resolver.js';
 import { hostOf, normalizeUrl, scrubUnknownUrls, SourceLedger } from './source-ledger.js';
 import { classifyLeadTime, daysUntil, leadTimeWindowFromEnv, madridToday, windowInfo, type LeadTimeWindow } from '../signals/lead-time.js';
 import { domainResolverConfigFromEnv, DomainResolverSession, resolveExhibitorDomain, type DomainResolverConfig, type ResolverPageRead } from './domain-resolver.js';
+import { CompanySignalSeen, discoverCompanySignals, type CompanyDiscoveryResult } from './company-signals.js';
+import { COMPANY_SIGNAL_FRESH_DAYS } from '../signals/company-signal.js';
 
 // ---------------------------------------------------------------------------
 // Input
@@ -135,15 +137,26 @@ export const ScoutInput = z
      * evaluated. The list is combed once a person qualifies the signal (daily run / trigger).
      */
     discover_only: z.boolean().optional(),
+    /**
+     * Tanda 21: list of sectors of ONE run (weekly scouting). Each sector is a full scout pass (its
+     * own search, same per-sector budgets), run in series under the run's time budget; the start
+     * rotates every week. `sector` is the fallback when it is missing.
+     */
+    sectors: z.array(z.string().trim().min(2).max(120)).min(1).max(12).optional(),
+    /**
+     * Tanda 21: after the fairs of a sector, one grounded news search for company signals
+     * (openings, funding rounds, anniversaries; src/agents/company-signals.ts). Discovery only.
+     */
+    company_signals: z.boolean().optional(),
   })
-  .refine((v) => v.sector !== undefined || v.event_url !== undefined, { message: 'sector or event_url is required' });
+  .refine((v) => v.sector !== undefined || (v.sectors !== undefined && v.sectors.length > 0) || v.event_url !== undefined, { message: 'sector, sectors or event_url is required' });
 export type ScoutInput = z.infer<typeof ScoutInput>;
 
 /** Scout mode when the input asks for it or has no `event`/`exhibitors` but a sector / event_url. */
 export function isScoutInput(input: Record<string, unknown>): boolean {
   if (input.mode === 'scout') return true;
   if ('event' in input || 'exhibitors' in input) return false;
-  return 'sector' in input || 'event_url' in input;
+  return 'sector' in input || 'sectors' in input || 'event_url' in input;
 }
 
 // ---------------------------------------------------------------------------
@@ -539,6 +552,8 @@ export interface ScoutEventResult {
   not_evaluated: string[];
   exhibitors_not_evaluated: number;
   signal_id?: string;
+  /** Tanda 21: the event signal was created by this run (false: it already existed, e.g. found again by another sector or week). */
+  signal_created?: boolean;
   error?: { code: string; message: string };
   results: ExhibitorResult[];
 }
@@ -575,6 +590,21 @@ export interface ScoutRunOptions {
   leadTime?: LeadTimeWindow;
   /** Domain resolver (tanda 20); default DOMAIN_RESOLVER_ENABLED / DOMAIN_RESOLVER_MAX_PER_RUN. */
   domainResolver?: DomainResolverConfig;
+  /** Tanda 21 (several sectors in one run): what the earlier sectors already recorded. */
+  seen?: ScoutSeen;
+}
+
+/** Shared by the sectors of one run: fairs (event URLs, folded name + date) and company signals already recorded. */
+export interface ScoutSeen {
+  fairs: Set<string>;
+  companies: CompanySignalSeen;
+}
+
+/** Keys of a fair for the cross-sector dedupe: its URLs and its folded name + start date. */
+export function fairKeys(f: { name: string | null; date: string | null; urls: Array<string | null> }): string[] {
+  const keys = f.urls.map((u) => (u ? normalizeUrl(u) : null)).filter((u): u is string => u !== null).map((u) => `url:${u}`);
+  if (f.name && foldText(f.name).length > 0) keys.push(`name:${foldText(f.name)}|${f.date ?? ''}`);
+  return keys;
 }
 
 export async function runScout(run: ProspectorRun, rawInput: Record<string, unknown>, today: string, opts: ScoutRunOptions = {}): Promise<ScoutRunOutput> {
@@ -603,6 +633,8 @@ export async function runScout(run: ProspectorRun, rawInput: Record<string, unkn
     return { outcome: 'FAILED', lines: [`Entrada inválida (modo scout): ${issues(parsed.error)}`], output: { mode: 'scout', input_error: issues(parsed.error) } };
   }
   const input = parsed.data;
+  if (input.sectors && !input.event_url) return runScoutSectors(run, input, today, opts);
+  const seen = opts.seen;
   const maxEvents = Math.max(1, Math.min(input.max_events ?? cfg.maxEvents, cfg.maxEvents));
   const maxExhibitors = Math.max(1, Math.min(input.max_exhibitors ?? cfg.maxExhibitorsPerEvent, cfg.maxExhibitorsPerEvent));
   const until = addMonths(today, input.horizon_months);
@@ -897,6 +929,10 @@ export async function runScout(run: ProspectorRun, rawInput: Record<string, unkn
               discarded.push({ name: e.name, reason: v.status === 'too_far' ? 'fuera_de_ventana_lead_time_lejana' : 'fuera_de_ventana_lead_time_cercana', url: e.website_url, days: v.days });
               continue;
             }
+          }
+          if (seen && fairKeys({ name: e.name, date: start, urls: [e.website_url, e.exhibitors_url] }).some((k) => seen.fairs.has(k))) {
+            discarded.push({ name: e.name, reason: 'duplicada_en_otro_sector', url: e.website_url });
+            continue;
           }
           candidates.push({
             name: e.name,
@@ -1461,10 +1497,36 @@ export async function runScout(run: ProspectorRun, rawInput: Record<string, unkn
     });
     if (sig.result.status === 'ok') {
       ev.status = 'event_signal';
-      ev.signal_id = (sig.result.output as { record: { id: string } }).record.id;
+      const so = sig.result.output as { created: boolean; record: { id: string } };
+      ev.signal_id = so.record.id;
+      ev.signal_created = so.created;
+      if (seen) for (const k of fairKeys({ name: ev.name, date: ev.date, urls: [websiteUrl, exhibitorsUrl, sourceUrl] })) seen.fairs.add(k);
     } else {
       ev.status = 'event_signal_error';
       ev.error = toolError(sig);
+    }
+  }
+
+  // ------------------------------------------- company signals (tanda 21)
+  let company: CompanyDiscoveryResult | null = null;
+  if (input.company_signals && input.sector && !input.event_url) {
+    const maxCompany = cfg.maxCompanySignalsPerSector;
+    if (maxCompany > 0 && outOfTime('company_signals')) {
+      partialReasons.push('presupuesto de tiempo agotado antes de buscar señales de empresa');
+    } else if (maxCompany > 0) {
+      company = await discoverCompanySignals(run, {
+        sector: input.sector,
+        region: input.region,
+        today: leadTimeToday,
+        maxSignals: maxCompany,
+        ledger,
+        seen: seen?.companies ?? new CompanySignalSeen(),
+        outOfTime: () => outOfTime('company_signals'),
+        confidence: cfg.eventSignalConfidence,
+        verifyUnsourced: cfg.verifyUnsourcedByFetch,
+        maxRedirectResolutions: cfg.maxRedirectResolutions,
+      });
+      if (company.search_error) partialReasons.push(`búsqueda de señales de empresa fallida (${company.search_error.code})`);
     }
   }
 
@@ -1477,6 +1539,18 @@ export async function runScout(run: ProspectorRun, rawInput: Record<string, unkn
     events_verified: events.length,
     events_with_exhibitors: events.filter((e) => e.status === 'exhibitors_processed').length,
     event_signals: events.filter((e) => e.status === 'event_signal').length,
+    event_signals_created: events.filter((e) => e.status === 'event_signal' && e.signal_created === true).length,
+    event_signals_existing: events.filter((e) => e.status === 'event_signal' && e.signal_created === false).length,
+    events_duplicated_other_sector: discarded.filter((d) => d.reason === 'duplicada_en_otro_sector').length,
+    ...(company
+      ? {
+          company_signals_proposed: company.counters.proposed,
+          company_signals_created: company.counters.created,
+          company_signals_existing: company.counters.existing,
+          company_signals_discarded: company.counters.discarded,
+          company_signal_errors: company.counters.errors,
+        }
+      : {}),
     events_discarded: discarded.length,
     discarded_out_of_window: discardedOutOfWindow,
     events_skipped_time_budget: eventsSkippedForTime + events.filter((e) => e.status === 'time_budget_exhausted').length,
@@ -1515,8 +1589,8 @@ export async function runScout(run: ProspectorRun, rawInput: Record<string, unkn
     );
   }
   const eventErrors = events.filter((e) => e.status === 'event_signal_error').length;
-  const errors = counters.errors + eventErrors;
-  if (events.length === 0 && !searchFailed && !cut) {
+  const errors = counters.errors + eventErrors + (company?.counters.errors ?? 0);
+  if (events.length === 0 && !searchFailed && !cut && !(company && company.counters.created + company.counters.existing > 0)) {
     partialReasons.push(
       discardedOutOfWindow > 0 && discardedOutOfWindow === discarded.length
         ? `todas las ferias propuestas (${discardedOutOfWindow}) están fuera de la ventana de lead time (${leadTime.minDays}–${leadTime.maxDays} días)`
@@ -1552,7 +1626,13 @@ export async function runScout(run: ProspectorRun, rawInput: Record<string, unkn
       : []),
     `Totales: relevantes ${counters.relevant}, hipótesis nuevas ${counters.hypotheses_created}, ya existentes ${counters.hypotheses_existing}, research ${counters.research_created}${counters.research_errors > 0 ? ` (${counters.research_errors} sin registrar)` : ''}, descartados ${counters.discarded_irrelevant + counters.discarded_low_confidence}, sin dominio verificado ${counters.skipped_no_domain}, errores ${errors}.`,
     `Coste del modelo: ${formatEur(run.costEur())} (${run.llmCalls} llamadas, ${run.groundingCalls} con búsqueda: ${formatEur(groundingEur)} de búsqueda; ${run.usage.inputTokens} tokens de entrada y ${run.usage.outputTokens} de salida). Tiempo: ${minutes(counters.elapsed_ms)} min de ${minutes(timeBudgetMs)} min de presupuesto.`,
+    ...(company
+      ? [
+          `Señales de empresa (aperturas, financiación, aniversarios; noticias de ≤ ${COMPANY_SIGNAL_FRESH_DAYS} días): propuestas ${company.counters.proposed}, creadas ${company.counters.created}, ya existentes ${company.counters.existing}, descartadas ${company.counters.discarded}${company.counters.errors > 0 ? `, errores ${company.counters.errors}` : ''}.`,
+        ]
+      : []),
     ...(partialReasons.length > 0 ? [`Motivos: ${partialReasons.join(' | ')}`] : []),
+    ...(company ? company.entries.filter((c) => c.status === 'signal_created' || c.status === 'signal_existing').map((c) => `Empresa: ${c.company} (${c.kind}, noticia del ${c.news_date}) — ${c.status === 'signal_created' ? 'señal creada' : 'señal ya existente'}.`) : []),
     ...events.flatMap((e) => [
       `Feria: ${e.name}${e.date ? ` (${e.date})` : ''}${e.location ? `, ${e.location}` : ''} — ${
         e.status === 'exhibitors_processed'
@@ -1593,6 +1673,7 @@ export async function runScout(run: ProspectorRun, rawInput: Record<string, unkn
         max_catalog_pages: maxCatalogPages,
       },
       domain_resolver: domainResolver.summary(),
+      ...(company ? { company_signals: company } : {}),
       time_budget: { budget_ms: timeBudgetMs, elapsed_ms: counters.elapsed_ms, exhausted: cut !== null, ...(cut ? { phase: cut.phase, exhausted_at_ms: cut.elapsed_ms } : {}) },
       errors_by_status: ERROR_STATUSES.reduce<Record<string, number>>((acc, s) => ({ ...acc, [s]: results.filter((r) => r.status === s).length }), {}),
     },
@@ -1607,4 +1688,169 @@ const TIME_PHASE_ES: Record<string, string> = {
   evaluation: 'evaluación de expositores',
   profiles: 'fichas de expositor',
   domains: 'búsqueda de webs',
+  company_signals: 'señales de empresa',
 };
+
+// ---------------------------------------------------------------------------
+// Several sectors in one run (tanda 21)
+// ---------------------------------------------------------------------------
+
+/** Per-sector summary of a multi-sector run (`output.sectors`). */
+export interface SectorSummary {
+  sector: string;
+  /** Position in this week's order (the start rotates every week). */
+  order: number;
+  status: 'done' | 'skipped_time_budget';
+  outcome?: RunOutcome;
+  /** Fairs proposed by the search, verified (one page read), with a signal created now / already existing, discarded (outside lead time included), duplicated with an earlier sector. */
+  fairs_proposed: number;
+  fairs_verified: number;
+  fair_signals_created: number;
+  fair_signals_existing: number;
+  fairs_discarded: number;
+  fairs_out_of_window: number;
+  fairs_duplicated_other_sector: number;
+  /** Company signals (news) proposed / created / already existing / discarded. */
+  company_signals_proposed: number;
+  company_signals_created: number;
+  company_signals_existing: number;
+  company_signals_discarded: number;
+  errors: number;
+  llm_calls: number;
+  grounding_calls: number;
+  cost_eur: number;
+  elapsed_ms: number;
+  partial_reasons: string[];
+}
+
+/** Rotation of the sector list: the start moves one position every week (Monday-based week of the Madrid day). */
+export function rotateSectors(sectors: readonly string[], madridDay: string): Array<{ sector: string; index: number }> {
+  const unique = [...new Map(sectors.map((s) => [foldText(s), s])).values()];
+  if (unique.length === 0) return [];
+  const t = Date.parse(`${madridDay}T00:00:00Z`);
+  // 1970-01-05 was a Monday: weeks change on Mondays (the weekly scouting runs on Mondays).
+  const week = Number.isNaN(t) ? 0 : Math.floor((t - Date.UTC(1970, 0, 5)) / (7 * 86_400_000));
+  const start = ((week % unique.length) + unique.length) % unique.length;
+  return unique.map((_, i) => ({ sector: unique[(start + i) % unique.length]!, index: (start + i) % unique.length }));
+}
+
+/**
+ * Runs the scout once per sector, IN SERIES, under the run's single time budget (the same deadline
+ * for all: `scout.time_budget_ms` from the start of the run). Before a sector, if the budget is
+ * spent, it and the rest are reported `skipped_time_budget`; the weekly rotation of the start means
+ * the same sectors do not always fall off. Fairs and company signals already recorded by an earlier
+ * sector are not recorded again (`duplicada_en_otro_sector`; create_signal is idempotent anyway).
+ */
+async function runScoutSectors(run: ProspectorRun, input: ScoutInput, today: string, opts: ScoutRunOptions): Promise<ScoutRunOutput> {
+  const cfg = run.cfg.scout;
+  const madrid = madridToday(run.startedAt);
+  const order = rotateSectors(input.sectors ?? [], madrid);
+  const timeBudgetMs = Math.min(input.scout_time_budget_ms ?? cfg.timeBudgetMs, cfg.timeBudgetMs);
+  const deadline = run.startedAt.getTime() + timeBudgetMs;
+  const seen: ScoutSeen = opts.seen ?? { fairs: new Set(), companies: new CompanySignalSeen() };
+  const sectors: SectorSummary[] = [];
+  const runs: Array<{ sector: string; output: Record<string, unknown> }> = [];
+  const sectorLines: string[] = [];
+  const { sectors: _all, sector: _one, ...rest } = input;
+  for (const [i, { sector }] of order.entries()) {
+    run.ctx.signal.throwIfAborted();
+    const empty: SectorSummary = {
+      sector, order: i + 1, status: 'skipped_time_budget', fairs_proposed: 0, fairs_verified: 0, fair_signals_created: 0, fair_signals_existing: 0, fairs_discarded: 0,
+      fairs_out_of_window: 0, fairs_duplicated_other_sector: 0, company_signals_proposed: 0, company_signals_created: 0, company_signals_existing: 0, company_signals_discarded: 0,
+      errors: 0, llm_calls: 0, grounding_calls: 0, cost_eur: 0, elapsed_ms: 0, partial_reasons: [],
+    };
+    if (run.clock().getTime() >= deadline) {
+      sectors.push(empty);
+      continue;
+    }
+    const cost0 = run.costEur();
+    const llm0 = run.llmCalls;
+    const g0 = run.groundingCalls;
+    const t0 = run.clock().getTime();
+    const r = await runScout(run, { ...rest, sector }, today, { ...opts, seen });
+    const c = (r.output.counters ?? {}) as Record<string, number>;
+    const s: SectorSummary = {
+      ...empty,
+      status: 'done',
+      outcome: r.outcome,
+      fairs_proposed: c.events_proposed ?? 0,
+      fairs_verified: c.events_verified ?? 0,
+      fair_signals_created: c.event_signals_created ?? 0,
+      fair_signals_existing: c.event_signals_existing ?? 0,
+      fairs_discarded: c.events_discarded ?? 0,
+      fairs_out_of_window: c.discarded_out_of_window ?? 0,
+      fairs_duplicated_other_sector: c.events_duplicated_other_sector ?? 0,
+      company_signals_proposed: c.company_signals_proposed ?? 0,
+      company_signals_created: c.company_signals_created ?? 0,
+      company_signals_existing: c.company_signals_existing ?? 0,
+      company_signals_discarded: c.company_signals_discarded ?? 0,
+      errors: c.errors ?? 0,
+      llm_calls: run.llmCalls - llm0,
+      grounding_calls: run.groundingCalls - g0,
+      cost_eur: round6(run.costEur() - cost0),
+      elapsed_ms: run.clock().getTime() - t0,
+      partial_reasons: (r.output.partial_reasons as string[] | undefined) ?? [],
+    };
+    sectors.push(s);
+    runs.push({ sector, output: r.output });
+    const extra = s.outcome !== 'SUCCESS' ? ` [${s.outcome}${s.partial_reasons.length > 0 ? `: ${s.partial_reasons.join(' | ').slice(0, 200)}` : ''}]` : '';
+    sectorLines.push(
+      `- ${sector}: ferias propuestas ${s.fairs_proposed}, verificadas ${s.fairs_verified}, señales nuevas ${s.fair_signals_created}${s.fair_signals_existing > 0 ? ` (+${s.fair_signals_existing} ya existentes)` : ''}, fuera de ventana ${s.fairs_out_of_window}${s.fairs_duplicated_other_sector > 0 ? `, repetidas de otro sector ${s.fairs_duplicated_other_sector}` : ''}; señales de empresa nuevas ${s.company_signals_created}${s.company_signals_existing > 0 ? ` (+${s.company_signals_existing} ya existentes)` : ''} de ${s.company_signals_proposed} propuestas; coste ${formatEur(s.cost_eur)}${extra}.`,
+    );
+  }
+  const done = sectors.filter((s) => s.status === 'done');
+  const skipped = sectors.filter((s) => s.status === 'skipped_time_budget');
+  const sum = (k: keyof SectorSummary) => sectors.reduce((n, s) => n + (typeof s[k] === 'number' ? (s[k] as number) : 0), 0);
+  const counters = {
+    sectors_total: sectors.length,
+    sectors_done: done.length,
+    sectors_skipped_time_budget: skipped.length,
+    events_proposed: sum('fairs_proposed'),
+    events_verified: sum('fairs_verified'),
+    event_signals_created: sum('fair_signals_created'),
+    event_signals_existing: sum('fair_signals_existing'),
+    events_discarded: sum('fairs_discarded'),
+    discarded_out_of_window: sum('fairs_out_of_window'),
+    events_duplicated_other_sector: sum('fairs_duplicated_other_sector'),
+    company_signals_proposed: sum('company_signals_proposed'),
+    company_signals_created: sum('company_signals_created'),
+    company_signals_existing: sum('company_signals_existing'),
+    company_signals_discarded: sum('company_signals_discarded'),
+    errors: sum('errors'),
+    llm_calls: run.llmCalls,
+    grounding_calls: run.groundingCalls,
+    elapsed_ms: run.clock().getTime() - run.startedAt.getTime(),
+  };
+  const failed = done.filter((s) => s.outcome === 'FAILED').length;
+  const outcome: RunOutcome =
+    done.length > 0 && failed === done.length ? 'FAILED' : failed > 0 || skipped.length > 0 || done.some((s) => s.outcome !== 'SUCCESS') ? 'PARTIAL' : 'SUCCESS';
+  const partialReasons = [
+    ...(skipped.length > 0 ? [`presupuesto de tiempo agotado: ${skipped.length} sector(es) sin correr (${skipped.map((s) => s.sector).join(', ')}); la rotación semanal cambia el orden la próxima semana`] : []),
+    ...done.filter((s) => s.outcome !== 'SUCCESS').map((s) => `${s.sector}: ${s.outcome}`),
+  ];
+  const groundingEur = run.currency === 'EUR' ? round6(run.groundingCost) : round6(run.groundingCost * run.cfg.usdToEur);
+  const minutes = (ms: number) => (ms / 60_000).toLocaleString('es-ES', { maximumFractionDigits: 1 });
+  const lines = [
+    `Modo scout${input.discover_only ? ' (solo descubrimiento: ferias y señales de empresa se registran como señal NEW)' : ''}: ${sectors.length} sectores en ${input.region} (orden de esta semana: ${order.map((o) => o.sector).join(' → ')}).`,
+    `Totales: ferias propuestas ${counters.events_proposed}, señales de feria nuevas ${counters.event_signals_created} (ya existentes ${counters.event_signals_existing}), fuera de ventana ${counters.discarded_out_of_window}, repetidas entre sectores ${counters.events_duplicated_other_sector}; señales de empresa nuevas ${counters.company_signals_created} (ya existentes ${counters.company_signals_existing}) de ${counters.company_signals_proposed} propuestas; sectores corridos ${done.length} de ${sectors.length}; errores ${counters.errors}.`,
+    `Coste del modelo: ${formatEur(run.costEur())} (${run.llmCalls} llamadas, ${run.groundingCalls} con búsqueda: ${formatEur(groundingEur)} de búsqueda). Tiempo: ${minutes(counters.elapsed_ms)} min de ${minutes(timeBudgetMs)} min.`,
+    ...(partialReasons.length > 0 ? [`Motivos: ${partialReasons.join(' | ')}`] : []),
+    'Por sector:',
+    ...sectorLines,
+    ...skipped.map((s) => `- ${s.sector}: sin correr (presupuesto de tiempo agotado).`),
+  ];
+  return {
+    outcome,
+    lines,
+    output: {
+      mode: 'scout',
+      input,
+      sectors,
+      sector_order: order.map((o) => o.sector),
+      counters,
+      partial_reasons: partialReasons,
+      sector_runs: runs.map((r) => ({ sector: r.sector, ...r.output, input: undefined })),
+      time_budget: { budget_ms: timeBudgetMs, elapsed_ms: counters.elapsed_ms, exhausted: skipped.length > 0 },
+    },
+  };
+}

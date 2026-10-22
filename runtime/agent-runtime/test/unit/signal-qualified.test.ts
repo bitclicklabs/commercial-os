@@ -74,6 +74,7 @@ describe('classifySignalQualification', () => {
         event_url: 'https://expofoods.example/expositores',
         event_date: '2026-11-24',
         signal_type: 'FAIR',
+        signal_kind: 'fair',
         transition: 'updated_fields',
       },
     });

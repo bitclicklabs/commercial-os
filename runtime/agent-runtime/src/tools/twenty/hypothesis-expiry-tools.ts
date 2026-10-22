@@ -17,6 +17,7 @@
 import { z } from 'zod';
 import { TWENTY_OBJECTS, filterValue, type TwentyCommercialHypothesisExpanded, type TwentyCommercialSignal } from '../../integrations/twenty/index.js';
 import { daysUntil } from '../../signals/lead-time.js';
+import { isCompanySignal } from '../../signals/company-signal.js';
 import { defineTool } from '../types.js';
 import { RecordId, withTwenty, type TwentyToolDeps } from './shared.js';
 
@@ -142,11 +143,17 @@ export const ExpireHypothesisInput = z.object({
   today: z.iso.date(),
   /** Lead-time minimum: expires only when the fair is fewer than this many days away (or past). */
   minDays: z.number().int().min(0).max(3650),
+  /**
+   * Tanda 21, hypotheses of a COMPANY signal (name suffix, src/signals/company-signal.ts): they
+   * expire with their signal, when its news date is MORE than this many days old. Required for
+   * them: a company-signal hypothesis is never expired by the fair lead-time rule.
+   */
+  minAgeDays: z.number().int().min(1).max(3650).optional(),
 });
 
 export const ExpireHypothesisOutput = z.object({
   expired: z.boolean(),
-  reason: z.enum(['expired', 'not_found', 'status_not_proposed', 'event_in_lead_time']),
+  reason: z.enum(['expired', 'not_found', 'status_not_proposed', 'event_in_lead_time', 'company_signal_not_expired']),
   previousStatus: z.string().nullable(),
   eventDate: z.string().nullable(),
   days: z.number().int().nullable(),
@@ -159,7 +166,7 @@ export function createExpireHypothesisTool(deps: TwentyToolDeps) {
     name: 'Expire commercial hypothesis',
     version: '1.0.0',
     description:
-      'Set a PROPOSED commercial hypothesis to EXPIRED (only that field) when its fair is closer than the lead-time minimum or already past. Never touches VALIDATED, REJECTED or EXPIRED hypotheses nor any other field.',
+      'Set a PROPOSED commercial hypothesis to EXPIRED (only that field) when its fair is closer than the lead-time minimum or already past (company signals: when its news is more than minAgeDays old). Never touches VALIDATED, REJECTED or EXPIRED hypotheses nor any other field.',
     inputSchema: ExpireHypothesisInput,
     outputSchema: ExpireHypothesisOutput,
     riskLevel: 'LOW_WRITE',
@@ -182,7 +189,13 @@ export function createExpireHypothesisTool(deps: TwentyToolDeps) {
         const days = daysUntil(eventDate, input.today);
         const base = { previousStatus: h.status ?? null, eventDate, days };
         if (h.status !== 'PROPOSED') return { status: 'ok', output: { expired: false, reason: 'status_not_proposed', ...base } };
-        if (days === null || days >= input.minDays) return { status: 'ok', output: { expired: false, reason: 'event_in_lead_time', ...base } };
+        const company = h.commercialSignal ? isCompanySignal({ signalType: h.commercialSignal.signalType, name: h.commercialSignal.name }) : false;
+        if (company || input.minAgeDays !== undefined) {
+          // Company signal: only by the age of its news (the lead-time window does not apply).
+          if (days === null || input.minAgeDays === undefined || -days <= input.minAgeDays) {
+            return { status: 'ok', output: { expired: false, reason: 'company_signal_not_expired', ...base } };
+          }
+        } else if (days === null || days >= input.minDays) return { status: 'ok', output: { expired: false, reason: 'event_in_lead_time', ...base } };
         await deps.twenty.update(TWENTY_OBJECTS.commercialHypothesis, input.hypothesisId, { status: 'EXPIRED' }, { signal: ctx.signal });
         ctx.logger.info('commercial hypothesis expired (lead time)', { hypothesisId: input.hypothesisId, eventDate, days });
         return { status: 'ok', output: { expired: true, reason: 'expired', ...base } };

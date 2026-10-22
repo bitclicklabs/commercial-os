@@ -155,6 +155,7 @@ Requisitos: Node.js 22, pnpm, y los contenedores `pxos-postgres` (127.0.0.1:5440
 | `OPTIMIZER_SCHEDULE_ENABLED` | `false` | `true` activa el Skill Optimizer programado en el rol `scheduler`. Consulta [Programado](#programado) |
 | `OPTIMIZER_SCHEDULE_CRON` | `0 9 * * 3` | Cuándo se encola el run programado (CRON de 5 campos, hora de `Europe/Madrid`): miércoles a las 09:00 |
 | `OPTIMIZER_SCHEDULE_SKILLS` | `prospector-event-exhibitors` | Skills que optimiza el run programado, separadas por comas. Solo las que tienen runner de experimentos |
+| `FOLLOWUP_AFTER_BUSINESS_DAYS` | `5` | Días laborables (lunes a viernes, Europe/Madrid, sin festivos) desde el primer envío tras los que `lead-followup-check` crea la tarea «🔔 Seguimiento» si no hay respuesta. `0` desactiva el chequeo; un valor no válido (no entero entre 0 y 60) vuelve a 5. Consulta [Seguimiento de envíos sin respuesta](#seguimiento-de-envíos-sin-respuesta-tanda-21) |
 
 ## Migraciones
 
@@ -1434,7 +1435,7 @@ Las de Twenty usan `TWENTY_BASE_URL` y `TWENTY_API_KEY` y tienen `outputTrust = 
 | `find_company` | `READ` | No | — |
 | `get_company` | `READ` | No | — |
 | `upsert_company` | `LOW_WRITE` | Sí | Por dominio normalizado: `publi:company:create:domain:{domain}` |
-| `create_signal` | `LOW_WRITE` | Sí | Empresa + tipo + `eventDate` + `sourceDomain` |
+| `create_signal` | `LOW_WRITE` | Sí | Empresa + tipo + `eventDate` + `sourceDomain`; con `dedupeBySourceUrl` (señales de empresa, tanda 21), empresa + tipo + URL exacta del artículo |
 | `create_research` | `LOW_WRITE` | Sí | Ejecución + empresa + `researchType` |
 | `create_hypothesis` | `LOW_WRITE` | Sí | Empresa + `name` (por defecto `{empresa} — {need}`) |
 | `create_agent_run_summary` | `LOW_WRITE` | Sí | `agentExecutionId` |
@@ -1447,6 +1448,7 @@ Las de Twenty usan `TWENTY_BASE_URL` y `TWENTY_API_KEY` y tienen `outputTrust = 
 | `upsert_person` | `LOW_WRITE` | Sí | Por email (`emails.primaryEmail`, sin distinguir mayúsculas): una Persona existente solo se **completa** (nombre, cargo o empresa vacíos), nunca se pisa. `info@`, `comercial@`, `rrhh@`, `noreply@`... se omiten sin escribir: no son personas |
 | `upsert_opportunity` | `LOW_WRITE` | Sí | Por empresa: reutiliza su Oportunidad **abierta** (etapa que no sea de cierre); si no hay, la crea en la primera etapa del pipeline, sin importe. Engancha la nota de la respuesta. Solo el InboxAgent |
 | `create_reply_task` | `LOW_WRITE` | Sí | Título «📬 Responder a <persona/empresa>» + oportunidad (o empresa): una tarea abierta igual se reutiliza; adopta una huérfana. Solo el InboxAgent |
+| `list_sent_hypotheses` | `READ` | No | — (hipótesis del tenant con `emailStatus = SENT`, con empresa, `need`, `whyNow`, destinatario y asunto; salida `untrusted`). Solo el FollowUpAgent |
 | `fetch_url` | `READ` | No | — (consulta [Seguridad del contenido web](#seguridad-del-contenido-web)) |
 | `render_url` | `READ` | No | — (consulta [Render de JavaScript](#render-de-javascript-render_url)) |
 | `catalog_search_products` | `READ` | No | — (consulta [Catálogo](#catálogo-catalog-service); salida `untrusted`) |
@@ -1573,7 +1575,8 @@ El `StubAgent` sigue usando su tool simulada (`stub.lookup`), que no pasa por el
 |---|---|---|---|
 | Señales | `{ mode: "signals", scout_time_budget_ms? }` | `daily-event-prospecting` (v2, tanda 15) | Caduca las señales de feria con fecha pasada y peina la feria `QUALIFIED` vigente trabajada hace más tiempo. Consulta [Modo señales](#modo-señales-ferias-calificadas) |
 | Directo | `{ event, exhibitors[] }` | — (era la v1 de `daily-event-prospecting`) | Evalúa los expositores ya extraídos (fixture de demo) |
-| Scout | `{ sector, region?, horizon_months?, discover_only? }` o `{ event_url, event_name?, event_date?, max_events? }` | `weekly-event-scouting` (`discover_only: true` desde la tanda 15) | Busca ferias reales; con `discover_only` solo las registra como señal FAIR `NEW`; con `event_url` (scout dirigido) peina su catálogo. Consulta [Modo scout](#modo-scout-ferias-reales) |
+| Scout | `{ sectors[] \| sector, region?, horizon_months?, discover_only?, company_signals? }` o `{ event_url, event_name?, event_date?, max_events? }` | `weekly-event-scouting` (`discover_only: true` desde la tanda 15; seis sectores y señales de empresa desde la tanda 21) | Busca ferias reales; con `discover_only` solo las registra como señal FAIR `NEW`; con `company_signals`, también noticias de empresa (aperturas, financiación, aniversarios); con `event_url` (scout dirigido) peina su catálogo. Consulta [Modo scout](#modo-scout-ferias-reales) y [Señales de empresa](#señales-de-empresa-tanda-21) |
+| Señal de empresa | disparo al calificar una señal «… — apertura \| financiación \| aniversario», o su turno en el reparto diario | `prospect-on-qualified` / `daily-event-prospecting` | Evalúa esa empresa directamente (sin catálogo). Consulta [Señales de empresa](#señales-de-empresa-tanda-21) |
 
 ### Modo señales (ferias calificadas)
 
@@ -1584,7 +1587,8 @@ Entrada de la tarea diaria desde la tanda 15: `{ "mode": "signals" }`, sin feria
 3. **Caducidad de hipótesis por lead time** (tanda 18): las hipótesis `PROPOSED` de ferias a menos de `LEADTIME_MIN_DAYS` días (o ya pasadas) pasan a `EXPIRED`. Consulta [Ventana de lead time](#ventana-de-lead-time).
 4. De las `QUALIFIED` vigentes **dentro de la ventana de lead time** elige la **trabajada hace más tiempo** (round-robin): primero las que ninguna ejecución ha trabajado; después, la de última pasada más antigua; empates por la fecha de feria más próxima. La memoria es la tabla `agent_executions` del mismo agente: `output.signal_id` (este modo) o `input.signal_id` (un scout dirigido que la lleve, como el disparo al calificar). Una ejecución que acabó `SKIPPED` no cuenta como pasada.
 5. Lanza el scout dirigido con `{ event_url, event_name, event_date, max_events: 1 }` y el presupuesto de tiempo del scout (`scout.time_budget_ms`, 20 min; la entrada `scout_time_budget_ms` lo baja). La salida lleva `signal_id`, `signal_name`, `event_name`, `event_url`, `signals` (caducadas, candidatas con su última pasada y sus días), `lead_time` e `hypothesis_expiry`.
-6. Sin ninguna `QUALIFIED` en ventana: `outcome = SKIPPED` (`reason`: `0 señales calificadas` o `0 señales calificadas en ventana de lead time`, con el desglose en `lead_time`), coste 0, sin llamadas al modelo y sin `agentRunSummary`.
+6. **Señales de empresa** (tanda 21; consulta [Señales de empresa](#señales-de-empresa-tanda-21)): las señales sin empresa con sufijo «— apertura», «— financiación» o «— aniversario» se listan con las de feria pero tienen su propia vida: caducan (`EXPIRED`, `expire_signal` con `minAgeDays: 120`) cuando su **noticia** tiene más de 120 días, y sus hipótesis `PROPOSED` con ellas (`expire_hypothesis` con `minAgeDays`); la ventana de lead time no les aplica y la caducidad por lead time de las hipótesis nunca las toca. Las `QUALIFIED` vivas entran en el mismo round-robin (desempate por su fecha límite, noticia + 120 días); las que ya tienen una hipótesis `PROPOSED` o `VALIDATED` colgada de la señal quedan fuera con coste 0 (`signals.company_skipped_existing`). Si le toca a una señal de empresa, se evalúa esa empresa (una llamada al LLM) en lugar del scout dirigido; la salida lleva `signal_kind: "company"`.
+7. Sin ninguna `QUALIFIED` en ventana (ni señal de empresa pendiente): `outcome = SKIPPED` (`reason`: `0 señales calificadas` o `0 señales calificadas en ventana de lead time`, con el desglose en `lead_time`), coste 0, sin llamadas al modelo y sin `agentRunSummary`.
 
 #### Ventana de lead time
 
@@ -1655,6 +1659,7 @@ Un error en un expositor (modelo o Twenty) no detiene la ejecución: queda en `o
 Entrada (`ScoutInput`):
 
 ```json
+{ "sectors": ["alimentación y bebidas", "farmacia y salud"], "region": "España", "discover_only": true, "company_signals": true }
 { "sector": "alimentación y bebidas", "region": "España", "horizon_months": 6 }
 { "event_url": "https://www.gastronoma.es", "event_name": "Mediterránea Gastrónoma 2026" }
 ```
@@ -1695,6 +1700,15 @@ Flujo:
 `outcome`: `FAILED` si falla la búsqueda o todos los expositores; `PARTIAL` si hay errores, ninguna feria verificable o alguna feria sin lista de expositores; `SUCCESS` en otro caso. La salida incluye `events[]` (páginas leídas con `via` = `fetch` | `render` | `pdf`, `content_kind`, `js_app_likely`, expositores extraídos y verificados por página; verificación; expositores descartados), `discarded_events[]` con el motivo, `sources` (URL visitadas y fuentes de grounding), `render` (`calls`, `ok`, `retries`, `max`, `disabled` con el motivo si se desactivó), los contadores `fetches`, `renders`, `renders_ok`, `render_retries`, `pdfs_read`, `catalog_pages` (páginas del listado de las que salen expositores), `profile_lookups` (fichas abiertas), `profile_renders`, `domain_checks` y `domains_resolved` (dominios obtenidos de la ficha), `profiles` (resumen y límites), `profile` en cada resultado (`url`, `status`, `via`, `domain`, `domain_source`, `social`, `error`) y el coste de búsqueda.
 
 El catálogo JavaScript de Gastrónoma lista nombres, sector y país, pero no la web de cada expositor: está en su ficha (`/exhibitors/{id}`, etiqueta "Website"). Hasta la tanda 4 el scout solo leía la primera página (20 de 91) y los relevantes acababan como `skipped_no_domain`. La tanda 5 leía 3 páginas (60) y 20 fichas. Ahora lee el catálogo entero (o su API JSON) y abre las fichas de los relevantes mientras quede tiempo.
+
+#### Varios sectores por ejecución (tanda 21)
+
+Con `sectors` (lista de 1 a 12; sin ella vale `sector`), la ejecución hace una pasada completa del scout **por sector, en serie**: su propia búsqueda de ferias (y, con `company_signals`, de noticias de empresa), los mismos límites por sector (`max_events`, `max_fetches`…), la misma verificación de una página por feria y la misma ventana de lead time. El coste crece linealmente con los sectores (unos 0,07 € de búsqueda de ferias por sector, más la de noticias).
+
+- **Presupuesto de tiempo único**: todos los sectores comparten el `scout.time_budget_ms` de la ejecución (20 min desde su inicio). Antes de cada sector se comprueba; si se agotó, ese sector y los siguientes quedan `skipped_time_budget` (contador `counters.sectors_skipped_time_budget`) y el `outcome` es `PARTIAL`.
+- **Rotación semanal**: el orden empieza cada lunes una posición más allá (`rotateSectors`, por semana del día de Madrid), así que no son siempre los últimos los que se quedan sin correr. `output.sector_order` dice el orden de esa ejecución.
+- **Deduplicación entre sectores**: una feria que ya registró un sector anterior (misma URL o mismo nombre y fecha) se descarta con `duplicada_en_otro_sector`; una noticia ya registrada (misma URL, o misma empresa y tipo) también. Además, `create_signal` es idempotente: feria por fecha y dominio, noticia por URL del artículo.
+- **Salida**: `output.sectors[]` con, por sector, `status` (`done` o `skipped_time_budget`), `outcome`, `fairs_proposed`, `fairs_verified`, `fair_signals_created`, `fair_signals_existing`, `fairs_discarded`, `fairs_out_of_window`, `fairs_duplicated_other_sector`, `company_signals_proposed`, `company_signals_created`, `company_signals_existing`, `company_signals_discarded`, `errors`, `llm_calls`, `grounding_calls`, `cost_eur`, `elapsed_ms` y `partial_reasons`; `output.counters` con los totales y `output.sector_runs[]` con la salida completa de cada pasada. El `agentRunSummary` lleva una línea por sector.
 
 #### Resolución de dominios por nombre
 
@@ -1764,6 +1778,41 @@ Con la configuración por defecto (`max_catalog_pages` 10, `max_exhibitors_per_e
 | **Total por feria** | | **~0,2-0,25 €** (en modo `sector`, la búsqueda con grounding suma ~0,10 €) |
 
 El coste de modelo crece con los expositores evaluados, no con las páginas: cada expositor se extrae una vez (por trozos de 5 páginas, o ninguna con la API JSON) y se evalúa una vez. La ejecución semanal (`max_events` 3) con tres catálogos de 100 expositores puede llegar a unos 0,7 €; el presupuesto de tiempo la acota. Para bajar el coste, reduce `max_exhibitors_per_event` (cada expositor evaluado cuesta unos 0,002 €). Las fichas no tienen coste de modelo, solo tiempo: el presupuesto de tiempo decide cuántas se abren.
+
+### Señales de empresa (tanda 21)
+
+Además de ferias, el scout semanal pesca señales de **empresa**: una apertura (tienda, fábrica, sede), una ronda de financiación o un aniversario, en España y en los sectores de la lista. Código: `src/signals/company-signal.ts` (convenciones), `src/agents/company-signals.ts` (descubrimiento y prospección) y `src/agents/company-signals-prompt.ts` (prompts, constantes de código en v1, no skills de la BD).
+
+**Tipado por el nombre** (decisión del PM: sin campos nuevos en la Twenty App). El tipo es el sufijo del nombre:
+
+| Tipo | Nombre | `signalType` (solo orientativo) |
+|---|---|---|
+| apertura | `"<empresa>: <qué pasó> — apertura"` | `EXPANSION` |
+| financiación | `"<empresa>: <qué pasó> — financiación"` | `OTHER` (la App no tiene valor propio) |
+| aniversario | `"<empresa>: <qué pasó> — aniversario"` | `ANNIVERSARY` |
+
+El código decide **solo por el sufijo** (`isCompanySignal`): acepta raya, semiraya o guion con espacio delante, mayúsculas, `financiacion` sin tilde y la forma `(apertura)` que alguien escriba a mano; un tipo de feria (`FAIR`, `CONGRESS`, `EVENT`) nunca es señal de empresa. La parte antes del primer `": "` es la empresa. Las señales por expositor (con `companyId`) siguen sin disparar nada.
+
+**Descubrimiento** (por sector, después de sus ferias, con `company_signals: true`):
+
+1. Una búsqueda con grounding de noticias de los últimos 60 días (hasta `scout.max_company_signals_per_sector`, 3 por defecto, tope 5).
+1. Por noticia, por código: tipo válido; **frescura en lugar de lead time**: la fecha de la noticia tiene como mucho 60 días (`noticia_no_fresca`, `sin_fecha_de_noticia`, `fecha_de_noticia_futura`); no repetida en la ejecución; URL respaldada por el grounding (o, sin fuentes, solo con corroboración, como las ferias).
+1. `fetch_url` del artículo: tiene que descargarse y **nombrar a la empresa** (`pagina_no_corrobora_la_noticia`). Sin fuente verificable no se crea nada.
+1. `create_signal` sin empresa, `NEW`, `eventDate` = fecha de la noticia, `sourceUrl` = el artículo, descripción con empresa, qué pasó y fecha; idempotente por la URL del artículo (`dedupeBySourceUrl`).
+
+`output.company_signals` (en cada pasada de sector) lleva la búsqueda, cada noticia (`entries[]` con `status` y `reason`) y los contadores; `counters.company_signals_*` los resume.
+
+**Al calificarla** (disparo `prospect-on-qualified`, o su turno en el reparto diario), `runCompanySignal`:
+
+1. Si la noticia tiene más de 120 días: `SKIPPED`, sin modelo.
+1. Vuelve a descargar el artículo (sin él no escribe nada: `PARTIAL`).
+1. Una llamada al LLM evalúa **esa empresa** (relevancia para merchandising, con la noticia en un bloque `DATOS_NO_CONFIABLES`); no se busca catálogo de expositores ni aplica la ventana de lead time.
+1. Si es relevante (confianza ≥ `min_confidence`): la empresa de Twenty con el mismo nombre exacto, o su web con el [resolvedor de dominios](#resolución-de-dominios-por-nombre) de la tanda 20. Sin web verificada (`domain_ambiguous`, `domain_not_found` o resolvedor apagado) no se crea empresa ni hipótesis y queda una **nota** breve en la señal con las candidatas vistas (`create_signal_note`), para la vía manual.
+1. Con web: `upsert_company` → `create_research` (`SIGNAL_VERIFICATION`, fuente el artículo) → `create_hypothesis` `PROPOSED` con nombre `"<empresa> — <qué pasó>"`, **colgadas de la propia señal calificada** (no se escribe una segunda señal por empresa). El `whyNow` empieza siempre, por código, por el hecho y la fecha de la noticia.
+
+Coste: una llamada al LLM (más, como mucho, una búsqueda del resolvedor). La salida lleva `mode: "company_signal"`, `signal_id`, `company`, `kind`, `news_date`, `result` y `counters`.
+
+**Vida**: caduca a los 120 días de la noticia (también con apertura futura; sin reglas especiales en v1), con sus hipótesis `PROPOSED` (consulta [Modo señales](#modo-señales-ferias-calificadas)). Las de feria no cambian: lead time 45–210 y caducidad por la fecha de la feria.
 
 ### Seguridad del contenido web
 
@@ -1841,6 +1890,7 @@ Cada llamada al LLM es un paso `MODEL` con `model` (el modelo real que respondi�
 | `scout.max_redirect_resolutions` | `3` | Redirecciones de grounding resueltas para conocer su dominio |
 | `scout.event_signal_confidence` | `0.5` | Confianza de la señal de evento sin expositores |
 | `scout.verify_unsourced_by_fetch` | `true` | Sin fuentes de grounding, aceptar la URL si la página corrobora la feria. `false` = estricto |
+| `scout.max_company_signals_per_sector` | `3` | Señales de empresa (noticias) creadas por sector y ejecución cuando la entrada lleva `company_signals` (máximo 5). `0` = nunca buscarlas |
 
 ### Seed
 
@@ -1854,10 +1904,11 @@ Es idempotente:
 - **Skills** (primero): crea las que faltan con su versión 1 `ACTIVE` y el texto exacto de las constantes de código. No modifica las que ya existen. Consulta [Skills](#skills).
 - **Agente `Prospector`**: si no existe, lo crea con la versión 1 `ACTIVE` (`model_provider = gemini`, `model = gemini-flash-latest`, `thinking_level = low`, la tool policy anterior y el prompt en español con los diferenciales de PubliEXPE: ofertas, trato cercano, taller propio y precio). Si existe y su versión activa es distinta, añade una versión nueva, la activa y pasa la anterior a `DEPRECATED`. Si es igual, no cambia nada.
 - **Tarea `daily-event-prospecting`** (v2, tanda 15): `CRON 0 8 * * *` en `Europe/Madrid`, `timeout_ms = 1800000`, sin reintentos, `default_input = { "mode": "signals" }` (modo señales). `--input=fichero.json` aún acepta un fixture del modo directo para un tenant de demo. Si cambia, se actualiza y se guarda una `TaskDefinitionVersion` nueva (la v1 con la feria de ejemplo se conserva).
-- **Tarea `weekly-event-scouting`** (modo scout, solo descubrimiento desde la tanda 15): `CRON 30 7 * * 1` (lunes 07:30) en `Europe/Madrid`, `timeout_ms = 1800000`, sin reintentos, `default_input = { "sector": "alimentación y bebidas", "region": "España", "horizon_months": 6, "discover_only": true }`: cada feria verificada queda como señal FAIR `NEW` con URL y fecha, sin leer ni evaluar expositores.
+- **Tarea `weekly-event-scouting`** (modo scout, solo descubrimiento desde la tanda 15): `CRON 30 7 * * 1` (lunes 07:30) en `Europe/Madrid`, `timeout_ms = 1800000`, sin reintentos. Desde la tanda 21 (v3), `default_input = { "sectors": ["alimentación y bebidas", "horeca y food service", "farmacia y salud", "cosmética y belleza", "franquicias y retail", "industria y packaging"], "region": "España", "horizon_months": 6, "discover_only": true, "company_signals": true }` (antes, `sector: "alimentación y bebidas"`): cada feria verificada queda como señal FAIR `NEW` con URL y fecha, sin leer ni evaluar expositores, y cada noticia de empresa verificada como señal `NEW` «… — apertura | financiación | aniversario». Para cambiar la lista, edita `SCOUT_SECTORS` y ejecuta el seed (versión nueva de la tarea) o cambia el `default_input` por la API de tareas.
 - **Tareas retiradas** (`RETIRED_TASKS`, hoy `event-scouting-live-test-muxyo7gz`): `enabled = false` con una versión nueva; nunca se borran.
 - **Agente `BajasAgent` y tarea `process-unsubscribes`**: `CRON 0 */2 * * *` en `Europe/Madrid`, sin LLM (`model_provider = stub`), tool policy `get_note` + `update_note` (una escritura por ejecución). Desde la tanda 12 la tarea queda **desactivada** (`enabled = false`). Consulta [Inbound de bajas](#inbound-de-bajas).
 - **Agente `InboxAgent` y tarea `process-inbox`**: `CRON 0 */2 * * *` en `Europe/Madrid`, Gemini Flash solo para las respuestas que las reglas no deciden, tool policy `get_note` + `update_note` + `create_note` + `find_company`. Consulta [Triaje del buzón](#triaje-del-buzón).
+- **Agente `FollowUpAgent` y tarea `lead-followup-check`** (tanda 21): `CRON 30 8 * * *` en `Europe/Madrid`, sin LLM (`model_provider = stub`), tool policy `list_sent_hypotheses` + `get_note` (una cada una) + `create_crm_task` (20). Consulta [Seguimiento de envíos sin respuesta](#seguimiento-de-envíos-sin-respuesta-tanda-21).
 
 Las dos tareas usan la misma versión del agente. La versión del seed añade `fetch_url` a la tool policy, la configuración `scout` y la skill `event-source-discovery` v1, y sube la skill `prospector-event-exhibitors` a v2 (datos en bloques `DATOS_NO_CONFIABLES`): al ejecutar el seed sobre una BD existente se crea una versión nueva del agente.
 
@@ -1866,6 +1917,8 @@ La versión actual del seed añade `render_url` a la tool policy, sube los lími
 La versión de la tanda 5 sube `max_exhibitors_per_event` a 60, añade `max_catalog_pages` (3) y `max_profile_lookups` (10, hoy 100), amplía la tool policy (`fetch_url` 42, `render_url` 15, 640 llamadas) y sube la skill `event-source-discovery` a v3 (paginación y fichas). Necesita el renderer con `max_pages` (imagen `pxos-renderer` reconstruida desde esta rama). Con un renderer anterior, el scout lee solo la primera página y, como los enlaces del listado llegan sin texto, no encuentra las fichas.
 
 La versión de la tanda 6 (catálogo completo) sube `max_catalog_pages` a 10, `max_profile_lookups` a 60 y `max_exhibitors_per_event` a 100, añade `time_budget_ms` (20 min), `profile_concurrency` (2) y `capture_json` (`true`), amplía la tool policy (`fetch_url` 230, `render_url` 115, 1 500 llamadas) y sube la skill `event-source-discovery` a v4. Para el atajo JSON y más de 5 páginas necesita pxos-renderer 0.2 (imagen reconstruida desde esta rama); con uno anterior, el scout lee 5 páginas y extrae el texto.
+
+La versión de la tanda 21 añade `create_signal_note` a la tool policy (máximo 2; la nota de una señal de empresa sin web verificada) y `scout.max_company_signals_per_sector` (3), sube `weekly-event-scouting` a la lista de sectores con señales de empresa y `prospect-on-qualified` a una versión que pasa `signal_type` y `signal_kind` del evento. Ejecuta `pnpm seed` después de desplegar; las versiones anteriores se conservan. Sin el seed, la tarea semanal sigue con un solo sector y sin noticias, y una señal de empresa calificada se reconoce igual por el sobre del evento (`event.data.signal_kind`), pero su nota sin web falla con `TOOL_NOT_ALLOWED` (queda en `result.error`).
 
 > **Importante:** ejecuta el seed después de desplegar este código. Un runtime anterior trataría la entrada de `weekly-event-scouting` como entrada directa no válida y cerraría la ejecución del lunes como `FAILED`.
 
@@ -2245,10 +2298,10 @@ pnpm register:webhook --dry-run
 Cuando un comercial califica en Twenty una señal de feria (`commercialSignal.status` → `QUALIFIED`), el Prospector explora esa feria en el momento, sin esperar al run diario ni al semanal.
 
 1. Twenty envía `commercialSignal.updated` (o `commercialSignal.created` si la señal se crea ya calificada) al mismo `POST /webhooks/twenty`, con la misma firma HMAC. La ruta enruta por objeto (`objectMetadata.nameSingular`): las hipótesis siguen al evaluador HUMAN y a email-ops; las señales, a `src/signals/qualified.ts`.
-1. Solo cuentan las **señales de feria**: sin `companyId`, `signalType` `FAIR`, `CONGRESS` o `EVENT`, y una URL http(s) en `sourceUrl` (un dominio sin esquema se completa con `https://`). Las señales por expositor (las que el Prospector cuelga de una empresa), las de otro tipo y las que no tienen URL se ignoran; la respuesta lleva `signal.status = "ignored"` y el motivo, que también queda en el log.
+1. Solo cuentan las **señales de feria**: sin `companyId`, `signalType` `FAIR`, `CONGRESS` o `EVENT`, y una URL http(s) en `sourceUrl` (un dominio sin esquema se completa con `https://`), y, desde la tanda 21, las **señales de empresa** (sin `companyId`, nombre con sufijo «— apertura», «— financiación» o «— aniversario», URL http(s)), que se emiten con `signal_kind: "company"` y el nombre completo. Las señales por expositor (las que el Prospector cuelga de una empresa), las de otro tipo y las que no tienen URL se ignoran; la respuesta lleva `signal.status = "ignored"` y el motivo, que también queda en el log.
 1. Transición: si llega `updatedFields`, debe incluir `status` (editar otro campo de una señal ya calificada no la recalifica). Sin `updatedFields` (por ejemplo, en `created`) basta con `status = QUALIFIED`, y la ventana de 24 h hace de guarda.
 1. Una vez por señal: si la señal ya emitió `signal.qualified` en las últimas 24 h, no se emite nada (`signal.status = "within_window"`). Calificar → descalificar → recalificar, o un reenvío del webhook, no relanza la prospección. Pasadas 24 h, una recalificación sí la relanza. La clave del evento se encadena con el evento anterior de la señal (`evt:signal.qualified:{signal_id}:{id_anterior|first}`), así que dos entregas simultáneas producen un solo evento.
-1. La tarea `EVENT` `prospect-on-qualified` (seed, agente Prospector, `max_concurrency` 1) se dispara con `signal.qualified` y encola un `TaskRun` (clave `taskrun:{task_id}:event:{event_id}`) con el input del scout dirigido: `{"mode": "scout", "max_events": 1, "event_url": "...", "event_name": "...", "signal_id": "...", "event": {...}}`. `mode: "scout"` es necesario porque la clave `event` elegiría el modo directo. El scout ignora `signal_id` y `event`.
+1. La tarea `EVENT` `prospect-on-qualified` (seed, agente Prospector, `max_concurrency` 1) se dispara con `signal.qualified` y encola un `TaskRun` (clave `taskrun:{task_id}:event:{event_id}`) con el input del scout dirigido: `{"mode": "scout", "max_events": 1, "event_url": "...", "event_name": "...", "signal_id": "...", "event": {...}}`. `mode: "scout"` es necesario porque la clave `event` elegiría el modo directo. El scout ignora `signal_id` y `event`. Desde la tanda 21 el input lleva también `signal_type` y `signal_kind`; con `signal_kind: "company"` el Prospector evalúa esa empresa en lugar de peinar un catálogo (consulta [Señales de empresa](#señales-de-empresa-tanda-21)). La auditoría es la misma.
 1. Cada run encolado deja la fila de auditoría `prospect.on_qualified` (actor `system`, método `EVENT`, sujeto `commercial_signal` = id de la señal, `payload` con `signal_id` y `run_id`). Consulta: `GET /audit?action=prospect.on_qualified`.
 
 Respuesta del webhook: `202` si se emitió el evento, `200` si se ignoró o cayó dentro de la ventana, y `502` si el bus de eventos no pudo publicarlo.
@@ -2510,6 +2563,7 @@ Las alertas que piden a una persona hacer algo son **tareas** nativas de Twenty 
 | Propuesta de promoción — `<skill>` v`<N>` | A 3 días | Ningún registro CRM; una por versión |
 | ⚠️ Catálogo no disponible — `<día>` (`<tenant>`) | Hoy | Ninguno; como mucho una por tenant y día |
 | ⏳ Fuera de ventana / Sin fecha de feria | El día en que entra en ventana; a 7 días sin fecha; hoy si está cerca o ya pasó | La señal (`taskTarget`) |
+| 🔔 Seguimiento — `<empresa>` (tanda 21) | Hoy (el día del chequeo) | La empresa y la hipótesis; una por hipótesis, para siempre |
 
 Formato de Twenty 2.45 (verificado en solo lectura contra `GET /rest/open-api/core`):
 
@@ -2520,9 +2574,49 @@ POST /rest/taskTargets  { "taskId": "<task>", "targetCommercialSignalId": "<sign
 
 - `status` admite `TODO`, `IN_PROGRESS` y `DONE`. Un vencimiento dado como día es las 09:00 de Europe/Madrid.
 - `taskTarget` tiene una columna por objeto: `targetCompanyId`, `targetPersonId`, `targetOpportunityId` y, para los objetos de la App, `targetCommercialSignalId`, `targetCommercialHypothesisId`, `targetResearchId`, `targetAgentRunSummaryId` y `targetAgentOsDailyMetricId`.
-- El helper es `createCrmTask` (`src/integrations/twenty/tasks.ts`): idempotente por título y día local de creación (o por título, `scope: 'ever'`), crea solo los `taskTargets` que falten y adopta una tarea huérfana con ese título. Nunca edita ni borra.
+- El helper es `createCrmTask` (`src/integrations/twenty/tasks.ts`): idempotente por título y día local de creación (o por título, `scope: 'ever'`), crea solo los `taskTargets` que falten y adopta una tarea huérfana con ese título. Nunca edita ni borra. Una tarea con el mismo título solo se reutiliza si ya apunta al target ancla: por defecto el primero (empresa, persona, oportunidad, señal, hipótesis); `anchor` elige otro (el seguimiento ancla en la hipótesis).
 - La tool `create_crm_task` (`LOW_WRITE`) es la misma operación para los agentes; relee la señal o la hipótesis con el tenant del run antes de escribir.
 - `task` es un objeto estándar: **no tiene `tenantId`**, como las notas. Las tareas son comunes a todo el workspace; los títulos que deben ser por tenant lo llevan en el texto.
+
+## Seguimiento de envíos sin respuesta (tanda 21)
+
+La tarea `lead-followup-check` (`CRON 30 8 * * *`, `Europe/Madrid`, `max_concurrency = 1`) ejecuta el **FollowUpAgent** (`implementation = "lead_followup"`, `src/agents/followup-agent.ts`). Es determinista: **no llama a ningún modelo**. Recuerda al comercial los primeros emails que no han tenido respuesta; **nunca envía nada ni escribe en la hipótesis** (el workflow de envío lee `emailSubject`, `emailBody` y `emailTo`, y un segundo borrador pisaría el primero).
+
+### Qué revisa
+
+1. `list_sent_hypotheses` (READ): las hipótesis del tenant con `emailStatus = SENT`.
+2. En la base de datos del runtime (`src/crm/followup-store.ts`):
+   - **Fecha y asunto del envío**: `email_sends`, la fila que escribe email-ops al recibir el webhook `SENT` de Twenty. El reloj cuenta desde el último envío de la hipótesis; el cuerpo de la tarea muestra el primero.
+   - **Respuesta**: `inbound_triage`, la fila que el InboxAgent escribe por cada correo clasificado, con la hipótesis y la empresa del envío al que responde (por dirección, por dominio o por el dominio de la empresa en Twenty). Es el rastro del que salen la nota 📬, la Oportunidad y la tarea «📬 Responder a…», y es de solo añadir. Cuenta cualquier correo vinculado a la hipótesis **o a su empresa** recibido después del envío.
+   - **Ya hecho**: `audit_log` con `lead.followup_task` para la hipótesis.
+3. Por hipótesis, en orden de envío (el más antiguo primero), la primera razón que aplica queda en `output.examined` como `skipped`:
+
+| Razón | Cuándo |
+|---|---|
+| `task_exists` | La hipótesis ya tuvo su tarea de seguimiento (fila en `audit_log`). Sobrevive a que el comercial cierre o **borre** la tarea en Twenty |
+| `no_send_record` | `SENT` en Twenty pero sin fila en `email_sends` (el webhook no registró la fecha del envío). La salida lleva el `updatedAt` de la hipótesis, lo único que hay; no se adivina la fecha |
+| `too_recent` | Faltan días laborables: `due_day` dice cuándo vence |
+| `bounced` | Un rebote del envío. Un rebote **nunca** genera seguimiento |
+| `replied` | Cualquier otro correo clasificado (interesado, pregunta, no interesado, baja u otro). Las **respuestas automáticas** (`AUTO_REPLY`, fuera de la oficina) no cuentan como respuesta |
+| `cap_reached` | Ya se crearon 20 tareas en esta ejecución (constante `FOLLOWUP_MAX_TASKS_PER_RUN`); el resto, en los días siguientes |
+| `suppression_list_unavailable` | No se pudo leer la nota «Lista de supresión — NO contactar»: falla cerrado y la ejecución termina `FAILED` |
+| `suppressed` | Algún destinatario (del envío o el `emailTo` actual) está en la lista de supresión, por dirección o por `@dominio` |
+
+4. Si nada aplica, `create_crm_task` crea la tarea **«🔔 Seguimiento — `<empresa>`»** (`TODO`, vence hoy a las 09:00), con `taskTargets` a la empresa y a la hipótesis, idempotente con `scope: 'ever'` anclada en la hipótesis, y una fila `lead.followup_task` en `audit_log` (`actor = agent`, `subject_type = commercial_hypothesis`, `payload` con `task_id`, `first_sent_at` y `business_days`).
+
+### La tarea
+
+El cuerpo lleva la fecha y el asunto del primer envío, el destinatario, la hipótesis, su ángulo (`need` y `whyNow` ya guardados) y un **guion fijo por código** de tres viñetas, sin urgencia ni «plazos cortos»: retomar el primer email sin reproches, aportar una idea concreta ligada a la necesidad y cerrar con una pregunta abierta, ofreciéndose para más adelante si no es el momento. El comercial escribe y envía el seguimiento desde Twenty.
+
+**Una tarea por hipótesis, para siempre**: si el comercial la cierra sin actuar, o la borra, no se vuelve a crear. Si un intento murió entre crear la tarea y auditarla, el siguiente la encuentra por título y ancla (`created: false`, contador `tasks_reused`) y la audita.
+
+### Días laborables
+
+Lunes a viernes en `Europe/Madrid`, **sin festivos**, contados de día local a día local (`addBusinessDays` de `src/crm/reply-task.ts`). Con el valor por defecto (5), un envío del lunes vence el lunes siguiente, uno del viernes el viernes siguiente y uno del sábado también el viernes siguiente. `FOLLOWUP_AFTER_BUSINESS_DAYS=0` desactiva el chequeo: la ejecución termina `SKIPPED` sin tocar Twenty.
+
+### Tests
+
+`test/unit/lead-followup.test.ts` (reglas, ancla de `createCrmTask` y agente contra el Twenty simulado) y `test/integration/lead-followup.test.ts` (seed, `RunProcessor`, `email_sends`, `inbound_triage` y `audit_log` en PostgreSQL).
 
 ## Borradores de email
 
@@ -2780,6 +2874,7 @@ Formas verificadas en solo lectura contra el Twenty vivo (`GET /rest/people`, `/
 
 ## Pendiente
 
+- Seguimiento v2: hilo de email por hipótesis (borrador del segundo email sin pisar los campos del primero, que lee el workflow de envío), festivos en el cálculo de días laborables y cortar también por una Oportunidad creada a mano. Hoy el seguimiento es una tarea con guion (consulta [Seguimiento de envíos sin respuesta](#seguimiento-de-envíos-sin-respuesta-tanda-21)).
 - Triggers `DEPENDENCY` y `CONDITION` (hoy no registran nada).
 - Columna `trigger` (`SCHEDULE`, `MANUAL`...) en `task_runs` para distinguir el origen de cada run (LLD v0.2, AC-04).
 - Exponer `EntityLocks` a las tools (el helper está listo en `RunProcessor.locks`).

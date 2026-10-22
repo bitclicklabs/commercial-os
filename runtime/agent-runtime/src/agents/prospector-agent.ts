@@ -21,6 +21,7 @@ import { DrizzleSignalHistory, isQualifiedTriggerInput, isSignalsInput, qualifie
 import { leadTimeWindowFromEnv, type LeadTimeWindow } from '../signals/lead-time.js';
 import { domainResolverConfigFromEnv, DomainResolverSession, toolFetcher, type DomainResolverConfig } from './domain-resolver.js';
 import { hostOf } from './source-ledger.js';
+import { companySignalInputFromTrigger, isCompanySignalTriggerInput, runCompanySignal } from './company-signals.js';
 
 export interface ProspectorAgentDeps {
   /** Runtime database: round-robin memory of the signals mode (`agent_executions`). */
@@ -56,7 +57,9 @@ export {
  *   retry). Relevant exhibitors with `confidence >= min_confidence` are written to
  *   Twenty: `upsert_company` -> `create_signal` (status NEW) -> `create_hypothesis`
  *   (status PROPOSED).
- * - **scout** (`{ sector, region?, horizon_months? }` or `{ event_url }`, task
+ * - **company signal** (tanda 21, trigger on qualification of a company signal "— apertura" /
+ *   "— financiación" / "— aniversario"): evaluates that ONE company (see `company-signals.ts`).
+ * - **scout** (`{ sector | sectors[], region?, horizon_months? }` or `{ event_url }`, task
  *   `weekly-event-scouting`): finds real fairs with Gemini grounding, downloads their
  *   exhibitor pages with `fetch_url`, extracts exhibitors from the downloaded text and
  *   runs the same per-exhibitor pipeline (see `event-scout.ts`).
@@ -108,6 +111,14 @@ export class ProspectorAgent implements AgentImplementation {
       if (signals.outcome === 'SKIPPED') return this.finishSkipped(run, signals.output);
       ({ outcome, lines, body } = { outcome: signals.outcome, lines: signals.lines, body: signals.output });
       taskName = cfg.taskName;
+    } else if (isScoutInput(ctx.input) && isQualifiedTriggerInput(ctx.input) && isCompanySignalTriggerInput(ctx.input) && companySignalInputFromTrigger(ctx.input)) {
+      // Tanda 21: a qualified COMPANY signal (opening, funding, anniversary): that company is evaluated
+      // directly (no exhibitor catalog, no lead-time window: the news freshness rules instead).
+      const cs = await runCompanySignal(run, companySignalInputFromTrigger(ctx.input)!, today, { domainResolver });
+      if (cs.outcome === 'SKIPPED') return this.finishSkipped(run, { ...cs.output, trigger: 'signal.qualified' });
+      ({ lines, body } = { lines: cs.lines, body: { ...cs.output, trigger: 'signal.qualified' } });
+      outcome = cs.outcome;
+      taskName = cfg.scout.taskName;
     } else if (isScoutInput(ctx.input)) {
       // Trigger on qualification: outside the lead-time window the run stops SKIPPED with a note on the signal.
       const gate = isQualifiedTriggerInput(ctx.input) ? await qualifiedLeadTimeGate(run, ctx.input, { window: leadTime }) : null;

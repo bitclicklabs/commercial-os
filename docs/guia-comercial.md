@@ -35,7 +35,7 @@ Cada lunes, el sistema busca ferias y eventos reales relevantes para PubliEXPE y
 
 La ejecución tiene un límite de 20 minutos: si algo es muy grande, el resumen de la ejecución (*Agent run*) sale como `Partial` e indica en qué fase se cortó. Lo ya hecho se guarda igualmente.
 
-> **Novedad (tanda 21):** el lunes el sistema ya no mira solo alimentación y bebidas. Recorre **seis sectores** (alimentación y bebidas, horeca y food service, farmacia y salud, cosmética y belleza, franquicias y retail, industria y packaging) y, además de ferias, deja **señales de empresa** de tipo apertura, ronda de financiación y aniversario. Tu cola de `New` tendrá más variedad; el gesto para decidir es el mismo. Consulta [señales de empresa](#señales-de-empresa-apertura-financiación-y-aniversario). `[POR CONFIRMAR]` fecha de activación en producción.
+> **Novedad (tanda 21):** el lunes el sistema ya no mira solo alimentación y bebidas. Recorre **seis sectores** (alimentación y bebidas, horeca y food service, farmacia y salud, cosmética y belleza, franquicias y retail, industria y packaging) y, además de ferias, deja **señales de empresa** de tipo ronda de financiación y aniversario (las de apertura se retiraron el 2026-10-26: ver abajo). Tu cola de `New` tendrá más variedad; el gesto para decidir es el mismo. Consulta [señales de empresa](#señales-de-empresa-apertura-financiación-y-aniversario). `[POR CONFIRMAR]` fecha de activación en producción.
 
 ### Cuando calificas una feria: al momento
 
@@ -121,18 +121,20 @@ El lunes, el sistema ya no te deja en la cola ferias demasiado próximas ni dema
 
 Además de ferias, desde la tanda 21 el sistema deja en tu cola **señales de empresa**: noticias que dicen que una empresa concreta está en un buen momento para el merchandising.
 
+> **Tipo retirado: apertura (desde el 2026-10-26).** El sistema ya no busca aperturas. Motivo: feedback comercial del 2026-10-26: las noticias de apertura llegan tarde (la tienda ya ha abierto) y no son nicho. Las aperturas que ya tienes en la cola siguen su ciclo normal: puedes calificarlas (se prospectan igual) o descartarlas, y si no haces nada caducan solas a los 120 días de la noticia. Financiación y aniversario siguen una semana más a prueba.
+
 | Tipo | Cómo lo reconoces | Qué significa |
 |---|---|---|
-| **Apertura** | El nombre acaba en «— apertura» | La empresa abre (o va a abrir) un local, una fábrica o una sede |
+| **Apertura** (retirado el 2026-10-26) | El nombre acaba en «— apertura» | La empresa abre (o va a abrir) un local, una fábrica o una sede. Ya no se crean nuevas: feedback comercial del 2026-10-26: las noticias de apertura llegan tarde (la tienda ya ha abierto) y no son nicho |
 | **Financiación** | El nombre acaba en «— financiación» | La empresa ha cerrado una ronda de financiación |
 | **Aniversario** | El nombre acaba en «— aniversario» | La empresa cumple un aniversario redondo |
 
-El nombre tiene el formato «Empresa: qué pasó — apertura», «— financiación» o «— aniversario».
+El nombre tiene el formato «Empresa: qué pasó — financiación» o «— aniversario» (las aperturas anteriores al 2026-10-26 acaban en «— apertura»).
 
 **Las calificas igual que una feria.** Abre la señal en **Commercial OS → Signals**, comprueba la noticia con su enlace y cambia **Status** a `Qualified` o `Discarded`. Lo que cambia es lo que ocurre después:
 
 - **No investiga una feria, sino a esa empresa.** El agente prospecta directamente a la empresa de la señal y te deja una hipótesis en `Proposed`, con el motivo y la fecha de la noticia como arranque, garantizado por código, de la razón del momento (**Why now**). Si la noticia no trae la web de la empresa, el sistema intenta [encontrarla y verificarla](resolver-dominios.md); si no está seguro, no propone nada en lugar de adivinar.
-- **No hay «plazo de 2 a 6 meses».** Esa regla es de ferias. En una señal de empresa manda la frescura: solo se crean con noticias de los últimos 60 días (o una apertura futura) y con la fuente comprobada por el sistema.
+- **No hay «plazo de 2 a 6 meses».** Esa regla es de ferias. En una señal de empresa manda la frescura: solo se crean con noticias de los últimos 60 días y con la fuente comprobada por el sistema.
 - **Caducan solas a los 120 días.** Si no la has calificado, la señal pasa sola a `Expired` cuando han pasado 120 días desde la noticia: una noticia vieja ya no es un buen motivo para escribir.
 - **Sigue siendo tu decisión.** El sistema no califica por ti y no envía nada. Validar una hipótesis de empresa, buscar el contacto y revisar el borrador funciona como en cualquier otra.
 

@@ -43,7 +43,10 @@ const GOURMETS_HTML = '<html><head><title>Salón de Gourmets 2027</title></head>
 
 const fairSearch = (events: unknown[], sources: unknown[]): StubResponse => ({ text: JSON.stringify({ events }), grounding: { queries: ['ferias'], sources: sources as never }, cost: 0.03 });
 const newsSearch = (news: unknown[], sources: unknown[]): StubResponse => ({ text: JSON.stringify({ news }), grounding: { queries: ['noticias'], sources: sources as never }, cost: 0.03 });
-const ORTIZ_NEWS = { company: 'Conservas Ortiz', kind: 'apertura', what: 'abre una nueva fábrica en Ondarroa', news_date: '2026-09-20', url: ORTIZ_URL, city: 'Ondarroa' };
+// Fix 2026-10-26: openings are no longer discovered; the discovery fixtures use an anniversary.
+const ORTIZ_NEWS = { company: 'Conservas Ortiz', kind: 'aniversario', what: 'cumple 135 años en Ondarroa', news_date: '2026-09-20', url: ORTIZ_URL, city: 'Ondarroa' };
+/** An opening as the model may still propose it: outside the active kinds, dropped by code. */
+const ORTIZ_OPENING_NEWS = { ...ORTIZ_NEWS, kind: 'apertura', what: 'abre una nueva fábrica en Ondarroa' };
 const BETA_NEWS = { company: 'Laboratorios Beta', kind: 'financiación', what: 'cierra una ronda de 12 millones', news_date: '2026-10-01', url: BETA_URL, city: null };
 
 const decision = (company = 'Conservas Ortiz', confidence = 0.8) =>
@@ -149,7 +152,9 @@ describe('company signal conventions (name suffix is the type)', () => {
     expect(isScoutInput({ sectors: ['x'] })).toBe(true);
     expect(ScoutInput.safeParse({ sectors: [] }).success).toBe(false);
     expect(ScoutInput.safeParse({ sectors: ['farmacia y salud'], discover_only: true, company_signals: true }).success).toBe(true);
-    expect(desiredScoutTask().defaultInput).toEqual({ sectors: [...SCOUT_SECTORS], region: 'España', horizon_months: 6, discover_only: true, company_signals: true });
+    expect(desiredScoutTask().defaultInput).toEqual({ sectors: [...SCOUT_SECTORS], region: 'España', horizon_months: 6, discover_only: true, company_signals: true, company_signal_kinds: ['financiacion', 'aniversario'] });
+    expect(desiredScoutTask().description).not.toMatch(/apertura\|/);
+    expect(ScoutInput.safeParse({ sector: 'x', company_signal_kinds: ['contratacion'] }).success).toBe(false);
     expect(SCOUT_SECTORS).toHaveLength(6);
     expect((desiredProspectorVersion().configuration.scout as Record<string, unknown>).max_company_signals_per_sector).toBe(3);
     expect(desiredProspectOnQualifiedTask().schedule).toMatchObject({ input_from_event: { signal_kind: 'signal_kind', signal_type: 'signal_type' } });
@@ -225,9 +230,9 @@ describe('weekly scouting: several sectors + company signals (discover_only)', (
     expect(fake.tables.companies).toHaveLength(0);
     expect(fake.tables.commercialHypotheses).toHaveLength(0);
     const sigs = fake.tables.commercialSignals!;
-    expect(sigs.map((s) => s.name).sort()).toEqual(['Conservas Ortiz: abre una nueva fábrica en Ondarroa — apertura', 'Laboratorios Beta: cierra una ronda de 12 millones — financiación', 'Salón de Gourmets 2027 (feria)']);
+    expect(sigs.map((s) => s.name).sort()).toEqual(['Conservas Ortiz: cumple 135 años en Ondarroa — aniversario', 'Laboratorios Beta: cierra una ronda de 12 millones — financiación', 'Salón de Gourmets 2027 (feria)']);
     const ortiz = sigs.find((s) => String(s.name).startsWith('Conservas Ortiz'))!;
-    expect(ortiz).toMatchObject({ signalType: 'EXPANSION', status: 'NEW', eventDate: '2026-09-20', companyId: null, tenantId: 'publiexpe', sourceUrl: { primaryLinkUrl: ORTIZ_URL } });
+    expect(ortiz).toMatchObject({ signalType: 'ANNIVERSARY', status: 'NEW', eventDate: '2026-09-20', companyId: null, tenantId: 'publiexpe', sourceUrl: { primaryLinkUrl: ORTIZ_URL } });
     expect(String(ortiz.description)).toContain('Fecha de la noticia: 2026-09-20');
     expect(sigs.find((s) => String(s.name).startsWith('Laboratorios'))).toMatchObject({ signalType: 'OTHER', eventDate: '2026-10-01' });
     // The stale news was never downloaded.
@@ -264,7 +269,36 @@ describe('weekly scouting: several sectors + company signals (discover_only)', (
     expect(out.counters).toMatchObject({ company_signals_created: 2 });
     // Only company signals found: the run is not "nothing verifiable".
     expect(out.outcome).toBe('SUCCESS');
-    expect(fake.tables.commercialSignals!.map((s) => s.signalType).sort()).toEqual(['ANNIVERSARY', 'EXPANSION']);
+    expect(fake.tables.commercialSignals!.map((s) => s.signalType).sort()).toEqual(['ANNIVERSARY', 'ANNIVERSARY']);
+  });
+
+  it('openings are no longer discovered: the prompt does not ask for them and a proposed opening is dropped by code (tipo_no_activo)', async () => {
+    const w = new FakeWeb().page(ORTIZ_URL, ORTIZ_HTML).page(BETA_URL, BETA_HTML);
+    const { fake, provider, ctx, agent } = setup([fairSearch([], [GOURMETS]), newsSearch([ORTIZ_OPENING_NEWS, BETA_NEWS], [DIARIO, ECONOMIA])], {
+      web: w,
+      input: { sector: 'alimentación y bebidas', discover_only: true, company_signals: true },
+    });
+    const out = (await agent.run(ctx)).output as Record<string, any>;
+    const req = provider.requests[1]!;
+    expect(`${req.system}\n${req.messages[0]!.content}`).not.toMatch(/apertura|abre nueva/i);
+    expect(req.messages[0]!.content).toContain('"financiacion" | "aniversario"');
+    expect(out.company_signals.kinds).toEqual(['financiacion', 'aniversario']);
+    expect(out.company_signals.entries).toEqual(expect.arrayContaining([expect.objectContaining({ company: 'Conservas Ortiz', kind: 'apertura', status: 'discarded', reason: 'tipo_no_activo' })]));
+    expect(out.counters).toMatchObject({ company_signals_proposed: 1, company_signals_inactive_kind: 1, company_signals_created: 1 });
+    // The opening article is never downloaded and no opening signal is written.
+    expect(w.requests.map((r) => r.url.toString())).not.toContain(ORTIZ_URL);
+    expect(fake.tables.commercialSignals!.map((s) => s.name)).toEqual(['Laboratorios Beta: cierra una ronda de 12 millones — financiación']);
+
+    // The list is configuration: the task input can bring a kind back (or retire another) without code.
+    const back = setup([fairSearch([], [GOURMETS]), newsSearch([ORTIZ_OPENING_NEWS, BETA_NEWS], [DIARIO, ECONOMIA])], {
+      web: new FakeWeb().page(ORTIZ_URL, ORTIZ_HTML).page(BETA_URL, BETA_HTML),
+      input: { sector: 'alimentación y bebidas', discover_only: true, company_signals: true, company_signal_kinds: ['apertura'] },
+    });
+    const out2 = (await back.agent.run(back.ctx)).output as Record<string, any>;
+    expect(back.provider.requests[1]!.system).toContain('"apertura"');
+    expect(back.provider.requests[1]!.system).not.toContain('"financiacion"');
+    expect(out2.counters).toMatchObject({ company_signals_created: 1, company_signals_inactive_kind: 1 });
+    expect(back.fake.tables.commercialSignals!.map((s) => s.name)).toEqual(['Conservas Ortiz: abre una nueva fábrica en Ondarroa — apertura']);
   });
 
   it('a single `sector` (fallback) keeps the old behaviour: no company search unless asked', async () => {

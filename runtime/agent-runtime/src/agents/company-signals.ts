@@ -46,7 +46,8 @@ import {
   buildCompanyNewsRepairPrompt,
   buildCompanyNewsSearchPrompt,
   buildCompanySignalPrompt,
-  COMPANY_NEWS_SEARCH_SYSTEM_PROMPT,
+  buildCompanyNewsSearchSystemPrompt,
+  DEFAULT_DISCOVERY_KINDS,
   COMPANY_SIGNAL_DECISION_JSON_SCHEMA,
   COMPANY_SIGNAL_SYSTEM_PROMPT,
   NewsSearchAnswer,
@@ -105,7 +106,9 @@ export interface CompanyDiscoveryResult {
   search: { queries: string[]; sources: number; proposed: number; verification: 'grounding_sources' | 'fetch_corroboration' | 'none' } | null;
   search_error?: { code: string; message: string };
   entries: CompanySignalEntry[];
-  counters: { proposed: number; created: number; existing: number; discarded: number; errors: number; fetches: number; skipped_time_budget: number };
+  counters: { proposed: number; created: number; existing: number; discarded: number; errors: number; fetches: number; skipped_time_budget: number; inactive_kind: number };
+  /** Kinds searched in this pass. */
+  kinds: CompanySignalKind[];
 }
 
 export interface CompanyDiscoveryArgs {
@@ -120,6 +123,11 @@ export interface CompanyDiscoveryArgs {
   confidence: number;
   verifyUnsourced: boolean;
   maxRedirectResolutions: number;
+  /**
+   * Kinds searched (fix 2026-10-26; default `DEFAULT_DISCOVERY_KINDS`: financiación and aniversario,
+   * apertura retired). Only these are named in the prompt and a news of any other kind is dropped.
+   */
+  kinds?: readonly CompanySignalKind[];
 }
 
 function shiftDay(day: string, days: number): string {
@@ -137,11 +145,12 @@ export function pageNamesCompany(company: string, page: Pick<FetchUrlOutput, 'ti
 
 export async function discoverCompanySignals(run: ProspectorRun, a: CompanyDiscoveryArgs): Promise<CompanyDiscoveryResult> {
   const { ledger } = a;
-  const out: CompanyDiscoveryResult = { search: null, entries: [], counters: { proposed: 0, created: 0, existing: 0, discarded: 0, errors: 0, fetches: 0, skipped_time_budget: 0 } };
+  const kinds: CompanySignalKind[] = a.kinds && a.kinds.length > 0 ? [...new Set(a.kinds)] : [...DEFAULT_DISCOVERY_KINDS];
+  const out: CompanyDiscoveryResult = { search: null, entries: [], kinds, counters: { proposed: 0, created: 0, existing: 0, discarded: 0, errors: 0, fetches: 0, skipped_time_budget: 0, inactive_kind: 0 } };
   const search = await run.completeJson({
     label: { step: 'company_signal_search', sector: a.sector, region: a.region },
-    system: COMPANY_NEWS_SEARCH_SYSTEM_PROMPT,
-    messages: [{ role: 'user', content: buildCompanyNewsSearchPrompt({ sector: a.sector, region: a.region, today: a.today, since: shiftDay(a.today, -COMPANY_SIGNAL_FRESH_DAYS), maxSignals: a.maxSignals }) }],
+    system: buildCompanyNewsSearchSystemPrompt(kinds),
+    messages: [{ role: 'user', content: buildCompanyNewsSearchPrompt({ sector: a.sector, region: a.region, today: a.today, since: shiftDay(a.today, -COMPANY_SIGNAL_FRESH_DAYS), maxSignals: a.maxSignals, kinds }) }],
     parse: (text) => parseWith(NewsSearchAnswer, text),
     grounding: true,
     repair: (previous, error) => [{ role: 'user', content: buildCompanyNewsRepairPrompt(previous, error) }],
@@ -159,8 +168,13 @@ export async function discoverCompanySignals(run: ProspectorRun, a: CompanyDisco
   const hasSources = (grounding?.sources.length ?? 0) > 0;
   const searched = (grounding?.queries.length ?? 0) > 0 || (grounding?.diagnostics?.toolCalls ?? 0) > 0;
   const corroborateOnly = !hasSources && searched && a.verifyUnsourced;
-  const news = search.value.news;
+  // The model never decides which kinds exist: a news of a kind outside the active list is dropped by code.
+  const active = new Set<CompanySignalKind>(kinds);
+  const news = search.value.news.filter((n) => active.has(n.kind));
+  const inactive = search.value.news.filter((n) => !active.has(n.kind));
   out.counters.proposed = news.length;
+  out.counters.inactive_kind = inactive.length;
+  for (const n of inactive) out.entries.push({ company: n.company, kind: n.kind, what: n.what, news_date: n.news_date, url: n.url, status: 'discarded', reason: 'tipo_no_activo' });
   out.search = { queries: grounding?.queries ?? [], sources: grounding?.sources.length ?? 0, proposed: news.length, verification: hasSources ? 'grounding_sources' : corroborateOnly ? 'fetch_corroboration' : 'none' };
 
   let redirects = 0;

@@ -157,7 +157,7 @@ describe('company signal conventions (name suffix is the type)', () => {
     expect(isScoutInput({ sectors: ['x'] })).toBe(true);
     expect(ScoutInput.safeParse({ sectors: [] }).success).toBe(false);
     expect(ScoutInput.safeParse({ sectors: ['farmacia y salud'], discover_only: true, company_signals: true }).success).toBe(true);
-    expect(desiredScoutTask().defaultInput).toEqual({ sectors: [...SCOUT_SECTORS], region: 'España', horizon_months: 6, discover_only: true, company_signals: true, company_signal_kinds: ['financiacion'], company_signal_max_age_days: 30 });
+    expect(desiredScoutTask().defaultInput).toEqual({ sectors: [...SCOUT_SECTORS], region: 'España', horizon_months: 6, discover_only: true, company_signals: false });
     expect(ScoutInput.safeParse({ sector: 'x', company_signal_max_age_days: 121 }).success).toBe(false);
     expect(desiredScoutTask().description).not.toMatch(/apertura\|/);
     expect(ScoutInput.safeParse({ sector: 'x', company_signal_kinds: ['contratacion'] }).success).toBe(false);

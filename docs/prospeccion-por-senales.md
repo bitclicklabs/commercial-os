@@ -122,15 +122,21 @@ La lista vive en la task del seed, no en una variable de entorno. Para añadir o
 
 Una feria no es la única razón para escribir a una empresa. Desde la tanda 21, el scout también descubre **señales de empresa**: noticias que dicen que una empresa concreta está en un momento en que el merchandising encaja.
 
+> **Señales de empresa: APAGADAS desde el 2026-11-03.** Tras dos lotes semanales con todos los tipos descartados por el comercial (aperturas el 2026-10-26; aniversarios y financiación el 2026-11-03), el scout vuelve a ser **solo de ferias** (`company_signals: false` en la tarea del seed). Las señales de empresa ya creadas siguen su ciclo normal hasta caducar, y todo el circuito (tipado, calificación, prospección directa) sigue en el código: reactivarlo es un cambio de seed, no de código.
+
+> **Tipo retirado: apertura (2026-10-26).** El scout ya no busca aperturas. Motivo: feedback comercial del 2026-10-26: las noticias de apertura llegan tarde (la tienda ya ha abierto) y no son nicho; todas las aperturas de la primera semana acabaron descartadas. Las señales de apertura que ya existen siguen su ciclo normal: si calificas una, se prospecta igual, y caducan a los 120 días de su noticia. Los tipos que se buscan son una lista en la entrada de la tarea `weekly-event-scouting` (`company_signal_kinds`, hoy solo `financiacion`): retirar o recuperar un tipo es un cambio de seed, no de código.
+
+> **Tipo retirado: aniversario (2026-11-03).** El scout ya no busca aniversarios. Motivo: feedback comercial del 2026-11-03: el scout traía aniversarios con fecha ya pasada, sin motivo de compra actual. Igual que con las aperturas, las señales de aniversario que ya existen siguen su ciclo normal: si calificas una, se prospecta igual, y caducan a los 120 días de su noticia. Hoy el scout solo busca **rondas de financiación**.
+
 | Tipo | Qué es | Por qué importa |
 |---|---|---|
-| **Apertura** | Una empresa abre un local, una fábrica o una sede, o lo va a hacer | Una apertura necesita regalo de inauguración, uniformes y material de marca |
+| **Apertura** (retirado del descubrimiento el 2026-10-26) | Una empresa abre un local, una fábrica o una sede, o lo va a hacer | Una apertura necesita regalo de inauguración, uniformes y material de marca. Retirado: feedback comercial del 2026-10-26: las noticias de apertura llegan tarde (la tienda ya ha abierto) y no son nicho |
 | **Ronda de financiación** | Una empresa anuncia que ha cerrado una ronda | Con caja nueva y un equipo que crece hay presupuesto de marca |
-| **Aniversario** | Una empresa cumple un aniversario redondo | Los aniversarios piden regalo corporativo y piezas conmemorativas |
+| **Aniversario** (retirado del descubrimiento el 2026-11-03) | Una empresa cumple un aniversario redondo | Los aniversarios piden regalo corporativo y piezas conmemorativas. Retirado: feedback comercial del 2026-11-03: el scout traía aniversarios con fecha ya pasada, sin motivo de compra actual |
 
 ### Reglas de frescura y de verificación
 
-- **Solo noticias recientes.** La noticia debe ser de los **últimos 60 días**. La excepción es la **apertura futura**: una apertura anunciada para una fecha por venir también vale.
+- **Solo noticias recientes.** La noticia debe ser del **último mes (30 días)**. Es configurable en la entrada de la tarea `weekly-event-scouting` (`company_signal_max_age_days`, entre 1 y 120). Hasta el 2026-11-03 la ventana era de 60 días: el comercial vio una ronda de financiación de 57 días como rancia. El sistema pide al buscador noticias del último mes y, además, rechaza por código cualquier noticia más vieja (motivo `stale_news`): no es el modelo quien decide la ventana. (La excepción de la apertura futura ya no aplica: las aperturas no se descubren desde el 2026-10-26.)
 - **Fuente verificada.** La señal solo se crea si el scout ha descargado (`fetch_url`) la URL de la noticia y ha comprobado que dice lo que se afirma. Sin fuente verificada, no hay señal.
 - **Caducidad a los 120 días.** Una señal de empresa pasa sola a `EXPIRED` cuando han pasado **120 días desde la fecha de la noticia**, igual que una feria cuando pasa su fecha. Es el mismo envejecimiento diario ([más abajo](#envejecimiento-señales-que-pasan-a-expired)). Los 120 días cuentan desde la fecha de la noticia, también en una apertura futura.
 - **La ventana de lead time no se aplica.** La ventana de 45 a 210 días mide la distancia a una feria; una empresa no tiene fecha de feria. Lo que acota la vida de la señal de empresa es su frescura y su caducidad.
@@ -138,7 +144,7 @@ Una feria no es la única razón para escribir a una empresa. Desde la tanda 21,
 
 ### Cómo las reconoces
 
-El nombre de cada señal de empresa lleva un **sufijo de tipo**: por ejemplo, «Conservas del Norte — apertura», «Conservas del Norte — financiación» o «Conservas del Norte — aniversario». El mecanismo de tipado es el sufijo del nombre (acepta variantes de guion y «financiacion» sin tilde); el campo `signalType` existente lleva además un valor orientativo para la persona (EXPANSION, OTHER, ANNIVERSARY) y el evento `signal.qualified` viaja con `signal_kind`. No hay cambios de esquema en la Twenty App.
+El nombre de cada señal de empresa lleva un **sufijo de tipo**: por ejemplo, «Conservas del Norte — financiación» (y, en las señales anteriores a la retirada de su tipo, «Conservas del Norte — apertura» o «Conservas del Norte — aniversario», que se siguen reconociendo). El mecanismo de tipado es el sufijo del nombre (acepta variantes de guion y «financiacion» sin tilde); el campo `signalType` existente lleva además un valor orientativo para la persona (EXPANSION, OTHER, ANNIVERSARY) y el evento `signal.qualified` viaja con `signal_kind`. No hay cambios de esquema en la Twenty App.
 
 > **Nota:** a diferencia de una señal de feria, que no tiene empresa asociada, la señal de empresa **sí la tiene**: es la empresa a la que luego se prospecta.
 
@@ -342,7 +348,7 @@ Pasos:
 
 1. Tras un lunes, abre **Commercial OS → Agent runs** y localiza el run de `weekly-event-scouting` de las 07:30. Su **Result** debe traer los contadores de cada sector de la lista. El formato: un bloque `sectors[]` con los contadores por sector.
 1. En **Commercial OS → Signals**, la columna `New` debe incluir ferias de varios sectores, sin la misma feria dos veces.
-1. Para una señal de empresa, comprueba que su nombre lleva el sufijo de tipo, que su fecha de noticia es de los últimos 60 días (o una apertura futura) y que la URL de la fuente abre la noticia.
+1. Para una señal de empresa, comprueba que su nombre lleva el sufijo de tipo, que su fecha de noticia es de los últimos 30 días (o de la ventana que fije `company_signal_max_age_days`) y que la URL de la fuente abre la noticia.
 1. Califica una señal de empresa de prueba y busca el disparo en el `audit_log` (`GET /audit`, igual que arriba). Debe aparecer una empresa nueva o reutilizada y una hipótesis `Proposed` enlazada a la señal.
 
 ## Limitaciones

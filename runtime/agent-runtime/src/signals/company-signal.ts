@@ -20,7 +20,9 @@
  * Fair-like types (FAIR / CONGRESS / EVENT) are never company signals, whatever their name.
  *
  * Dates: `eventDate` of a company signal is the date of the NEWS. Rules (PM, closed):
- * - created only when the news is at most COMPANY_SIGNAL_FRESH_DAYS (60) days old;
+ * - created only when the news is at most `company_signal_max_age_days` days old (task input; default
+ *   COMPANY_SIGNAL_FRESH_DAYS = 30 since the fix of 2026-11-03, it was a 60-day constant: a 57-day
+ *   old funding round was "rancia" for the commercial);
  * - it expires (EXPIRED, daily run) once the news is more than COMPANY_SIGNAL_EXPIRY_DAYS (120)
  *   days old, and its PROPOSED hypotheses with it. No special rule for future openings in v1.
  * The fairs keep their own rules (lead time 45-210 days, expiry on the fair date).
@@ -52,8 +54,12 @@ export const COMPANY_SIGNAL_LABEL_ES: Record<CompanySignalKind, string> = {
   aniversario: 'aniversario',
 };
 
-/** A company signal is created only if its news is at most this many days old. */
-export const COMPANY_SIGNAL_FRESH_DAYS = 60;
+/**
+ * Default freshness window at creation: a company signal is created only if its news is at most this
+ * many days old. Configurable per run (`company_signal_max_age_days`, 1..COMPANY_SIGNAL_EXPIRY_DAYS).
+ * 30 since 2026-11-03 (was 60).
+ */
+export const COMPANY_SIGNAL_FRESH_DAYS = 30;
 /** A company signal (and its PROPOSED hypotheses) expires once its news is older than this many days. */
 export const COMPANY_SIGNAL_EXPIRY_DAYS = 120;
 
@@ -108,14 +114,14 @@ export type FreshnessVerdict =
   | { fresh: true; age_days: number }
   | { fresh: false; age_days: number | null; reason: 'no_news_date' | 'news_in_future' | 'stale_news' };
 
-/** Freshness gate at creation (Madrid day `today`): the news is at most COMPANY_SIGNAL_FRESH_DAYS old. */
-export function companySignalFreshness(newsDate: string | null | undefined, today: string): FreshnessVerdict {
+/** Freshness gate at creation (Madrid day `today`): the news is at most `maxAgeDays` (default COMPANY_SIGNAL_FRESH_DAYS) old. */
+export function companySignalFreshness(newsDate: string | null | undefined, today: string, maxAgeDays: number = COMPANY_SIGNAL_FRESH_DAYS): FreshnessVerdict {
   const until = daysUntil(newsDate ?? null, today);
   if (until === null) return { fresh: false, age_days: null, reason: 'no_news_date' };
   const age = -until;
   // One day of slack: a news dated "tomorrow" in another time zone.
   if (age < -1) return { fresh: false, age_days: age, reason: 'news_in_future' };
-  if (age > COMPANY_SIGNAL_FRESH_DAYS) return { fresh: false, age_days: age, reason: 'stale_news' };
+  if (age > maxAgeDays) return { fresh: false, age_days: age, reason: 'stale_news' };
   return { fresh: true, age_days: Math.max(0, age) };
 }
 

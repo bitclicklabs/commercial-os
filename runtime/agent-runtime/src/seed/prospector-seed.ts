@@ -189,15 +189,37 @@ export const SCOUT_SECTORS = [
 ] as const;
 
 /**
- * Weekly scouting v3 (tanda 21): the six sectors in series (the start rotates every week) and, per
- * sector, company signals (openings, funding rounds, anniversaries) besides the fairs. Discovery only.
+ * Company-signal kinds the weekly discovery looks for (fix 2026-10-26). `apertura` is RETIRED from
+ * discovery (commercial feedback: every opening of the first week was discarded, the news arrive
+ * late and are not a niche); its existing signals keep their cycle (qualification, 120-day expiry).
+ * Retiring or adding a kind is a change of this list (new task version through the seed).
  */
-export const SCOUT_WEEKLY_INPUT = { sectors: [...SCOUT_SECTORS], region: 'España', horizon_months: 6, discover_only: true, company_signals: true };
+export const SCOUT_COMPANY_SIGNAL_KINDS = ['financiacion'] as const;
+// Fix 2026-11-03: `aniversario` retired too (commercial feedback: "aniversarios con fecha anterior").
+
+/** Freshness window (days) of the news of a company signal (fix 2026-11-03: 30, it was 60). */
+export const SCOUT_COMPANY_SIGNAL_MAX_AGE_DAYS = 30;
+
+/**
+ * Weekly scouting v3 (tanda 21): the six sectors in series (the start rotates every week) and, per
+ * sector, company signals besides the fairs. Discovery only. v4 (fix 2026-10-26): only funding rounds
+ * and anniversaries (`company_signal_kinds`), no openings. v5 (fix 2026-11-03): only funding rounds, and
+ * news of the last 30 days (`company_signal_max_age_days`). v6 (fix 2026-11-03): company signals OFF —
+ * the commercial discarded every kind after two weekly batches; the scout is fairs-only again. The
+ * code paths stay: re-enabling is a seed change (`company_signals: true` + the kinds to search).
+ */
+export const SCOUT_WEEKLY_INPUT = {
+  sectors: [...SCOUT_SECTORS],
+  region: 'España',
+  horizon_months: 6,
+  discover_only: true,
+  company_signals: false,
+};
 
 export function desiredScoutTask() {
   return {
     description:
-      'Descubrimiento semanal de ferias reales y señales de empresa: el Prospector (modo scout, solo descubrimiento) recorre en serie la lista de sectores de la entrada (sectors; el inicio rota cada semana; si se agota el presupuesto de tiempo, los sectores restantes quedan sin correr y se cuentan), busca con Google (grounding de Gemini) ferias próximas de cada sector, verifica una página de cada una y la registra en Twenty como señal FAIR (NEW) con su URL y fecha, sin peinar expositores; por sector, además, busca noticias de los últimos 60 días de aperturas, rondas de financiación y aniversarios de empresas y crea señales NEW «<empresa>: <qué pasó> — apertura|financiación|aniversario» con la noticia verificada por descarga. Al calificarse, la feria se peina y la empresa se evalúa directamente.',
+      'Descubrimiento semanal de ferias reales: el Prospector (modo scout, solo descubrimiento) recorre en serie la lista de sectores de la entrada (sectors; el inicio rota cada semana; si se agota el presupuesto de tiempo, los sectores restantes quedan sin correr y se cuentan), busca con Google (grounding de Gemini) ferias próximas de cada sector, verifica una página de cada una y la registra en Twenty como señal FAIR (NEW) con su URL y fecha, sin peinar expositores. Las señales de empresa están APAGADAS (company_signals: false) por feedback comercial: aperturas retiradas el 2026-10-26, aniversarios y por último financiación el 2026-11-03 — dos lotes semanales acabaron íntegros en Discarded. Reactivarlas es un cambio de seed. Al calificarse una feria, se peina su catálogo.',
     defaultInput: { ...SCOUT_WEEKLY_INPUT },
     schedule: { type: 'CRON', expression: '30 7 * * 1' },
     timezone: 'Europe/Madrid',

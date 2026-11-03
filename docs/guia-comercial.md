@@ -35,7 +35,7 @@ Cada lunes, el sistema busca ferias y eventos reales relevantes para PubliEXPE y
 
 La ejecución tiene un límite de 20 minutos: si algo es muy grande, el resumen de la ejecución (*Agent run*) sale como `Partial` e indica en qué fase se cortó. Lo ya hecho se guarda igualmente.
 
-> **Novedad (tanda 21):** el lunes el sistema ya no mira solo alimentación y bebidas. Recorre **seis sectores** (alimentación y bebidas, horeca y food service, farmacia y salud, cosmética y belleza, franquicias y retail, industria y packaging) y, además de ferias, deja **señales de empresa** de tipo apertura, ronda de financiación y aniversario. Tu cola de `New` tendrá más variedad; el gesto para decidir es el mismo. Consulta [señales de empresa](#señales-de-empresa-apertura-financiación-y-aniversario). `[POR CONFIRMAR]` fecha de activación en producción.
+> **Novedad (tanda 21):** el lunes el sistema ya no mira solo alimentación y bebidas: recorre **seis sectores** (alimentación y bebidas, horeca y food service, farmacia y salud, cosmética y belleza, franquicias y retail, industria y packaging). Las **señales de empresa** se probaron dos semanas y se apagaron el 2026-11-03 (todas acabaron descartadas); tu cola de `New` trae ferias de los seis sectores.
 
 ### Cuando calificas una feria: al momento
 
@@ -117,22 +117,28 @@ La tarea ⏳ no es un fallo: es el sistema diciéndote «te he hecho caso, pero 
 
 El lunes, el sistema ya no te deja en la cola ferias demasiado próximas ni demasiado lejanas: la cola de `New` son, en su mayoría, ferias del próximo trimestre.
 
-### Señales de empresa: apertura, financiación y aniversario
+### Señales de empresa: apertura, financiación y aniversario (APAGADAS desde el 2026-11-03)
+
+> **Señales de empresa: APAGADAS desde el 2026-11-03.** Tras dos lotes semanales con todos los tipos descartados por el comercial (aperturas el 2026-10-26; aniversarios y financiación el 2026-11-03), el scout vuelve a ser **solo de ferias** (`company_signals: false` en la tarea del seed). Las señales de empresa ya creadas siguen su ciclo normal hasta caducar, y todo el circuito (tipado, calificación, prospección directa) sigue en el código: reactivarlo es un cambio de seed, no de código.
 
 Además de ferias, desde la tanda 21 el sistema deja en tu cola **señales de empresa**: noticias que dicen que una empresa concreta está en un buen momento para el merchandising.
 
+> **Tipo retirado: apertura (desde el 2026-10-26).** El sistema ya no busca aperturas. Motivo: feedback comercial del 2026-10-26: las noticias de apertura llegan tarde (la tienda ya ha abierto) y no son nicho. Las aperturas que ya tienes en la cola siguen su ciclo normal: puedes calificarlas (se prospectan igual) o descartarlas, y si no haces nada caducan solas a los 120 días de la noticia. 
+
+> **Tipo retirado: aniversario (desde el 2026-11-03).** El sistema ya no busca aniversarios. Motivo: feedback comercial del 2026-11-03: el scout traía aniversarios con fecha ya pasada, sin motivo de compra actual. Los aniversarios que ya tienes en la cola siguen su ciclo normal, igual que las aperturas. Hoy el lunes solo trae **rondas de financiación**, y solo de noticias del último mes.
+
 | Tipo | Cómo lo reconoces | Qué significa |
 |---|---|---|
-| **Apertura** | El nombre acaba en «— apertura» | La empresa abre (o va a abrir) un local, una fábrica o una sede |
+| **Apertura** (retirado el 2026-10-26) | El nombre acaba en «— apertura» | La empresa abre (o va a abrir) un local, una fábrica o una sede. Ya no se crean nuevas: feedback comercial del 2026-10-26: las noticias de apertura llegan tarde (la tienda ya ha abierto) y no son nicho |
 | **Financiación** | El nombre acaba en «— financiación» | La empresa ha cerrado una ronda de financiación |
-| **Aniversario** | El nombre acaba en «— aniversario» | La empresa cumple un aniversario redondo |
+| **Aniversario** (retirado el 2026-11-03) | El nombre acaba en «— aniversario» | La empresa cumple un aniversario redondo. Ya no se crean nuevas: el scout traía aniversarios con fecha ya pasada |
 
-El nombre tiene el formato «Empresa: qué pasó — apertura», «— financiación» o «— aniversario».
+El nombre tiene el formato «Empresa: qué pasó — financiación» (las aperturas y aniversarios anteriores a su retirada acaban en «— apertura» o «— aniversario»).
 
 **Las calificas igual que una feria.** Abre la señal en **Commercial OS → Signals**, comprueba la noticia con su enlace y cambia **Status** a `Qualified` o `Discarded`. Lo que cambia es lo que ocurre después:
 
 - **No investiga una feria, sino a esa empresa.** El agente prospecta directamente a la empresa de la señal y te deja una hipótesis en `Proposed`, con el motivo y la fecha de la noticia como arranque, garantizado por código, de la razón del momento (**Why now**). Si la noticia no trae la web de la empresa, el sistema intenta [encontrarla y verificarla](resolver-dominios.md); si no está seguro, no propone nada en lugar de adivinar.
-- **No hay «plazo de 2 a 6 meses».** Esa regla es de ferias. En una señal de empresa manda la frescura: solo se crean con noticias de los últimos 60 días (o una apertura futura) y con la fuente comprobada por el sistema.
+- **No hay «plazo de 2 a 6 meses».** Esa regla es de ferias. En una señal de empresa manda la frescura: solo se crean con noticias del último mes (30 días; antes del 2026-11-03 eran 60) y con la fuente comprobada por el sistema.
 - **Caducan solas a los 120 días.** Si no la has calificado, la señal pasa sola a `Expired` cuando han pasado 120 días desde la noticia: una noticia vieja ya no es un buen motivo para escribir.
 - **Sigue siendo tu decisión.** El sistema no califica por ti y no envía nada. Validar una hipótesis de empresa, buscar el contacto y revisar el borrador funciona como en cualquier otra.
 

@@ -4,7 +4,7 @@
  * A) Discovery (`discoverCompanySignals`, weekly scout, one call per sector after its fairs):
  *    1. ONE grounded search (Gemini + Google Search) for news of the last 60 days of companies of
  *       the sector in the region: openings, funding rounds, anniversaries;
- *    2. per proposed news, by code: valid kind, news date at most COMPANY_SIGNAL_FRESH_DAYS old,
+ *    2. per proposed news, by code: valid kind, news date at most `maxAgeDays` old (default 30),
  *       not already seen in this run (same article URL, or same company + kind in another
  *       sector), URL backed by grounding (redirects resolved like the scout) or, when the search
  *       returned no sources, accepted only by corroboration (`verify_unsourced_by_fetch`);
@@ -46,7 +46,8 @@ import {
   buildCompanyNewsRepairPrompt,
   buildCompanyNewsSearchPrompt,
   buildCompanySignalPrompt,
-  COMPANY_NEWS_SEARCH_SYSTEM_PROMPT,
+  buildCompanyNewsSearchSystemPrompt,
+  DEFAULT_DISCOVERY_KINDS,
   COMPANY_SIGNAL_DECISION_JSON_SCHEMA,
   COMPANY_SIGNAL_SYSTEM_PROMPT,
   NewsSearchAnswer,
@@ -105,7 +106,11 @@ export interface CompanyDiscoveryResult {
   search: { queries: string[]; sources: number; proposed: number; verification: 'grounding_sources' | 'fetch_corroboration' | 'none' } | null;
   search_error?: { code: string; message: string };
   entries: CompanySignalEntry[];
-  counters: { proposed: number; created: number; existing: number; discarded: number; errors: number; fetches: number; skipped_time_budget: number };
+  counters: { proposed: number; created: number; existing: number; discarded: number; errors: number; fetches: number; skipped_time_budget: number; inactive_kind: number; stale: number };
+  /** Kinds searched in this pass. */
+  kinds: CompanySignalKind[];
+  /** Freshness window applied (days). */
+  max_age_days: number;
 }
 
 export interface CompanyDiscoveryArgs {
@@ -120,6 +125,16 @@ export interface CompanyDiscoveryArgs {
   confidence: number;
   verifyUnsourced: boolean;
   maxRedirectResolutions: number;
+  /**
+   * Kinds searched (fix 2026-10-26; default `DEFAULT_DISCOVERY_KINDS`: financiación and aniversario,
+   * apertura retired). Only these are named in the prompt and a news of any other kind is dropped.
+   */
+  kinds?: readonly CompanySignalKind[];
+  /**
+   * Freshness window at creation (fix 2026-11-03; default COMPANY_SIGNAL_FRESH_DAYS = 30). The prompt
+   * asks for it and the code rejects any older news (`stale_news`): the model does not decide it.
+   */
+  maxAgeDays?: number;
 }
 
 function shiftDay(day: string, days: number): string {
@@ -137,11 +152,13 @@ export function pageNamesCompany(company: string, page: Pick<FetchUrlOutput, 'ti
 
 export async function discoverCompanySignals(run: ProspectorRun, a: CompanyDiscoveryArgs): Promise<CompanyDiscoveryResult> {
   const { ledger } = a;
-  const out: CompanyDiscoveryResult = { search: null, entries: [], counters: { proposed: 0, created: 0, existing: 0, discarded: 0, errors: 0, fetches: 0, skipped_time_budget: 0 } };
+  const kinds: CompanySignalKind[] = a.kinds && a.kinds.length > 0 ? [...new Set(a.kinds)] : [...DEFAULT_DISCOVERY_KINDS];
+  const maxAgeDays = a.maxAgeDays ?? COMPANY_SIGNAL_FRESH_DAYS;
+  const out: CompanyDiscoveryResult = { search: null, entries: [], kinds, max_age_days: maxAgeDays, counters: { proposed: 0, created: 0, existing: 0, discarded: 0, errors: 0, fetches: 0, skipped_time_budget: 0, inactive_kind: 0, stale: 0 } };
   const search = await run.completeJson({
     label: { step: 'company_signal_search', sector: a.sector, region: a.region },
-    system: COMPANY_NEWS_SEARCH_SYSTEM_PROMPT,
-    messages: [{ role: 'user', content: buildCompanyNewsSearchPrompt({ sector: a.sector, region: a.region, today: a.today, since: shiftDay(a.today, -COMPANY_SIGNAL_FRESH_DAYS), maxSignals: a.maxSignals }) }],
+    system: buildCompanyNewsSearchSystemPrompt(kinds),
+    messages: [{ role: 'user', content: buildCompanyNewsSearchPrompt({ sector: a.sector, region: a.region, today: a.today, since: shiftDay(a.today, -maxAgeDays), maxSignals: a.maxSignals, kinds, maxAgeDays }) }],
     parse: (text) => parseWith(NewsSearchAnswer, text),
     grounding: true,
     repair: (previous, error) => [{ role: 'user', content: buildCompanyNewsRepairPrompt(previous, error) }],
@@ -159,8 +176,13 @@ export async function discoverCompanySignals(run: ProspectorRun, a: CompanyDisco
   const hasSources = (grounding?.sources.length ?? 0) > 0;
   const searched = (grounding?.queries.length ?? 0) > 0 || (grounding?.diagnostics?.toolCalls ?? 0) > 0;
   const corroborateOnly = !hasSources && searched && a.verifyUnsourced;
-  const news = search.value.news;
+  // The model never decides which kinds exist: a news of a kind outside the active list is dropped by code.
+  const active = new Set<CompanySignalKind>(kinds);
+  const news = search.value.news.filter((n) => active.has(n.kind));
+  const inactive = search.value.news.filter((n) => !active.has(n.kind));
   out.counters.proposed = news.length;
+  out.counters.inactive_kind = inactive.length;
+  for (const n of inactive) out.entries.push({ company: n.company, kind: n.kind, what: n.what, news_date: n.news_date, url: n.url, status: 'discarded', reason: 'tipo_no_activo' });
   out.search = { queries: grounding?.queries ?? [], sources: grounding?.sources.length ?? 0, proposed: news.length, verification: hasSources ? 'grounding_sources' : corroborateOnly ? 'fetch_corroboration' : 'none' };
 
   let redirects = 0;
@@ -198,10 +220,11 @@ export async function discoverCompanySignals(run: ProspectorRun, a: CompanyDisco
       continue;
     }
     // Freshness instead of lead time: the news is at most 60 days old.
-    const fresh = companySignalFreshness(entry.news_date, a.today);
+    const fresh = companySignalFreshness(entry.news_date, a.today, maxAgeDays);
     entry.age_days = fresh.age_days;
     if (!fresh.fresh) {
-      discard(entry, fresh.reason === 'no_news_date' ? 'sin_fecha_de_noticia' : fresh.reason === 'news_in_future' ? 'fecha_de_noticia_futura' : 'noticia_no_fresca');
+      if (fresh.reason === 'stale_news') out.counters.stale += 1;
+      discard(entry, fresh.reason === 'no_news_date' ? 'sin_fecha_de_noticia' : fresh.reason === 'news_in_future' ? 'fecha_de_noticia_futura' : 'stale_news');
       continue;
     }
     const url = n.url && normalizeUrl(n.url) ? n.url : null;

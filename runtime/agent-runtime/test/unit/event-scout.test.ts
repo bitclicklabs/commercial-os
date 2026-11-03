@@ -464,14 +464,14 @@ describe('ProspectorAgent scout mode', () => {
 });
 
 describe('seed: weekly-event-scouting', () => {
-  it('adds the scout task (Monday 07:30 Madrid, discovery only since tanda 15, six sectors + company signals since tanda 21) and the daily task in signals mode', () => {
+  it('adds the scout task (Monday 07:30 Madrid, discovery only since tanda 15, six sectors since tanda 21; company signals OFF since 2026-11-03) and the daily task in signals mode', () => {
     expect(desiredScoutTask()).toMatchObject({
       defaultInput: {
         sectors: ['alimentación y bebidas', 'horeca y food service', 'farmacia y salud', 'cosmética y belleza', 'franquicias y retail', 'industria y packaging'],
         region: 'España',
         horizon_months: 6,
         discover_only: true,
-        company_signals: true,
+        company_signals: false,
       },
       schedule: { type: 'CRON', expression: '30 7 * * 1' },
       timezone: 'Europe/Madrid',

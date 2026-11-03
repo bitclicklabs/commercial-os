@@ -104,7 +104,7 @@ import { hostOf, normalizeUrl, scrubUnknownUrls, SourceLedger } from './source-l
 import { classifyLeadTime, daysUntil, leadTimeWindowFromEnv, madridToday, windowInfo, type LeadTimeWindow } from '../signals/lead-time.js';
 import { domainResolverConfigFromEnv, DomainResolverSession, resolveExhibitorDomain, type DomainResolverConfig, type ResolverPageRead } from './domain-resolver.js';
 import { CompanySignalSeen, discoverCompanySignals, type CompanyDiscoveryResult } from './company-signals.js';
-import { COMPANY_SIGNAL_FRESH_DAYS, COMPANY_SIGNAL_KINDS, COMPANY_SIGNAL_LABEL_ES } from '../signals/company-signal.js';
+import { COMPANY_SIGNAL_EXPIRY_DAYS, COMPANY_SIGNAL_KINDS, COMPANY_SIGNAL_LABEL_ES } from '../signals/company-signal.js';
 
 // ---------------------------------------------------------------------------
 // Input
@@ -154,6 +154,11 @@ export const ScoutInput = z
      * this list in the task input (seed), not of code.
      */
     company_signal_kinds: z.array(z.enum(COMPANY_SIGNAL_KINDS)).min(1).max(COMPANY_SIGNAL_KINDS.length).optional(),
+    /**
+     * Fix 2026-11-03: freshness window (days) of the news a company signal is created from. Default
+     * 30 (it was a 60-day constant); the 120-day expiry does not change.
+     */
+    company_signal_max_age_days: z.number().int().min(1).max(COMPANY_SIGNAL_EXPIRY_DAYS).optional(),
   })
   .refine((v) => v.sector !== undefined || (v.sectors !== undefined && v.sectors.length > 0) || v.event_url !== undefined, { message: 'sector, sectors or event_url is required' });
 export type ScoutInput = z.infer<typeof ScoutInput>;
@@ -1532,6 +1537,7 @@ export async function runScout(run: ProspectorRun, rawInput: Record<string, unkn
         verifyUnsourced: cfg.verifyUnsourcedByFetch,
         maxRedirectResolutions: cfg.maxRedirectResolutions,
         ...(input.company_signal_kinds ? { kinds: input.company_signal_kinds } : {}),
+        ...(input.company_signal_max_age_days ? { maxAgeDays: input.company_signal_max_age_days } : {}),
       });
       if (company.search_error) partialReasons.push(`búsqueda de señales de empresa fallida (${company.search_error.code})`);
     }
@@ -1556,6 +1562,7 @@ export async function runScout(run: ProspectorRun, rawInput: Record<string, unkn
           company_signals_existing: company.counters.existing,
           company_signals_discarded: company.counters.discarded,
           company_signals_inactive_kind: company.counters.inactive_kind,
+          company_signals_stale: company.counters.stale,
           company_signal_errors: company.counters.errors,
         }
       : {}),
@@ -1636,7 +1643,7 @@ export async function runScout(run: ProspectorRun, rawInput: Record<string, unkn
     `Coste del modelo: ${formatEur(run.costEur())} (${run.llmCalls} llamadas, ${run.groundingCalls} con búsqueda: ${formatEur(groundingEur)} de búsqueda; ${run.usage.inputTokens} tokens de entrada y ${run.usage.outputTokens} de salida). Tiempo: ${minutes(counters.elapsed_ms)} min de ${minutes(timeBudgetMs)} min de presupuesto.`,
     ...(company
       ? [
-          `Señales de empresa (${company.kinds.map((k) => COMPANY_SIGNAL_LABEL_ES[k]).join(', ')}; noticias de ≤ ${COMPANY_SIGNAL_FRESH_DAYS} días): propuestas ${company.counters.proposed}, creadas ${company.counters.created}, ya existentes ${company.counters.existing}, descartadas ${company.counters.discarded}${company.counters.errors > 0 ? `, errores ${company.counters.errors}` : ''}.`,
+          `Señales de empresa (${company.kinds.map((k) => COMPANY_SIGNAL_LABEL_ES[k]).join(', ')}; noticias de ≤ ${company.max_age_days} días): propuestas ${company.counters.proposed}, creadas ${company.counters.created}, ya existentes ${company.counters.existing}, descartadas ${company.counters.discarded}${company.counters.errors > 0 ? `, errores ${company.counters.errors}` : ''}.`,
         ]
       : []),
     ...(partialReasons.length > 0 ? [`Motivos: ${partialReasons.join(' | ')}`] : []),

@@ -43,8 +43,10 @@ const GOURMETS_HTML = '<html><head><title>Salón de Gourmets 2027</title></head>
 
 const fairSearch = (events: unknown[], sources: unknown[]): StubResponse => ({ text: JSON.stringify({ events }), grounding: { queries: ['ferias'], sources: sources as never }, cost: 0.03 });
 const newsSearch = (news: unknown[], sources: unknown[]): StubResponse => ({ text: JSON.stringify({ news }), grounding: { queries: ['noticias'], sources: sources as never }, cost: 0.03 });
-// Fix 2026-10-26: openings are no longer discovered; the discovery fixtures use an anniversary.
-const ORTIZ_NEWS = { company: 'Conservas Ortiz', kind: 'aniversario', what: 'cumple 135 años en Ondarroa', news_date: '2026-09-20', url: ORTIZ_URL, city: 'Ondarroa' };
+// Fix 2026-10-26 / 2026-11-03: openings and anniversaries are no longer discovered; the discovery fixtures use funding rounds.
+const ORTIZ_NEWS = { company: 'Conservas Ortiz', kind: 'financiacion', what: 'cierra una ronda de 5 millones para su fábrica de Ondarroa', news_date: '2026-09-20', url: ORTIZ_URL, city: 'Ondarroa' };
+/** An anniversary as the model may still propose it: outside the active kinds since 2026-11-03. */
+const ORTIZ_ANNIVERSARY_NEWS = { ...ORTIZ_NEWS, kind: 'aniversario', what: 'cumple 135 años en Ondarroa' };
 /** An opening as the model may still propose it: outside the active kinds, dropped by code. */
 const ORTIZ_OPENING_NEWS = { ...ORTIZ_NEWS, kind: 'apertura', what: 'abre una nueva fábrica en Ondarroa' };
 const BETA_NEWS = { company: 'Laboratorios Beta', kind: 'financiación', what: 'cierra una ronda de 12 millones', news_date: '2026-10-01', url: BETA_URL, city: null };
@@ -129,8 +131,11 @@ describe('company signal conventions (name suffix is the type)', () => {
     expect(companySignalTitle('X', 'y'.repeat(400), 'financiacion').endsWith(' — financiación')).toBe(true);
     expect(parseCompanySignalName(ORTIZ_SIGNAL_NAME)).toEqual({ company: 'Conservas Ortiz', headline: 'abre una nueva fábrica en Ondarroa' });
     expect(parseCompanySignalName('Ortiz cumple 100 años — aniversario')).toEqual({ company: null, headline: 'Ortiz cumple 100 años' });
-    expect(companySignalFreshness('2026-08-08', '2026-10-07')).toEqual({ fresh: true, age_days: 60 });
-    expect(companySignalFreshness('2026-08-07', '2026-10-07')).toMatchObject({ fresh: false, reason: 'stale_news', age_days: 61 });
+    // Default window 30 days since 2026-11-03 (it was 60); configurable.
+    expect(companySignalFreshness('2026-09-07', '2026-10-07')).toEqual({ fresh: true, age_days: 30 });
+    expect(companySignalFreshness('2026-09-06', '2026-10-07')).toMatchObject({ fresh: false, reason: 'stale_news', age_days: 31 });
+    expect(companySignalFreshness('2026-08-08', '2026-10-07', 60)).toEqual({ fresh: true, age_days: 60 });
+    expect(companySignalFreshness('2026-08-07', '2026-10-07', 60)).toMatchObject({ fresh: false, reason: 'stale_news', age_days: 61 });
     expect(companySignalFreshness(null, '2026-10-07')).toMatchObject({ fresh: false, reason: 'no_news_date' });
     expect(companySignalFreshness('2026-10-20', '2026-10-07')).toMatchObject({ fresh: false, reason: 'news_in_future' });
     expect(isExpiredCompanySignal('2026-06-09', '2026-10-07')).toBe(false);
@@ -152,7 +157,8 @@ describe('company signal conventions (name suffix is the type)', () => {
     expect(isScoutInput({ sectors: ['x'] })).toBe(true);
     expect(ScoutInput.safeParse({ sectors: [] }).success).toBe(false);
     expect(ScoutInput.safeParse({ sectors: ['farmacia y salud'], discover_only: true, company_signals: true }).success).toBe(true);
-    expect(desiredScoutTask().defaultInput).toEqual({ sectors: [...SCOUT_SECTORS], region: 'España', horizon_months: 6, discover_only: true, company_signals: true, company_signal_kinds: ['financiacion', 'aniversario'] });
+    expect(desiredScoutTask().defaultInput).toEqual({ sectors: [...SCOUT_SECTORS], region: 'España', horizon_months: 6, discover_only: true, company_signals: true, company_signal_kinds: ['financiacion'], company_signal_max_age_days: 30 });
+    expect(ScoutInput.safeParse({ sector: 'x', company_signal_max_age_days: 121 }).success).toBe(false);
     expect(desiredScoutTask().description).not.toMatch(/apertura\|/);
     expect(ScoutInput.safeParse({ sector: 'x', company_signal_kinds: ['contratacion'] }).success).toBe(false);
     expect(SCOUT_SECTORS).toHaveLength(6);
@@ -200,7 +206,7 @@ describe('weekly scouting: several sectors + company signals (discover_only)', (
     newsSearch(
       [
         { ...ORTIZ_NEWS, company: 'Conservas Viejas', news_date: '2026-06-01', url: 'https://www.diario.example/vieja' },
-        { company: 'Fantasma SA', kind: 'aniversario', what: 'cumple 50 años', news_date: '2026-10-01', url: FAKE_URL, city: null },
+        { company: 'Fantasma SA', kind: 'financiacion', what: 'cierra una ronda de 2 millones', news_date: '2026-10-01', url: FAKE_URL, city: null },
         ORTIZ_NEWS,
       ],
       [DIARIO],
@@ -224,15 +230,15 @@ describe('weekly scouting: several sectors + company signals (discover_only)', (
     expect(out.sectors[0].cost_eur).toBeGreaterThan(0);
     expect(out.counters).toMatchObject({ sectors_total: 2, sectors_done: 2, sectors_skipped_time_budget: 0, event_signals_created: 1, company_signals_created: 2, events_duplicated_other_sector: 1 });
     const discardReasons = out.sector_runs.flatMap((r: any) => r.company_signals.entries.filter((e: any) => e.status === 'discarded').map((e: any) => e.reason));
-    expect(discardReasons.sort()).toEqual(['duplicada_en_otro_sector', 'noticia_no_fresca', 'pagina_no_corrobora_la_noticia']);
+    expect(discardReasons.sort()).toEqual(['duplicada_en_otro_sector', 'pagina_no_corrobora_la_noticia', 'stale_news']);
 
     // Twenty: 1 fair + 2 company signals (event level, NEW), nothing else.
     expect(fake.tables.companies).toHaveLength(0);
     expect(fake.tables.commercialHypotheses).toHaveLength(0);
     const sigs = fake.tables.commercialSignals!;
-    expect(sigs.map((s) => s.name).sort()).toEqual(['Conservas Ortiz: cumple 135 años en Ondarroa — aniversario', 'Laboratorios Beta: cierra una ronda de 12 millones — financiación', 'Salón de Gourmets 2027 (feria)']);
+    expect(sigs.map((s) => s.name).sort()).toEqual(['Conservas Ortiz: cierra una ronda de 5 millones para su fábrica de Ondarroa — financiación', 'Laboratorios Beta: cierra una ronda de 12 millones — financiación', 'Salón de Gourmets 2027 (feria)']);
     const ortiz = sigs.find((s) => String(s.name).startsWith('Conservas Ortiz'))!;
-    expect(ortiz).toMatchObject({ signalType: 'ANNIVERSARY', status: 'NEW', eventDate: '2026-09-20', companyId: null, tenantId: 'publiexpe', sourceUrl: { primaryLinkUrl: ORTIZ_URL } });
+    expect(ortiz).toMatchObject({ signalType: 'OTHER', status: 'NEW', eventDate: '2026-09-20', companyId: null, tenantId: 'publiexpe', sourceUrl: { primaryLinkUrl: ORTIZ_URL } });
     expect(String(ortiz.description)).toContain('Fecha de la noticia: 2026-09-20');
     expect(sigs.find((s) => String(s.name).startsWith('Laboratorios'))).toMatchObject({ signalType: 'OTHER', eventDate: '2026-10-01' });
     // The stale news was never downloaded.
@@ -263,28 +269,29 @@ describe('weekly scouting: several sectors + company signals (discover_only)', (
   it('two articles of the same newspaper and day about different companies are two signals (dedupe by article URL)', async () => {
     const other = 'https://www.diario.example/empresas/bodegas-gamma-50-anos';
     const w = new FakeWeb().page(ORTIZ_URL, ORTIZ_HTML).page(other, '<html><head><title>Bodegas Gamma cumple 50 años</title></head><body>Bodegas Gamma celebra su aniversario.</body></html>');
-    const news = newsSearch([ORTIZ_NEWS, { company: 'Bodegas Gamma', kind: 'aniversario', what: 'cumple 50 años', news_date: '2026-09-20', url: other, city: null }], [DIARIO]);
+    const news = newsSearch([ORTIZ_NEWS, { company: 'Bodegas Gamma', kind: 'financiacion', what: 'cierra una ronda de 3 millones', news_date: '2026-09-20', url: other, city: null }], [DIARIO]);
     const { fake, ctx, agent } = setup([fairSearch([], [GOURMETS]), news], { web: w, input: { sector: 'alimentación y bebidas', discover_only: true, company_signals: true } });
     const out = (await agent.run(ctx)).output as Record<string, any>;
     expect(out.counters).toMatchObject({ company_signals_created: 2 });
     // Only company signals found: the run is not "nothing verifiable".
     expect(out.outcome).toBe('SUCCESS');
-    expect(fake.tables.commercialSignals!.map((s) => s.signalType).sort()).toEqual(['ANNIVERSARY', 'ANNIVERSARY']);
+    expect(fake.tables.commercialSignals!.map((s) => s.signalType).sort()).toEqual(['OTHER', 'OTHER']);
   });
 
   it('openings are no longer discovered: the prompt does not ask for them and a proposed opening is dropped by code (tipo_no_activo)', async () => {
     const w = new FakeWeb().page(ORTIZ_URL, ORTIZ_HTML).page(BETA_URL, BETA_HTML);
-    const { fake, provider, ctx, agent } = setup([fairSearch([], [GOURMETS]), newsSearch([ORTIZ_OPENING_NEWS, BETA_NEWS], [DIARIO, ECONOMIA])], {
+    const { fake, provider, ctx, agent } = setup([fairSearch([], [GOURMETS]), newsSearch([ORTIZ_OPENING_NEWS, ORTIZ_ANNIVERSARY_NEWS, BETA_NEWS], [DIARIO, ECONOMIA])], {
       web: w,
       input: { sector: 'alimentación y bebidas', discover_only: true, company_signals: true },
     });
     const out = (await agent.run(ctx)).output as Record<string, any>;
     const req = provider.requests[1]!;
-    expect(`${req.system}\n${req.messages[0]!.content}`).not.toMatch(/apertura|abre nueva/i);
-    expect(req.messages[0]!.content).toContain('"financiacion" | "aniversario"');
-    expect(out.company_signals.kinds).toEqual(['financiacion', 'aniversario']);
+    expect(`${req.system}\n${req.messages[0]!.content}`).not.toMatch(/apertura|abre nueva|aniversario/i);
+    expect(req.messages[0]!.content).toContain('"kind": "financiacion",');
+    expect(out.company_signals.kinds).toEqual(['financiacion']);
+    expect(out.company_signals.entries).toEqual(expect.arrayContaining([expect.objectContaining({ kind: 'aniversario', status: 'discarded', reason: 'tipo_no_activo' })]));
     expect(out.company_signals.entries).toEqual(expect.arrayContaining([expect.objectContaining({ company: 'Conservas Ortiz', kind: 'apertura', status: 'discarded', reason: 'tipo_no_activo' })]));
-    expect(out.counters).toMatchObject({ company_signals_proposed: 1, company_signals_inactive_kind: 1, company_signals_created: 1 });
+    expect(out.counters).toMatchObject({ company_signals_proposed: 1, company_signals_inactive_kind: 2, company_signals_created: 1 });
     // The opening article is never downloaded and no opening signal is written.
     expect(w.requests.map((r) => r.url.toString())).not.toContain(ORTIZ_URL);
     expect(fake.tables.commercialSignals!.map((s) => s.name)).toEqual(['Laboratorios Beta: cierra una ronda de 12 millones — financiación']);
@@ -299,6 +306,30 @@ describe('weekly scouting: several sectors + company signals (discover_only)', (
     expect(back.provider.requests[1]!.system).not.toContain('"financiacion"');
     expect(out2.counters).toMatchObject({ company_signals_created: 1, company_signals_inactive_kind: 1 });
     expect(back.fake.tables.commercialSignals!.map((s) => s.name)).toEqual(['Conservas Ortiz: abre una nueva fábrica en Ondarroa — apertura']);
+  });
+
+  it('freshness by code (default 30 days): a 45-day-old news is rejected as stale_news, a 20-day-old one passes; the input can widen the window', async () => {
+    const old = { ...ORTIZ_NEWS, news_date: '2026-08-23' }; // 45 days before TODAY
+    const recent = { ...BETA_NEWS, news_date: '2026-09-17' }; // 20 days
+    const run = (input: Record<string, unknown>) => {
+      const s = setup([fairSearch([], [GOURMETS]), newsSearch([old, recent], [DIARIO, ECONOMIA])], {
+        web: new FakeWeb().page(ORTIZ_URL, ORTIZ_HTML).page(BETA_URL, BETA_HTML),
+        input: { sector: 'alimentación y bebidas', discover_only: true, company_signals: true, ...input },
+      });
+      return s.agent.run(s.ctx).then((r) => ({ ...s, out: r.output as Record<string, any> }));
+    };
+    const d = await run({});
+    expect(d.provider.requests[1]!.messages[0]!.content).toContain('del último mes');
+    expect(d.provider.requests[1]!.messages[0]!.content).toContain('desde el 2026-09-07');
+    expect(d.out.company_signals.max_age_days).toBe(30);
+    expect(d.out.company_signals.entries).toEqual(expect.arrayContaining([expect.objectContaining({ company: 'Conservas Ortiz', status: 'discarded', reason: 'stale_news', age_days: 45 })]));
+    expect(d.out.counters).toMatchObject({ company_signals_created: 1, company_signals_stale: 1 });
+    expect(d.web.requests.map((r) => r.url.toString())).not.toContain(ORTIZ_URL);
+    expect(d.fake.tables.commercialSignals!.map((s) => s.name)).toEqual(['Laboratorios Beta: cierra una ronda de 12 millones — financiación']);
+
+    const wide = await run({ company_signal_max_age_days: 60 });
+    expect(wide.provider.requests[1]!.messages[0]!.content).toContain('de los últimos 60 días');
+    expect(wide.out.counters).toMatchObject({ company_signals_created: 2, company_signals_stale: 0 });
   });
 
   it('a single `sector` (fallback) keeps the old behaviour: no company search unless asked', async () => {

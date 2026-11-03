@@ -5,6 +5,11 @@
  */
 import { z } from 'zod';
 import { COMPANY_SIGNAL_FRESH_DAYS, type CompanySignalKind } from '../signals/company-signal.js';
+
+/** "del último mes (30 días)" for 30, "de los últimos N días" otherwise. */
+function windowText(days: number): string {
+  return days === 30 ? 'del último mes (los últimos 30 días)' : `de los últimos ${days} días`;
+}
 import { EXHIBITOR_DECISION_JSON_SCHEMA, ExhibitorDecision, issues, parseJsonText, type Parsed } from './prospector-core.js';
 import { UNTRUSTED_SYSTEM_RULE, wrapUntrusted } from './untrusted.js';
 
@@ -15,7 +20,9 @@ import { UNTRUSTED_SYSTEM_RULE, wrapUntrusted } from './untrusted.js';
  * qualified and expired at 120 days. The active list comes from the task input
  * (`company_signal_kinds`), so retiring another kind is a seed change.
  */
-export const DEFAULT_DISCOVERY_KINDS: readonly CompanySignalKind[] = ['financiacion', 'aniversario'];
+export const DEFAULT_DISCOVERY_KINDS: readonly CompanySignalKind[] = ['financiacion'];
+// Fix 2026-11-03 (commercial feedback: "aniversarios con fecha anterior"): `aniversario` retired from
+// discovery too, like `apertura`. Its legacy signals keep their cycle.
 
 /** What each kind is, for the search prompt (only the active kinds are ever written into it). */
 const KIND_DEFINITION: Record<CompanySignalKind, { label: string; definition: string; query: (sector: string, region: string, year: string) => string; what: string }> = {
@@ -64,7 +71,8 @@ ${UNTRUSTED_SYSTEM_RULE}`;
 /** Default system prompt (the default active kinds). */
 export const COMPANY_NEWS_SEARCH_SYSTEM_PROMPT = buildCompanyNewsSearchSystemPrompt();
 
-export function buildCompanyNewsSearchPrompt(p: { sector: string; region: string; today: string; since: string; maxSignals: number; kinds?: readonly CompanySignalKind[] }): string {
+export function buildCompanyNewsSearchPrompt(p: { sector: string; region: string; today: string; since: string; maxSignals: number; kinds?: readonly CompanySignalKind[]; maxAgeDays?: number }): string {
+  const maxAge = p.maxAgeDays ?? COMPANY_SIGNAL_FRESH_DAYS;
   const ks = p.kinds && p.kinds.length > 0 ? p.kinds : DEFAULT_DISCOVERY_KINDS;
   const year = p.today.slice(0, 4);
   return `Fecha de hoy: ${p.today}
@@ -72,7 +80,7 @@ export function buildCompanyNewsSearchPrompt(p: { sector: string; region: string
 Parámetros de búsqueda (configurados por el operador):
 ${JSON.stringify({ sector: p.sector, region: p.region, noticias_desde: p.since, hasta: p.today }, null, 2)}
 
-Haz ahora búsquedas en Google (por ejemplo: ${ks.map((k) => `"${KIND_DEFINITION[k].query(p.sector, p.region, year)}"`).join(', ')}) (como máximo 4 búsquedas: cada una tiene coste) para encontrar noticias publicadas en los últimos ${COMPANY_SIGNAL_FRESH_DAYS} días de empresas del sector indicado en la región indicada. Devuelve como máximo ${p.maxSignals}, priorizando empresas medianas o grandes y noticias concretas, y solo las que hayas encontrado en los resultados.
+Haz ahora búsquedas en Google (por ejemplo: ${ks.map((k) => `"${KIND_DEFINITION[k].query(p.sector, p.region, year)}"`).join(', ')}) (como máximo 4 búsquedas: cada una tiene coste) para encontrar noticias publicadas ${windowText(maxAge)} (desde el ${p.since}; una noticia anterior no sirve) de empresas del sector indicado en la región indicada. Devuelve como máximo ${p.maxSignals}, priorizando empresas medianas o grandes y noticias concretas, y solo las que hayas encontrado en los resultados.
 
 Devuelve SOLO este JSON:
 {

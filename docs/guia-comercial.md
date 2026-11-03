@@ -35,7 +35,7 @@ Cada lunes, el sistema busca ferias y eventos reales relevantes para PubliEXPE y
 
 La ejecución tiene un límite de 20 minutos: si algo es muy grande, el resumen de la ejecución (*Agent run*) sale como `Partial` e indica en qué fase se cortó. Lo ya hecho se guarda igualmente.
 
-> **Novedad (tanda 21):** el lunes el sistema ya no mira solo alimentación y bebidas. Recorre **seis sectores** (alimentación y bebidas, horeca y food service, farmacia y salud, cosmética y belleza, franquicias y retail, industria y packaging) y, además de ferias, deja **señales de empresa** de tipo ronda de financiación (las de apertura se retiraron el 2026-10-26 y las de aniversario el 2026-11-03: ver abajo). Tu cola de `New` tendrá más variedad; el gesto para decidir es el mismo. Consulta [señales de empresa](#señales-de-empresa-apertura-financiación-y-aniversario). `[POR CONFIRMAR]` fecha de activación en producción.
+> **Novedad (tanda 21):** el lunes el sistema ya no mira solo alimentación y bebidas: recorre **seis sectores** (alimentación y bebidas, horeca y food service, farmacia y salud, cosmética y belleza, franquicias y retail, industria y packaging). Las **señales de empresa** se probaron dos semanas y se apagaron el 2026-11-03 (todas acabaron descartadas); tu cola de `New` trae ferias de los seis sectores.
 
 ### Cuando calificas una feria: al momento
 
@@ -117,7 +117,9 @@ La tarea ⏳ no es un fallo: es el sistema diciéndote «te he hecho caso, pero 
 
 El lunes, el sistema ya no te deja en la cola ferias demasiado próximas ni demasiado lejanas: la cola de `New` son, en su mayoría, ferias del próximo trimestre.
 
-### Señales de empresa: apertura, financiación y aniversario
+### Señales de empresa: apertura, financiación y aniversario (APAGADAS desde el 2026-11-03)
+
+> **Señales de empresa: APAGADAS desde el 2026-11-03.** Tras dos lotes semanales con todos los tipos descartados por el comercial (aperturas el 2026-10-26; aniversarios y financiación el 2026-11-03), el scout vuelve a ser **solo de ferias** (`company_signals: false` en la tarea del seed). Las señales de empresa ya creadas siguen su ciclo normal hasta caducar, y todo el circuito (tipado, calificación, prospección directa) sigue en el código: reactivarlo es un cambio de seed, no de código.
 
 Además de ferias, desde la tanda 21 el sistema deja en tu cola **señales de empresa**: noticias que dicen que una empresa concreta está en un buen momento para el merchandising.
 

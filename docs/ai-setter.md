@@ -2,9 +2,9 @@
 
 El **AI Setter** es el papel que el Commercial OS asume desde la tanda 22: **convertir contactos en reuniones agendadas**. Hasta la tanda 21 el sistema llegaba a «tienes una respuesta interesada en tu bandeja». A partir de ahora, además, te deja la contestación redactada, te propone huecos reales de tu calendario y, cuando la reunión existe, mueve la oportunidad y te prepara la reunión.
 
-Este documento explica el modelo (niveles de autonomía y embudo), el ciclo completo de la tanda A (hecha y probada) y las cuatro piezas de la tanda B (secuencias de seguimiento, cualificación, huecos que respetan el plazo del cliente y títulos sin emoji delante). Lo que haces tú día a día está en la [guía del equipo comercial](guia-comercial.md#responder-y-cerrar-reuniones); la configuración, en el [runbook](runbook-local.md).
+Este documento explica el modelo (niveles de autonomía y embudo), el ciclo completo de la tanda A (hecha y probada) y las piezas de la tanda B (secuencias de seguimiento, retomar conversación, cualificación, huecos que respetan el plazo del cliente y títulos sin emoji delante). Lo que haces tú día a día está en la [guía del equipo comercial](guia-comercial.md#responder-y-cerrar-reuniones); la configuración, en el [runbook](runbook-local.md).
 
-> **Nota:** la tanda A está reconciliada con la implementación de la tanda 22. La tanda B (tanda 23) describe el diseño cerrado; lo que depende de la implementación va marcado `[POR CONFIRMAR]` y se reconcilia al integrar. Si un nombre de variable, tarea o skill difiere del código, manda el [README del runtime](../runtime/agent-runtime/README.md).
+> **Nota:** la tanda A está reconciliada con la implementación de la tanda 22. La tanda B (tanda 23) está reconciliada con la implementación del FollowUpAgent v2. Si un nombre de variable, tarea o skill difiere del código, manda el [README del runtime](../runtime/agent-runtime/README.md).
 
 ## Contenido
 
@@ -128,7 +128,7 @@ La tanda A (tanda 22) está desplegada y probada de punta a punta. **Prueba del 
 
 ## Tanda B: secuencias, cualificación y huecos con plazo
 
-La tanda B (tanda 23) mantiene el nivel 1: **el sistema prepara, tú envías**. Añade cuatro piezas.
+La tanda B (tanda 23) mantiene el nivel 1: **el sistema prepara, tú envías**. Añade cinco piezas.
 
 ### 1. Secuencias de seguimiento en el mismo hilo
 
@@ -144,14 +144,17 @@ Reglas de la secuencia:
 - **Cada seguimiento llega a los 5 días laborables del último toque enviado** (`FOLLOWUP_AFTER_BUSINESS_DAYS`).
 - **El último toque se detecta en los correos salientes que Twenty importa del buzón.** El sistema cuenta un toque como enviado solo si lo ve ahí.
 - **Si no enviaste el toque anterior, no se genera el siguiente.** No se acumulan seguimientos sobre un envío que no salió.
+- **Numeración:** el primer envío es el toque 1; «Seguimiento 1» es el toque 2 (borrador en modo «recordatorio») y «Seguimiento 2» es el toque 3 (el último toque permitido, en modo «cierre»).
 - **Mismo hilo:** el borrador usa el asunto «Re: <asunto del primer envío>» y propone una reunión con huecos del calendario.
-- **La secuencia se para** con cualquier respuesta (salvo respuestas automáticas), con un rebote o con una baja.
+- **La secuencia se para** con cualquier respuesta triada (salvo respuestas automáticas), con un correo entrante del destinatario visto en el buzón, con un rebote o con una baja.
 
 El borrador lo redacta la skill versionada `email-followup-draft` (v1). El detalle técnico está en [Seguimiento de leads enviados](seguimiento-leads.md).
 
-> **Importante:** el sistema sigue sin enviar nada. El borrador va en el cuerpo de la Task; lo copias, lo ajustas y lo envías tú. `[POR CONFIRMAR]` el nombre exacto del evento de auditoría de cada toque y qué pasa con la Task si falla la redacción del borrador (la tanda A la crea sin borrador).
+> **Importante:** el sistema sigue sin enviar nada. El borrador va en el cuerpo de la Task; lo copias, lo ajustas y lo envías tú. Si el modelo falla, la Task se crea igualmente con el guion fijo y la indicación «borrador no disponible». La auditoría registra cada toque en `lead.followup_task`, con el dato `touch` (2 o 3).
 
 ### 2. Cualificación volcada a la Oportunidad
+
+> **Importante:** la cualificación y la ventana del cliente las aporta la skill `email-reply-draft` **v2**, que queda en **DRAFT** hasta una activación explícita (pasa por el Release Gate). Con la v1 activa no hay ni cualificación ni ventana del cliente.
 
 De cada respuesta **INTERESADO**, el sistema extrae lo que el cliente haya dicho sobre:
 
@@ -163,20 +166,44 @@ De cada respuesta **INTERESADO**, el sistema extrae lo que el cliente haya dicho
 
 Reglas:
 
-- **Solo con cita literal del correo.** Cada dato lleva la frase del cliente que lo respalda; sin cita, el dato no se extrae. **Nunca se inventa.**
-- **Se deja en una nota** «Cualificación — {empresa} 🧾» en la Oportunidad.
+- **Solo con cita literal del correo.** Cada dato lleva la frase del cliente que lo respalda; sin cita, el dato no se extrae. **Nunca se inventa.** Las cifras deben aparecer escritas en la cita: un «dos mil» en letras se descarta.
+- **Rango:** `amount` toma el extremo inferior y la nota recoge el rango completo.
+- **Fecha necesaria:** no puede estar en el pasado ni a más de 18 meses.
+- **Se deja en una nota** «Cualificación — {empresa} 🧾», enlazada a la Oportunidad, la empresa y la Persona, con una sección «### Respuesta del AAAA-MM-DD HH:mm» por cada respuesta.
+- **Auditoría:** `opportunity.qualified`, solo con ids y nombres de campo.
 - **Si están vacíos, rellena los campos estándar** de la Oportunidad: Importe (`amount`) y Fecha de cierre (`closeDate`).
 - **Nunca pisa lo que haya puesto el comercial.** Un campo con valor no se toca.
 
-> **Nota:** el Importe sale de lo que el cliente dijo de presupuesto, no de un cálculo del sistema; trátalo como orientativo. `[POR CONFIRMAR]` cómo se convierte un presupuesto en forma de rango («entre 2.000 y 3.000 €») en un único Importe.
+> **Nota:** el Importe sale de lo que el cliente dijo de presupuesto, no de un cálculo del sistema; trátalo como orientativo.
 
 ### 3. Huecos que respetan el plazo del cliente
 
-Si el cliente escribe «la semana que viene», «por las tardes» o «a partir del 10», los huecos propuestos **respetan ese plazo**. Si en ese plazo no hay huecos libres, el borrador propone **los más cercanos disponibles y lo dice**. Los huecos siguen generándose por código, no por el modelo.
+Si el cliente escribe «la semana que viene», «por las tardes» o «a partir del 10», los huecos propuestos **respetan ese plazo**. Si en ese plazo no hay huecos libres, el borrador propone **los del horizonte normal y lo dice**: «En las fechas que comentáis no me queda ningún hueco libre…». Los huecos siguen generándose por código, no por el modelo.
+
+| El cliente dice | Ventana |
+|---|---|
+| «la semana que viene» | Lunes a viernes de la semana siguiente |
+| «esta semana» | Desde hoy hasta el viernes |
+| «a partir del 10» | Desde el día 10 |
+| «antes del 20» | Hasta el día 19 |
+| «por la mañana» / «por la tarde» | Antes de las 14:00 / desde las 14:00 |
+
+La búsqueda llega hasta 30 días hacia delante.
 
 ### 4. Títulos sin emoji delante
 
-Twenty dibujaba un «?» en un rombo rojo como icono de las Tasks cuyo título empezaba por emoji. Desde la tanda 23 los títulos llevan **el texto primero y el emoji al final**, por ejemplo «Responder a Adpan Europa S.L. 📬». Las Tasks antiguas, con el emoji delante, **se siguen reconociendo**: no se duplican ni se pierden. `[POR CONFIRMAR]` si el cambio alcanza también a las Tasks 📅 y 🧾.
+Twenty dibujaba un «?» en un rombo rojo como icono de las Tasks cuyo título empezaba por emoji. Desde la tanda 23 los títulos llevan **el texto primero y el emoji al final**, tanto en Tasks como en notas: «Responder a X 📬», «Cerrar reunión con X 📅», «Preparar reunión con X 🧾», «Seguimiento N — X 🔔», «Retomar conversación con X 🔔», «Revalidación fallida — X vN ⚠️», «Catálogo no disponible — día ⚠️», «Fuera de ventana (día): X ⏳» y «Sin fecha de feria (día): X ⏳»; en las notas, «Respuesta recibida — … 📬», «Rebote … ⚠️», «Reunión detectada — … 📅» y «Cualificación — X 🧾». Los registros antiguos conservan su título y **se siguen reconociendo**: no se duplican ni se pierden.
+
+### 5. Retomar conversación
+
+El seguimiento de la secuencia cubre los envíos que nadie contestó. Falta un caso: la conversación que **ya existía y se enfrió**. Cuando una **Oportunidad abierta, en una etapa anterior a Meeting**, tiene como **último mensaje con el contacto uno nuestro** y lleva **5 días laborables o más sin respuesta entrante**, el sistema crea la Task **«Retomar conversación con {empresa} 🔔»** (vence el mismo día) con un borrador que **retoma el hilo**: lee el último mensaje del cliente y el nuestro.
+
+- Como mucho `FOLLOWUP_MAX_TOUCHES` mensajes salientes seguidos sin respuesta.
+- Es idempotente por (Oportunidad, último saliente): no repite la Task para el mismo silencio.
+- **Estreno:** Adpan Europa S.L., con 25 días laborables de silencio tras la propuesta del 22 de octubre. El ensayo en modo prueba (`dry_run`) del 2026-11-26 produjo un borrador que cita la propuesta visual (talegas, delantales, tablas grabadas), ofrece una muestra física y propone 3 huecos del calendario.
+
+> **Importante:** el correo conectado en Twenty necesita visibilidad **Share everything**. Con «solo metadatos», Twenty entrega asunto y texto enmascarados (`FIELD_RESTRICTED_…`): el sistema lo detecta (contador `threads_text_restricted`), sigue detectando silencios y lo avisa en la Task.
+
 
 ## Lo que el sistema no hace
 

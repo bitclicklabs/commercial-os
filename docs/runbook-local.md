@@ -84,6 +84,7 @@ Todos los comandos `docker compose` de este runbook se ejecutan desde `deploymen
 | `ANTHROPIC_API_KEY` | `${ANTHROPIC_API_KEY:-}` | Solo para agentes con `model_provider=anthropic` |
 | `GEMINI_API_KEY` / `GEMINI_MODEL` | `${GEMINI_API_KEY:-}` / `${GEMINI_MODEL:-}` | Proveedor del Prospector (`model_provider=gemini`). `GEMINI_MODEL` vacío usa `gemini-flash-latest` |
 | `TWENTY_BASE_URL` | `http://pxos-twenty:3000` | URL de Twenty por la red `pxos-net` |
+| `TWENTY_PUBLIC_URL` | `http://localhost:3020` | URL de Twenty tal como la abre el navegador del comercial. Se usa en los enlaces que el runtime escribe en Tasks y notas (la URL interna `pxos-twenty:3000` no resuelve fuera de Docker). Cámbiala si accedes a Twenty por otra dirección |
 | `TWENTY_API_KEY` | `${TWENTY_API_KEY:-}` | API key de Twenty para que el runtime escriba en el CRM. Debe tener el rol restringido «Agent runtime» ([Rol de la API key](#rol-de-la-api-key-de-twenty)) |
 | `IONOS_IMAP_HOST` / `IONOS_IMAP_USER` / `IONOS_IMAP_PASSWORD` | `${IONOS_IMAP_*:-}` | Buzón que lee el BajasAgent, **solo lectura**. Sin usuario o contraseña, la tarea `process-unsubscribes` termina `SKIPPED` y no lee nada |
 | `RENDERER_URL` | `http://pxos-renderer:3000` | Servicio de render de JavaScript del scout |

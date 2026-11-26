@@ -118,9 +118,19 @@ export function replyTaskBody(b: ReplyTaskBodyInput): string {
   ].join('\n');
 }
 
-/** Link to a record in the Twenty UI (self-hosted: the UI is served on the API's base URL). */
-export function twentyRecordUrl(baseUrl: string, objectSingular: 'note' | 'opportunity' | 'company' | 'person', id: string): string {
-  return `${baseUrl.replace(/\/+$/, '')}/object/${objectSingular}/${encodeURIComponent(id)}`;
+/**
+ * Base URL of the Twenty UI as the salesperson's browser sees it. Inside Docker the runtime talks to
+ * Twenty on an internal host (`http://pxos-twenty:3000`) that does not resolve in the browser, so
+ * links written into Tasks and notes use `TWENTY_PUBLIC_URL` when it is set.
+ */
+export function twentyPublicBaseUrl(apiBaseUrl: string, env: NodeJS.ProcessEnv = process.env): string {
+  const pub = env.TWENTY_PUBLIC_URL?.trim();
+  return (pub || apiBaseUrl).replace(/\/+$/, '');
+}
+
+/** Link to a record in the Twenty UI. */
+export function twentyRecordUrl(baseUrl: string, objectSingular: 'note' | 'opportunity' | 'company' | 'person' | 'commercialHypothesis', id: string, env: NodeJS.ProcessEnv = process.env): string {
+  return `${twentyPublicBaseUrl(baseUrl, env)}/object/${objectSingular}/${encodeURIComponent(id)}`;
 }
 
 export interface ReplyTaskInput {

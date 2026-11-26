@@ -259,7 +259,7 @@ export class MeetingSyncAgent implements AgentImplementation {
         const links = [
           ...(opp.companyId ? [{ label: `Empresa (${opp.companyName ?? 'ficha'})`, url: twentyRecordUrl(baseUrl, 'company', opp.companyId) }] : []),
           { label: 'Oportunidad', url: twentyRecordUrl(baseUrl, 'opportunity', opp.id) },
-          ...opp.hypotheses.map((h) => ({ label: `Hipótesis${h.name ? ` «${h.name}»` : ''}`, url: `${baseUrl.replace(/\/+$/, '')}/object/commercialHypothesis/${encodeURIComponent(h.id)}` })),
+          ...opp.hypotheses.map((h) => ({ label: `Hipótesis${h.name ? ` «${h.name}»` : ''}`, url: twentyRecordUrl(baseUrl, 'commercialHypothesis', h.id) })),
         ];
         const created = await tools.call('create_crm_task', {
           title: meetingTaskTitle(opp.companyName ?? opp.name),

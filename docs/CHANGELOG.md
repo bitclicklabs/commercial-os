@@ -210,7 +210,7 @@ Integración de `feat/mvp0-bootstrap` en `main` (PR #1).
 - Deuda anotada: hilo de email por hipótesis.
 - Docs: nuevo [seguimiento-leads.md](seguimiento-leads.md); los [caladeros y las señales de empresa](prospeccion-por-senales.md#caladeros-el-scout-cubre-varios-sectores) en la prospección por señales; la [guía comercial](guia-comercial.md#seguimiento-de-lo-que-has-enviado) con las señales nuevas, la Task 🔔 y la vista de envíos; el [runbook](runbook-local.md#variables-del-runtime) con la variable, la sincronización de la tanda 21 y tres problemas frecuentes nuevos; ESTADO con el tablero de la tanda. Reconciliado con la implementación al integrar.
 
-## 2026-11-26 — Tanda 22 (en curso)
+## 2026-11-26 — Tanda 22 (cerrada)
 
 - AI Setter, tanda A (diseño cerrado; implementación en curso): el sistema asume el papel de convertir contactos en reuniones agendadas, con **nivel 1 de autonomía** (decisión del usuario del 2026-11-26): prepara todo, el humano envía y agenda, nada sale solo. Primera de tres tandas (A: contestar y agendar; B: secuencias y cualificación; C: traspaso y métricas).
 - Borrador de respuesta: cuando el triaje del buzón clasifica una respuesta como INTERESADO o PREGUNTA, la skill versionada `email-reply-draft` redacta la contestación (responde a lo que dijo el cliente, no inventa precios ni stock, sin urgencias, firma PubliEXPE «expertos en merchandising») y propone una reunión. Va en el cuerpo de la Task 📬 «Responder a…»; si el cliente ya propone o acepta reunión, la Task pasa a «📅 Cerrar reunión con {empresa}» y el borrador confirma la fecha. Si la redacción falla, la Task se crea sin borrador.

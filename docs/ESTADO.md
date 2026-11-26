@@ -246,7 +246,7 @@ Notas:
 - **Pendiente del usuario tras integrar:** sincronizar la Twenty App para que exista la vista «Hipótesis · Envíos» ([procedimiento](runbook-local.md#qué-añade-la-sincronización-de-la-tanda-21)).
 - **Riesgo conocido al activar el seguimiento:** las hipótesis `Sent` antiguas sin respuesta pueden generar Tasks de golpe en la primera pasada.
 
-## Tanda 22 — AI Setter, tanda A: contestar y agendar 🔄 (en curso, 2026-11-26)
+## Tanda 22 — AI Setter, tanda A: contestar y agendar ✅ (cerrada, 2026-11-26; suite 1319, desplegada; meeting-sync en vivo SKIPPED no_calendar_channel a la espera del calendario)
 
 Origen: el 2026-11-26 el usuario pidió convertir el sistema en un **AI Setter** (convertir contactos en reuniones agendadas) y eligió el **nivel 1 de autonomía**: el sistema prepara todo; el humano envía y agenda; nada sale solo. Esta es la tanda A de tres (A: contestar y agendar; B: secuencias y cualificación; C: traspaso y métricas). Modelo completo en [ai-setter.md](ai-setter.md).
 
@@ -255,7 +255,7 @@ Origen: el 2026-11-26 el usuario pidió convertir el sistema en un **AI Setter**
 | **A. Respuestas**: skill versionada `email-reply-draft` que redacta la contestación cuando el triaje clasifica INTERESADO o PREGUNTA (sin inventar precios ni stock, sin urgencias, firma PubliEXPE) y propone reunión; el borrador va en el cuerpo de la Task 📬 «Responder a…» o, si el cliente ya propone o acepta reunión, de la Task 📅 «Cerrar reunión con {empresa}»; párrafo de propuesta generado por código (3 huecos reales, enlace de reserva o pregunta abierta); variables `MEETING_*` | `feat/reply-drafts` | Opus | ✅ entregado (1291 tests) y fusionado |
 | **B. Agenda**: tarea `meeting-sync` cada 30 min que lee el calendario sincronizado en Twenty, pasa la Oportunidad abierta a `Meeting`, deja nota y crea la Task 🧾 «Preparar reunión con {empresa}» para el día anterior; nunca retrocede etapas ni crea eventos | `feat/meeting-agenda` | Opus | ✅ entregado (1285 tests) y fusionado |
 | **C. Docs**: ai-setter.md, guía comercial («Responder y cerrar reuniones»), runbook (variables, `meeting-sync`, activar el calendario, problemas frecuentes), ESTADO y CHANGELOG | `docs/tanda22` (wt22-docs) | Sonnet | ✅ entregado (todo lo que depende de la implementación queda marcado `[POR CONFIRMAR]` para reconciliar al integrar) |
-| Integración, e2e y PR | `feat/tanda22` (worktree wt22-integracion) | PM | 🔄 en curso: contrato de reuniones unificado, disponibilidad real cableada en el InboxAgent |
+| Integración, e2e y PR | `feat/tanda22` (worktree wt22-integracion) | PM | ✅ contrato de reuniones unificado, disponibilidad real cableada en el InboxAgent, suite 1319, desplegado, PR #24 |
 
 Notas:
 - **Pendiente del usuario:** activar la sincronización del calendario de su cuenta IONOS en Twenty ([procedimiento](runbook-local.md#activar-el-calendario-en-twenty), ruta exacta por confirmar) y crear las reuniones en ese calendario invitando al cliente por email.

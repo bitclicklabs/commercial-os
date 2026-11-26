@@ -245,3 +245,18 @@ Notas:
 - **Deuda anotada:** hilo de email por hipótesis (hoy el primer envío no deja ligado su hilo a la hipótesis). El seguimiento v1 solo avisa al comercial; un segundo email automático queda fuera.
 - **Pendiente del usuario tras integrar:** sincronizar la Twenty App para que exista la vista «Hipótesis · Envíos» ([procedimiento](runbook-local.md#qué-añade-la-sincronización-de-la-tanda-21)).
 - **Riesgo conocido al activar el seguimiento:** las hipótesis `Sent` antiguas sin respuesta pueden generar Tasks de golpe en la primera pasada.
+
+## Tanda 22 — AI Setter, tanda A: contestar y agendar 🔄 (en curso, 2026-11-26)
+
+Origen: el 2026-11-26 el usuario pidió convertir el sistema en un **AI Setter** (convertir contactos en reuniones agendadas) y eligió el **nivel 1 de autonomía**: el sistema prepara todo; el humano envía y agenda; nada sale solo. Esta es la tanda A de tres (A: contestar y agendar; B: secuencias y cualificación; C: traspaso y métricas). Modelo completo en [ai-setter.md](ai-setter.md).
+
+| Pieza | Rama | Agente | Estado |
+|---|---|---|---|
+| **A. Respuestas**: skill versionada `email-reply-draft` que redacta la contestación cuando el triaje clasifica INTERESADO o PREGUNTA (sin inventar precios ni stock, sin urgencias, firma PubliEXPE) y propone reunión; el borrador va en el cuerpo de la Task 📬 «Responder a…» o, si el cliente ya propone o acepta reunión, de la Task 📅 «Cerrar reunión con {empresa}»; párrafo de propuesta generado por código (3 huecos reales, enlace de reserva o pregunta abierta); variables `MEETING_*` | `replies22` `[POR CONFIRMAR rama]` | Opus | 🔄 en curso |
+| **B. Agenda**: tarea `meeting-sync` cada 30 min que lee el calendario sincronizado en Twenty, pasa la Oportunidad abierta a `Meeting`, deja nota y crea la Task 🧾 «Preparar reunión con {empresa}» para el día anterior; nunca retrocede etapas ni crea eventos | `agenda22` `[POR CONFIRMAR rama]` | Opus | 🔄 en curso |
+| **C. Docs**: ai-setter.md, guía comercial («Responder y cerrar reuniones»), runbook (variables, `meeting-sync`, activar el calendario, problemas frecuentes), ESTADO y CHANGELOG | `docs/tanda22` (wt22-docs) | Sonnet | ✅ entregado (todo lo que depende de la implementación queda marcado `[POR CONFIRMAR]` para reconciliar al integrar) |
+| Integración, e2e y PR | `[POR CONFIRMAR]` | PM | ⏳ pendiente |
+
+Notas:
+- **Pendiente del usuario:** activar la sincronización del calendario de su cuenta IONOS en Twenty ([procedimiento](runbook-local.md#activar-el-calendario-en-twenty), ruta exacta por confirmar) y crear las reuniones en ese calendario invitando al cliente por email.
+- **Decisión de producto:** nivel 1 de autonomía; subir de nivel exigirá una decisión nueva del usuario.

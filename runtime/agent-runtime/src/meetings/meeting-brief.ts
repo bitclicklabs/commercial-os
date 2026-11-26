@@ -3,7 +3,8 @@
  *
  * - The zod contract of the model answer (closed JSON) and the rules checked BY CODE: a
  *   conversation bullet that states something of the client is kept only when its quote is
- *   LITERALLY in an email of the client of that day (src/crm/qualification.ts `literalQuote`);
+ *   LITERALLY in an email of the client of that day (`findQuoteInText`: tildes, case, quote marks
+ *   and «¿¡» are folded on BOTH sides to compare; the quote shown is the email's original text);
  *   any text with a price / amount, a link or an urgency word is dropped (rules of
  *   src/agents/reply-draft.ts); «quién» and «origen» invalid -> the answer is invalid (repair).
  * - The data of the opportunity (stage, amount, close date) and the qualification data come from
@@ -16,7 +17,7 @@
 import { z } from 'zod';
 import { replyRuleViolations } from '../agents/reply-draft.js';
 import { issues, parseJsonText, type Parsed } from '../agents/prospector-core.js';
-import { literalQuote, plainText } from '../crm/qualification.js';
+import { plainText } from '../crm/qualification.js';
 import type { MeetingBriefMode } from '../agents/meeting-brief-prompt.js';
 
 export const MEETING_BRIEF_AUDIT_ACTION = 'opportunity.meeting_brief';
@@ -93,8 +94,24 @@ export const MeetingBriefAnswer = z.object({
 });
 export type MeetingBriefAnswer = z.infer<typeof MeetingBriefAnswer>;
 
-/** The answer, with «quién» / «origen» checked (mode `ficha`); the lists are filtered later. */
+/** Accented letters and Spanish opening marks: a long Spanish text without any is ASCII-folded. */
+const SPANISH_MARKS_RE = /[áéíóúüñÁÉÍÓÚÜÑ¿¡]/u;
+/** Characters of model text from which a brief with no accent at all is considered folded. */
+export const ORTHOGRAPHY_MIN_CHARS = 300;
+
+/** All the text the model wrote (fields and list items). */
+function answerText(a: MeetingBriefAnswer): string {
+  return [a.quien, a.origen, ...a.conversacion.map((b) => b.texto), ...a.huecos, ...a.preguntas_sugeridas, ...a.agenda, ...a.llevar].join(' ');
+}
+
+/**
+ * The answer, with «quién» / «origen» checked (mode `ficha`); the lists are filtered later.
+ * Orthography (live test 2026-11-26: the model answered the whole brief without tildes, ñ or ¿):
+ * the FIRST answer whose text is long and has no accented letter at all is sent back once with
+ * the error; a second answer is accepted as it is (never blocks the brief). One parser per call.
+ */
 export function parseMeetingBrief(mode: MeetingBriefMode): (text: string) => Parsed<MeetingBriefAnswer> {
+  let orthographyChecked = false;
   return (text: string) => {
     const json = parseJsonText(text);
     if (!json.ok) return json;
@@ -114,6 +131,13 @@ export function parseMeetingBrief(mode: MeetingBriefMode): (text: string) => Par
         }
       }
       if (errors.length > 0) return { ok: false, error: errors.join(' | ') };
+    }
+    if (!orthographyChecked) {
+      orthographyChecked = true;
+      const all = answerText(a);
+      if (all.length >= ORTHOGRAPHY_MIN_CHARS && !SPANISH_MARKS_RE.test(all)) {
+        return { ok: false, error: 'el texto está escrito sin tildes, sin «ñ» y sin «¿»: reescribe TODOS los textos en español con su ortografía completa (tildes, ñ, ¿ y ¡) y copia las citas exactamente como aparecen en el correo' };
+      }
     }
     return { ok: true, value: a };
   };
@@ -151,6 +175,63 @@ export function emailQuoteText(e: Pick<BriefEmail, 'subject' | 'text'>, max: num
   return `${e.subject ?? ''}\n${body.length <= max ? body : body.slice(0, max)}`;
 }
 
+/** One character folded for the quote comparison: no diacritics, lower case, no quote marks, no «¿¡». */
+function foldChar(c: string): string {
+  if (/[«»“”"„‘’`´']/u.test(c) || c === '¿' || c === '¡') return '';
+  if (/\s/u.test(c)) return ' ';
+  return c.normalize('NFD').replace(/\p{M}+/gu, '').toLowerCase();
+}
+
+/** The folded text and, per folded character, the original index it comes from. */
+function foldWithMap(text: string): { folded: string; from: number[]; to: number[] } {
+  let folded = '';
+  const from: number[] = [];
+  const to: number[] = [];
+  let i = 0;
+  for (const ch of text) {
+    const f = foldChar(ch);
+    for (const out of f) {
+      if (out === ' ' && (folded.length === 0 || folded.endsWith(' '))) continue;
+      folded += out;
+      from.push(i);
+      to.push(i + ch.length);
+    }
+    i += ch.length;
+  }
+  return { folded, from, to };
+}
+
+/** Folded form used for the comparison (both sides): `foldWithMap` without the map, edges trimmed. */
+export function foldForQuote(s: string): string {
+  return foldWithMap(s).folded.replace(/^[\s.,;:!?…-]+|[\s.,;:!?…-]+$/gu, '');
+}
+
+/** Minimum folded length of a quote (shorter ones prove nothing). */
+export const BRIEF_QUOTE_MIN = 6;
+
+/**
+ * Finds the model's `quote` in `text` tolerating differences of tildes, case, quote marks and the
+ * opening «¿¡» (both sides folded the same way). Returns the ORIGINAL span of `text` (with its
+ * tildes and, when they surround it, its «¿…?» / «¡…!»), or null when it is not there.
+ */
+export function findQuoteInText(quote: string, text: string): string | null {
+  const q = foldForQuote(quote);
+  if (q.length < BRIEF_QUOTE_MIN || q.length > 600) return null;
+  const t = foldWithMap(text);
+  const at = t.folded.indexOf(q);
+  if (at < 0) return null;
+  let start = t.from[at]!;
+  let end = t.to[at + q.length - 1]!;
+  if (start > 0 && /[¿¡]/u.test(text[start - 1]!)) start -= 1;
+  if (end < text.length && /[?!]/u.test(text[end]!)) end += 1;
+  return text.slice(start, end).replace(/\s+/g, ' ').trim();
+}
+
+/** «¿» in front of a question that ends with «?» and lacks it (Spanish punctuation). */
+export function withOpeningQuestionMark(q: string): string {
+  return q.trim().endsWith('?') && !q.includes('¿') ? `¿${q.trim()}` : q;
+}
+
 /**
  * Keeps what the code can stand behind: bullets on a day with an email of the thread and, when
  * they state something of the client, with a literal quote of a client email of that day; list
@@ -176,12 +257,13 @@ export function validateMeetingBrief(a: MeetingBriefAnswer, emails: readonly Bri
     if (b.de === 'cliente') {
       const raw = b.cita ?? '';
       const inbound = sameDay.filter((e) => e.direction === 'INBOUND');
-      const ok = raw.length > 0 && inbound.some((e) => literalQuote(raw, emailQuoteText(e, opts.emailTextMax)) !== null);
-      if (!ok) {
+      // The quote shown is the client's original text, never the model's copy of it.
+      const original = raw.length > 0 ? (inbound.map((e) => findQuoteInText(raw, emailQuoteText(e, opts.emailTextMax))).find((x): x is string => x !== null) ?? null) : null;
+      if (!original) {
         bullets += 1;
         continue;
       }
-      conversation.push({ date, from: 'cliente', text, quote: plainText(raw.replace(/^["'«»“”.…\s]+|["'«»“”.…\s]+$/g, ''), BRIEF_QUOTE_MAX) });
+      conversation.push({ date, from: 'cliente', text, quote: plainText(original, BRIEF_QUOTE_MAX) });
     } else conversation.push({ date, from: 'publiexpe', text, quote: null });
   }
   conversation.sort((x, y) => x.date.localeCompare(y.date));
@@ -208,7 +290,7 @@ export function validateMeetingBrief(a: MeetingBriefAnswer, emails: readonly Bri
     origen: clean(a.origen),
     conversation,
     gaps: keep(a.huecos, BRIEF_GAPS_MAX),
-    questions: keep(a.preguntas_sugeridas, BRIEF_QUESTIONS, (t) => t.includes('?')),
+    questions: keep(a.preguntas_sugeridas, BRIEF_QUESTIONS, (t) => t.includes('?')).map(withOpeningQuestionMark),
     agenda: keep(a.agenda, BRIEF_AGENDA_MAX),
     bring: keep(a.llevar, BRIEF_BRING_MAX),
     discarded: { bullets, items },

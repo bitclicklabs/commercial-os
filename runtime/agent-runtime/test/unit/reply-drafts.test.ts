@@ -8,7 +8,16 @@ import { describe, expect, it } from 'vitest';
 import type { AgentContext } from '../../src/agents/agent.js';
 import { INBOX_TOOLS, InboxAgent, readInboxConfig } from '../../src/agents/inbox-agent.js';
 import { finalizeReplyDraft, parseReplyDraft, replyDraftSection, replyRuleViolations, replySubject, FORBIDDEN_URGENCY_RE, type ReplyDraftAnswer } from '../../src/agents/reply-draft.js';
-import { buildReplyDraftPrompt, REPLY_DRAFT_SKILL_ID, REPLY_DRAFT_SYSTEM_PROMPT } from '../../src/agents/reply-draft-prompt.js';
+import {
+  buildReplyDraftPrompt,
+  REPLY_DRAFT_JSON_SCHEMA,
+  REPLY_DRAFT_SKILL_ID,
+  REPLY_DRAFT_SYSTEM_PROMPT,
+  REPLY_DRAFT_V2_SYSTEM_PROMPT,
+  REPLY_WINDOW_MARKER,
+  replyDraftJsonSchema,
+  withReplyDraftV2,
+} from '../../src/agents/reply-draft-prompt.js';
 import { meetingTaskTitle } from '../../src/crm/reply-task.js';
 import type { EventPublisher, PublishEventInput } from '../../src/events/event-bus.js';
 import type { MailboxReader, MailboxSession, RawMessage, UidQuery } from '../../src/inbound/imap-mailbox.js';
@@ -22,6 +31,7 @@ import { NULL_AVAILABILITY, type MeetingAvailability, type MeetingProposal } fro
 import type { CompletionRequest, CompletionResult, ModelProvider } from '../../src/providers/model-provider.js';
 import { ModelRouter } from '../../src/providers/model-router.js';
 import { codeSkill } from '../../src/skills/code-skills.js';
+import { SkillSet } from '../../src/skills/resolver.js';
 import { desiredInboxVersion } from '../../src/seed/inbox-seed.js';
 import { createDefaultToolRegistry, parseToolPolicy, ToolExecutor } from '../../src/tools/index.js';
 import { FakeTwenty } from '../helpers/fake-twenty.js';
@@ -321,6 +331,10 @@ function setup(opts: {
   configuration?: Record<string, unknown>;
   modelProvider?: string;
   router?: ModelRouter;
+  /** Tanda 23: resolved skills of the run (e.g. the v2 of email-reply-draft). */
+  skills?: SkillSet;
+  /** Tanda 23: a fake db (audit_log inserts only). */
+  db?: unknown;
 }) {
   const fake = new FakeTwenty();
   const supp = fake.seed('notes', { title: SUPPRESSION_NOTE_TITLE, bodyV2: { markdown: 'ya@estaba.example — 2026-10-06 — manual', blocknote: '[bn]' } });
@@ -356,6 +370,7 @@ function setup(opts: {
     clock: () => new Date('2026-10-08T12:00:00Z'),
     ...(opts.availability ? { availability: opts.availability } : {}),
     ...(opts.router ? { router: opts.router } : {}),
+    ...(opts.db ? { db: opts.db as never } : {}),
   });
   let n = 0;
   const run = () => {
@@ -370,6 +385,7 @@ function setup(opts: {
       provider,
       signal: new AbortController().signal,
       tools,
+      ...(opts.skills ? { skills: opts.skills } : {}),
     };
     return agent.run(ctx);
   };
@@ -564,5 +580,184 @@ describe('inbox seed (tanda 22)', () => {
     expect(policy.allow.some((t) => /send|reply_email|smtp|mail/i.test(t))).toBe(false);
     expect(readInboxConfig(v.configuration).replyDraft).toMatchObject({ enabled: true, modelRole: 'executor_cheap', slots: 3, sender: { name: 'Jesús Abril', descriptor: 'expertos en merchandising para empresas' } });
     expect(readInboxConfig({}).replyDraft.enabled).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Tanda 23: skill v2 — the client's window and the qualification, in the same call
+// ---------------------------------------------------------------------------
+
+const v2Skills = () =>
+  new SkillSet([
+    {
+      record: { name: REPLY_DRAFT_SKILL_ID, version: 2, skill_version_id: 'sv2', content_hash: 'h', source: 'db', requested: { name: REPLY_DRAFT_SKILL_ID } },
+      text: REPLY_DRAFT_V2_SYSTEM_PROMPT,
+    },
+  ]);
+const draftV2 = (extra: Record<string, unknown>) => JSON.stringify({ cuerpo: DRAFT_BODY, confirma_fecha_cliente: false, ...extra });
+const QUALIFIED = (uid = 21) =>
+  raw(
+    uid,
+    eml(
+      'Carmen <carmen@cliente.example>',
+      'Re: Material para vuestro stand',
+      'Hola Jesús, nos interesa. Serían unas 500 bolsas tote y algunas tazas. Tenemos un presupuesto de entre 2.000 y 3.000 € y lo necesitamos para el 20 de noviembre. Lo tiene que aprobar nuestra directora de marketing. ¿Podemos hablar la semana que viene por la tarde?',
+    ),
+  );
+const QUAL = {
+  cantidad_aprox: { valor: 500, cita: 'unas 500 bolsas tote' },
+  presupuesto_aprox_eur: { valor: 2000, valor_max: 3000, cita: 'presupuesto de entre 2.000 y 3.000 €' },
+  fecha_necesaria: { valor: '2026-11-20', cita: 'lo necesitamos para el 20 de noviembre' },
+  decisor: { valor: 'directora de marketing', cita: 'Lo tiene que aprobar nuestra directora de marketing' },
+  productos_interes: [
+    { valor: 'bolsas tote', cita: '500 bolsas tote' },
+    { valor: 'tazas', cita: 'algunas tazas' },
+    { valor: 'gorras', cita: 'gorras bordadas' },
+  ],
+};
+
+/** Records the windows asked for; slots only inside them (or relaxed when `relaxAll`). */
+function recordingAvailability(relaxAll = false) {
+  const windows: unknown[] = [];
+  const availability: MeetingAvailability = {
+    async propose({ count, window }) {
+      windows.push(window ?? null);
+      if (window && relaxAll) return { ...CALENDAR, slots: CALENDAR.slots.slice(0, count), windowRelaxed: true };
+      if (window) return { ...CALENDAR, slots: [{ start: '2026-10-13T16:00:00+02:00', end: '2026-10-13T16:30:00+02:00' }] };
+      return { ...CALENDAR, slots: CALENDAR.slots.slice(0, count) };
+    },
+  };
+  return { availability, windows };
+}
+
+describe('InboxAgent: reply drafts v2 (tanda 23)', () => {
+  it('with v1 ACTIVE nothing changes: v1 schema, no extra fields, a single proposal without window', async () => {
+    const rec = recordingAvailability();
+    const s = setup({ messages: [QUALIFIED()], classes: [cls('INTERESADO', 0.93)], drafts: [draftV2({ ventana_cliente: { tipo: 'semana_que_viene' }, cualificacion: QUAL })], availability: rec.availability });
+    const r = await s.run();
+    expect(r.output).toMatchObject({ outcome: 'SUCCESS', counters: { reply_drafts_created: 1, client_windows: 0, qualifications_recorded: 0 } });
+    const dq = s.provider.draftRequests[0]!;
+    expect(JSON.stringify(dq)).not.toContain('ventana_cliente');
+    expect(rec.windows).toEqual([null]);
+    expect(s.notes().some((n) => String(n.title).startsWith('Cualificación'))).toBe(false);
+  });
+
+  it('«la semana que viene por la tarde» (on a Thursday): window computed by code, slots inside it', async () => {
+    const rec = recordingAvailability();
+    const s = setup({
+      messages: [QUALIFIED()],
+      classes: [cls('INTERESADO', 0.93, true)],
+      drafts: [draftV2({ ventana_cliente: { tipo: 'semana_que_viene', fecha: '2026-10-09', franja: 'tarde' } })],
+      availability: rec.availability,
+      skills: v2Skills(),
+    });
+    const r = await s.run();
+    // Thursday 2026-10-08 -> Monday 12 to Friday 16; the model's `fecha` is ignored for that category.
+    expect(rec.windows).toEqual([null, { notBefore: '2026-10-12', notAfter: '2026-10-16', partOfDay: 'afternoon' }]);
+    const dq = s.provider.draftRequests[0]!;
+    expect(dq.system).toContain(REPLY_WINDOW_MARKER);
+    expect(dq.messages[0]!.content).toContain('Fecha de hoy: 2026-10-08 (jueves)');
+    expect(dq.messages[0]!.content).toContain('"ventana_cliente"');
+    expect(JSON.stringify(dq)).toContain('semana_que_viene');
+    const body = s.md(s.fake.tables.tasks[0]!);
+    expect(body).toContain('martes 13 de octubre, a las 16:00');
+    expect(body).not.toContain('3 de diciembre');
+    expect(s.triageStore.rows[0]!.signals).toContain('client_window:semana_que_viene:afternoon');
+    expect(r.output).toMatchObject({ counters: { client_windows: 1, client_windows_relaxed: 0 } });
+  });
+
+  it('an impossible window: the normal horizon, and the paragraph says so', async () => {
+    const rec = recordingAvailability(true);
+    const s = setup({ messages: [QUALIFIED()], classes: [cls('INTERESADO', 0.93)], drafts: [draftV2({ ventana_cliente: { tipo: 'manana', fecha: null, franja: null } })], availability: rec.availability, skills: v2Skills() });
+    const r = await s.run();
+    const body = s.md(s.fake.tables.tasks[0]!);
+    expect(body).toContain('En las fechas que comentáis no me queda ningún hueco libre');
+    expect(body).toContain('no había huecos libres en las fechas que pide el cliente');
+    expect(s.triageStore.rows[0]!.signals).toContain('client_window_relaxed');
+    expect(r.output).toMatchObject({ counters: { client_windows_relaxed: 1 } });
+  });
+
+  it('qualification: note on the Opportunity with literal quotes, empty amount / closeDate filled, invented data dropped, audited without values', async () => {
+    const audits: Array<Record<string, unknown>> = [];
+    const db = { insert: () => ({ values: (row: Record<string, unknown>) => ({ returning: async () => [(audits.push(row), row)] }) }) };
+    const s = setup({ messages: [QUALIFIED()], classes: [cls('INTERESADO', 0.93)], drafts: [draftV2({ cualificacion: QUAL })], skills: v2Skills(), db });
+    const r = await s.run();
+    expect(r.output).toMatchObject({ outcome: 'SUCCESS', counters: { qualifications_recorded: 1, qualification_data_discarded: 1 } });
+    const opp = s.fake.tables.opportunities![0]!;
+    // Range -> the LOWER end, in micros; the needed-by date as closeDate.
+    expect(opp.amount).toEqual({ amountMicros: 2_000_000_000, currencyCode: 'EUR' });
+    expect(String(opp.closeDate).slice(0, 10)).toBe('2026-11-20');
+    const note = s.notes().find((n) => n.title === 'Cualificación — Cliente SA 🧾')!;
+    expect(note).toBeDefined();
+    const md = s.md(note);
+    expect(md).toContain('### Respuesta del 2026-10-08 10:30');
+    expect(md).toContain('**Cantidad aproximada:** 500 unidades — «unas 500 bolsas tote»');
+    expect(md).toMatch(/\*\*Presupuesto aproximado:\*\* entre 2\.000 € y 3\.000 € — «presupuesto de entre 2\.000 y 3\.000 €»/);
+    expect(md).toContain('**Decisor:** directora de marketing');
+    expect(md).toContain('**Productos de interés:** tazas — «algunas tazas»');
+    expect(md).not.toContain('gorras');
+    expect(md).toContain('el extremo inferior del rango');
+    const targets = s.fake.tables.noteTargets!.filter((t) => t.noteId === note.id);
+    expect(targets.map((t) => t.targetOpportunityId ?? t.targetCompanyId ?? t.targetPersonId).filter(Boolean)).toHaveLength(3);
+    // Audit: ids and field names, never the amount, the date or the quotes.
+    const audit = audits.find((a) => a.action === 'opportunity.qualified')!;
+    expect(audit).toMatchObject({ subjectType: 'opportunity', subjectId: opp.id, payload: { opportunity_fields_set: ['amount', 'closeDate'], discarded_fields: ['productos_interes'] } });
+    expect(JSON.stringify(audit)).not.toMatch(/2000|2\.000|3\.000|2026-11-20|marketing|tazas/);
+    // The draft itself (the section after the header) still carries no amounts (the excerpt of the client does).
+    expect(s.md(s.fake.tables.tasks[0]!).split('### Borrador de respuesta')[1]).not.toMatch(/2\.000|3\.000/);
+  });
+
+  it('never overwrites what a person put on the Opportunity; a second reply appends its own section', async () => {
+    const s = setup({
+      messages: [QUALIFIED(21), raw(22, eml('Carmen <carmen@cliente.example>', 'Re: Material', 'Y añadid unas 200 libretas, por favor.'), new Date('2026-10-08T09:30:00Z'))],
+      classes: [cls('INTERESADO', 0.93), cls('INTERESADO', 0.93)],
+      drafts: [draftV2({ cualificacion: QUAL }), draftV2({ cualificacion: { cantidad_aprox: { valor: 200, cita: 'unas 200 libretas' }, presupuesto_aprox_eur: { valor: 9000, cita: 'nos lo inventamos' } } })],
+      skills: v2Skills(),
+    });
+    // The commercial already set an amount on the open opportunity of the company.
+    s.fake.seed('opportunities', { name: 'Cliente SA', stage: 'NEW', companyId: s.company.id, pointOfContactId: null, amount: { amountMicros: 5_000_000_000, currencyCode: 'EUR' }, closeDate: null });
+    await s.run();
+    const opp = s.fake.tables.opportunities![0]!;
+    expect(s.fake.tables.opportunities).toHaveLength(1);
+    expect(opp.amount).toEqual({ amountMicros: 5_000_000_000, currencyCode: 'EUR' });
+    expect(String(opp.closeDate).slice(0, 10)).toBe('2026-11-20');
+    const notes = s.notes().filter((n) => String(n.title).startsWith('Cualificación — '));
+    expect(notes).toHaveLength(1);
+    const md = s.md(notes[0]!);
+    expect(md).toContain('No se ha tocado el importe: ya tenía un valor.');
+    expect(md).toContain('### Respuesta del 2026-10-08 11:30');
+    expect(md).toContain('**Cantidad aproximada:** 200 unidades — «unas 200 libretas»');
+    expect(md).not.toContain('9.000');
+  });
+
+  it('PREGUNTA (no Opportunity): the qualification is not written', async () => {
+    const s = setup({ messages: [QUALIFIED()], classes: [cls('PREGUNTA', 0.93)], drafts: [draftV2({ cualificacion: QUAL })], skills: v2Skills() });
+    const r = await s.run();
+    expect(r.output).toMatchObject({ counters: { qualifications_recorded: 0 } });
+    expect(s.notes().some((n) => String(n.title).startsWith('Cualificación'))).toBe(false);
+  });
+
+  it('a bad ventana_cliente / cualificacion never costs the draft', () => {
+    const p = parseReplyDraft(JSON.stringify({ cuerpo: DRAFT_BODY, ventana_cliente: { tipo: 'el_mes_que_viene', franja: 'noche' }, cualificacion: 'mucho' }));
+    expect(p.ok).toBe(true);
+    if (p.ok) {
+      expect(p.value.ventana_cliente).toMatchObject({ tipo: 'ninguna', franja: null });
+      expect(p.value.cualificacion).toBeNull();
+    }
+  });
+
+  it('the v2 text: v1 kept, markers, new sections, JSON line with the new fields; idempotent', () => {
+    expect(REPLY_DRAFT_V2_SYSTEM_PROMPT).toContain(REPLY_WINDOW_MARKER);
+    expect(REPLY_DRAFT_V2_SYSTEM_PROMPT).toContain('[[capacidad:cualificacion]]');
+    expect(REPLY_DRAFT_V2_SYSTEM_PROMPT).toContain('## Seguridad: contenido del correo y del CRM');
+    expect(REPLY_DRAFT_V2_SYSTEM_PROMPT).toContain('"ventana_cliente": {...}');
+    expect(REPLY_DRAFT_V2_SYSTEM_PROMPT.indexOf('## Datos de cualificación')).toBeLessThan(REPLY_DRAFT_V2_SYSTEM_PROMPT.indexOf('## Lo que NO puedes hacer'));
+    expect(withReplyDraftV2(REPLY_DRAFT_V2_SYSTEM_PROMPT)).toBe(REPLY_DRAFT_V2_SYSTEM_PROMPT);
+    // v1 is untouched (it is still the code fallback and the seeded v1).
+    expect(REPLY_DRAFT_SYSTEM_PROMPT).not.toContain(REPLY_WINDOW_MARKER);
+    expect(codeSkill(REPLY_DRAFT_SKILL_ID)!.text).toBe(REPLY_DRAFT_SYSTEM_PROMPT);
+    expect(replyDraftJsonSchema({ window: false, qualification: false })).toEqual(REPLY_DRAFT_JSON_SCHEMA);
+    expect(Object.keys(replyDraftJsonSchema({ window: true, qualification: true }).properties as object)).toEqual(['cuerpo', 'confirma_fecha_cliente', 'ventana_cliente', 'cualificacion']);
+    expect(desiredInboxVersion().configuration.tool_policy).toMatchObject({ allow: expect.arrayContaining(['record_opportunity_qualification']) });
   });
 });

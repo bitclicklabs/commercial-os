@@ -36,6 +36,7 @@ import { seedHarnesses } from './harness-seed.js';
 import { seedInbox } from './inbox-seed.js';
 import { seedKnowledge } from './knowledge-seed.js';
 import { seedLeadTimeCandidates } from './lead-time-seed.js';
+import { seedReplyDraftV2 } from './reply-draft-v2-seed.js';
 import { seedMeetingSync } from './meeting-sync-seed.js';
 import { seedProspectOnQualified } from './prospect-on-qualified-seed.js';
 import { seedProspector } from './prospector-seed.js';
@@ -67,6 +68,8 @@ if (isMain) {
     .then(async (acc) => ({ ...acc, catalogSkill: await seedCatalogSkillCandidate(handle.db, { tenantId, log }) }))
     // Lead time (tanda 18): DRAFT candidates of the Prospector and the EmailDrafter skills; never activated here.
     .then(async (acc) => ({ ...acc, leadTimeSkills: await seedLeadTimeCandidates(handle.db, { tenantId, log }) }))
+    // Reply draft v2 (tanda 23): DRAFT version of email-reply-draft (client window + qualification); never activated here.
+    .then(async (acc) => ({ ...acc, replyDraftV2: await seedReplyDraftV2(handle.db, { tenantId, log }) }))
     .then(async (acc) => ({ ...acc, knowledge: await seedKnowledge(handle.db, { tenantId, log }) }))
     .then(async (r) => ({ ...r, prospector: await seedProspector(handle.db, { tenantId, ...(defaultInput ? { defaultInput } : {}), log }) }))
     .then(async (r) => ({ ...r, prospectOnQualified: await seedProspectOnQualified(handle.db, { tenantId, log }) }))

@@ -11,6 +11,8 @@
 import { z } from 'zod';
 import type { MeetingProposal } from '../meetings/types.js';
 import { meetingParagraph } from '../inbound/meeting-paragraph.js';
+import { VentanaCliente } from '../meetings/client-window.js';
+import { Cualificacion } from '../crm/qualification.js';
 import { sanitizeSubject } from '../inbound/suppression-list.js';
 import { DEFAULT_COMPANY_DESCRIPTOR, DEFAULT_SENDER, escapeMarkdown } from './email-draft.js';
 import { issues, parseJsonText, type Parsed } from './prospector-core.js';
@@ -45,6 +47,17 @@ export function replyRuleViolations(text: string): string[] {
 export const ReplyDraftAnswer = z.object({
   cuerpo: z.string().trim().min(20).max(4_000),
   confirma_fecha_cliente: z.boolean().optional().default(false),
+  /**
+   * Tanda 23 (skill v2, marker REPLY_WINDOW_MARKER): when the client wants the meeting, in closed
+   * categories; the dates are computed by code (src/meetings/client-window.ts). Lenient: a bad
+   * value is dropped (null), it never invalidates the draft.
+   */
+  ventana_cliente: VentanaCliente.nullable().optional().catch(null),
+  /**
+   * Tanda 23 (skill v2, marker REPLY_QUALIFICATION_MARKER): qualification data, each with its
+   * literal quote; validated against the client's text by code (src/crm/qualification.ts).
+   */
+  cualificacion: Cualificacion.nullable().optional().catch(null),
 });
 export type ReplyDraftAnswer = z.infer<typeof ReplyDraftAnswer>;
 
@@ -105,7 +118,7 @@ export interface FinalReplyDraft {
   subject: string;
   /** Full body ready to paste: text + meeting paragraph + farewell + signature. */
   body: string;
-  meeting: { source: MeetingProposal['source']; slots: string[]; clientProposedTime: boolean };
+  meeting: { source: MeetingProposal['source']; slots: string[]; clientProposedTime: boolean; windowRelaxed?: boolean };
   fixes: Array<'markdown_removed' | 'closing_removed' | 'greeting_name_removed'>;
   warnings: string[];
 }
@@ -176,7 +189,7 @@ export function finalizeReplyDraft(answer: ReplyDraftAnswer, opts: FinalizeReply
   return {
     subject: replySubject(opts.incomingSubject, opts.sendSubject),
     body,
-    meeting: { source: meeting.source, slots: meeting.slots, clientProposedTime },
+    meeting: { source: meeting.source, slots: meeting.slots, clientProposedTime, ...(opts.proposal.windowRelaxed && meeting.source === 'calendar' ? { windowRelaxed: true } : {}) },
     fixes,
     warnings,
   };
@@ -231,7 +244,7 @@ export function replyDraftSection(o: ReplyDraftOutcome, receivedLocal: string): 
     '',
     plainBlock(d.body),
     '',
-    `_Propuesta de reunión: ${MEETING_SOURCE_LABEL[d.meeting.source]}${d.meeting.clientProposedTime ? '; el borrador acepta el día y la hora que propone el cliente, compruébalo en tu agenda' : ''}. Lo ha redactado un modelo de lenguaje: comprueba los datos antes de enviarlo._`,
+    `_Propuesta de reunión: ${MEETING_SOURCE_LABEL[d.meeting.source]}${d.meeting.clientProposedTime ? '; el borrador acepta el día y la hora que propone el cliente, compruébalo en tu agenda' : ''}${d.meeting.windowRelaxed ? '; no había huecos libres en las fechas que pide el cliente, así que se proponen los más próximos' : ''}. Lo ha redactado un modelo de lenguaje: comprueba los datos antes de enviarlo._`,
     ...(d.warnings.length > 0 ? ['', `_Avisos: ${escapeMarkdown(d.warnings.join('; '))}._`] : []),
   ].join('\n');
 }

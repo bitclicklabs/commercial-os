@@ -8,6 +8,11 @@
  *                               2027-01-01) and the window's volume repriced (`pnpm models:costs`).
  * - GET /metrics/runs         - latest TaskRuns (compact) with the link to their trace (same
  *                               `include_archived` rule). /metrics/summary always counts every run.
+ * - GET /metrics/setter       - setter metrics (tanda 24) for [from, to) local days (Europe/Madrid),
+ *                               default the last 7 days (today included): first contacts, follow-ups,
+ *                               replies, cohort response rate, meetings, open opportunities, how fast
+ *                               the salesperson answers, overdue tasks, LLM cost, breakdown by origin.
+ *                               What Twenty cannot give is listed in `no_disponible` (never a zero).
  * - GET /dashboard            - static HTML page over the endpoints above (local requests only).
  */
 import type { FastifyInstance, FastifyRequest } from 'fastify';
@@ -15,6 +20,9 @@ import { z } from 'zod';
 import { DASHBOARD_HTML } from '../../metrics/dashboard.js';
 import { MODEL_COSTS_DEFAULT_DAYS, modelCostProjection, NEXT_PRICE_CHANGE } from '../../metrics/model-costs.js';
 import { metricsAgents, metricsEvaluations, metricsSummary, recentRuns } from '../../metrics/queries.js';
+import { setterOwnDomains } from '../../agents/setter-report-agent.js';
+import { collectSetterMetrics, defaultSetterPeriod, SETTER_MAX_PERIOD_DAYS, SETTER_TIMEZONE, setterPeriod } from '../../metrics/setter.js';
+import { twentySetterCrm, unavailableSetterCrm } from '../../metrics/setter-crm.js';
 import { defaultModelRouter, ModelRouteError } from '../../providers/model-router.js';
 import type { ApiContext } from '../context.js';
 import { HttpError, parse, tenantOf } from '../http.js';
@@ -67,6 +75,15 @@ export const ModelCostsQuery = z
     at: z.iso.date().default(NEXT_PRICE_CHANGE),
   })
   .refine((q) => !q.since || !q.until || new Date(q.since) < new Date(q.until), { message: 'since must be before until' });
+
+const dayMs = (d: string) => Date.parse(`${d}T00:00:00Z`);
+
+/** `from` / `to` are local days (Europe/Madrid), `to` exclusive; both or neither (default: last 7 days). */
+export const SetterMetricsQuery = z
+  .object({ from: z.iso.date().optional(), to: z.iso.date().optional() })
+  .refine((q) => (q.from === undefined) === (q.to === undefined), { message: 'from and to go together' })
+  .refine((q) => !q.from || !q.to || dayMs(q.from) < dayMs(q.to), { message: 'from must be before to' })
+  .refine((q) => !q.from || !q.to || dayMs(q.to) - dayMs(q.from) <= SETTER_MAX_PERIOD_DAYS * 86_400_000, { message: `at most ${SETTER_MAX_PERIOD_DAYS} days` });
 
 const toDate = (v: string | undefined) => (v ? new Date(v) : undefined);
 
@@ -141,6 +158,17 @@ export async function metricsRoutes(app: FastifyInstance, ctx: ApiContext): Prom
     const tenantId = tenantOf(req, ctx.config.defaultTenantId);
     const q = parse(RecentRunsQuery, req.query);
     return recentRuns(db, { tenantId, limit: q.limit, includeArchived: q.include_archived });
+  });
+
+  /** Read-only (GETs are never audited). Twenty is read with the API's client; without it, its parts are «no disponible». */
+  app.get('/metrics/setter', async (req) => {
+    const tenantId = tenantOf(req, ctx.config.defaultTenantId);
+    const q = parse(SetterMetricsQuery, req.query);
+    const now = new Date();
+    const period = q.from && q.to ? setterPeriod(q.from, q.to, SETTER_TIMEZONE) : defaultSetterPeriod(now);
+    const crm = ctx.twenty && ctx.twenty.isConfigured() ? twentySetterCrm(ctx.twenty, { tenantId }) : unavailableSetterCrm('Twenty no está configurado en la API (TWENTY_API_KEY)');
+    const { metrics } = await collectSetterMetrics({ db, crm, tenantId, period, now, ownDomains: setterOwnDomains(process.env), timezone: SETTER_TIMEZONE });
+    return metrics;
   });
 
   app.get('/dashboard', async (req, reply) => {

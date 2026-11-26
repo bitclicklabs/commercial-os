@@ -214,3 +214,131 @@ export async function readMailMessages(
     return { status: 'unreadable', code: e.code, message: e.message.slice(0, 300) };
   }
 }
+
+// ---------------------------------------------------------------------------
+// Tanda 24 (setter metrics, additive): the messages of a time window, and the addresses that
+// already had a message before a date. Same rules as `readMailMessages`: read only, probe first,
+// a hidden object degrades to `unreadable`, transient errors throw.
+// ---------------------------------------------------------------------------
+
+/** One message of a window, without its text: who it was with and when. */
+export interface WindowMessage {
+  id: string;
+  direction: MessageDirection;
+  receivedAt: string;
+  threadId: string | null;
+  /** FROM address (lower case). */
+  from: string;
+  /**
+   * The other party, lower case, never an own address: for an OUTBOUND message its TO / CC / BCC
+   * participants; for an INBOUND one, its FROM.
+   */
+  counterparts: string[];
+}
+
+export type MailWindowRead =
+  | { status: 'ok'; messages: WindowMessage[]; truncated: boolean }
+  | { status: 'no_messages' }
+  | { status: 'unreadable'; code: string; message: string };
+
+export type PriorAddressesRead =
+  | { status: 'ok'; addresses: string[]; truncated: boolean }
+  | { status: 'no_messages' }
+  | { status: 'unreadable'; code: string; message: string };
+
+const unreadable = (err: unknown): { status: 'unreadable'; code: string; message: string } => {
+  if (!isNotVisible(err)) throw err;
+  const e = err as TwentyApiError;
+  return { status: 'unreadable', code: e.code, message: e.message.slice(0, 300) };
+};
+
+/**
+ * Every message received in [since, until) (both directions, at most MAX_PAGES pages: `truncated`
+ * says when the window had more), with its direction and the other party. Read only.
+ */
+export async function readMailWindow(
+  twenty: TwentyClient,
+  q: { since: Date; until: Date; ownDomains: readonly string[] },
+  signal?: AbortSignal,
+): Promise<MailWindowRead> {
+  const opts = signal ? { signal } : {};
+  try {
+    const probe = await twenty.list<Rec>(MESSAGE_OBJECTS.message, { limit: 1, ...opts });
+    if (probe.records.length === 0) return { status: 'no_messages' };
+    const state = { truncated: false };
+    const filter = `and(receivedAt[gte]:${filterValue(q.since.toISOString())},receivedAt[lt]:${filterValue(q.until.toISOString())})`;
+    const messages = new Map<string, Rec>();
+    for (const m of await listAll(twenty, MESSAGE_OBJECTS.message, filter, signal, state)) {
+      const at = typeof m.receivedAt === 'string' ? Date.parse(m.receivedAt) : Number.NaN;
+      // The range is checked again here: a server that ignored part of the filter changes nothing.
+      if (typeof m.id === 'string' && !Number.isNaN(at) && at >= q.since.getTime() && at < q.until.getTime()) messages.set(m.id, m);
+    }
+    if (messages.size === 0) return { status: 'ok', messages: [], truncated: state.truncated };
+    const participants = new Map<string, Array<{ role: string; handle: string }>>();
+    for (const chunk of chunks([...messages.keys()], IN_CHUNK)) {
+      const f = `messageId[in]:[${chunk.map(filterValue).join(',')}]`;
+      for (const p of await listAll(twenty, MESSAGE_OBJECTS.participant, f, signal, state)) {
+        const mid = text(p.messageId, 64);
+        const h = normAddress(p.handle);
+        if (!mid || !h || !messages.has(mid)) continue;
+        participants.set(mid, [...(participants.get(mid) ?? []), { role: String(p.role ?? '').toUpperCase(), handle: h }]);
+      }
+    }
+    const out: WindowMessage[] = [];
+    for (const [id, m] of messages) {
+      const ps = participants.get(id) ?? [];
+      const from = ps.find((p) => p.role === 'FROM')?.handle;
+      if (!from) continue;
+      const direction: MessageDirection = isOwnAddress(from, q.ownDomains) ? 'OUTBOUND' : 'INBOUND';
+      const counterparts =
+        direction === 'OUTBOUND'
+          ? [...new Set(ps.filter((p) => p.role !== 'FROM' && !isOwnAddress(p.handle, q.ownDomains)).map((p) => p.handle))]
+          : [from];
+      out.push({ id, direction, receivedAt: new Date(String(m.receivedAt)).toISOString(), threadId: text(m.messageThreadId, 64), from, counterparts });
+    }
+    out.sort((a, b) => Date.parse(a.receivedAt) - Date.parse(b.receivedAt));
+    return { status: 'ok', messages: out, truncated: state.truncated };
+  } catch (err) {
+    return unreadable(err);
+  }
+}
+
+/** Which of `addresses` took part (any role, any direction) in a message received before `before`. Read only. */
+export async function readAddressesWithMessagesBefore(
+  twenty: TwentyClient,
+  q: { addresses: readonly string[]; before: Date },
+  signal?: AbortSignal,
+): Promise<PriorAddressesRead> {
+  const addresses = [...new Set(q.addresses.map(normAddress).filter((a): a is string => a !== null))];
+  const opts = signal ? { signal } : {};
+  try {
+    const probe = await twenty.list<Rec>(MESSAGE_OBJECTS.message, { limit: 1, ...opts });
+    if (probe.records.length === 0) return { status: 'no_messages' };
+    if (addresses.length === 0) return { status: 'ok', addresses: [], truncated: false };
+    const state = { truncated: false };
+    const of = new Map<string, Set<string>>(); // messageId -> addresses
+    for (const chunk of chunks(addresses, HANDLE_CHUNK)) {
+      const handles = chunk.map((h) => `handle[ilike]:${filterValue(h)}`);
+      const filter = handles.length === 1 ? handles[0]! : `or(${handles.join(',')})`;
+      for (const p of await listAll(twenty, MESSAGE_OBJECTS.participant, filter, signal, state)) {
+        const mid = text(p.messageId, 64);
+        const h = normAddress(p.handle);
+        if (!mid || !h || !chunk.includes(h)) continue;
+        of.set(mid, new Set([...(of.get(mid) ?? []), h]));
+      }
+    }
+    const found = new Set<string>();
+    const before = q.before.getTime();
+    for (const chunk of chunks([...of.keys()], IN_CHUNK)) {
+      const filter = `id[in]:[${chunk.map(filterValue).join(',')}]`;
+      for (const m of await listAll(twenty, MESSAGE_OBJECTS.message, filter, signal, state)) {
+        const at = typeof m.receivedAt === 'string' ? Date.parse(m.receivedAt) : Number.NaN;
+        if (typeof m.id !== 'string' || Number.isNaN(at) || at >= before) continue;
+        for (const a of of.get(m.id) ?? []) found.add(a);
+      }
+    }
+    return { status: 'ok', addresses: [...found].sort(), truncated: state.truncated };
+  } catch (err) {
+    return unreadable(err);
+  }
+}

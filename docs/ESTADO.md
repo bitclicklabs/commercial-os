@@ -260,3 +260,19 @@ Origen: el 2026-11-26 el usuario pidió convertir el sistema en un **AI Setter**
 Notas:
 - **Pendiente del usuario:** activar la sincronización del calendario de su cuenta IONOS en Twenty ([procedimiento](runbook-local.md#activar-el-calendario-en-twenty), ruta exacta por confirmar) y crear las reuniones en ese calendario invitando al cliente por email.
 - **Decisión de producto:** nivel 1 de autonomía; subir de nivel exigirá una decisión nueva del usuario.
+
+## Tanda 23 — AI Setter, tanda B: secuencias y cualificación 🚧 (en curso, 2026-11-26)
+
+Origen: continuación del AI Setter con el mismo **nivel 1 de autonomía** (el sistema prepara, el humano envía). La tanda A (tanda 22) quedó **hecha y probada**: prueba de punta a punta del 2026-11-26 (correo de prueba → Task 📅 con borrador y 3 huecos reales del calendario IONOS, 0,002 €). La tanda B cierra cuatro huecos: el seguimiento era un único aviso con guion, la cualificación del cliente se perdía en el correo, los huecos ignoraban el plazo que pedía el cliente y las Tasks con emoji delante se veían con un icono roto.
+
+| Pieza | Rama | Agente | Estado |
+|---|---|---|---|
+| **A. Cualificación + ventana + títulos**: extracción de cantidad, presupuesto, fecha, decisor y productos de interés de las respuestas INTERESADO (solo con cita literal) → nota «Cualificación — {empresa} 🧾» y, si están vacíos, `amount` y `closeDate` de la Oportunidad (nunca pisa lo del comercial); huecos que respetan el plazo del cliente; títulos de Task con el emoji al final (las antiguas se siguen reconociendo) | `qualify23` | Opus | 🚧 en curso |
+| **B. Secuencias + títulos**: hasta 2 seguimientos (`FOLLOWUP_MAX_TOUCHES`) a los 5 días laborables del último toque enviado, detectado en los salientes que Twenty importa; Tasks «Seguimiento N — {empresa} 🔔» con borrador en el mismo hilo (skill `email-followup-draft` v1: recordatorio con ángulo nuevo; cierre amable); se para con respuesta (no automática), rebote o baja | `sequences23` | Opus | 🚧 en curso |
+| **C. Docs**: ai-setter.md (tanda A hecha y probada, tanda B), seguimiento-leads.md (de una Task con guion a secuencia), guía comercial, runbook (`FOLLOWUP_MAX_TOUCHES`, problema del segundo seguimiento), ESTADO y CHANGELOG | `docs/tanda23` (wt23-docs) | Sonnet | ✅ entregado (todo lo que depende de la implementación queda marcado `[POR CONFIRMAR]`) |
+| Integración, e2e y PR | por definir | PM | ⏳ pendiente |
+
+Notas:
+- **Siguiente (tanda C del AI Setter):** traspaso con ficha previa a la reunión y métricas de setter.
+- **Riesgo a vigilar:** el segundo seguimiento depende de que Twenty importe los correos enviados del buzón y de que el rol «Agent runtime» pueda leerlos `[POR CONFIRMAR]`.
+- **Decisión de producto:** se mantiene el nivel 1 de autonomía; nada sale sin un clic humano.

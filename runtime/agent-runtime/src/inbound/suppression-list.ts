@@ -11,6 +11,17 @@ import { emailDomain, normalizeEmail } from './unsubscribe-classifier.js';
 
 export const SUPPRESSION_NOTE_ID = '6658e882-60f9-427f-808d-dc5c255570dc';
 export const SUPPRESSION_NOTE_TITLE = 'Lista de supresión — NO contactar';
+
+/**
+ * Id of the suppression note in the CURRENT Twenty workspace. `SUPPRESSION_NOTE_ID` wins over the
+ * id stored in an agent version's configuration (seeded from the constant above): when Twenty is
+ * recreated the note gets a new id, and without this override every reader fails closed.
+ */
+export function suppressionNoteId(configured?: unknown, env: NodeJS.ProcessEnv = process.env): string {
+  const fromEnv = env.SUPPRESSION_NOTE_ID?.trim();
+  if (fromEnv) return fromEnv;
+  return typeof configured === 'string' && configured.trim().length > 0 ? configured.trim() : SUPPRESSION_NOTE_ID;
+}
 /** Characters of the subject kept in the motive. */
 export const MOTIVE_SUBJECT_MAX = 80;
 

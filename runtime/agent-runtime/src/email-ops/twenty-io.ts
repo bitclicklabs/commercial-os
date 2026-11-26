@@ -4,7 +4,7 @@
  * alert notes: it never edits or removes existing content and never deletes anything.
  */
 import { TWENTY_OBJECTS, filterValue, type TwentyClient, type TwentyNote, type TwentyNoteTarget } from '../integrations/twenty/index.js';
-import { parseSuppressionList, SUPPRESSION_NOTE_ID, SUPPRESSION_NOTE_TITLE, type SuppressionList } from '../inbound/suppression-list.js';
+import { parseSuppressionList, SUPPRESSION_NOTE_TITLE, suppressionNoteId, type SuppressionList } from '../inbound/suppression-list.js';
 import { appendMarkdownLines, noteTitle } from '../tools/twenty/note-tools.js';
 
 const eq = (field: string, value: string) => `${field}[eq]:${filterValue(value)}`;
@@ -41,7 +41,7 @@ export async function loadSuppressionList(
   const title = noteTitle(opts.title ?? SUPPRESSION_NOTE_TITLE);
   const signal = opts.signal ? { signal: opts.signal } : {};
   const notes = new Map<string, TwentyNote>();
-  const byId = await twenty.get<TwentyNote>(TWENTY_OBJECTS.note, opts.noteId ?? SUPPRESSION_NOTE_ID, signal);
+  const byId = await twenty.get<TwentyNote>(TWENTY_OBJECTS.note, suppressionNoteId(opts.noteId), signal);
   let titleDamaged = false;
   if (byId && titleMatches(byId.title ?? '', title)) {
     notes.set(byId.id, byId);

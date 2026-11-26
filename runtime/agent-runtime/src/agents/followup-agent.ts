@@ -78,7 +78,7 @@ import { parseRecipients, suppressionMatch } from '../email-ops/recipients.js';
 import { titleMatches } from '../email-ops/twenty-io.js';
 import { FREEMAIL_DOMAINS } from '../inbound/reply-links.js';
 import { meetingParagraph, MEETING_SLOTS_IN_DRAFT } from '../inbound/meeting-paragraph.js';
-import { parseSuppressionList, SUPPRESSION_NOTE_ID, SUPPRESSION_NOTE_TITLE, type SuppressionList } from '../inbound/suppression-list.js';
+import { parseSuppressionList, SUPPRESSION_NOTE_TITLE, suppressionNoteId, type SuppressionList } from '../inbound/suppression-list.js';
 import { redactNoteStep, toolError } from '../inbound/suppression-writer.js';
 import { crmTaskDueAt, legacyEmojiFirstTitle } from '../integrations/twenty/tasks.js';
 import { isOwnAddress, normAddress } from '../integrations/twenty/messages.js';
@@ -207,7 +207,7 @@ export class FollowUpAgent implements AgentImplementation {
     const asOf = typeof ctx.input.as_of === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(ctx.input.as_of) && !Number.isNaN(Date.parse(ctx.input.as_of)) ? ctx.input.as_of : null;
     const now = asOf ? asOfDate(asOf) : startedAt;
     const timezone = str(cfg.timezone, FOLLOWUP_TIMEZONE);
-    const noteId = str(cfg.suppression_note_id, SUPPRESSION_NOTE_ID);
+    const noteId = suppressionNoteId(cfg.suppression_note_id, env);
     const noteTitle = str(cfg.suppression_note_title, SUPPRESSION_NOTE_TITLE);
     const days = followUpAfterBusinessDaysFromEnv(env);
     const maxTouches = followUpMaxTouchesFromEnv(env);

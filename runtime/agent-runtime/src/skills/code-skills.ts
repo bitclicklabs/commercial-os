@@ -15,6 +15,7 @@ import {
 } from '../agents/event-scout-prompt.js';
 import { REPLY_DRAFT_SKILL_ID, REPLY_DRAFT_SKILL_VERSION, REPLY_DRAFT_SYSTEM_PROMPT } from '../agents/reply-draft-prompt.js';
 import { FOLLOWUP_DRAFT_SKILL_ID, FOLLOWUP_DRAFT_SKILL_VERSION, FOLLOWUP_DRAFT_SYSTEM_PROMPT } from '../agents/followup-draft-prompt.js';
+import { MEETING_BRIEF_SKILL_ID, MEETING_BRIEF_SKILL_VERSION, MEETING_BRIEF_SYSTEM_PROMPT } from '../agents/meeting-brief-prompt.js';
 import { PROSPECTOR_SKILL_ID, PROSPECTOR_SKILL_VERSION, PROSPECTOR_SYSTEM_PROMPT } from '../agents/prospector-prompt.js';
 
 export interface CodeSkill {
@@ -70,6 +71,14 @@ export const CODE_SKILLS: readonly CodeSkill[] = [
     domain: 'outreach',
     text: FOLLOWUP_DRAFT_SYSTEM_PROMPT,
     source: { file: 'src/agents/followup-draft-prompt.ts', constant: 'FOLLOWUP_DRAFT_SYSTEM_PROMPT', legacy_skill_id: FOLLOWUP_DRAFT_SKILL_ID, legacy_version: FOLLOWUP_DRAFT_SKILL_VERSION },
+  },
+  {
+    // Tanda 24: born in the database (v1 = this text); the constant is only its fallback.
+    name: MEETING_BRIEF_SKILL_ID,
+    description: 'MeetingSyncAgent: ficha previa de una reunión detectada en el calendario (JSON cerrado; citas del cliente verificadas, datos de la oportunidad y de cualificación por código; nunca se envía nada).',
+    domain: 'outreach',
+    text: MEETING_BRIEF_SYSTEM_PROMPT,
+    source: { file: 'src/agents/meeting-brief-prompt.ts', constant: 'MEETING_BRIEF_SYSTEM_PROMPT', legacy_skill_id: MEETING_BRIEF_SKILL_ID, legacy_version: MEETING_BRIEF_SKILL_VERSION },
   },
 ];
 

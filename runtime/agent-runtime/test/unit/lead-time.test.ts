@@ -172,7 +172,7 @@ describe('lead-time window: pure rules', () => {
 
   it('notes: too close, too far (with the day it enters the window) and undated', () => {
     const close = outOfWindowNote({ signalName: 'Gastrónoma 2026', status: 'too_close', days: 7, eventDate: addDays(7), today: TODAY, window: W });
-    expect(close.title).toBe('⏳ Fuera de ventana (2026-10-12): Gastrónoma 2026');
+    expect(close.title).toBe('Fuera de ventana (2026-10-12): Gastrónoma 2026 ⏳');
     expect(close.body).toContain('⏳ Fuera de ventana: la feria es en 7 días');
     expect(close.body).toContain('sigue QUALIFIED');
     const far = outOfWindowNote({ signalName: 'Feria Lejana', status: 'too_far', days: 300, eventDate: addDays(300), today: TODAY, window: W });
@@ -346,7 +346,7 @@ describe('trigger on qualification (prospect-on-qualified) with the lead-time wi
     expect(fake.tables.noteTargets).toHaveLength(0);
     expect(fake.tables.tasks).toHaveLength(1);
     // Too close never enters the window: due today (09:00 Madrid).
-    expect(fake.tables.tasks[0]).toMatchObject({ title: '⏳ Fuera de ventana (2026-10-12): Gastrónoma 2026', status: 'TODO', dueAt: '2026-10-12T07:00:00.000Z' });
+    expect(fake.tables.tasks[0]).toMatchObject({ title: 'Fuera de ventana (2026-10-12): Gastrónoma 2026 ⏳', status: 'TODO', dueAt: '2026-10-12T07:00:00.000Z' });
     expect(String((fake.tables.tasks[0]!.bodyV2 as { markdown: string }).markdown)).toContain('⏳ Fuera de ventana: la feria es en 7 días');
     expect(fake.tables.taskTargets).toEqual([expect.objectContaining({ taskId: out.task.taskId, targetCommercialSignalId: s.id })]);
     expect(out.task.created).toBe(true);

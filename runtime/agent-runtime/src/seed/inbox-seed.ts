@@ -12,7 +12,10 @@
  * PREGUNTA replies) and `get_company` (READ); since tanda 22 `get_hypothesis` (READ) and the
  * reply drafts (`reply_draft`: one more LLM call per INTERESADO / PREGUNTA reply, skill
  * `email-reply-draft`, knowledge of the domains email + prospeccion; the draft goes into the
- * Task body, never sent). No tool can send, move or delete mail.
+ * Task body, never sent); since tanda 23 `record_opportunity_qualification` (LOW_WRITE: the note
+ * «Cualificación — <empresa> 🧾» on the Opportunity and its EMPTY amount / closeDate; only with the
+ * skill v2, which stays DRAFT until activated through the Release Gate). No tool can send, move or
+ * delete mail.
  */
 import type { Db } from '../db/client.js';
 import { INBOX_IMPLEMENTATION, INBOX_TOOLS } from '../agents/inbox-agent.js';
@@ -42,8 +45,9 @@ export function desiredInboxVersion(): AgentVersionSpec {
         allow: [...INBOX_TOOLS],
         max_risk_level: 'LOW_WRITE',
         // Per reply note at most: create_note, find_company + (tanda 19) upsert_person,
-        // upsert_opportunity, get_company, create_reply_task + (tanda 22) get_hypothesis.
-        max_calls_per_execution: 2 + 7 * INBOX_MAX_NOTES_PER_RUN,
+        // upsert_opportunity, get_company, create_reply_task + (tanda 22) get_hypothesis
+        // + (tanda 23) record_opportunity_qualification.
+        max_calls_per_execution: 2 + 8 * INBOX_MAX_NOTES_PER_RUN,
         max_calls_per_tool: {
           get_note: 1,
           update_note: 1,
@@ -54,6 +58,7 @@ export function desiredInboxVersion(): AgentVersionSpec {
           get_company: INBOX_MAX_NOTES_PER_RUN,
           create_reply_task: INBOX_MAX_NOTES_PER_RUN,
           get_hypothesis: INBOX_MAX_NOTES_PER_RUN,
+          record_opportunity_qualification: INBOX_MAX_NOTES_PER_RUN,
         },
       },
       suppression_note_id: SUPPRESSION_NOTE_ID,
@@ -103,7 +108,7 @@ export function desiredInboxVersion(): AgentVersionSpec {
 export function desiredInboxTask(): TaskSpec {
   return {
     description:
-      'Cada 2 horas lee (solo lectura) el buzón jesus.abril@publiexpe.info y clasifica cada correo nuevo una sola vez: bajas, rebotes y respuestas automáticas por reglas; el resto (interesado, pregunta, no interesado, otro) con una llamada corta al modelo. Las bajas y los "no interesado" explícitos van a la nota "Lista de supresión — NO contactar"; interesados, preguntas y no interesados dejan una nota "📬 Respuesta recibida" en la empresa; interesados y preguntas, además, la Persona del remitente y una tarea "📬 Responder a …" (o "📅 Cerrar reunión con …" si el cliente propone o acepta una reunión) con el borrador de la contestación para que el comercial lo revise y lo envíe él, y los interesados abren (o reutilizan) la Oportunidad de la empresa; los rebotes duros, una nota "⚠️ Rebote". No envía, responde, mueve ni borra ningún correo.',
+      'Cada 2 horas lee (solo lectura) el buzón jesus.abril@publiexpe.info y clasifica cada correo nuevo una sola vez: bajas, rebotes y respuestas automáticas por reglas; el resto (interesado, pregunta, no interesado, otro) con una llamada corta al modelo. Las bajas y los "no interesado" explícitos van a la nota "Lista de supresión — NO contactar"; interesados, preguntas y no interesados dejan una nota "Respuesta recibida … 📬" en la empresa; interesados y preguntas, además, la Persona del remitente y una tarea "Responder a … 📬" (o "Cerrar reunión con … 📅" si el cliente propone o acepta una reunión) con el borrador de la contestación para que el comercial lo revise y lo envíe él, y los interesados abren (o reutilizan) la Oportunidad de la empresa; los rebotes duros, una nota "Rebote … ⚠️". No envía, responde, mueve ni borra ningún correo.',
     defaultInput: {},
     schedule: { type: 'CRON', expression: '0 */2 * * *' },
     timezone: 'Europe/Madrid',

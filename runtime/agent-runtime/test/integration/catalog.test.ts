@@ -194,8 +194,8 @@ describe.skipIf(!dbAvailable)('Catalog Service (PostgreSQL)', () => {
     const second = await runTask(processor, tenantId);
     expect(second.output).toMatchObject({ outcome: 'SUCCESS' });
     // Tanda 19: a Twenty Task (TODO, due today), never a note.
-    expect((fake.tables.notes as Array<{ title: string }>).filter((n) => n.title.startsWith('⚠️ Catálogo no disponible'))).toHaveLength(0);
-    const warnings = (fake.tables.tasks as Array<{ title: string; status: string; dueAt: string }>).filter((n) => n.title.startsWith('⚠️ Catálogo no disponible'));
+    expect((fake.tables.notes as Array<{ title: string }>).filter((n) => n.title.startsWith('Catálogo no disponible'))).toHaveLength(0);
+    const warnings = (fake.tables.tasks as Array<{ title: string; status: string; dueAt: string }>).filter((n) => n.title.startsWith('Catálogo no disponible'));
     expect(warnings).toHaveLength(1);
     expect(warnings[0]!.status).toBe('TODO');
     expect(warnings[0]!.dueAt).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:00:00\.000Z$/);

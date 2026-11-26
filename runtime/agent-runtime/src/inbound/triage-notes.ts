@@ -1,8 +1,11 @@
 /**
  * Twenty notes of the inbound triage, for the commercial (they never answer anybody):
  *
- *   📬 Respuesta recibida — Interesado (AAAA-MM-DD HH:mm)      INTERESADO / PREGUNTA / NO_INTERESADO
- *   ⚠️ Rebote: el email no existe (AAAA-MM-DD HH:mm)           hard bounce of one of our sends
+ *   Respuesta recibida — Interesado (AAAA-MM-DD HH:mm) 📬      INTERESADO / PREGUNTA / NO_INTERESADO
+ *   Rebote: el email no existe (AAAA-MM-DD HH:mm) ⚠️           hard bounce of one of our sends
+ *
+ * (Tanda 23: emoji at the END of the title; `create_note` is given the old emoji-first title as
+ * `legacyTitles`, so a note created before the change is still found.)
  *
  * Every value that comes from the email (subject, excerpt) is reduced to plain text: no
  * markdown or HTML syntax, no links or images, no control characters, bounded. The title
@@ -24,7 +27,7 @@ export const REPLY_CLASS_LABELS: Record<TriageClass, string> = {
   OTRO: 'Otro',
 };
 
-/** Classes that get a "📬 Respuesta recibida" note. */
+/** Classes that get a "Respuesta recibida … 📬" note. */
 export const NOTE_CLASSES: ReadonlySet<TriageClass> = new Set(['INTERESADO', 'PREGUNTA', 'NO_INTERESADO']);
 
 /**
@@ -70,7 +73,16 @@ export interface ReplyNoteInput {
   suppressionAdded: boolean;
 }
 
+/**
+ * Tanda 23: TEXT FIRST, emoji at the end (Twenty draws the note icon with the first character of
+ * the title; an emoji there shows as a broken «?»).
+ */
 export function replyNoteTitle(cls: TriageClass, receivedLocal: string): string {
+  return `Respuesta recibida — ${REPLY_CLASS_LABELS[cls]} (${receivedLocal}) 📬`;
+}
+
+/** The pre-tanda 23 spelling (emoji first): only to find a note created before the change. */
+export function legacyReplyNoteTitle(cls: TriageClass, receivedLocal: string): string {
   return `📬 Respuesta recibida — ${REPLY_CLASS_LABELS[cls]} (${receivedLocal})`;
 }
 
@@ -118,6 +130,11 @@ export interface BounceNoteInput {
 }
 
 export function bounceNoteTitle(receivedLocal: string): string {
+  return `Rebote: el email no existe (${receivedLocal}) ⚠️`;
+}
+
+/** The pre-tanda 23 spelling (emoji first): only to find a note created before the change. */
+export function legacyBounceNoteTitle(receivedLocal: string): string {
   return `⚠️ Rebote: el email no existe (${receivedLocal})`;
 }
 

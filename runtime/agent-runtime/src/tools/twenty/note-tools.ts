@@ -10,7 +10,7 @@
  *   `POST /rest/noteTargets` `{ noteId, targetCompanyId }` (one row per linked record;
  *   `targetCommercialHypothesisId` for the App object).
  *
- * Idempotent by (companyId + title): a note with the same title already targeting the
+ * Idempotent by (companyId + title, or one of `legacyTitles`): a note with the same title already targeting the
  * company is returned (`created: false`) and missing targets are added. A note with that
  * title and NO targets at all (a previous call that died between the two POSTs) is
  * adopted instead of creating a second one.
@@ -35,6 +35,12 @@ export const CreateNoteInput = z.object({
   bodyMarkdown: z.string().trim().min(1).max(NOTE_BODY_MAX),
   /** Also attach the note to this commercial hypothesis. */
   hypothesisId: RecordId.optional(),
+  /**
+   * Tanda 23: older spellings of the title that also count as the same note (the «emoji first»
+   * title from before the change, `legacyEmojiFirstTitle`). Searched after the title; a note found
+   * by one of them is reused as it is (its title is not changed).
+   */
+  legacyTitles: z.array(ShortText).max(4).optional(),
 });
 
 export const CreateNoteOutput = z.object({
@@ -80,8 +86,14 @@ export function createCreateNoteTool(deps: TwentyToolDeps) {
         const title = noteTitle(input.title);
         const idempotencyKey = `publi:note:create:${input.companyId}:${title}`;
 
-        // 1. Existing note with the same title on this company, or an orphan to adopt.
-        const { records: sameTitle } = await twenty.list<TwentyNote>(TWENTY_OBJECTS.note, { filter: eq('title', title), limit: 20, signal: ctx.signal });
+        // 1. Existing note with the same title on this company, or an orphan to adopt. The title
+        //    first, then its older spellings (tanda 23).
+        const titles = [title, ...(input.legacyTitles ?? []).map(noteTitle)].filter((t, i, all) => t.length > 0 && all.indexOf(t) === i);
+        const sameTitle: TwentyNote[] = [];
+        for (const t of titles) {
+          const { records } = await twenty.list<TwentyNote>(TWENTY_OBJECTS.note, { filter: eq('title', t), limit: 20, signal: ctx.signal });
+          for (const r of records) if (!sameTitle.some((x) => x.id === r.id)) sameTitle.push(r);
+        }
         let note: TwentyNote | null = null;
         let targets: TwentyNoteTarget[] = [];
         let orphan: TwentyNote | null = null;

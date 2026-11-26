@@ -210,7 +210,7 @@ Las alertas que piden una acción ya no se quedan enterradas en notas: el sistem
 | **🧾 Preparar reunión con {empresa}** | El sistema detecta tu reunión en el calendario (tanda 22) | El día anterior a la reunión | Repasa la hipótesis y la conversación antes de la reunión |
 | **⚠️ Revalidación fallida** | Una versión de skill en uso ha dado peor resultado al medirla con tus veredictos | +1 día | Avisa al equipo técnico: decide si se revierte. Tú no tienes que hacer nada más |
 | **Propuesta de promoción** | El optimizador propone una skill mejor y ha pasado el Release Gate | +3 días | Avisa al equipo técnico para que la revise. Si no se hace nada, no pasa nada |
-| **🔔 Seguimiento — {empresa}** | Has enviado un correo a esa empresa hace 5 días laborables o más y no ha respondido (ni está en la lista de supresión) | El mismo día en que se crea | Lee el cuerpo (fecha y asunto del envío, destinatario, ángulo y guion sugerido), decide si escribes de nuevo, llamas o lo dejas, y márcala como hecha. **El sistema no envía nada**. Ver [Seguimiento](#seguimiento-de-lo-que-has-enviado) |
+| **Seguimiento 1 — {empresa} 🔔** y **Seguimiento 2 — {empresa} 🔔** (tanda 23) | Han pasado 5 días laborables desde el último correo que **enviaste** a esa empresa y no ha respondido (ni está en la lista de supresión) | El mismo día en que se crea | Trae un **borrador** en el mismo hilo: revísalo, envíalo desde tu correo (o llama, o déjalo) y márcala como hecha. **El sistema no envía nada**. Ver [Seguimiento](#seguimiento-de-lo-que-has-enviado). Antes de la tanda 23 se llamaba «🔔 Seguimiento — {empresa}» y traía un guion |
 | **⏳ Fuera de ventana / sin fecha** | Has calificado una feria demasiado cercana, demasiado lejana o sin fecha | La que fija el sistema | Nada urgente: [qué ferias calificar](#qué-ferias-calificar-las-del-próximo-trimestre) |
 | **⚠️ Catálogo no disponible** | El catálogo de productos no respondió | Como máximo una al día | Nada: las hipótesis de ese día llevan familias genéricas. Avisa al equipo técnico si se repite varios días |
 
@@ -273,7 +273,7 @@ Dos ejemplos:
 
 ## Tu rutina diaria de 10 minutos
 
-1. Abre Twenty y ve a **Tareas → Tareas · Bandeja**. Despacha primero las **📬 Responder a…** (alguien ha contestado con interés: responde hoy desde tu correo y márcala como hecha) y después el resto, empezando por las que vencen antes ([qué es cada una](#tu-bandeja-las-tareas)). Si hay una tarea 🔔 de seguimiento, decide si vuelves a escribir o llamas ([cómo](#seguimiento-de-lo-que-has-enviado)). Si hay una tarea ⚠️ de skill o de catálogo, no tienes que resolverla tú: avisa al equipo técnico.
+1. Abre Twenty y ve a **Tareas → Tareas · Bandeja**. Despacha primero las **📬 Responder a…** (alguien ha contestado con interés: responde hoy desde tu correo y márcala como hecha) y después el resto, empezando por las que vencen antes ([qué es cada una](#tu-bandeja-las-tareas)). Si hay una tarea de seguimiento (🔔 al final del título), revisa el borrador y decide si lo envías o llamas ([cómo](#seguimiento-de-lo-que-has-enviado)). Si hay una tarea ⚠️ de skill o de catálogo, no tienes que resolverla tú: avisa al equipo técnico.
 1. Ve a **Commercial OS → Agent runs** y comprueba que hay una ejecución de hoy. Si el resultado (*Outcome*) es `Failed` o `Partial`, avisa al equipo técnico (consulta [Preguntas frecuentes](#preguntas-frecuentes)). Un `Skipped` es normal si no tienes ninguna feria calificada.
 1. Ve a **Commercial OS → Signals** con la vista **Señales · Cola**. Si el lunes llegaron ferias nuevas (columna `New`), califica las que merecen trabajo y descarta el resto ([cómo](#señales-de-feria-tu-cola-de-decisión)).
 1. Ve a **Commercial OS → Hypotheses** con la vista **Hipótesis · Por estado**.
@@ -480,7 +480,9 @@ Cómo funciona por dentro, las garantías y el evento para n8n están en [Triaje
 
 Hasta ahora, un correo sin respuesta se perdía en silencio. Desde la tanda 21, **el sistema te avisa cuando un envío lleva 5 días laborables sin respuesta**: te deja una tarea en tu bandeja y tú decides qué hacer. Activo en producción desde el 2026-10-22.
 
-**Cuándo aparece la tarea.** Cada día a las 08:30 el sistema revisa las hipótesis con **Email status** = `Sent` y crea la tarea **🔔 Seguimiento — {empresa}** si se cumplen las tres condiciones:
+> **Novedad (tanda 23, 2026-11-26).** El aviso ya no es una sola tarea con un guion: es una **secuencia de hasta 2 seguimientos** y cada uno trae **un borrador redactado en el mismo hilo**. Sigue valiendo la regla de siempre: **el sistema no envía nada; lo envías tú.** Más abajo, «Cómo funciona la secuencia».
+
+**Cuándo aparece la tarea.** Cada día a las 08:30 el sistema revisa las hipótesis con **Email status** = `Sent` y crea la tarea **Seguimiento 1 — {empresa} 🔔** si se cumplen las tres condiciones (desde la tanda 23 el plazo se cuenta desde el último correo que enviaste; antes, desde el primer envío):
 
 1. Han pasado **5 días laborables** (de lunes a viernes) desde el primer envío.
 1. **No hay ninguna respuesta registrada** de esa empresa.
@@ -491,22 +493,36 @@ Hasta ahora, un correo sin respuesta se perdía en silencio. Desde la tanda 21, 
 - La **fecha y el asunto** del primer correo que enviaste.
 - El **destinatario**.
 - El **ángulo de la hipótesis**: qué le propusiste y por qué.
-- Un **guion sugerido**, sin urgencia. Es una idea de texto, no un correo enviado. Por ejemplo, en la línea de «retomo mi mensaje de hace unos días por si se te pasó; si el momento no es bueno, dímelo y no te molesto más».
+- Un **borrador del seguimiento** (tanda 23), sin urgencia, con asunto «Re: …» para que lo envíes en el mismo hilo, y una propuesta de reunión con huecos de tu calendario. Es una idea de texto, no un correo enviado. Antes de la tanda 23 era un guion fijo en la línea de «retomo mi mensaje de hace unos días por si se te pasó; si el momento no es bueno, dímelo y no te molesto más».
 
 **Qué haces tú.**
 
-1. Abre **Tareas → Tareas · Bandeja** y localiza las que empiezan por 🔔.
-1. Lee el cuerpo y decide: escribir de nuevo con el guion (adáptalo), llamar, o dejarlo correr.
-1. Si vas a escribir, hazlo **a mano desde tu correo** o con un clic desde Twenty, **tras comprobar la [lista de supresión](#lista-de-supresión-qué-haces-antes-de-enviar)** como siempre.
+1. Abre **Tareas → Tareas · Bandeja** y localiza las que empiezan por «Seguimiento» (llevan el 🔔 al final; las antiguas lo llevan delante).
+1. Lee el cuerpo y decide: enviar el borrador (adáptalo), llamar, o dejarlo correr.
+1. Si vas a escribir, **responde en el hilo desde tu correo conectado en Twenty**, **tras comprobar la [lista de supresión](#lista-de-supresión-qué-haces-antes-de-enviar)** como siempre. Importante: envíalo desde la cuenta conectada, porque así el sistema ve que lo enviaste.
 1. Marca la tarea como hecha (*Done*).
 
 **Qué debes saber.**
 
-- **El sistema no envía nada.** Ni un segundo correo automático ni un recordatorio. La tarea es solo un aviso para ti.
-- **Una sola tarea por hipótesis, para siempre.** Si la cierras o la borras, no vuelve a aparecer. Si quieres insistir otra vez, lo decides tú.
-- **Si el cliente responde, el aviso se corta.** Si llega una respuesta (interesado, pregunta, no interesado o baja), no hay seguimiento y sigues el camino habitual de [respuestas de los clientes](#respuestas-de-los-clientes).
+- **El sistema no envía nada.** Ni un seguimiento automático ni un recordatorio. La tarea te trae el borrador; lo envías tú.
+- **Una tarea por toque, para siempre.** Si cierras o borras el Seguimiento 1, no vuelve a aparecer. Pasados los 2 seguimientos, no hay más: si quieres insistir otra vez, lo decides tú.
+- **Si el cliente responde, la secuencia se corta.** Si llega una respuesta (interesado, pregunta, no interesado o baja; las respuestas automáticas, como un «fuera de la oficina», no cuentan) o un rebote, no hay más seguimientos y sigues el camino habitual de [respuestas de los clientes](#respuestas-de-los-clientes).
 - **Si la tarea es un falso aviso**, por ejemplo porque contestó otra persona desde otra dirección y el sistema no lo asoció, ciérrala sin más: no pasa nada.
 - **Las hipótesis enviadas antes de la tanda 21 pueden generar tareas la primera vez** que se activa el seguimiento, con un tope de 20 por día (las más antiguas primero). Si te molesta el lote, ciérralas: no vuelven a crearse.
+
+**Cómo funciona la secuencia (tanda 23).**
+
+| Tarea | Qué lleva el borrador |
+|---|---|
+| **Seguimiento 1 — {empresa} 🔔** | Un recordatorio breve con un **ángulo nuevo de valor**. |
+| **Seguimiento 2 — {empresa} 🔔** | Un **cierre amable**. |
+
+1. **El Seguimiento 2 solo aparece si enviaste el Seguimiento 1** y han pasado otros 5 días laborables sin respuesta. Si no lo enviaste, el sistema no genera el siguiente: es normal.
+1. El sistema sabe que lo enviaste porque ve el correo saliente en la carpeta «Enviados» de tu buzón conectado en Twenty (el webmail de IONOS sirve). Envía siempre desde esa cuenta.
+1. Si el modelo no pudo redactar el borrador, la tarea sale con un guion fijo y la indicación «borrador no disponible».
+1. Si el cliente responde, o el correo rebota, o se da de baja, la secuencia termina.
+
+> **Nota:** el borrador propone una reunión con huecos libres de tu calendario. Si el cliente dijo cuándo le viene bien («la semana que viene», «por las tardes», «a partir del 10»), los huecos lo respetan; si no hay ninguno en ese plazo, el borrador usa el horizonte normal y lo dice («En las fechas que comentáis no me queda ningún hueco libre…»).
 
 **Tu tablero de envíos.** La vista **Hipótesis · Envíos** (en **Commercial OS → Hypotheses**) muestra tus hipótesis en columnas por **Email status**: `Draft` (por revisar), `Reviewed` (listas para enviar), `Sending` (en curso) y `Sent` (ya enviadas). Úsala para ver de un vistazo qué te queda por revisar y qué has enviado ya; las enviadas con tarea 🔔 son las que no han contestado.
 
@@ -541,6 +557,32 @@ Cuando un cliente contesta con interés o con una pregunta, el sistema (que revi
 > **Importante:** invita al cliente **como participante del evento**. Es lo que permite al sistema reconocer la reunión y asociarla a la oportunidad. Una reunión creada sin invitados no se detecta.
 
 > **Nota:** si el sistema no pudo redactar el borrador, la tarea se crea igualmente, sin borrador. Responde a mano como hasta ahora; no se pierde el aviso.
+
+### Retomar una conversación que se enfrió (tanda 23)
+
+Si tienes una **Oportunidad abierta** (antes de la etapa Meeting) y el **último mensaje con el contacto es tuyo** y lleva **5 días laborables o más sin respuesta**, el sistema crea la tarea **«Retomar conversación con {empresa} 🔔»**, con vencimiento hoy. Trae un **borrador que retoma el hilo**: lee el último mensaje del cliente y el tuyo.
+
+1. Abre la tarea y lee el borrador. Comprueba que cita lo que de verdad hablasteis.
+1. Ajústalo y **envíalo tú** desde tu correo conectado en Twenty.
+1. Marca la tarea como hecha.
+
+> **Nota:** como mucho se generan `FOLLOWUP_MAX_TOUCHES` mensajes tuyos seguidos sin respuesta (2 por defecto) y no se repite la tarea para el mismo silencio. Si la tarea avisa de que no pudo leer el hilo, el correo de Twenty está compartido solo como metadatos: avisa al equipo técnico para ponerlo en **Share everything**.
+
+### La cualificación de la oportunidad (tanda 23)
+
+> **Importante:** la cualificación y los huecos que respetan el plazo del cliente dependen de la skill `email-reply-draft` **v2**, que está en **DRAFT** hasta que se active de forma explícita. Mientras esté activa la v1, no verás la nota de Cualificación.
+
+Cuando el cliente responde con interés y menciona datos de su pedido, el sistema los deja anotados en la **Oportunidad** para que no tengas que releer el correo:
+
+- Una nota **«Cualificación — {empresa} 🧾»** con lo que haya dicho sobre **cantidad aproximada, presupuesto, fecha necesaria, decisor y productos de interés**. Cada dato lleva la **cita literal** del correo; si el cliente no lo dijo, el dato no aparece. **El sistema no inventa nada.** Las cifras tienen que estar escritas en la cita (un «dos mil» en letras se descarta). Si el cliente da un rango, el Importe toma el extremo inferior y la nota recoge el rango completo. La nota queda enlazada a la Oportunidad, la empresa y la Persona, con una sección por cada respuesta.
+- Si el **Importe** y la **Fecha de cierre** de la Oportunidad están vacíos, el sistema los rellena con lo que dijo el cliente.
+- **Nunca pisa lo que hayas puesto tú.** Si ya tenías un Importe o una Fecha de cierre, se quedan como están.
+
+**Qué haces tú:** abre la Oportunidad antes de responder, lee la nota de Cualificación, corrige el Importe o la Fecha si no te cuadran (es una cifra orientativa, la del cliente) y úsala para preparar la reunión.
+
+### Títulos con el emoji al final (tanda 23)
+
+Las tareas y las notas nuevas llevan el texto primero y el emoji al final: «Responder a X 📬», «Cerrar reunión con X 📅», «Preparar reunión con X 🧾», «Seguimiento N — X 🔔», «Retomar conversación con X 🔔», «Revalidación fallida — X vN ⚠️», «Catálogo no disponible — día ⚠️», «Fuera de ventana (día): X ⏳» y «Sin fecha de feria (día): X ⏳»; en las notas, «Respuesta recibida — … 📬», «Rebote … ⚠️», «Reunión detectada — … 📅» y «Cualificación — X 🧾». Es un cambio de formato (Twenty mostraba un «?» en un rombo rojo cuando el título empezaba por emoji). Los registros antiguos, con el emoji delante, conservan su título y funcionan igual.
 
 ### Qué verás después
 

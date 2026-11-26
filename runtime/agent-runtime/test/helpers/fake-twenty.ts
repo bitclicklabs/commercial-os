@@ -10,6 +10,8 @@
  * calendar objects `calendarEvents`, `calendarEventParticipants` and
  * `calendarChannelEventAssociations` (read only), the `[in]` and range (`gte`/`lte`/`gt`/`lt`)
  * filters, `expandRelations` (depth 1) and `hiddenObjects` (an object the API key cannot see).
+ * Tanda 23: the mail objects `messages`, `messageParticipants` and `messageThreads` (read only,
+ * as Twenty imports them from the connected mailbox).
  */
 import { randomUUID } from 'node:crypto';
 import { TwentyClient } from '../../src/integrations/twenty/index.js';
@@ -31,6 +33,9 @@ const SINGULAR: Record<string, string> = {
   calendarEvents: 'CalendarEvent',
   calendarEventParticipants: 'CalendarEventParticipant',
   calendarChannelEventAssociations: 'CalendarChannelEventAssociation',
+  messages: 'Message',
+  messageParticipants: 'MessageParticipant',
+  messageThreads: 'MessageThread',
 };
 /** `opportunity.stage` options of a default Twenty workspace, in order (GET /rest/open-api/core, tanda 19). */
 export const DEFAULT_OPPORTUNITY_STAGES = ['NEW', 'SCREENING', 'MEETING', 'PROPOSAL', 'CUSTOMER'];
@@ -112,7 +117,10 @@ export class FakeTwenty {
     | 'taskTargets'
     | 'calendarEvents'
     | 'calendarEventParticipants'
-    | 'calendarChannelEventAssociations',
+    | 'calendarChannelEventAssociations'
+    | 'messages'
+    | 'messageParticipants'
+    | 'messageThreads',
     Rec[]
   > &
     Record<string, Rec[] | undefined> = {
@@ -130,6 +138,9 @@ export class FakeTwenty {
     calendarEvents: [],
     calendarEventParticipants: [],
     calendarChannelEventAssociations: [],
+    messages: [],
+    messageParticipants: [],
+    messageThreads: [],
   };
   /**
    * Expand relations with `depth=1` like the real server (tanda 22, verified on Twenty 2.45): lists

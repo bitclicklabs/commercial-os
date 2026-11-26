@@ -106,7 +106,8 @@ export function resolveAgentImplementation(configuration: Record<string, unknown
       return new InboxAgent({ ...(deps.db ? { db: deps.db } : {}), ...(deps.events ? { events: deps.events } : {}), availability: meetingAvailabilityFromEnv() });
     case FOLLOWUP_IMPLEMENTATION:
       // Lead follow-up (tanda 21): email_sends, inbound_triage and audit_log live in the database.
-      return new FollowUpAgent(deps.db ? { db: deps.db } : {});
+      // Tanda 23: the drafts propose meeting slots from the salesperson's calendar synced in Twenty.
+      return new FollowUpAgent({ ...(deps.db ? { db: deps.db } : {}), availability: meetingAvailabilityFromEnv() });
     case MEETING_SYNC_IMPLEMENTATION:
       // Meeting sync (tanda 22): the «already detected» marks live in audit_log; emits opportunity.meeting_detected.
       return new MeetingSyncAgent({ ...(deps.db ? { db: deps.db } : {}), ...(deps.events ? { events: deps.events } : {}) });

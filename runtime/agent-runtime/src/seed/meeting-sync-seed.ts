@@ -49,7 +49,7 @@ export function desiredMeetingSyncVersion(): AgentVersionSpec {
 export function desiredMeetingSyncTask(): TaskSpec {
   return {
     description:
-      'Cada 30 minutos lee el calendario del comercial sincronizado en Twenty (desde ayer hasta 60 días vista) y casa cada reunión con una oportunidad abierta por el email del asistente (punto de contacto o persona de la empresa) o por el dominio de la empresa (nunca gmail, hotmail y similares). Si la oportunidad está en una etapa anterior a MEETING, la pasa a MEETING, deja una nota «📅 Reunión detectada» y crea la tarea «🧾 Preparar reunión con <empresa>» para el día laborable anterior. Nunca retrocede etapas ni toca oportunidades más avanzadas; una sola vez por oportunidad y reunión. Solo lee el calendario: no crea eventos ni envía invitaciones. Sin calendario sincronizado termina SKIPPED (no_calendar_channel) sin coste.',
+      'Cada 30 minutos lee el calendario del comercial sincronizado en Twenty (desde ayer hasta 60 días vista) y casa cada reunión con una oportunidad abierta por el email del asistente (punto de contacto o persona de la empresa) o por el dominio de la empresa (nunca gmail, hotmail y similares). Si la oportunidad está en una etapa anterior a MEETING, la pasa a MEETING, deja una nota «Reunión detectada — … 📅» y crea la tarea «Preparar reunión con <empresa> 🧾» para el día laborable anterior. Nunca retrocede etapas ni toca oportunidades más avanzadas; una sola vez por oportunidad y reunión. Solo lee el calendario: no crea eventos ni envía invitaciones. Sin calendario sincronizado termina SKIPPED (no_calendar_channel) sin coste.',
     defaultInput: {},
     schedule: { type: 'CRON', expression: MEETING_SYNC_CRON },
     timezone: MEETING_SYNC_TIMEZONE,

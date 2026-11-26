@@ -118,11 +118,11 @@ describe('MeetingSyncAgent', () => {
       expect(r.output).toMatchObject({ outcome: 'SUCCESS', counters: { events: 1, opportunities: 1, matches: 1, detected: 1, stage_moved: 1, tasks_created: 1 } });
       expect(o.stage).toBe('MEETING');
       const note = s.fake.tables.notes[0]!;
-      expect(note.title).toBe('📅 Reunión detectada — 2026-11-30 10:00');
+      expect(note.title).toBe('Reunión detectada — 2026-11-30 10:00 📅');
       expect((note.bodyV2 as { markdown: string }).markdown).toContain('📅 Reunión detectada en tu calendario: 2026-11-30 10:00–10:45 (Europe/Madrid), Reunión merchandising');
       expect(s.fake.tables.noteTargets.map((t) => t.targetOpportunityId ?? t.targetCompanyId).sort()).toEqual([o.id, c.id].sort());
       const task = s.fake.tables.tasks[0]!;
-      expect(task.title).toBe('🧾 Preparar reunión con Cliente SA');
+      expect(task.title).toBe('Preparar reunión con Cliente SA 🧾');
       // Friday 27, 09:00 Madrid.
       expect(task.dueAt).toBe('2026-11-27T08:00:00.000Z');
       const body = (task.bodyV2 as { markdown: string }).markdown;
@@ -193,7 +193,7 @@ describe('MeetingSyncAgent', () => {
     s.meeting('2026-12-01T09:00:00.000Z', '2026-12-01T10:00:00.000Z', [['otra@dos.example', { personId: p.id }]]);
     const r = await s.run();
     expect(r.output).toMatchObject({ counters: { matches: 2, detected: 1, skipped_by: { other_meeting_this_run: 1 } } });
-    expect(s.fake.tables.notes[0]!.title).toBe('📅 Reunión detectada — 2026-12-01 10:00');
+    expect(s.fake.tables.notes[0]!.title).toBe('Reunión detectada — 2026-12-01 10:00 📅');
   });
 
   it('resumes a run that stopped after the stage move: the task is still created', async () => {
@@ -201,6 +201,7 @@ describe('MeetingSyncAgent', () => {
     const c = s.company('Resume SA', 'resume.example');
     const o = s.opportunity({ companyId: c.id, stage: 'MEETING' });
     s.meeting('2026-12-01T09:00:00.000Z', '2026-12-01T10:00:00.000Z', ['ana@resume.example']);
+    // A note with the pre-tanda 23 title (emoji first) is found too.
     const note = s.fake.seed('notes', { title: '📅 Reunión detectada — 2026-12-01 10:00', bodyV2: { markdown: 'x', blocknote: null } });
     s.fake.seed('noteTargets', { noteId: note.id, targetOpportunityId: o.id, targetCompanyId: null });
     const r = await s.run();

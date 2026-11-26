@@ -259,7 +259,7 @@ describe('notes, send matching and message keys', () => {
   });
 
   it('builds the reply note with class, date, the send it answers and the excerpt', () => {
-    expect(replyNoteTitle('INTERESADO', '2026-10-08 10:30')).toBe('📬 Respuesta recibida — Interesado (2026-10-08 10:30)');
+    expect(replyNoteTitle('INTERESADO', '2026-10-08 10:30')).toBe('Respuesta recibida — Interesado (2026-10-08 10:30) 📬');
     const body = replyNoteBody({
       class: 'INTERESADO',
       method: 'LLM',
@@ -516,10 +516,10 @@ describe('InboxAgent', () => {
     // Notes for the commercial.
     const titles = s.notes().map((n) => n.title).sort();
     expect(titles).toEqual([
-      '⚠️ Rebote: el email no existe (2026-10-08 11:10)',
-      '📬 Respuesta recibida — Interesado (2026-10-08 10:30)',
-      '📬 Respuesta recibida — No interesado (2026-10-08 10:50)',
-      '📬 Respuesta recibida — Pregunta (2026-10-08 10:40)',
+      'Rebote: el email no existe (2026-10-08 11:10) ⚠️',
+      'Respuesta recibida — Interesado (2026-10-08 10:30) 📬',
+      'Respuesta recibida — No interesado (2026-10-08 10:50) 📬',
+      'Respuesta recibida — Pregunta (2026-10-08 10:40) 📬',
     ]);
     const interested = s.notes().find((n) => String(n.title).includes('Interesado ('))!;
     const md = (interested.bodyV2 as { markdown: string }).markdown;
@@ -539,7 +539,7 @@ describe('InboxAgent', () => {
     expect(s.targetsOf(noInterest.id).map((t) => t.targetCompanyId)).toContain(s.otherCompany.id);
     expect((noInterest.bodyV2 as { markdown: string }).markdown).toContain('se ha añadido a la «Lista de supresión — NO contactar»');
     // Hard bounce: warning note on the company of the send; suppression untouched.
-    const bounce = s.notes().find((n) => String(n.title).startsWith('⚠️'))!;
+    const bounce = s.notes().find((n) => String(n.title).startsWith('Rebote:'))!;
     expect((bounce.bodyV2 as { markdown: string }).markdown).toContain('noexiste@cliente.example');
     expect(after).not.toContain('noexiste@cliente.example');
 
@@ -706,7 +706,7 @@ describe('InboxAgent: native CRM records (tanda 19)', () => {
     const note = s.notes().find((n) => String(n.title).includes('Interesado ('))!;
     expect(s.targetsOf(note.id).map((t) => t.targetOpportunityId ?? t.targetPersonId).filter(Boolean).sort()).toEqual([opp.id, person.id].sort());
     // Task: actionable, TODO, due in 2 working days (Thursday 10:30 -> Monday 09:00 Madrid).
-    expect(s.fake.tables.tasks).toEqual([expect.objectContaining({ title: '📬 Responder a Carmen', status: 'TODO', dueAt: '2026-10-12T07:00:00.000Z' })]);
+    expect(s.fake.tables.tasks).toEqual([expect.objectContaining({ title: 'Responder a Carmen 📬', status: 'TODO', dueAt: '2026-10-12T07:00:00.000Z' })]);
     const task = s.fake.tables.tasks[0]!;
     const md = (task.bodyV2 as { markdown: string }).markdown;
     expect(md).toContain('> ¡Hola Jesús! Sí, nos interesa. ¿Me pasas precios de bolsas tote para 500 uds?');
@@ -747,7 +747,7 @@ describe('InboxAgent: native CRM records (tanda 19)', () => {
     expect(s.fake.tables.opportunities).toHaveLength(0);
     expect(s.fake.tables.people).toEqual([expect.objectContaining({ name: { firstName: 'Marta', lastName: 'López' }, emails: { primaryEmail: 'marta.lopez@cliente.example', additionalEmails: [] } })]);
     // Without a name: task named after the company; with a name: after the person.
-    expect(s.fake.tables.tasks.map((t) => t.title).sort()).toEqual(['📬 Responder a Cliente SA', '📬 Responder a Marta López']);
+    expect(s.fake.tables.tasks.map((t) => t.title).sort()).toEqual(['Responder a Cliente SA 📬', 'Responder a Marta López 📬']);
     expect(s.events.emitted.some((e) => e.type === 'opportunity.created')).toBe(false);
   });
 
@@ -756,7 +756,7 @@ describe('InboxAgent: native CRM records (tanda 19)', () => {
     const r = await s.run();
     expect(s.fake.tables.people).toHaveLength(0);
     expect(s.fake.tables.opportunities).toEqual([expect.objectContaining({ companyId: s.company.id, pointOfContactId: null, stage: 'NEW' })]);
-    expect(s.fake.tables.tasks).toEqual([expect.objectContaining({ title: '📬 Responder a Cliente SA' })]);
+    expect(s.fake.tables.tasks).toEqual([expect.objectContaining({ title: 'Responder a Cliente SA 📬' })]);
     expect(s.triageStore.rows[0]!.signals).toContain('sender_not_a_person:generic');
     expect(r.output.triaged).toEqual([expect.objectContaining({ person_id: null })]);
   });

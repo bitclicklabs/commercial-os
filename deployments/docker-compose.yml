@@ -174,6 +174,8 @@ services:
       GEMINI_MODEL: ${GEMINI_MODEL:-}
       TWENTY_BASE_URL: http://pxos-twenty:3000
       TWENTY_PUBLIC_URL: ${TWENTY_PUBLIC_URL:-http://localhost:3020}
+      SUPPRESSION_NOTE_ID: ${SUPPRESSION_NOTE_ID:-}
+      MEETING_CALENDAR_SYNCED: ${MEETING_CALENDAR_SYNCED:-false}
       TWENTY_API_KEY: ${TWENTY_API_KEY:-}
       TWENTY_WAIT_MAX_MS: ${TWENTY_WAIT_MAX_MS:-600000}
       TWENTY_WEBHOOK_SECRET: ${TWENTY_WEBHOOK_SECRET:-}
@@ -200,6 +202,8 @@ services:
       LEADTIME_MAX_DAYS: ${LEADTIME_MAX_DAYS:-210}
       # Seguimiento de envíos sin respuesta (tanda 21): días laborables; 0 desactiva el chequeo diario.
       FOLLOWUP_AFTER_BUSINESS_DAYS: ${FOLLOWUP_AFTER_BUSINESS_DAYS:-5}
+      # Secuencia de seguimiento (tanda 23): seguimientos tras el primer email (0-3); 0 = no crea ninguno.
+      FOLLOWUP_MAX_TOUCHES: ${FOLLOWUP_MAX_TOUCHES:-2}
       # Reuniones (tanda 22): huecos desde el calendario sincronizado en Twenty (solo lectura) y tarea meeting-sync.
       MEETING_HORIZON_DAYS: ${MEETING_HORIZON_DAYS:-7}
       MEETING_HOURS: ${MEETING_HOURS:-10:00-13:30,16:00-18:00}

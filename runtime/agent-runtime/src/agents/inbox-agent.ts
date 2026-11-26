@@ -15,15 +15,15 @@
  *    - BAJA and explicit NO_INTERESADO -> append-only entry in the suppression note (one
  *      get_note + one update_note per run, deduped), motives "baja solicitada" / "no interesado
  *      (respuesta)";
- *    - INTERESADO / PREGUNTA / NO_INTERESADO -> note "📬 Respuesta recibida — <clase>" on the
+ *    - INTERESADO / PREGUNTA / NO_INTERESADO -> note "Respuesta recibida — <clase> (…) 📬" on the
  *      company (+ hypothesis) of the send it answers (`email_sends`), or of the company found by
  *      the sender's domain in Twenty;
- *    - hard bounce -> note "⚠️ Rebote: el email no existe" on the company of the send (the
+ *    - hard bounce -> note "Rebote: el email no existe (…) ⚠️" on the company of the send (the
  *      suppression list is NOT touched);
  *    - native CRM records (tanda 19), after the 📬 note, when the reply is linked to a company:
  *      INTERESADO -> Person of the sender (From name + address; none for info@/comercial@...),
  *      the company's OPEN Opportunity (created at the first stage of the pipeline, or reused:
- *      never duplicated) with the note attached, a Task «📬 Responder a <persona/empresa>» (TODO,
+ *      never duplicated) with the note attached, a Task «Responder a <persona/empresa> 📬» (TODO,
  *      due in 2 working days) and the event `opportunity.created` when it is new;
  *      PREGUNTA -> Person (only when the From header carries a name) + the same Task, NO
  *      Opportunity. The 📬 note stays: it is the record with the excerpt, the Task is the action;
@@ -56,7 +56,7 @@ import { DEFAULT_REPLY_THRESHOLDS, MEETING_INTENT_SIGNAL, REPLY_CLASSIFICATION_J
 import { DrizzleSendLookup, FREEMAIL_DOMAINS, type SendLookup, type SendMatch } from '../inbound/reply-links.js';
 import { localDate, noInterestLine, sanitizeSubject, suppressionLine } from '../inbound/suppression-list.js';
 import { appendSuppressionEntries, toolError } from '../inbound/suppression-writer.js';
-import { bounceNoteBody, bounceNoteTitle, NOTE_CLASSES, replyNoteBody, replyNoteTitle, sanitizeExcerpt } from '../inbound/triage-notes.js';
+import { bounceNoteBody, bounceNoteTitle, legacyBounceNoteTitle, legacyReplyNoteTitle, NOTE_CLASSES, replyNoteBody, replyNoteTitle, sanitizeExcerpt } from '../inbound/triage-notes.js';
 import { cleanPersonName, personDisplayName, type PersonSummary } from '../crm/people.js';
 import { opportunityCreatedEvent } from '../crm/opportunities.js';
 import { addBusinessDays, REPLY_TASK_BUSINESS_DAYS, replyTaskBody } from '../crm/reply-task.js';
@@ -67,7 +67,10 @@ import { useKnowledge } from '../knowledge/resolver.js';
 import { useSkill } from '../skills/resolver.js';
 import type { GetHypothesisOutput } from '../tools/twenty/hypothesis-tools.js';
 import { DEFAULT_REPLY_SENDER, finalizeReplyDraft, parseReplyDraft, replyDraftNoteSection, replyDraftSection, replyDraftSectionTitle, type ReplyDraftOutcome, type ReplySender } from './reply-draft.js';
-import { buildReplyDraftPrompt, REPLY_DRAFT_JSON_SCHEMA, REPLY_DRAFT_SKILL_ID, REPLY_DRAFT_SYSTEM_PROMPT, REPLY_TEXT_MAX } from './reply-draft-prompt.js';
+import { buildReplyDraftPrompt, replyDraftCapabilities, replyDraftJsonSchema, REPLY_DRAFT_SKILL_ID, REPLY_DRAFT_SYSTEM_PROMPT, REPLY_TEXT_MAX } from './reply-draft-prompt.js';
+import { resolveClientWindow } from '../meetings/client-window.js';
+import { isEmptyQualification, QUALIFICATION_AUDIT_ACTION, validateQualification, type QualificationData } from '../crm/qualification.js';
+import type { RecordQualificationOutput } from '../tools/twenty/qualification-tools.js';
 import { classifyByRules, extractTriageFeatures, type BounceInfo, type TriageClass, type TriageFeatures } from '../inbound/triage-rules.js';
 import { DrizzleInboundTriageStore, messageKeyOf, type InboundTriageStore } from '../inbound/triage-store.js';
 import { emailDomain, isDomainOrSubdomain, parseRawMessage, type ParsedInboundMessage } from '../inbound/unsubscribe-classifier.js';
@@ -82,7 +85,9 @@ export const INBOX_CONSUMER = 'inbox';
 export const INBOX_CRM_TOOLS = ['upsert_person', 'upsert_opportunity', 'create_reply_task', 'get_company'] as const;
 /** Tanda 22: READ of the hypothesis of the send (need, why now, first email) for the reply draft. */
 export const INBOX_DRAFT_TOOLS = ['get_hypothesis'] as const;
-export const INBOX_TOOLS = ['get_note', 'update_note', 'create_note', 'find_company', ...INBOX_CRM_TOOLS, ...INBOX_DRAFT_TOOLS] as const;
+/** Tanda 23: the qualification of an INTERESADO reply onto its Opportunity (note + empty standard fields). */
+export const INBOX_QUALIFICATION_TOOL = 'record_opportunity_qualification';
+export const INBOX_TOOLS = ['get_note', 'update_note', 'create_note', 'find_company', ...INBOX_CRM_TOOLS, ...INBOX_DRAFT_TOOLS, INBOX_QUALIFICATION_TOOL] as const;
 export const REPLY_RECEIVED_EVENT = 'email.reply_received';
 
 export interface InboxTriageConfig extends ReplyThresholds {
@@ -213,6 +218,11 @@ function zeroCounters() {
     reply_drafts_created: 0,
     reply_drafts_failed: 0,
     meeting_tasks: 0,
+    // Tanda 23 (skill email-reply-draft v2).
+    client_windows: 0,
+    client_windows_relaxed: 0,
+    qualifications_recorded: 0,
+    qualification_data_discarded: 0,
   };
 }
 
@@ -505,7 +515,7 @@ export class InboxAgent implements AgentImplementation {
             hypothesis_id: done.hypothesisId,
             match_by: done.matchBy,
             note_id: done.noteId,
-            ...(crm ? { person_id: crm.personId, opportunity_id: crm.opportunityId, opportunity_created: crm.opportunityCreated, task_id: crm.taskId, task_kind: crm.taskKind } : {}),
+            ...(crm ? { person_id: crm.personId, opportunity_id: crm.opportunityId, opportunity_created: crm.opportunityCreated, task_id: crm.taskId, task_kind: crm.taskKind, ...(crm.qualification ? { qualification: crm.qualification } : {}) } : {}),
             ...(draft ? { reply_draft: draft } : {}),
           });
           lastDoneUid = Math.max(lastDoneUid, p.item.raw.uid);
@@ -609,6 +619,7 @@ export class InboxAgent implements AgentImplementation {
         const note = isBounce
           ? {
               title: bounceNoteTitle(receivedLocal),
+              legacyTitles: [legacyBounceNoteTitle(receivedLocal)],
               bodyMarkdown: bounceNoteBody({
                 recipient: subjectAddress!,
                 status: d.bounce?.status ?? null,
@@ -620,6 +631,7 @@ export class InboxAgent implements AgentImplementation {
             }
           : {
               title: replyNoteTitle(d.class, receivedLocal),
+              legacyTitles: [legacyReplyNoteTitle(d.class, receivedLocal)],
               bodyMarkdown: replyNoteBody({
                 class: d.class,
                 method: d.method,
@@ -654,6 +666,7 @@ ${replyDraftNoteSection(prepared.outcome)}
             sendSubject: match?.subject ?? null,
             companyName: prepared?.companyName ?? null,
             draft: prepared?.outcome ?? null,
+            qualification: prepared?.qualification ?? null,
           });
           signals.push(...crm.signals);
         }
@@ -743,7 +756,7 @@ ${replyDraftNoteSection(prepared.outcome)}
     ctx: AgentContext,
     cfg: InboxConfig,
     d: Decision,
-    o: { events: EventPublisher; steps: AgentStep[]; counters: Counters },
+    o: { events: EventPublisher; steps: AgentStep[]; counters: Counters; allowed: ReadonlySet<string> },
     r: {
       companyId: string;
       hypothesisId: string | null;
@@ -756,6 +769,8 @@ ${replyDraftNoteSection(prepared.outcome)}
       companyName: string | null;
       /** Tanda 22: the reply draft (or why it is not available); null = drafts disabled. */
       draft: ReplyDraftOutcome | null;
+      /** Tanda 23: validated qualification data of the reply (skill v2); null = none asked / none given. */
+      qualification: QualificationData | null;
     },
   ): Promise<CrmFollowUp> {
     const tools = ctx.tools!;
@@ -801,7 +816,7 @@ ${replyDraftNoteSection(prepared.outcome)}
       }
     }
 
-    // 3. Task «📬 Responder a <persona/empresa>» (or, tanda 22, «📅 Cerrar reunión con <empresa>»
+    // 3. Task «Responder a <persona/empresa> 📬» (or, tanda 22, «Cerrar reunión con <empresa> 📅»
     //    when the client accepts or proposes a meeting), due in 2 working days, with the draft.
     let companyName = r.companyName;
     const company = async (): Promise<string> => {
@@ -841,6 +856,56 @@ ${replyDraftNoteSection(prepared.outcome)}
     o.counters.reply_tasks++;
     if (meetingIntent) o.counters.meeting_tasks++;
     if (task.appended) out.signals.push('reply_task_draft_appended');
+
+    // 4. Tanda 23: the qualification onto the Opportunity (INTERESADO with one only). The note
+    //    «Cualificación — <empresa> 🧾» gets one section per reply; amount / closeDate are filled
+    //    only when empty. A Twenty error stops the run like the rest (retried, idempotent).
+    if (out.opportunityId && r.qualification && !isEmptyQualification(r.qualification) && o.allowed.has(INBOX_QUALIFICATION_TOOL)) {
+      const q = r.qualification;
+      const rec = (await call(INBOX_QUALIFICATION_TOOL, {
+        opportunityId: out.opportunityId,
+        companyId: r.companyId,
+        personId: out.personId,
+        companyName: await company(),
+        receivedLocal: r.receivedLocal,
+        data: { quantity: q.quantity, budget: q.budget, neededBy: q.neededBy, decisionMaker: q.decisionMaker, products: q.products },
+      })) as RecordQualificationOutput;
+      if (rec.found) {
+        o.counters.qualifications_recorded++;
+        out.signals.push('opportunity_qualified');
+        out.qualification = { noteId: rec.noteId, noteCreated: rec.noteCreated, sectionAppended: rec.sectionAppended, amount: rec.amount, closeDate: rec.closeDate };
+        // Audit: ids and FIELD NAMES only, never amounts, dates or quotes (client data stays in Twenty).
+        const db = this.deps.db;
+        if (db && rec.sectionAppended) {
+          const fields = (['quantity', 'budget', 'neededBy', 'decisionMaker', 'products'] as const).filter((k) => (k === 'products' ? q.products.length > 0 : q[k] !== null));
+          try {
+            await recordAudit(db, {
+              tenantId: ctx.tenantId,
+              actor: 'agent',
+              actorLabel: ctx.agent.name,
+              action: QUALIFICATION_AUDIT_ACTION,
+              subjectType: 'opportunity',
+              subjectId: out.opportunityId,
+              method: 'AGENT',
+              route: 'agent:inbox',
+              result: 'ok',
+              statusCode: 200,
+              payload: {
+                note_id: rec.noteId,
+                note_created: rec.noteCreated,
+                data_fields: fields,
+                opportunity_fields_set: [...(rec.amount === 'set' ? ['amount'] : []), ...(rec.closeDate === 'set' ? ['closeDate'] : [])],
+                opportunity_fields_kept: [...(rec.amount === 'kept' ? ['amount'] : []), ...(rec.closeDate === 'kept' ? ['closeDate'] : [])],
+                discarded_fields: q.discarded,
+                execution_id: ctx.executionId,
+              },
+            });
+          } catch {
+            o.counters.audit_errors += 1;
+          }
+        }
+      } else out.signals.push('qualification_opportunity_not_found');
+    }
     return out;
   }
 
@@ -893,9 +958,10 @@ ${replyDraftNoteSection(prepared.outcome)}
     }
 
     // Meeting proposal (code). An availability error falls back to «¿qué día os viene bien?».
+    const availability = this.deps.availability ?? NULL_AVAILABILITY;
     let proposal: MeetingProposal;
     try {
-      proposal = await (this.deps.availability ?? NULL_AVAILABILITY).propose({ now: this.clock(), count: rc.slots });
+      proposal = await availability.propose({ now: this.clock(), count: rc.slots });
     } catch {
       signals.push('availability_error');
       proposal = await NULL_AVAILABILITY.propose({ now: this.clock(), count: rc.slots });
@@ -905,6 +971,9 @@ ${replyDraftNoteSection(prepared.outcome)}
     const fromName = cleanPersonName(msg?.fromName ?? null);
     const firstName = fromName ? (fromName.split(/\s+/)[0] ?? null) : null;
     const system = useKnowledge(ctx, useSkill(ctx, REPLY_DRAFT_SKILL_ID, REPLY_DRAFT_SYSTEM_PROMPT));
+    // Tanda 23: the skill v2 (markers) also asks for the client's window and the qualification.
+    const caps = replyDraftCapabilities(system);
+    const today = localMinute(this.clock(), cfg.timezone).slice(0, 10);
     const eurBefore = o.llm.costEur();
     const call = await o.llm.completeJson({
       label: { step: 'reply_draft', uid: d.item.raw.uid },
@@ -913,7 +982,7 @@ ${replyDraftNoteSection(prepared.outcome)}
         {
           role: 'user',
           content: buildReplyDraftPrompt({
-            today: localMinute(this.clock(), cfg.timezone).slice(0, 10),
+            today,
             sender: { name: rc.sender.name, company: rc.sender.company, descriptor: rc.sender.descriptor },
             class: d.class as 'INTERESADO' | 'PREGUNTA',
             meetingIntent,
@@ -924,11 +993,12 @@ ${replyDraftNoteSection(prepared.outcome)}
             hypothesis,
             incoming: { subject: msg?.subject ?? '', text: msg?.authoredText ?? '' },
             textMax: rc.textMax,
+            ...(caps.window || caps.qualification ? { capabilities: caps } : {}),
           }),
         },
       ],
       parse: parseReplyDraft,
-      schema: REPLY_DRAFT_JSON_SCHEMA,
+      schema: replyDraftJsonSchema(caps),
       maxAttempts: rc.maxAttempts,
       maxTokens: rc.maxOutputTokens,
       model,
@@ -937,6 +1007,36 @@ ${replyDraftNoteSection(prepared.outcome)}
     const costEur = round6(o.llm.costEur() - eurBefore);
     if (call.status === 'model_error') return failed(`error del modelo (${call.code})`, { companyName, costEur, model });
     if (call.status === 'invalid') return failed(`la respuesta del modelo no cumplía las reglas (${call.message.slice(0, 200)})`, { companyName, costEur, model });
+
+    // Tanda 23: the client's window -> dates BY CODE -> slots inside it (or the normal horizon,
+    // said in the paragraph, when it leaves none). Never fatal: any error keeps the first proposal.
+    if (caps.window && call.value.ventana_cliente) {
+      const resolved = resolveClientWindow(call.value.ventana_cliente, this.clock(), cfg.timezone);
+      if (resolved.ignored) signals.push(`client_window_date_ignored:${resolved.ignored}`);
+      if (resolved.window) {
+        signals.push(`client_window:${resolved.tipo}${resolved.window.partOfDay ? `:${resolved.window.partOfDay}` : ''}`);
+        o.counters.client_windows++;
+        try {
+          proposal = await availability.propose({ now: this.clock(), count: rc.slots, window: resolved.window });
+          if (proposal.windowRelaxed) {
+            signals.push('client_window_relaxed');
+            o.counters.client_windows_relaxed++;
+          }
+        } catch {
+          signals.push('availability_error');
+        }
+      }
+    }
+    // Tanda 23: qualification data, kept only with a literal quote of the client's text.
+    let qualification: QualificationData | null = null;
+    if (caps.qualification && call.value.cualificacion) {
+      qualification = validateQualification(call.value.cualificacion, msg?.authoredText ?? '', today);
+      if (qualification.discarded.length > 0) {
+        signals.push('qualification_data_discarded');
+        o.counters.qualification_data_discarded += qualification.discarded.length;
+      }
+      if (isEmptyQualification(qualification)) qualification = null;
+    }
     const draft = finalizeReplyDraft(call.value, {
       sender: rc.sender,
       personFirstName: firstName,
@@ -947,7 +1047,7 @@ ${replyDraftNoteSection(prepared.outcome)}
       timeZone: cfg.timezone,
     });
     o.counters.reply_drafts_created++;
-    return { outcome: { status: 'created', draft, to: r.fromEmail, meetingIntent }, companyName, costEur, model, signals: [...signals, 'reply_draft_created'] };
+    return { outcome: { status: 'created', draft, to: r.fromEmail, meetingIntent }, companyName, costEur, model, qualification, signals: [...signals, 'reply_draft_created'] };
   }
 
   /**
@@ -989,6 +1089,8 @@ interface PreparedDraft {
   costEur: number;
   model: string | null;
   signals: string[];
+  /** Tanda 23: validated qualification (skill v2), null when none. */
+  qualification?: QualificationData | null;
 }
 
 interface CrmFollowUp {
@@ -999,6 +1101,8 @@ interface CrmFollowUp {
   opportunityCreated: boolean;
   taskId: string | null;
   signals: string[];
+  /** Tanda 23: what the qualification step wrote (no values). */
+  qualification?: { noteId: string | null; noteCreated: boolean; sectionAppended: boolean; amount: string; closeDate: string };
 }
 
 

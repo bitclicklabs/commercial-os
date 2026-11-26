@@ -85,7 +85,7 @@ describe('renderSkill', () => {
 
 describe('code skills (fallbacks and seed content)', () => {
   it('registers the MVP-0 prompts (and the tanda 22 reply draft) with their exact constants', () => {
-    expect(CODE_SKILLS.map((s) => s.name)).toEqual(['prospector-event-exhibitors', 'event-source-discovery', 'exhibitor-list-extraction', 'email-first-contact-draft', 'email-reply-draft']);
+    expect(CODE_SKILLS.map((s) => s.name)).toEqual(['prospector-event-exhibitors', 'event-source-discovery', 'exhibitor-list-extraction', 'email-first-contact-draft', 'email-reply-draft', 'email-followup-draft']);
     expect(codeSkill('prospector-event-exhibitors')!.text).toBe(PROSPECTOR_SYSTEM_PROMPT);
     expect(codeSkill('event-source-discovery')!.text).toBe(SCOUT_SEARCH_SYSTEM_PROMPT);
     expect(codeSkill('exhibitor-list-extraction')!.text).toBe(SCOUT_EXTRACT_SYSTEM_PROMPT);

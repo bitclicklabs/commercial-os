@@ -137,6 +137,15 @@ describe('CalendarAvailability (fake Twenty, read only)', () => {
     noWrites(fake);
   });
 
+  it('MEETING_CALENDAR_SYNCED: an empty synced calendar is an agenda with every slot free', async () => {
+    const fake = new FakeTwenty();
+    const synced = await new CalendarAvailability(fake.client(), cfg({ MEETING_CALENDAR_SYNCED: 'true' })).propose({ now: NOW, count: 3 });
+    expect(synced.source).toBe('calendar');
+    expect(synced.slots).toHaveLength(3);
+    expect(await new CalendarAvailability(fake.client(), cfg()).propose({ now: NOW, count: 3 })).toMatchObject({ slots: [], source: 'none' });
+    noWrites(fake);
+  });
+
   it('associations hidden from the role: falls back to the events themselves; nothing readable -> link/none', async () => {
     const fake = withCalendar();
     fake.hiddenObjects.add('calendarChannelEventAssociations');
@@ -249,8 +258,8 @@ describe('meeting sync rules', () => {
   });
 
   it('texts: title, note and task body with plain values and no promise to send anything', () => {
-    expect(meetingTaskTitle('Cliente "SA"')).toBe('🧾 Preparar reunión con Cliente SA');
-    expect(meetingTaskTitle(null)).toBe('🧾 Preparar reunión con la empresa');
+    expect(meetingTaskTitle('Cliente "SA"')).toBe('Preparar reunión con Cliente SA 🧾');
+    expect(meetingTaskTitle(null)).toBe('Preparar reunión con la empresa 🧾');
     const base = { startsAt: new Date('2026-11-30T09:00:00Z'), endsAt: new Date('2026-11-30T09:30:00Z'), title: 'Demo **merch** [x](http://evil)', attendees: ['Ana <ana@cliente.example>'], location: null, conferenceUrl: 'https://meet.example/x' };
     const note = meetingNoteBody({ ...base, stageFrom: 'NEW', stageTo: 'MEETING', via: 'point_of_contact' });
     expect(note).toContain('📅 Reunión detectada en tu calendario: 2026-11-30 10:00–10:30 (Europe/Madrid), Demo merch xhttp://evil');

@@ -328,7 +328,8 @@ export interface VersionState {
 }
 
 export function revalidationNoteTitle(subjectName: string, version: number): string {
-  return `⚠️ Revalidación fallida — ${subjectName} v${version}`;
+  // Tanda 23: text first, emoji last (Twenty draws the task icon with the first character).
+  return `Revalidación fallida — ${subjectName} v${version} ⚠️`;
 }
 
 export interface RevalidationNoteInput {

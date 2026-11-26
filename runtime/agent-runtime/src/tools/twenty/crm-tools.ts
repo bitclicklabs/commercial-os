@@ -9,7 +9,7 @@
  * - `upsert_opportunity`: the company's OPEN Opportunity, created at the first stage of the
  *   workspace when there is none (`«<Empresa> — <feria>»`, no amount); attaches the reply note.
  *   InboxAgent only (INTERESADO replies): never a bulk copy of hypotheses.
- * - `create_reply_task`: the Task «📬 Responder a <persona/empresa>» (TODO, due in 2 working
+ * - `create_reply_task`: the Task «Responder a <persona/empresa> 📬» (TODO, due in 2 working
  *   days) linked to the opportunity / company / person. InboxAgent only.
  *
  * Person and Opportunity have no `tenantId` (standard objects); the hypothesis read to name the
@@ -19,7 +19,7 @@ import { z } from 'zod';
 import { OPPORTUNITY_NAME_MAX } from '../../crm/opportunities.js';
 import { openOpportunityFor, PromotionError } from '../../crm/promote.js';
 import { personMailbox, upsertPerson } from '../../crm/people.js';
-import { meetingTaskTitle, replyTaskTitle, twentyRecordUrl, upsertReplyTask } from '../../crm/reply-task.js';
+import { legacyMeetingTaskTitle, legacyReplyTaskTitle, meetingTaskTitle, replyTaskTitle, twentyRecordUrl, upsertReplyTask } from '../../crm/reply-task.js';
 import { defineTool } from '../types.js';
 import { errorResult, RecordId, withTwenty, type TwentyToolDeps } from './shared.js';
 
@@ -142,7 +142,7 @@ export function createUpsertOpportunityTool(deps: TwentyToolDeps) {
 }
 
 export const CreateReplyTaskInput = z.object({
-  /** Who to answer: the person's name, or the company. Title = «📬 Responder a <who>». */
+  /** Who to answer: the person's name, or the company. Title = «Responder a <who> 📬» (tanda 23: emoji at the end). */
   who: z.string().trim().min(1).max(200),
   bodyMarkdown: z.string().trim().min(1).max(10_000),
   dueAt: z.iso.datetime({ offset: true }),
@@ -152,8 +152,8 @@ export const CreateReplyTaskInput = z.object({
   /** The 📬 note of the reply: its link (and the opportunity's) is appended to the body. */
   noteId: RecordId.nullable().optional(),
   /**
-   * Tanda 22: `meeting` = the client accepts or proposes a meeting; title «📅 Cerrar reunión con
-   * <who>» (`who` = the company). Default `reply`: «📬 Responder a <who>».
+   * Tanda 22: `meeting` = the client accepts or proposes a meeting; title «Cerrar reunión con
+   * <who> 📅» (`who` = the company). Default `reply`: «Responder a <who> 📬».
    */
   kind: z.enum(['reply', 'meeting']).optional().default('reply'),
   /** Tanda 22: appended (once, by marker) to the body of an open task that is reused. */
@@ -173,7 +173,7 @@ export function createCreateReplyTaskTool(deps: TwentyToolDeps) {
     name: 'Create reply task',
     version: '1.0.0',
     description:
-      'Create the CRM task «📬 Responder a <who>» (or «📅 Cerrar reunión con <who>» for kind meeting; status TODO, with a due date) linked to the opportunity, company and person of a reply. An open task with the same title on the same opportunity/company is reused. Never sends anything.',
+      'Create the CRM task «Responder a <who> 📬» (or «Cerrar reunión con <who> 📅» for kind meeting; status TODO, with a due date) linked to the opportunity, company and person of a reply. An open task with the same title (or its older emoji-first spelling) on the same opportunity/company is reused. Never sends anything.',
     inputSchema: CreateReplyTaskInput,
     outputSchema: CreateReplyTaskOutput,
     riskLevel: 'LOW_WRITE',
@@ -190,6 +190,8 @@ export function createCreateReplyTaskTool(deps: TwentyToolDeps) {
           deps.twenty,
           {
             title: input.kind === 'meeting' ? meetingTaskTitle(input.who) : replyTaskTitle(input.who),
+            // Tanda 23: the open task created before the change («📬 Responder a …») is reused too.
+            legacyTitles: [input.kind === 'meeting' ? legacyMeetingTaskTitle(input.who) : legacyReplyTaskTitle(input.who)],
             bodyMarkdown: [
               input.bodyMarkdown,
               ...(input.noteId || input.opportunityId ? [''] : []),

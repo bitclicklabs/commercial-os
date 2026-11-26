@@ -39,6 +39,12 @@ export interface MeetingConfig {
   bookingUrl: string | null;
   videoUrl: string | null;
   internalDomains: string[];
+  /**
+   * MEETING_CALENDAR_SYNCED: the operator states that the salesperson's calendar is synced in
+   * Twenty. The REST API cannot tell an EMPTY synced calendar from no calendar at all (calendar
+   * channels are not exposed), so without this an empty agenda proposes no slots.
+   */
+  calendarSynced: boolean;
 }
 
 const intIn = (raw: string | undefined, min: number, max: number, fallback: number): number => {
@@ -99,5 +105,6 @@ export function meetingConfigFromEnv(env: NodeJS.ProcessEnv = process.env): Meet
     bookingUrl: httpUrlOrNull(env.MEETING_BOOKING_URL),
     videoUrl: httpUrlOrNull(env.MEETING_VIDEO_URL),
     internalDomains: domains.length > 0 ? domains : [...DEFAULT_MEETING_INTERNAL_DOMAINS],
+    calendarSynced: /^(1|true|yes|si|sí)$/i.test((env.MEETING_CALENDAR_SYNCED ?? '').trim()),
   };
 }

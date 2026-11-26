@@ -191,7 +191,7 @@ describe.skipIf(!dbAvailable)('inbound triage: process-inbox -> InboxAgent -> no
     );
     // Notes: the interested reply and the hard bounce, on the company + hypothesis of the send.
     const notes = fake.tables.notes!.filter((n) => n.id !== supp.id);
-    expect(notes.map((n) => n.title).sort()).toEqual(['⚠️ Rebote: el email no existe (2026-10-08 12:00)', '📬 Respuesta recibida — Interesado (2026-10-08 10:00)']);
+    expect(notes.map((n) => n.title).sort()).toEqual(['Rebote: el email no existe (2026-10-08 12:00) ⚠️', 'Respuesta recibida — Interesado (2026-10-08 10:00) 📬']);
     for (const n of notes) {
       const targets = fake.tables.noteTargets!.filter((t) => t.noteId === n.id);
       expect(targets.map((t) => t.targetCompanyId ?? t.targetCommercialHypothesisId).filter(Boolean).sort()).toEqual([company.id, hypothesisId].sort());
@@ -203,7 +203,7 @@ describe.skipIf(!dbAvailable)('inbound triage: process-inbox -> InboxAgent -> no
     const carmen = fake.tables.people[0]!;
     expect(fake.tables.opportunities).toEqual([expect.objectContaining({ name: 'Cliente SA', stage: 'NEW', companyId: company.id, pointOfContactId: carmen.id })]);
     const opp = fake.tables.opportunities[0]!;
-    expect(fake.tables.tasks).toEqual([expect.objectContaining({ title: '📬 Responder a Carmen', status: 'TODO', dueAt: '2026-10-12T07:00:00.000Z' })]);
+    expect(fake.tables.tasks).toEqual([expect.objectContaining({ title: 'Responder a Carmen 📬', status: 'TODO', dueAt: '2026-10-12T07:00:00.000Z' })]);
     // Tanda 22: the draft of the answer in the task body (never sent), with the meeting paragraph.
     const taskMd = (fake.tables.tasks[0]!.bodyV2 as { markdown: string }).markdown;
     expect(taskMd).toContain('### Borrador de respuesta');
@@ -211,7 +211,7 @@ describe.skipIf(!dbAvailable)('inbound triage: process-inbox -> InboxAgent -> no
     expect(taskMd).toContain('¿Qué día y hora os vendría bien para una llamada de 30 minutos?');
     expect(taskMd).toContain('PubliEXPE · expertos en merchandising para empresas');
     expect(fake.tables.taskTargets.map((t) => t.targetOpportunityId ?? t.targetCompanyId ?? t.targetPersonId).sort()).toEqual([opp.id, company.id, carmen.id].sort());
-    const interestedNote = notes.find((n) => String(n.title).startsWith('📬'))!;
+    const interestedNote = notes.find((n) => String(n.title).startsWith('Respuesta recibida'))!;
     expect(fake.tables.noteTargets.filter((t) => t.noteId === interestedNote.id && (t.targetOpportunityId === opp.id || t.targetPersonId === carmen.id))).toHaveLength(2);
     // opportunity.created in the events table (for n8n): ids only.
     const oppEvents = await handle.db.query.events.findMany({ where: and(eq(events.tenantId, tenant), eq(events.type, 'opportunity.created')) });
@@ -300,13 +300,13 @@ describe.skipIf(!dbAvailable)('inbound triage: process-inbox -> InboxAgent -> no
     expect(fake.tables.people.map((p) => (p.name as { firstName: string; lastName: string }).firstName).sort()).toEqual(['Carmen', 'Pedro']);
     expect(fake.tables.people.find((p) => (p.name as { firstName: string }).firstName === 'Pedro')).toMatchObject({ name: { firstName: 'Pedro', lastName: 'Sanz' }, companyId: company.id });
     // Pedro's question: its own task, on the company and the person, not on the opportunity.
-    const pedroTask = fake.tables.tasks.find((t) => t.title === '📬 Responder a Pedro Sanz')!;
+    const pedroTask = fake.tables.tasks.find((t) => t.title === 'Responder a Pedro Sanz 📬')!;
     expect(fake.tables.taskTargets.filter((t) => t.taskId === pedroTask.id).some((t) => t.targetOpportunityId)).toBe(false);
     // Carmen's second reply: the open «📬 Responder a Carmen» task is reused; no new event.
     expect(fake.tables.tasks).toHaveLength(2);
     // Tanda 22: both drafts; Carmen's reused task gets the new reply and its draft appended.
     expect(run.output).toMatchObject({ counters: { reply_drafts_created: 2, reply_drafts_failed: 0 } });
-    const carmenMd = (fake.tables.tasks.find((t) => t.title === '📬 Responder a Carmen')!.bodyV2 as { markdown: string }).markdown;
+    const carmenMd = (fake.tables.tasks.find((t) => t.title === 'Responder a Carmen 📬')!.bodyV2 as { markdown: string }).markdown;
     expect(carmenMd).toContain('añado las 200 bolsas');
     expect(carmenMd).toContain('Te preparo una propuesta de 500 bolsas');
     expect(await handle.db.query.events.findMany({ where: and(eq(events.tenantId, tenant), eq(events.type, 'opportunity.created')) })).toHaveLength(1);

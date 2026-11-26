@@ -20,7 +20,7 @@
 import type { Db } from '../db/client.js';
 import { ImapError, ImapFlowMailboxReader, imapConfigFromEnv, mailboxKey, type ImapConfig, type MailboxReader, type MailboxSession } from '../inbound/imap-mailbox.js';
 import { DrizzleInboundStateStore, type InboundStateStore } from '../inbound/inbound-state.js';
-import { localDate, sanitizeSubject, SUPPRESSION_NOTE_ID, SUPPRESSION_NOTE_TITLE, suppressionLine } from '../inbound/suppression-list.js';
+import { localDate, sanitizeSubject, SUPPRESSION_NOTE_TITLE, suppressionLine, suppressionNoteId } from '../inbound/suppression-list.js';
 import { appendSuppressionEntries } from '../inbound/suppression-writer.js';
 import { classifyMessage, DEFAULT_CLASSIFIER_CONFIG, parseMessage, type BajaSignal, type ClassifierConfig } from '../inbound/unsubscribe-classifier.js';
 import type { AgentContext, AgentImplementation, AgentResult, AgentStep } from './agent.js';
@@ -49,7 +49,7 @@ export function readBajasConfig(configuration: Record<string, unknown>): BajasCo
   const str = (v: unknown, d: string) => (typeof v === 'string' && v.trim().length > 0 ? v.trim() : d);
   const since = str(configuration.initial_since, '2026-10-06');
   return {
-    noteId: str(configuration.suppression_note_id, SUPPRESSION_NOTE_ID),
+    noteId: suppressionNoteId(configuration.suppression_note_id),
     noteTitle: str(configuration.suppression_note_title, SUPPRESSION_NOTE_TITLE),
     mailbox: typeof configuration.imap_mailbox === 'string' && configuration.imap_mailbox.length > 0 ? configuration.imap_mailbox : undefined,
     initialSince: /^\d{4}-\d{2}-\d{2}$/.test(since) ? since : '2026-10-06',

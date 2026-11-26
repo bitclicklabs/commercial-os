@@ -12,6 +12,7 @@
  * holds the standard `opportunities` / `tasks` / `taskTargets` and serves the stage options of
  * `GET /rest/open-api/core`. Since tanda 22 it also has the (empty) calendar objects and the `[in]`
  * and range filters: an experiment run sees «no calendar channel», like a workspace without one.
+ * Since tanda 23 the (empty) mail objects too: «no messages», like a workspace without a mailbox.
  */
 import { randomUUID } from 'node:crypto';
 import { TwentyClient } from './client.js';
@@ -33,6 +34,9 @@ const SINGULAR: Record<string, string> = {
   calendarEvents: 'CalendarEvent',
   calendarEventParticipants: 'CalendarEventParticipant',
   calendarChannelEventAssociations: 'CalendarChannelEventAssociation',
+  messages: 'Message',
+  messageParticipants: 'MessageParticipant',
+  messageThreads: 'MessageThread',
 };
 /** `opportunity.stage` options of a default Twenty workspace, in order (tanda 19). */
 const OPPORTUNITY_STAGES = ['NEW', 'SCREENING', 'MEETING', 'PROPOSAL', 'CUSTOMER'];

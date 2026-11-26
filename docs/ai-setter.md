@@ -4,7 +4,7 @@ El **AI Setter** es el papel que el Commercial OS asume desde la tanda 22: **con
 
 Este documento explica el modelo (niveles de autonomía y embudo), el ciclo completo de la tanda A (hecha y probada), las piezas de la tanda B (hecha: secuencias de seguimiento, retomar conversación, cualificación, huecos que respetan el plazo del cliente y títulos sin emoji delante) y las de la tanda C (la última: ficha previa a la reunión, métricas del setter y la regla del «vosotros»). Termina con [el AI Setter completo](#el-ai-setter-completo), el embudo de punta a punta. Lo que haces tú día a día está en la [guía del equipo comercial](guia-comercial.md#responder-y-cerrar-reuniones); la configuración, en el [runbook](runbook-local.md).
 
-> **Nota:** la tanda A está reconciliada con la implementación de la tanda 22. La tanda B (tanda 23) está reconciliada con la implementación del FollowUpAgent v2. La tanda C (tanda 24) se documentó mientras se implementaba: todo lo que depende del código y aún no está contrastado va marcado `[POR CONFIRMAR]`. Si un nombre de variable, tarea o skill difiere del código, manda el [README del runtime](../runtime/agent-runtime/README.md).
+> **Nota:** la tanda A está reconciliada con la implementación de la tanda 22. La tanda B (tanda 23) está reconciliada con la implementación del FollowUpAgent v2. La tanda C (tanda 24) está reconciliada con la implementación de la ficha previa y de las métricas del setter. Si un nombre de variable, tarea o skill difiere del código, manda el [README del runtime](../runtime/agent-runtime/README.md).
 
 ## Contenido
 
@@ -211,66 +211,76 @@ El seguimiento de la secuencia cubre los envíos que nadie contestó. Falta un c
 
 ## Tanda C: ficha previa, métricas y trato de vosotros
 
-> **Estado: en curso (tanda 24, 2026-11-26).** Es la última tanda del AI Setter y mantiene el nivel 1: el sistema prepara, tú decides. Lo que depende del código aún sin contrastar va marcado `[POR CONFIRMAR]`.
+> **Estado: tanda 24, 2026-11-26.** Es la última tanda del AI Setter y mantiene el nivel 1: el sistema prepara, tú decides.
 
 Añade tres piezas.
 
 ### 1. Ficha previa a la reunión
 
-Cuando `meeting-sync` detecta en el calendario una reunión con el contacto de una **Oportunidad abierta**, la Task **«Preparar reunión con {empresa} 🧾»** (vence el día anterior) ya no es solo un recordatorio: **trae una ficha** generada por una skill nueva y versionada, `meeting-brief` (v1) `[POR CONFIRMAR: estado inicial de la versión, ACTIVE o DRAFT]`.
+Cuando `meeting-sync` detecta en el calendario una reunión con el contacto de una **Oportunidad abierta**, genera la ficha **dentro de la Task «Preparar reunión con {empresa} 🧾»** (vence el día anterior). La redacta la skill versionada `meeting-brief` (v1, sembrada **ACTIVE**), con una nueva versión del MeetingSyncAgent que usa el modelo de redacción `executor_cheap` y el conocimiento `email` y `prospeccion`.
 
 La ficha contiene:
 
 | Sección | Qué te cuenta |
 |---|---|
-| **Quién es** | Persona, cargo y empresa. |
-| **De dónde viene** | La feria o la señal que originó el contacto y **por qué ahora**. |
-| **La conversación** | De 3 a 5 viñetas con **citas literales** de los correos. |
-| **Datos de cualificación** | Cantidad, presupuesto, fecha, decisor y productos de interés, si el cliente los dijo (los de la nota «Cualificación 🧾»). |
-| **Lo que falta saber** | Los huecos de información que conviene cerrar en la reunión. |
-| **3 preguntas sugeridas** | Para abrir cada hueco sin interrogar al cliente. |
-| **Agenda de 30 minutos** | Un guion de la reunión con tiempos. |
-| **Qué llevar** | Muestras, la propuesta anterior, catálogo u otro material mencionado en la conversación. |
+| **Empresa, Contacto y «Oportunidad (CRM)»** | Etapa, importe y fecha de cierre. Los pinta el código, no el modelo. |
+| **Quién** | Quién es la persona de contacto. |
+| **Cómo llegamos** | De dónde viene el contacto (feria o señal) y por qué ahora. |
+| **Conversación** | De 3 a 5 viñetas. Las del cliente llevan **cita literal verificada** contra su correo; las que no se pueden verificar se **descartan** y la ficha dice cuántas. |
+| **Datos de cualificación** | Copiados **por código** de la nota «Cualificación 🧾»; nunca los escribe el modelo. |
+| **Huecos** | Lo que falta saber. |
+| **3 preguntas sugeridas** | Para cerrar esos huecos. |
+| **Agenda (30 min)** | Un guion de la reunión. |
+| **Qué llevar** | El material que conviene preparar. |
 
 Reglas:
 
-- **Nunca inventa datos ni precios.** Todo lo que afirma sale del CRM o de los correos; lo que no consta, aparece en «Lo que falta saber».
-- **Se actualiza si llegan correos nuevos.** Si entran correos del cliente entre la creación de la ficha y la reunión, el sistema **añade al final una sección «Actualización — {fecha}»** con lo nuevo; no reescribe lo anterior.
-- **Si el modelo falla, la ficha sale mínima, generada por código** (quién es, de dónde viene y últimos mensajes, sin análisis). La Task se crea igualmente: no se pierde el aviso.
-- **Modo prueba:** se puede generar la ficha de una Oportunidad concreta sin esperar a una reunión real `[POR CONFIRMAR: parámetro exacto y si escribe en Twenty]`.
+- **Sin precios ni enlaces.** La ficha no inventa datos.
+- **Actualizaciones.** Si llegan correos nuevos, se añade al final una sección **«Actualización — AAAA-MM-DD»**. Como máximo una por día, nunca el mismo día que la ficha inicial, y solo si el evento sigue en el calendario, no está cancelado y es futuro. Si la Task ya está en DONE, no se añade nada.
+- **Límite por pasada.** Como máximo 10 fichas completas por ejecución (`meeting_brief.max_per_run`); por encima, las demás salen mínimas y su actualización se aplaza.
+- **Ficha mínima por código (sin modelo)** si no hay correos, ni hipótesis, ni nota de cualificación, o si el modelo falla. Incluye quién es, el origen, los últimos correos (fecha y asunto), la cualificación y la frase «ficha completa no disponible: <motivo>». La Task se crea igualmente.
+- **Qué hilo lee.** El de los correos del punto de contacto o de las personas de la empresa con dirección no genérica, de los últimos 180 días; al modelo le llegan los 8 correos más recientes.
+- **Auditoría:** `opportunity.meeting_brief`.
+- **Modo prueba:** `meeting-sync` con `{dry_run:true, opportunity_id}` genera la ficha de esa Oportunidad sin leer el calendario (si no existe, termina `SKIPPED` con `opportunity_not_found`); con `{dry_run:true}` devuelve `would_detect`.
 
-> **Importante:** la ficha es una ayuda de lectura, no una promesa al cliente. Comprueba las citas contra el hilo antes de apoyarte en ellas.
+> **Importante:** requiere que Gemini esté disponible y que el correo conectado en Twenty tenga visibilidad **Share everything**. La ficha es una ayuda de lectura, no una promesa al cliente.
 
 ### 2. Métricas del setter y resumen semanal
 
 El sistema mide el embudo del AI Setter de dos formas:
 
-- **`GET /metrics/setter`**, un endpoint del runtime con las cifras del setter `[POR CONFIRMAR: parámetros, p. ej. ventana de fechas]`.
-- **Una nota semanal en Twenty**, cada **lunes a las 08:45** (`Europe/Madrid`), titulada **«Resumen semanal del setter — semana del DD/MM 📊»**. La genera la tarea `setter-weekly-report` `[POR CONFIRMAR: nombre en el seed]`.
+- **`GET /metrics/setter?from=AAAA-MM-DD&to=AAAA-MM-DD`**, un endpoint del runtime. Las fechas son días locales de Madrid y `to` es exclusivo. Por defecto cubre los últimos 7 días, incluido hoy; el máximo es 92 días.
+- **Una nota semanal en Twenty**, cada **lunes a las 08:45** (`Europe/Madrid`), titulada **«Resumen semanal del setter — semana del DD/MM 📊»**. La genera la tarea `setter-weekly-report` (agente SetterReportAgent, **sin modelo, coste 0**). Informa de la semana **anterior** y la compara con la previa. La nota no se enlaza a ningún registro.
 
-La nota recoge la semana que termina, comparada con la anterior:
+Qué mide y de dónde sale:
 
 | Bloque | Qué mide |
 |---|---|
-| Primeros contactos y seguimientos | Cuántos envíos iniciales y cuántos seguimientos salieron. |
-| Respuestas por clase | Cuántas respuestas hubo de cada clase del triaje (interesado, pregunta, no interesado...). |
-| **Tasa de respuesta** | Sobre una **cohorte de 30 días**: de los contactos enviados en los últimos 30 días, qué proporción ha contestado. Evita que un envío de ayer cuente como «sin respuesta». |
-| Interesados | Respuestas con interés real. |
-| Reuniones detectadas | Reuniones que `meeting-sync` encontró en el calendario. |
-| Oportunidades por etapa | Cuántas hay en `New`, `Screening`, `Meeting`, `Proposal` y `Customer`. |
-| **Velocidad de respuesta del comercial** | La **mediana de horas laborables** entre la respuesta del cliente y la nuestra. Mide tu rapidez, no la del sistema. |
-| Respuestas sin contestar | Respuestas de clientes que siguen esperando contestación. |
-| Tareas vencidas | Tareas del sistema que han pasado su fecha sin hacerse. |
-| Coste de IA | Gasto en modelos de la semana. |
-| Desglose por feria | Las cifras anteriores agrupadas por la feria de origen. |
-| Comparación | Cada cifra frente a la semana anterior. |
-| **Para esta semana** | Una lista corta de lo que conviene hacer ya. Cómo usarla: [guía comercial](guia-comercial.md#el-resumen-semanal-del-setter). |
+| **Primeros contactos** | Los envíos de `email_sends` más los salientes del buzón a direcciones sin mensajes previos (uno por destinatario). Un saliente a ±15 minutos de un envío de `email_sends` al mismo destinatario es la misma copia. |
+| **Seguimientos** | El resto de salientes. |
+| **Respuestas por clase** | El triaje del buzón por clase; las automáticas y otras, aparte. |
+| **Tasa de respuesta (cohorte)** | De los primeros contactos enviados en el periodo, cuántos tienen respuesta humana en los 30 días siguientes. La cohorte puede seguir abierta. |
+| **Reuniones detectadas** | Los eventos `opportunity.meeting_detected` de la auditoría. |
+| **Oportunidades por etapa** | Las abiertas, según Twenty. |
+| **Velocidad de respuesta del comercial** | Mediana de horas laborables (lunes a viernes, 9:00-18:00, sin festivos) hasta nuestro siguiente correo. Solo para INTERESADO y PREGUNTA. |
+| **Sin contestar** | Esas respuestas con más de 9 horas laborables de espera en los últimos 30 días. |
+| **Tareas vencidas** | Tasks del sistema en TODO o IN_PROGRESS con vencimiento pasado (títulos nuevos y antiguos). |
+| **Coste de IA** | El de `agent_executions`. |
+| **Por feria** | Envíos → hipótesis → señal; si no se puede, «sin atribuir». |
+| **Para esta semana** | Una lista corta de lo que conviene hacer ya. Cómo usarla: [guía comercial](guia-comercial.md#el-resumen-semanal-del-setter-tanda-24). |
 
-> **Nota:** es una nota, no una tarea: te informa, no te asigna trabajo. Las acciones de «Para esta semana» las decides tú. Los criterios con los que se redacta esa sección `[POR CONFIRMAR]`.
+Reglas:
+
+- **Lo ilegible sale como n/d** («no disponible», con el motivo), **nunca como 0**.
+- **Idempotente por semana:** deja la marca `metrics.setter_weekly` en la auditoría; si se pierde la marca, reutiliza la nota por título dentro de los últimos 14 días.
+- **Modo prueba:** `{dry_run:true, week_of:'AAAA-MM-DD'}`.
+- **Ensayo real del 2026-11-26 (semana del 23/11):** 1 seguimiento enviado, 1 respuesta humana (interesado), coste de IA de 1,62 € y 1 oportunidad abierta en SCREENING.
+
+> **Importante:** la semana anterior sale a cero porque el historial se perdió el 2026-11-26. **Las comparaciones son fiables a partir de la semana del 30/11.**
 
 ### 3. Regla de estilo: «vosotros» coherente
 
-Se ha añadido una regla de conocimiento, `email/trato-vosotros-coherente`, **activa desde el 2026-11-26**: **a una empresa se le escribe siempre de «vosotros», de principio a fin, sin mezclar «te» con «os»**. Nació de una corrección del comercial a un borrador real que empezaba en plural y acababa tuteando a un solo interlocutor. Aplica a los borradores que redactan las skills `[POR CONFIRMAR: cuáles la consumen]`.
+Se ha añadido una regla de conocimiento, `email/trato-vosotros-coherente`, **activa desde el 2026-11-26**: **a una empresa se le escribe siempre de «vosotros», de principio a fin, sin mezclar «te» con «os»**. Nació de una corrección del comercial a un borrador real que empezaba en plural y acababa tuteando a un solo interlocutor. La reciben todas las skills que inyectan el dominio `email`: los borradores de primer contacto, de respuesta y de seguimiento, y la ficha previa.
 
 ## El AI Setter completo
 

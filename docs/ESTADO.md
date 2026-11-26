@@ -276,3 +276,19 @@ Notas:
 - **Siguiente (tanda C del AI Setter):** traspaso con ficha previa a la reunión y métricas de setter.
 - **Riesgo a vigilar:** el segundo seguimiento depende de que Twenty importe los correos enviados del buzón y de que el rol «Agent runtime» pueda leerlos `[POR CONFIRMAR]`.
 - **Decisión de producto:** se mantiene el nivel 1 de autonomía; nada sale sin un clic humano.
+
+## Tanda 24 — AI Setter, tanda C: ficha previa y métricas 🚧 (en curso, 2026-11-26)
+
+Origen: última tanda del AI Setter, con el mismo **nivel 1 de autonomía** (el sistema prepara, el humano envía y agenda). La tanda B (tanda 23) queda **hecha**: seguimientos en hilo y «Retomar conversación» desplegados; esta última se estrenó el 2026-11-26 con Adpan (Task real creada, correo enviado por el comercial, insistencia agotada con 2 salientes seguidos sin respuesta por decisión del usuario). La tanda C cierra el embudo: el traspaso a la reunión y la medición. Modelo completo en [ai-setter.md](ai-setter.md#el-ai-setter-completo).
+
+| Pieza | Rama | Agente | Estado |
+|---|---|---|---|
+| **A. Ficha previa a la reunión**: skill versionada `meeting-brief` (v1); la Task «Preparar reunión con {empresa} 🧾» trae quién es, de dónde viene, la conversación en 3-5 viñetas con citas literales, datos de cualificación, lo que falta saber, 3 preguntas, agenda de 30 minutos y qué llevar; sección «Actualización — fecha» si entran correos nuevos; ficha mínima por código si el modelo falla; modo prueba con una Oportunidad concreta. Nunca inventa datos ni precios | `brief24` | Opus | 🚧 en curso |
+| **B. Métricas del setter**: `GET /metrics/setter` y nota semanal en Twenty cada lunes a las 08:45 («Resumen semanal del setter — semana del DD/MM 📊»): primeros contactos, seguimientos, respuestas por clase, tasa de respuesta (cohorte de 30 días), interesados, reuniones detectadas, oportunidades por etapa, velocidad de respuesta del comercial (mediana de horas laborables), respuestas sin contestar, tareas vencidas, coste de IA, desglose por feria, comparación con la semana anterior y «Para esta semana» | `metrics24` | Opus | 🚧 en curso |
+| **Regla de estilo**: knowledge `email/trato-vosotros-coherente` (a una empresa, siempre «vosotros»; nunca mezclar «te» con «os»), activa desde el 2026-11-26; nació de una corrección del comercial a un borrador real | (conocimiento, sin rama) | PM | ✅ activa |
+| **C. Docs**: ai-setter.md (tanda B hecha, tanda C, «El AI Setter completo»), guía comercial (ficha previa, resumen semanal, «vosotros»), runbook (`setter-weekly-report`, `meeting-sync`, endpoint, problemas frecuentes), ESTADO y CHANGELOG | `docs/tanda24` (wt24-docs) | Sonnet | ✅ entregado (todo lo que depende de la implementación queda marcado `[POR CONFIRMAR]` para reconciliar al integrar) |
+| Integración, e2e y PR | `feat/tanda24` (wt24-integracion) | PM | ⏳ pendiente |
+
+Notas:
+- **Fin del AI Setter por tandas:** con la C, el embudo queda completo en el nivel 1. Subir al nivel 2 exige una decisión nueva del usuario; el resumen semanal aporta los datos para tomarla.
+- **Pendiente al integrar:** reconciliar los `[POR CONFIRMAR]` de los docs con el código (estado inicial de `meeting-brief`, parámetros de `/metrics/setter`, nombre de la tarea del seed, modo prueba).

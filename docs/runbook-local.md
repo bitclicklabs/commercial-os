@@ -254,6 +254,8 @@ Las contraseñas de Postgres solo se aplican al crear el volumen por primera vez
    - Desde la tanda 21, `weekly-event-scouting` lleva en su input una **lista de sectores** (alimentación y bebidas, horeca y food service, farmacia y salud, cosmética y belleza, franquicias y retail, industria y packaging) en lugar de un solo sector, y descubre además [señales de empresa](prospeccion-por-senales.md#señales-de-empresa-más-allá-de-las-ferias). En una BD existente, `pnpm seed` añade una versión nueva de la task; la anterior no se borra. `[POR CONFIRMAR]` el nombre del campo de la lista.
    - Desde la tanda 21, crea la tarea de [seguimiento de leads enviados](seguimiento-leads.md) (chequeo diario a las 08:30, `Europe/Madrid`). La tarea es `lead-followup-check` (CRON, agente FollowUpAgent).
    - Desde la tanda 22, crea la tarea `meeting-sync` (cada 30 minutos): lee el calendario sincronizado en Twenty y, si un evento tiene como participante a la persona o empresa de una Oportunidad abierta, la pasa a `Meeting`, deja una nota y crea la Task «🧾 Preparar reunión con {empresa}». Nunca retrocede etapas y nunca crea eventos ni envía invitaciones; sin calendario sincronizado, termina sin hacer nada. `[POR CONFIRMAR]` nombre del agente y si el `SKIPPED` sin calendario es el resultado del run. Además, el triaje del buzón (`process-unsubscribes`) usa la skill `email-reply-draft` para redactar el borrador de respuesta ([AI Setter](ai-setter.md)); el seed la siembra como v1 `ACTIVE` `[POR CONFIRMAR]`.
+   - Desde la tanda 24, crea la tarea `setter-weekly-report` `[POR CONFIRMAR: nombre exacto en el seed]`: `CRON 45 8 * * 1` en `Europe/Madrid` (cada lunes a las 08:45). Agente sin modelo `[POR CONFIRMAR]`; escribe la nota «Resumen semanal del setter — semana del DD/MM 📊» en Twenty. Es idempotente por semana: repetirla no duplica la nota `[POR CONFIRMAR]`.
+   - Desde la tanda 24, `meeting-sync` cambia: además de mover la Oportunidad y crear la Task «Preparar reunión con {empresa} 🧾», genera la **ficha previa** con la skill `meeting-brief` (v1) y, si entran correos nuevos antes de la reunión, añade a la Task una sección «Actualización — {fecha}». Si el modelo falla, la ficha sale mínima por código. En una BD existente, `pnpm seed` actualiza la tarea `[POR CONFIRMAR: si hace falta repasar el input]`. La skill `meeting-brief` se siembra como v1 `[POR CONFIRMAR: ACTIVE o DRAFT]`: compruébalo con [`GET /skills`](#skills-comprobar-que-están-activas).
    - Deja desactivada la tarea de test huérfana que quedó de pruebas anteriores. Desactivar no borra: el registro y sus ejecuciones se conservan.
 
    Opciones: `pnpm seed -- --tenant=otro --input=evento.json`. Detalles en el [README del runtime](../runtime/agent-runtime/README.md#seed).
@@ -695,6 +697,27 @@ Para ver qué ficheros se han generado, lista el directorio de archivo (`ls -lh 
 
 > **Nota:** si un fichero archivado falta, la traza no se puede rehidratar y el paso devuelve el puntero tal cual. Restaura el archivo desde la copia de seguridad.
 
+## Métricas del setter
+
+Desde la tanda 24, el runtime expone las cifras del embudo del [AI Setter](ai-setter.md#2-métricas-del-setter-y-resumen-semanal) en `GET /metrics/setter`. La misma información alimenta la nota semanal de los lunes.
+
+1. Consulta el endpoint:
+
+   ```bash
+   curl "http://127.0.0.1:4020/metrics/setter" -H 'x-tenant-id: publiexpe'
+   ```
+
+   `[POR CONFIRMAR: parámetros de consulta (ventana de fechas) y forma exacta de la respuesta]`
+
+1. Comprueba que la respuesta incluye, como mínimo, primeros contactos, seguimientos, respuestas por clase, tasa de respuesta (cohorte de 30 días), interesados, reuniones detectadas, oportunidades por etapa, velocidad de respuesta del comercial (mediana de horas laborables), respuestas sin contestar, tareas vencidas, coste de IA y desglose por feria.
+1. Para comprobar la nota del lunes, revisa que la tarea `setter-weekly-report` tiene una ejecución a las 08:45 con `outcome` `SUCCESS`:
+
+   ```bash
+   curl "http://127.0.0.1:4020/tasks/<TASK_ID>/runs" -H 'x-tenant-id: publiexpe'
+   ```
+
+> **Nota:** la velocidad de respuesta del comercial usa horas **laborables**: no cuenta noches ni fines de semana `[POR CONFIRMAR: calendario laboral exacto, p. ej. festivos]`.
+
 ## Consultar el audit log
 
 Desde la tanda 12 toda acción mutante de la API deja una fila en la tabla `audit_log` (migración `0015`), de solo añadir: activaciones, `force` con su motivo, canario (arranque, promoción, rollback), cierres del optimizador y altas en la lista de supresión. No se edita ni se borra.
@@ -912,6 +935,9 @@ ORDER BY created_at DESC;
 | El scout del lunes solo trae ferias de alimentación, o falta algún sector | La task del seed es anterior a la tanda 21 (input con un solo sector), no se ha pasado `pnpm seed` tras actualizar, o el sector no está en la lista | Ejecuta `pnpm seed` y comprueba en **Agent runs** que el **Result** del run de los lunes trae el contador de cada sector. Para añadir o quitar un sector, edita la lista en el seed ([cómo](prospeccion-por-senales.md#cómo-cambiar-la-lista)) |
 | El borrador de respuesta no trae huecos concretos | Twenty no tiene calendario sincronizado o no es visible para el runtime (el borrador cae al enlace `MEETING_BOOKING_URL` o a la pregunta abierta); no hay 3 huecos libres en los próximos `MEETING_HORIZON_DAYS` días dentro de `MEETING_HOURS`; las variables `MEETING_*` no llegan al contenedor; o el runtime es anterior a la tanda 22 | 1) Comprueba que el calendario está activo en Twenty ([Activar el calendario](#activar-el-calendario-en-twenty)). 2) Comprueba las variables en el contenedor (`docker compose exec pxos-runtime printenv MEETING_HOURS`). 3) Revisa que el rol «Agent runtime» lee los eventos `[POR CONFIRMAR]`. 4) Si la agenda está llena, amplía `MEETING_HORIZON_DAYS`. No es un fallo del borrador: el párrafo de la propuesta lo genera el código y degrada a propósito |
 | La Oportunidad no pasa a Meeting tras agendar | El calendario no está sincronizado en Twenty; la reunión se creó sin invitar al cliente (sin participante no hay asociación); el participante tiene otro email distinto del de la persona de la Oportunidad; no hay una Oportunidad **abierta** de esa empresa; la Oportunidad ya está en una etapa igual o posterior a `Meeting` (nunca retrocede); o aún no ha corrido `meeting-sync` (cada 30 minutos) | 1) Comprueba que el evento aparece en Twenty. 2) Comprueba que el cliente figura como participante, con el email de su ficha en **Personas**. 3) Revisa `GET /tasks` y el último run de `meeting-sync` en `GET /tasks/<TASK_ID>/runs` y en **Agent runs**. 4) Mira la etapa actual de la Oportunidad. 5) Si todo está bien y no se mueve, mueve la etapa a mano: el pipeline sigue siendo tuyo. Detalle: [AI Setter](ai-setter.md#la-detección-de-reuniones) |
+| La ficha de «Preparar reunión» sale mínima (solo quién es, de dónde viene y últimos mensajes) | El modelo falló al redactar la ficha completa y el sistema generó la mínima por código (es el comportamiento previsto); la skill `meeting-brief` no está `ACTIVE` `[POR CONFIRMAR]`; el proveedor de IA no está disponible o falta `GEMINI_API_KEY`; el correo de Twenty está compartido solo como metadatos y el sistema no pudo leer los mensajes | Mira la ejecución de `meeting-sync` y su traza para ver el motivo. Comprueba `GET /skills` (versión activa de `meeting-brief`) y la clave del proveedor. Si el hilo viene enmascarado (`FIELD_RESTRICTED_…`), pon el correo en **Share everything**. Para regenerar una ficha concreta, usa el modo prueba con esa Oportunidad `[POR CONFIRMAR: comando o parámetro]`. |
+| El resumen semanal del setter no aparece el lunes | La tarea `setter-weekly-report` no está sembrada, activa o corriendo (falta `pnpm seed` tras actualizar, tarea `enabled=false` o proceso sin rol `scheduler`/`all`); el runtime estaba apagado a las 08:45 y el catch-up no la recuperó; el rol «Agent runtime» no puede escribir notas; la nota ya existía para esa semana (idempotencia) `[POR CONFIRMAR]` | Revisa `GET /tasks` y las ejecuciones de la tarea. Si falló, lee la traza y relánzala. Comprueba que la nota de esa semana no existe ya en Twenty antes de relanzar. |
+| Las cifras del resumen semanal salen a 0 o muy bajas | Pocos envíos esa semana; Twenty no importa los correos del buzón (sin respuestas ni salientes, la tasa y la velocidad no se calculan); sin calendario sincronizado, «reuniones detectadas» es 0 | Contrasta con `GET /metrics/setter` y con los correos en Twenty. Si el buzón no se importa, revisa la visibilidad **Share everything** y [Activar el calendario en Twenty](#activar-el-calendario-en-twenty). |
 | Hipótesis duplicadas en Twenty | Fallo de idempotencia | Conserva los datos, anota las `idempotencyKey` afectadas y abre una incidencia. No borres registros sin revisión. |
 
 ## Backup

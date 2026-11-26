@@ -589,7 +589,7 @@ Las tareas y las notas nuevas llevan el texto primero y el emoji al final: «Res
 Cuando el sistema detecta tu reunión en el calendario (revisa cada 30 minutos):
 
 - La **oportunidad** de esa empresa pasa a la etapa **Meeting** y verás una **nota** que lo explica. Nunca la mueve hacia atrás: si ya estaba más avanzada, no la toca.
-- Aparece una tarea **🧾 Preparar reunión con {empresa}** con vencimiento **el día anterior** a la reunión. Úsala para repasar la hipótesis, la conversación y lo que quieres conseguir.
+- Aparece una tarea **🧾 Preparar reunión con {empresa}** con vencimiento **el día anterior** a la reunión. Úsala para repasar la hipótesis, la conversación y lo que quieres conseguir. Desde la tanda 24 trae una [ficha previa](#la-ficha-previa-a-la-reunión-tanda-24) con todo eso ya reunido.
 
 Si no ves esos cambios tras una hora, avisa al equipo técnico: el calendario puede no estar sincronizado en Twenty ([cómo activarlo](runbook-local.md#activar-el-calendario-en-twenty)).
 
@@ -600,6 +600,64 @@ Si no ves esos cambios tras una hora, avisa al equipo técnico: el calendario pu
 - **No mueve la oportunidad hacia atrás** ni a etapas posteriores a Meeting.
 - **No inventa precios ni stock** en el borrador.
 
+
+### La ficha previa a la reunión (tanda 24)
+
+> **Novedad (2026-11-26).** La tarea **«Preparar reunión con {empresa} 🧾»** ya no es solo un recordatorio: trae una **ficha** con lo que el sistema sabe del cliente. `[POR CONFIRMAR: la ficha depende de la skill meeting-brief v1; si no está activa, la tarea sale con la ficha mínima]`
+
+La ficha aparece en el cuerpo de la tarea cuando el sistema detecta en tu calendario una reunión con el contacto de una Oportunidad abierta. Vence el día anterior a la reunión.
+
+**Cómo usarla, paso a paso:**
+
+1. El día anterior, abre **Tareas → Tareas · Bandeja** y entra en **«Preparar reunión con {empresa} 🧾»**.
+1. Lee la ficha de arriba abajo (son unos 3 minutos):
+   - **Quién es** y **de dónde viene**: la feria o la señal que originó el contacto y por qué ahora.
+   - **La conversación**: de 3 a 5 viñetas con **citas literales** de los correos. Si una cita te importa, compruébala en el hilo.
+   - **Datos de cualificación**: lo que el cliente dijo de cantidad, presupuesto, fecha, decisor y productos.
+   - **Lo que falta saber**: los huecos que conviene cerrar en la reunión.
+1. Elige de las **3 preguntas sugeridas** las que encajen y llévalas a la reunión.
+1. Usa la **agenda de 30 minutos** como guion; ajústala a tu estilo.
+1. Mira **qué llevar** (muestras, la propuesta anterior, catálogo) y prepáralo.
+1. Si la tarea trae una sección **«Actualización — {fecha}»** al final, léela: son correos que entraron después de crearse la ficha.
+1. Tras la reunión, marca la tarea como hecha y actualiza la Oportunidad (etapa, importe, fecha de cierre).
+
+> **Importante:** la ficha **nunca inventa datos ni precios**. Si algo no aparece, es que el sistema no lo sabe: está en «Lo que falta saber». No prometas un precio apoyándote en la ficha.
+
+> **Nota:** si ves una ficha **muy corta** (quién es, de dónde viene y los últimos mensajes, sin preguntas ni agenda), es la **ficha mínima**: el modelo no pudo redactar la completa y el sistema generó lo básico por código. Sigue siendo útil; avisa al equipo técnico si ocurre a menudo ([problema en el runbook](runbook-local.md#problemas-frecuentes)).
+
+### El resumen semanal del setter (tanda 24)
+
+Cada **lunes a las 08:45** el sistema deja en Twenty una **nota** titulada **«Resumen semanal del setter — semana del DD/MM 📊»**. Es tu cuadro de mandos del embudo: cuánto se ha contactado, quién ha respondido y dónde se atasca todo. `[POR CONFIRMAR: ubicación exacta de la nota en Twenty]`
+
+**Cómo leerlo los lunes (5 minutos):**
+
+1. Abre la nota de la semana. Empieza por la **comparación con la semana anterior**: ¿suben o bajan los contactos, las respuestas y las reuniones?
+1. Mira la **tasa de respuesta**. Se calcula sobre los contactos enviados en los **últimos 30 días**, no sobre los de esta semana, para no contar como «sin respuesta» un correo enviado ayer.
+1. Revisa **interesados** y **reuniones detectadas**: son el resultado que importa.
+1. Mira **oportunidades por etapa** para ver dónde se acumulan.
+1. Lee la **velocidad de respuesta del comercial**: la **mediana de horas laborables** entre que el cliente responde y tú contestas. Es tu cifra, no la del sistema; si sube, las respuestas se están enfriando.
+1. Comprueba **respuestas sin contestar** y **tareas vencidas**: es lo más urgente de la semana.
+1. Consulta el **desglose por feria** para saber qué ferias traen respuestas y cuáles no, y el **coste de IA** para vigilar el gasto.
+1. Termina por **«Para esta semana»**.
+
+**Qué hacer con «Para esta semana»:** es una lista corta de acciones sugeridas a partir de las cifras (por ejemplo, contestar respuestas pendientes o retomar oportunidades paradas). Trátala como una propuesta, no como una orden:
+
+1. Haz primero lo que tenga que ver con **respuestas sin contestar** y **tareas vencidas**.
+1. Decide qué otras acciones valen tu tiempo esta semana.
+1. Lo que no vayas a hacer, ignóralo: la nota es informativa y no crea tareas.
+
+> **Nota:** con pocos envíos, los porcentajes bailan mucho: una respuesta más o menos cambia la tasa varios puntos. Mira la tendencia de varias semanas, no una sola. Si la nota del lunes no aparece, avisa al equipo técnico ([problema en el runbook](runbook-local.md#problemas-frecuentes)).
+
+### Trato de «vosotros» (regla nueva, 2026-11-26)
+
+A una empresa, el sistema le escribe **siempre de «vosotros», de principio a fin**: no mezcla «te» con «os» en el mismo correo. La regla (`email/trato-vosotros-coherente`) nació de una corrección tuya a un borrador real que empezaba en plural y acababa tuteando.
+
+Al revisar un borrador, comprueba que:
+
+- el saludo, el cuerpo y la despedida hablan al mismo interlocutor en plural («vosotros», «os», «vuestro»);
+- no hay un «te» o un «tu» suelto.
+
+Si te encuentras uno, corrígelo en el borrador y, si se repite, dilo: eso mejora la regla ([por qué tu feedback importa](#por-qué-tu-feedback-importa)).
 
 ## Estados: cuándo usar cada uno
 

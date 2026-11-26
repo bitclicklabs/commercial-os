@@ -70,7 +70,7 @@ describe('ToolRegistry', () => {
     expect(r.resolve(policy(['read_a', 'write_b'], { maxRiskLevel: 'READ' })).map((t) => t.id)).toEqual(['read_a']);
   });
 
-  it('default registry exposes the 26 Twenty tools, fetch_url, render_url and the 5 catalog tools with their risk classes', () => {
+  it('default registry exposes the 28 Twenty tools, fetch_url, render_url and the 5 catalog tools with their risk classes', () => {
     const r = createDefaultToolRegistry({ twenty: new FakeTwenty().client() });
     const byId = Object.fromEntries(r.list().map((t) => [t.id, t.riskLevel]));
     expect(byId).toEqual({
@@ -104,6 +104,12 @@ describe('ToolRegistry', () => {
       list_calendar_events: 'READ',
       list_open_opportunities: 'READ',
       mark_opportunity_meeting: 'LOW_WRITE',
+      // Tanda 24: the meeting brief (context read only; the 🧾 task section append-only).
+      get_meeting_brief_context: 'READ',
+      append_crm_task_section: 'LOW_WRITE',
+      // Tanda 24: the weekly setter report (reads, one untargeted note).
+      read_setter_crm: 'READ',
+      create_report_note: 'LOW_WRITE',
       fetch_url: 'READ',
       render_url: 'READ',
       find_contact: 'READ',

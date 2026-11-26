@@ -18,7 +18,7 @@ import { createCrmTask } from '../../integrations/twenty/tasks.js';
 import { defineTool } from '../types.js';
 import { RecordId, withTwenty, type TwentyToolDeps } from './shared.js';
 
-export const CRM_TASK_BODY_MAX = 8_000;
+export const CRM_TASK_BODY_MAX = 16_000;
 
 const DueAt = z.union([z.iso.date(), z.iso.datetime({ offset: true })]);
 

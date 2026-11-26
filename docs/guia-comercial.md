@@ -589,7 +589,7 @@ Las tareas y las notas nuevas llevan el texto primero y el emoji al final: «Res
 Cuando el sistema detecta tu reunión en el calendario (revisa cada 30 minutos):
 
 - La **oportunidad** de esa empresa pasa a la etapa **Meeting** y verás una **nota** que lo explica. Nunca la mueve hacia atrás: si ya estaba más avanzada, no la toca.
-- Aparece una tarea **🧾 Preparar reunión con {empresa}** con vencimiento **el día anterior** a la reunión. Úsala para repasar la hipótesis, la conversación y lo que quieres conseguir.
+- Aparece una tarea **🧾 Preparar reunión con {empresa}** con vencimiento **el día anterior** a la reunión. Úsala para repasar la hipótesis, la conversación y lo que quieres conseguir. Desde la tanda 24 trae una [ficha previa](#la-ficha-previa-a-la-reunión-tanda-24) con todo eso ya reunido.
 
 Si no ves esos cambios tras una hora, avisa al equipo técnico: el calendario puede no estar sincronizado en Twenty ([cómo activarlo](runbook-local.md#activar-el-calendario-en-twenty)).
 
@@ -600,6 +600,67 @@ Si no ves esos cambios tras una hora, avisa al equipo técnico: el calendario pu
 - **No mueve la oportunidad hacia atrás** ni a etapas posteriores a Meeting.
 - **No inventa precios ni stock** en el borrador.
 
+
+### La ficha previa a la reunión (tanda 24)
+
+> **Novedad (2026-11-26).** La tarea **«Preparar reunión con {empresa} 🧾»** ya no es solo un recordatorio: trae una **ficha** con lo que el sistema sabe del cliente.
+
+La ficha aparece en el cuerpo de la tarea en cuanto el sistema detecta en tu calendario una reunión con el contacto de una Oportunidad abierta. Vence el día anterior a la reunión.
+
+**Cómo usarla, paso a paso:**
+
+1. El día anterior, abre **Tareas → Tareas · Bandeja** y entra en **«Preparar reunión con {empresa} 🧾»**.
+1. Mira arriba los datos de **Empresa**, **Contacto** y **Oportunidad (CRM)** (etapa, importe y cierre). Los rellena el código a partir de Twenty.
+1. Lee **Quién** y **Cómo llegamos**: de qué feria o señal viene el contacto y por qué ahora.
+1. Lee la **Conversación**: de 3 a 5 viñetas. Las del cliente llevan una **cita literal verificada** contra su correo. Si la ficha avisa de que descartó alguna viñeta por no poder verificarla, mira el hilo.
+1. Revisa los **Datos de cualificación** (copiados de la nota «Cualificación 🧾») y los **Huecos**: lo que falta saber.
+1. Elige de las **3 preguntas sugeridas** las que encajen, usa la **Agenda de 30 minutos** como guion y prepara lo de **Qué llevar**.
+1. Si al final hay una sección **«Actualización — AAAA-MM-DD»**, léela: son correos que entraron después de crearse la ficha.
+1. Tras la reunión, marca la tarea como hecha y actualiza la Oportunidad (etapa, importe, fecha de cierre).
+
+> **Importante:** la ficha **no incluye precios ni enlaces** y no inventa datos. Si algo no aparece, es que el sistema no lo sabe. No prometas un precio apoyándote en la ficha.
+
+> **Nota:** una Actualización se añade como mucho una vez al día, nunca el mismo día de la ficha inicial, y solo mientras la reunión siga en el calendario, sin cancelar y en el futuro. Si ya marcaste la tarea como hecha, no se añade nada.
+
+> **Nota:** si ves una ficha **muy corta**, con la frase «ficha completa no disponible: …», es la **ficha mínima**: quién es, de dónde viene, los últimos correos (fecha y asunto) y la cualificación. Pasa si no hay correos, hipótesis o nota de cualificación, o si el modelo falló. Sigue siendo útil; el motivo viene en la propia ficha. Si ocurre a menudo, avisa al equipo técnico ([problema en el runbook](runbook-local.md#problemas-frecuentes)).
+
+### El resumen semanal del setter (tanda 24)
+
+Cada **lunes a las 08:45** el sistema deja en Twenty una **nota** titulada **«Resumen semanal del setter — semana del DD/MM 📊»**. Es tu cuadro de mandos del embudo: cuánto se ha contactado, quién ha respondido y dónde se atasca todo. Informa de la semana **anterior** y la compara con la previa. No está enlazada a ninguna empresa ni oportunidad concreta.
+
+> **Importante:** el historial se perdió el 2026-11-26, así que la semana anterior a la primera nota sale a cero. **Las comparaciones son fiables a partir de la semana del 30/11.** Hasta entonces, no leas una subida como un éxito.
+
+**Cómo leerlo los lunes (5 minutos):**
+
+1. Abre la nota de la semana. Empieza por la **comparación con la semana anterior**.
+1. Mira la **tasa de respuesta**. Se calcula por **cohorte**: de los primeros contactos de la semana, cuántos tienen respuesta humana en los 30 días siguientes. La cohorte puede seguir abierta, así que la cifra puede subir en las semanas siguientes.
+1. Revisa **interesados** y **reuniones detectadas**: son el resultado que importa.
+1. Mira **oportunidades por etapa** para ver dónde se acumulan.
+1. Lee la **velocidad de respuesta del comercial**: la **mediana de horas laborables** (lunes a viernes, 9:00-18:00) entre que el cliente se interesa o pregunta y tú contestas. Es tu cifra, no la del sistema.
+1. Comprueba **sin contestar** (respuestas con más de 9 horas laborables de espera) y **tareas vencidas**: es lo más urgente.
+1. Consulta el **desglose por feria** (lo que no se puede atribuir sale como «sin atribuir») y el **coste de IA**.
+1. Termina por **«Para esta semana»**.
+
+> **Nota:** una cifra que aparece como **n/d** («no disponible», con el motivo) significa que el sistema no pudo calcularla, **no que valga 0**.
+
+**Qué hacer con «Para esta semana»:** es una lista corta de acciones sugeridas a partir de las cifras. Trátala como una propuesta, no como una orden:
+
+1. Haz primero lo que tenga que ver con **sin contestar** y **tareas vencidas**.
+1. Decide qué otras acciones valen tu tiempo esta semana.
+1. Lo que no vayas a hacer, ignóralo: la nota es informativa y no crea tareas.
+
+> **Nota:** con pocos envíos, los porcentajes bailan mucho: una respuesta más o menos cambia la tasa varios puntos. Mira la tendencia de varias semanas. Si la nota del lunes no aparece, avisa al equipo técnico ([problema en el runbook](runbook-local.md#problemas-frecuentes)).
+
+### Trato de «vosotros» (regla nueva, 2026-11-26)
+
+A una empresa, el sistema le escribe **siempre de «vosotros», de principio a fin**: no mezcla «te» con «os» en el mismo correo. La regla (`email/trato-vosotros-coherente`) nació de una corrección tuya a un borrador real que empezaba en plural y acababa tuteando. La aplican los borradores de primer contacto, de respuesta y de seguimiento, y la ficha previa.
+
+Al revisar un borrador, comprueba que:
+
+- el saludo, el cuerpo y la despedida hablan al mismo interlocutor en plural («vosotros», «os», «vuestro»);
+- no hay un «te» o un «tu» suelto.
+
+Si te encuentras uno, corrígelo en el borrador y, si se repite, dilo ([por qué tu feedback importa](#por-qué-tu-feedback-importa)).
 
 ## Estados: cuándo usar cada uno
 

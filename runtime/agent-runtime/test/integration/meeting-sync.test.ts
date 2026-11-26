@@ -94,6 +94,9 @@ describe.skipIf(!dbAvailable)('meeting sync: meeting-sync -> MeetingSyncAgent ->
     expect(rows).toHaveLength(1);
     expect(rows[0]).toMatchObject({ subjectType: 'opportunity', subjectId: opp.id, actor: 'agent', result: 'ok', payload: { event_key: 'ical:uid-it', stage_from: 'SCREENING', stage_to: 'MEETING' } });
     expect([...(await new DrizzleMeetingSyncStore(handle.db).alreadyDetected(tenant, [String(opp.id), 'other']))]).toEqual([detectionKey(String(opp.id), 'ical:uid-it')]);
+    // Tanda 24: the stub model answers no JSON -> the minimal brief, the task created anyway, and its mark read back.
+    expect((fake.tables.tasks[0]!.bodyV2 as { markdown: string }).markdown).toContain('Ficha completa no disponible');
+    expect(await new DrizzleMeetingSyncStore(handle.db).briefMarks(tenant, [String(opp.id)])).toMatchObject([{ opportunityId: opp.id, kind: 'initial', eventKey: 'ical:uid-it', taskId: fake.tables.tasks[0]!.id }]);
 
     // Moved back and the task deleted by hand: the audit mark stops a second detection.
     opp.stage = 'NEW';

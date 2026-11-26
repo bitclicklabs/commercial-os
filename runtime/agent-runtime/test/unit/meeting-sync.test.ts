@@ -11,7 +11,8 @@ import { resolveAgentImplementation } from '../../src/agents/stub-agent.js';
 import type { AuditInsert } from '../../src/audit/service.js';
 import type { PublishEventInput } from '../../src/events/event-bus.js';
 import { EventEnvelopeSchema, OPPORTUNITY_EVENT_TYPES } from '../../src/events/envelope.js';
-import { MemoryMeetingSyncStore } from '../../src/meetings/meeting-store.js';
+import { MEETING_BRIEF_AUDIT_ACTION } from '../../src/meetings/meeting-brief.js';
+import { briefMarkFromPayload, MemoryMeetingSyncStore } from '../../src/meetings/meeting-store.js';
 import { MEETING_SYNC_AUDIT_ACTION } from '../../src/meetings/meeting-sync.js';
 import { StubProvider } from '../../src/providers/index.js';
 import { desiredMeetingSyncTask, desiredMeetingSyncVersion, MEETING_SYNC_CRON, MEETING_SYNC_TASK_NAME } from '../../src/seed/meeting-sync-seed.js';
@@ -35,6 +36,11 @@ function setup(opts: { expand?: boolean } = {}) {
   const agent = new MeetingSyncAgent({
     store,
     audit: async (row) => {
+      // Tanda 24: the brief marks go to their own list (tested in meeting-brief.test.ts).
+      if (row.action === MEETING_BRIEF_AUDIT_ACTION) {
+        store.briefs.push({ tenantId: row.tenantId, ...briefMarkFromPayload(String(row.subjectId), row.payload as Record<string, unknown>, now) });
+        return;
+      }
       audits.push(row);
       store.rows.push({ tenantId: row.tenantId, opportunityId: String(row.subjectId), eventKey: String((row.payload as Record<string, unknown>).event_key) });
     },
@@ -210,9 +216,9 @@ describe('MeetingSyncAgent', () => {
     expect(s.audits).toHaveLength(1);
   });
 
-  it('seed spec: no LLM, CRON every 30 minutes in Madrid, only the meeting tools', () => {
+  it('seed spec: CRON every 30 minutes in Madrid, the meeting tools + the brief tools (tanda 24: one LLM call per brief)', () => {
     const v = desiredMeetingSyncVersion();
-    expect(v).toMatchObject({ modelProvider: 'stub', configuration: { implementation: MEETING_SYNC_IMPLEMENTATION } });
+    expect(v).toMatchObject({ modelProvider: 'gemini', configuration: { implementation: MEETING_SYNC_IMPLEMENTATION, meeting_brief: { enabled: true, updates: true, model_role: 'executor_cheap' }, knowledge_domains: ['email', 'prospeccion'] }, skillRefs: [{ name: 'meeting-brief' }] });
     expect((v.configuration.tool_policy as { allow: string[] }).allow).toEqual([...MEETING_SYNC_TOOLS]);
     expect(desiredMeetingSyncTask()).toMatchObject({ schedule: { type: 'CRON', expression: MEETING_SYNC_CRON }, timezone: 'Europe/Madrid', enabled: true, maxConcurrency: 1 });
     expect(MEETING_SYNC_CRON).toBe('*/30 * * * *');

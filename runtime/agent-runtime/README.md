@@ -647,6 +647,7 @@ Las skills son objetos versionados en la BD (LLD v0.1 §6.3, MVP-1, sin optimiza
 | `email-first-contact-draft` | EmailDrafter | `EMAIL_DRAFTER_SYSTEM_PROMPT` |
 | `email-reply-draft` | InboxAgent (borrador de la contestación, tanda 22; v2 DRAFT de la tanda 23 con ventana del cliente y cualificación: `REPLY_DRAFT_V2_SYSTEM_PROMPT`) | `REPLY_DRAFT_SYSTEM_PROMPT` |
 | `email-followup-draft` | FollowUpAgent (borrador del seguimiento o de «retomar conversación», tanda 23) | `FOLLOWUP_DRAFT_SYSTEM_PROMPT` |
+| `meeting-brief` | MeetingSyncAgent (ficha previa de la reunión en la tarea 🧾 y sus actualizaciones, tanda 24) | `MEETING_BRIEF_SYSTEM_PROMPT` |
 
 `exhibitor-list-extraction` formaba parte de `event-source-discovery` v4 en el código; en la BD es una skill propia para poder versionarla por separado.
 
@@ -1462,6 +1463,8 @@ Las de Twenty usan `TWENTY_BASE_URL` y `TWENTY_API_KEY` y tienen `outputTrust = 
 | `list_calendar_events` | `READ` | No | — (eventos del calendario sincronizado en Twenty que empiezan en una ventana, con asistentes; `calendar: no_channel` sin canal sincronizado; salida `untrusted`). **Nunca crea, cambia ni responde un evento**. Solo el MeetingSyncAgent |
 | `list_open_opportunities` | `READ` | No | — (oportunidades abiertas con empresa, dominio, Personas y sus emails, punto de contacto e hipótesis del tenant; salida `untrusted`). Solo el MeetingSyncAgent |
 | `mark_opportunity_meeting` | `LOW_WRITE` | Sí | Nota «📅 Reunión detectada — <fecha>» por oportunidad (buscada por título): deja la nota y pasa a la etapa de reunión **solo desde una etapa anterior**; nunca retrocede ni toca etapas posteriores o de cierre. Solo el MeetingSyncAgent |
+| `get_meeting_brief_context` | `READ` | No | — (tanda 24: etapa, importe y cierre de una Oportunidad, empresa, punto de contacto con cargo, Personas, hipótesis del tenant con su origen, nota de cualificación y, si se pide, el estado de una tarea; salida `untrusted`). Solo el MeetingSyncAgent |
+| `append_crm_task_section` | `LOW_WRITE` | Sí | Tanda 24: añade una sección markdown **al final** del cuerpo de una tarea vinculada a la Oportunidad indicada, una vez por cabecera; nunca cambia el texto existente, el título, el estado ni el vencimiento, y no escribe en una tarea `DONE`. Solo el MeetingSyncAgent |
 | `fetch_url` | `READ` | No | — (consulta [Seguridad del contenido web](#seguridad-del-contenido-web)) |
 | `render_url` | `READ` | No | — (consulta [Render de JavaScript](#render-de-javascript-render_url)) |
 | `catalog_search_products` | `READ` | No | — (consulta [Catálogo](#catálogo-catalog-service); salida `untrusted`) |
@@ -1926,7 +1929,7 @@ Es idempotente:
 - **Agente `BajasAgent` y tarea `process-unsubscribes`**: `CRON 0 */2 * * *` en `Europe/Madrid`, sin LLM (`model_provider = stub`), tool policy `get_note` + `update_note` (una escritura por ejecución). Desde la tanda 12 la tarea queda **desactivada** (`enabled = false`). Consulta [Inbound de bajas](#inbound-de-bajas).
 - **Agente `InboxAgent` y tarea `process-inbox`**: `CRON 0 */2 * * *` en `Europe/Madrid`, Gemini Flash solo para las respuestas que las reglas no deciden, tool policy `get_note` + `update_note` + `create_note` + `find_company`. Consulta [Triaje del buzón](#triaje-del-buzón).
 - **Agente `FollowUpAgent` y tarea `lead-followup-check`** (tanda 21): `CRON 30 8 * * *` en `Europe/Madrid`, sin LLM (`model_provider = stub`), tool policy `list_sent_hypotheses` + `get_note` (una cada una) + `create_crm_task` (20). Consulta [Seguimiento de envíos sin respuesta](#seguimiento-de-envíos-sin-respuesta-tanda-21).
-- **Agente `MeetingSyncAgent` y tarea `meeting-sync`** (tanda 22): `CRON */30 * * * *` en `Europe/Madrid`, sin LLM (`model_provider = stub`), tool policy `list_calendar_events` + `list_open_opportunities` (una cada una) + `mark_opportunity_meeting` y `create_crm_task` (20 cada una). Sin calendario sincronizado termina `SKIPPED` (`no_calendar_channel`) sin coste. Consulta [Reuniones: huecos y detección](#reuniones-huecos-y-detección-tanda-22).
+- **Agente `MeetingSyncAgent` y tarea `meeting-sync`** (tanda 22): `CRON */30 * * * *` en `Europe/Madrid`, en la tanda 22 sin LLM (`model_provider = stub`), tool policy `list_calendar_events` + `list_open_opportunities` (una cada una) + `mark_opportunity_meeting` y `create_crm_task` (20 cada una). Sin calendario sincronizado termina `SKIPPED` (`no_calendar_channel`) sin coste. Tanda 24: versión nueva con `model_provider = gemini` (rol `executor_cheap`), skill `meeting-brief`, `meeting_brief.enabled` y las tools `get_meeting_brief_context`, `list_crm_messages` y `append_crm_task_section` (10 fichas por ejecución); la versión de la tanda 22 se conserva. Consulta [Reuniones: huecos y detección](#reuniones-huecos-y-detección-tanda-22).
 
 Las dos tareas usan la misma versión del agente. La versión del seed añade `fetch_url` a la tool policy, la configuración `scout` y la skill `event-source-discovery` v1, y sube la skill `prospector-event-exhibitors` a v2 (datos en bloques `DATOS_NO_CONFIABLES`): al ejecutar el seed sobre una BD existente se crea una versión nueva del agente.
 
@@ -2796,7 +2799,7 @@ Reglas de los huecos (`src/meetings/slots.ts`):
 
 ### Detección de reuniones agendadas: tarea `meeting-sync`
 
-La tarea `meeting-sync` (`CRON */30 * * * *`, `Europe/Madrid`, `max_concurrency = 1`) ejecuta el **MeetingSyncAgent** (`implementation = "meeting_sync"`, `src/agents/meeting-sync-agent.ts`). Es determinista: **no llama a ningún modelo**.
+La tarea `meeting-sync` (`CRON */30 * * * *`, `Europe/Madrid`, `max_concurrency = 1`) ejecuta el **MeetingSyncAgent** (`implementation = "meeting_sync"`, `src/agents/meeting-sync-agent.ts`). La detección es determinista; desde la tanda 24, la tarea 🧾 lleva además una **ficha previa** que prepara un modelo (consulta [Ficha previa de la reunión](#ficha-previa-de-la-reunión-tanda-24)).
 
 1. `list_calendar_events` (READ): eventos que empiezan desde **ayer hasta 60 días vista**, con sus asistentes.
    - Sin canal sincronizado: termina `SKIPPED` con `reason: no_calendar_channel`, coste 0 y sin leer nada más.
@@ -2811,10 +2814,32 @@ La tarea `meeting-sync` (`CRON */30 * * * *`, `Europe/Madrid`, `max_concurrency 
 4. Por oportunidad, **una reunión por ejecución**: la próxima que viene (o, si todas han pasado, la última). `mark_opportunity_meeting` lee las etapas reales del select `stage` del workspace (como `src/crm/opportunities.ts`) y:
    - etapa **anterior** a `MEETING` (o vacía): deja la nota **«Reunión detectada — `<fecha>` 📅»** en la oportunidad y en su empresa («📅 Reunión detectada en tu calendario: `<fecha>`, `<título>`», con asistentes y videollamada) y la pasa a `MEETING`;
    - ya en `MEETING`, en una etapa **posterior**, de cierre o desconocida: no la toca (`skipped_by`: `at_meeting`, `past_meeting`, `closed`, `unknown_stage`). Nunca retrocede una etapa. Sin una etapa de reunión en el workspace (`MEETING`, o una opción con `MEET` o `REUNI`): `no_meeting_stage`.
-5. Si la reunión aún no ha pasado, `create_crm_task` crea **«Preparar reunión con `<empresa>` 🧾»** (`TODO`), con vencimiento a las 09:00 del **día laborable anterior** a la reunión (hoy si ese día ya pasó). El cuerpo lleva fecha, asistentes y enlaces a la empresa, la oportunidad y las hipótesis del tenant; sin LLM. Una reunión que ya pasó (ayer) mueve la etapa y deja la nota, pero no crea tarea.
+5. Si la reunión aún no ha pasado, `create_crm_task` crea **«Preparar reunión con `<empresa>` 🧾»** (`TODO`), con vencimiento a las 09:00 del **día laborable anterior** a la reunión (hoy si ese día ya pasó). El cuerpo lleva fecha, asistentes y enlaces a la empresa, la oportunidad y las hipótesis del tenant y, desde la tanda 24, la sección «Ficha previa». Una reunión que ya pasó (ayer) mueve la etapa y deja la nota, pero no crea tarea.
 6. Una fila `opportunity.meeting_detected` en `audit_log` (`actor = agent`, `subject_type = opportunity`, `subject_id` = la oportunidad, `payload.event_key` = el iCalUID del evento, o su id) y el evento de dominio `opportunity.meeting_detected`.
 
 **Una vez por oportunidad y reunión, para siempre**: la marca de `audit_log` sobrevive a que borres la nota o la tarea, y una oportunidad que devuelves a mano a una etapa anterior no vuelve a avanzar por la misma reunión. Si una ejecución muere a mitad, la siguiente encuentra la nota por título y completa la tarea (`resumed`). Máximo 20 detecciones por ejecución (`MEETING_SYNC_MAX_PER_RUN`).
+
+### Ficha previa de la reunión (tanda 24)
+
+La versión nueva del MeetingSyncAgent (el seed la añade; la anterior se conserva) usa el modelo del rol de redacción del model router (`executor_cheap`, `MODEL_ROUTE_EXECUTOR_CHEAP`), la skill `meeting-brief` v1 (`src/agents/meeting-brief-prompt.ts`, sembrada ACTIVE) y el conocimiento de los dominios `email` y `prospeccion`. Se activa con `configuration.meeting_brief.enabled`; sin ese bloque, el agente se comporta como la versión de la tanda 22. Nivel 1: la ficha es texto para el comercial; **nada se envía y no se crea ningún evento**.
+
+1. Cuando se detecta una reunión que aún no ha pasado, **antes** de crear la tarea:
+   1. `get_meeting_brief_context` (READ, salida `untrusted`): etapa, importe y fecha de cierre de la Oportunidad; empresa y dominio; punto de contacto (nombre, cargo, emails) y Personas de la empresa; hipótesis del tenant con su necesidad, por qué ahora y su origen (la feria o señal); la nota «Cualificación — X 🧾».
+   1. `list_crm_messages` (READ): el hilo con el punto de contacto (o, sin él, con las Personas de la empresa con dirección no genérica) de los últimos 180 días. Los campos que Twenty enmascara (`FIELD_RESTRICTED_…`) cuentan como ausentes.
+   1. **Una llamada al modelo** con todo dentro de la envoltura `DATOS_NO_CONFIABLES`. Devuelve un JSON cerrado: `quien`, `origen`, `conversacion` (3 a 5 viñetas con fecha y, si afirman algo del cliente, una cita literal), `huecos`, `preguntas_sugeridas` (3), `agenda` (3 o 4 puntos para 30 min) y `llevar`.
+2. El código (`src/meetings/meeting-brief.ts`) valida la respuesta y escribe la sección **«Ficha previa (reunión del AAAA-MM-DD HH:mm)»** al final del cuerpo de la tarea:
+   - una viñeta del cliente se queda solo si su cita está **literalmente** en un correo del cliente de ese día; una viñeta de un día sin correos, también fuera. La ficha dice cuántas se descartaron;
+   - fuera cualquier texto con importes, euros o porcentajes, con enlaces o dominios, o con «plazo», «urgente» o «prisa» (reglas de `src/agents/reply-draft.ts`); un `quien` u `origen` que las incumple invalida la respuesta (un reintento con el error);
+   - los datos de la Oportunidad (etapa, importe, cierre) y los **datos de cualificación** salen del CRM por código, nunca del modelo; los huecos que no da el modelo se calculan de la nota (cantidad, presupuesto, fecha, decisor, productos).
+3. Si la tarea ya existía (mismo título hoy, o el título antiguo con el emoji delante), la ficha se **añade al final** con `append_crm_task_section` (LOW_WRITE), una vez por cabecera; lo que hay escrito no se toca.
+4. **Si el modelo falla, no hay datos o se alcanza el límite**, la tarea se crea igual con la **ficha mínima** por código (empresa, contacto, Oportunidad, origen, últimos correos con fecha y asunto, cualificación y huecos) y la línea «Ficha completa no disponible: `<motivo>`». La detección nunca se bloquea por la ficha.
+5. Marca `opportunity.meeting_brief` en `audit_log` (`kind: initial`, reunión, tarea, día, `status` `full` o `minimal`, id y fecha del último correo considerado).
+
+**Actualizaciones.** En cada pasada, para las reuniones con ficha que aún no han pasado (el evento sigue en el calendario y no está cancelado), una sola lectura del buzón para todas. Si hay correos nuevos con el contacto (entrantes o salientes) posteriores al último considerado, una llamada al modelo (modo `actualizacion`) y se **añade** al final de la tarea **«Actualización — AAAA-MM-DD»** con la conversación nueva, los datos de cualificación al día, huecos y preguntas. Como mucho una por tarea y día (tampoco el mismo día de la ficha inicial); nunca se reescribe lo anterior. Una tarea borrada, desvinculada o hecha (`DONE`) no recibe actualizaciones. Marca `opportunity.meeting_brief` con `kind: update`.
+
+**Límites y costes.** Como mucho 10 fichas (iniciales y actualizaciones) por ejecución (`meeting_brief.max_per_run`); la tool policy lo acota también. El coste del modelo se contabiliza en la ejecución (`cost`), y la salida trae `briefs_created`, `briefs_failed` (fichas mínimas) y `brief_updates`.
+
+**Modo prueba.** Lanza `meeting-sync` con el input `{"dry_run": true, "opportunity_id": "<id>"}`: genera la ficha de esa Oportunidad aunque no tenga reunión (no lee el calendario) y la devuelve en `output.brief` (`markdown`, `json` y `datos_cualificacion`) **sin escribir nada**. Con `{"dry_run": true}` sin oportunidad, devuelve la ficha de cada reunión que se detectaría, sin mover etapas ni crear notas, tareas o marcas.
 
 ### Qué tienes que activar en Twenty
 
@@ -2826,7 +2851,7 @@ El canal en sí (`calendarChannel`) no es un objeto REST en Twenty 2.45: el runt
 
 ### Tests
 
-`test/unit/meetings.test.ts` (configuración, huecos, disponibilidad contra el Twenty simulado con calendario, sin canal, oculto e ilegible, y casado), `test/unit/meeting-sync.test.ts` (agente: `SKIPPED` sin canal, avance a `MEETING`, idempotencia, etapas que no se tocan, reunión pasada, reanudación) y `test/integration/meeting-sync.test.ts` (seed, `RunProcessor` y `audit_log` en PostgreSQL).
+`test/unit/meetings.test.ts` (configuración, huecos, disponibilidad contra el Twenty simulado con calendario, sin canal, oculto e ilegible, y casado), `test/unit/meeting-sync.test.ts` (agente: `SKIPPED` sin canal, avance a `MEETING`, idempotencia, etapas que no se tocan, reunión pasada, reanudación), `test/unit/meeting-brief.test.ts` (tanda 24: contrato y reglas de la ficha, citas verificadas, ficha mínima, tarea reutilizada, actualizaciones una por día, modo prueba, campos enmascarados, versión sin ficha y las dos tools nuevas) y `test/integration/meeting-sync.test.ts` (seed, `RunProcessor` y `audit_log` en PostgreSQL, con la marca de la ficha).
 
 ## Borradores de email
 

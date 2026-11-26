@@ -516,7 +516,7 @@ El detalle técnico está en [Seguimiento de leads enviados](seguimiento-leads.m
 
 ## Responder y cerrar reuniones
 
-> **Novedad (tanda 22, 2026-11-26).** El sistema ya no solo te avisa de que alguien ha respondido: te deja **la contestación redactada** y te propone huecos de tu calendario. Sigue valiendo la regla de siempre: **el sistema no envía ni agenda nada; lo haces tú.** Los detalles de implementación están marcados `[POR CONFIRMAR]` hasta integrar la tanda. El modelo completo está en [AI Setter](ai-setter.md).
+> **Novedad (tanda 22, 2026-11-26).** El sistema ya no solo te avisa de que alguien ha respondido: te deja **la contestación redactada** y te propone huecos de tu calendario. Sigue valiendo la regla de siempre: **el sistema no envía ni agenda nada; lo haces tú.** El modelo completo está en [AI Setter](ai-setter.md).
 
 Cuando un cliente contesta con interés o con una pregunta, el sistema (que revisa el buzón cada 2 horas) crea una Task en tu bandeja con el borrador de la respuesta en el cuerpo. Dos casos:
 

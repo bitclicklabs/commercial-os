@@ -113,7 +113,7 @@ Todos los comandos `docker compose` de este runbook se ejecutan desde `deploymen
 | `DOMAIN_RESOLVER_MAX_PER_RUN` | `25` por defecto | Máximo de búsquedas de resolución por run (el coste de cada una se contabiliza en el run). Al agotarse, los expositores sin intentar quedan `skipped_no_domain` y entran en el siguiente turno del reparto: un catálogo grande se completa en varios runs. Tanda 20 |
 | `FOLLOWUP_AFTER_BUSINESS_DAYS` | `5` por defecto | Días laborables (lunes a viernes) sin respuesta tras el primer envío antes de que el chequeo diario de las 08:30 cree la Task «🔔 Seguimiento — empresa» ([seguimiento de leads](seguimiento-leads.md)). `0` **desactiva** el seguimiento: la tarea no crea nada. Se cambia en `deployments/.env` y se aplica con `docker compose up -d pxos-runtime`. Tanda 21 |
 
-| `MEETING_HOURS` | franjas `10:00-13:30,16:00-18:00` por defecto `[POR CONFIRMAR formato y defecto]` | Franjas (lunes a viernes) en las que el [borrador de respuesta](ai-setter.md#la-propuesta-de-reunión) propone huecos. Tanda 22 |
+| `MEETING_HOURS` | `10:00-13:30,16:00-18:00` (franjas separadas por comas, hora local de Madrid) | Franjas (lunes a viernes) en las que el [borrador de respuesta](ai-setter.md#la-propuesta-de-reunión) propone huecos. Tanda 22 |
 | `MEETING_DURATION_MIN` | `30` por defecto | Duración, en minutos, de cada hueco propuesto. Tanda 22 |
 | `MEETING_HORIZON_DAYS` | `7` por defecto | Días hacia delante en los que se buscan huecos libres (3 huecos, en días distintos). Tanda 22 |
 | `MEETING_BOOKING_URL` | vacía | Enlace de reserva que acompaña a la propuesta. Sin calendario visible, es lo único que se propone; sin calendario ni enlace, el borrador hace una pregunta abierta. Tanda 22 |
@@ -551,22 +551,22 @@ Es el tablero de envíos del comercial. Las vistas anteriores (**Señales · Col
 
 ## Activar el calendario en Twenty
 
-> **Nota:** `[POR CONFIRMAR]` la ruta exacta de los menús y la visibilidad necesaria dependen de la versión de Twenty (2.45.6). Verifícalo en vivo antes de darlo por bueno y corrige este apartado.
+> **Nota:** la ruta exacta de los menús puede variar entre versiones de Twenty (2.45.6). Si no coincide, sigue la lógica: cuenta conectada → calendario → visibilidad.
 
 El AI Setter ([ai-setter.md](ai-setter.md)) necesita ver tu calendario para dos cosas: proponer **huecos libres reales** en el borrador de respuesta y **detectar** que has agendado una reunión (`meeting-sync`). Sin calendario sincronizado el sistema no falla: el borrador propone solo el enlace de reserva (`MEETING_BOOKING_URL`) o una pregunta abierta, y `meeting-sync` no hace nada.
 
 **Quién:** el usuario, con su propia cuenta de IONOS ya conectada a Twenty para enviar.
 
-1. En Twenty, abre **Settings → Accounts** `[POR CONFIRMAR ruta]`.
+1. En Twenty, abre **Settings → Accounts**.
 1. Selecciona tu cuenta de IONOS (`jesus.abril@publiexpe.info`).
-1. Activa la sincronización del **calendario** de esa cuenta `[POR CONFIRMAR si IONOS expone el calendario por CalDAV con la conexión IMAP/SMTP genérica de la 2.45]`.
-1. Configura la visibilidad de los eventos para que muestre **al menos la disponibilidad y los participantes** `[POR CONFIRMAR visibilidad necesaria]`. Con visibilidad «solo ocupado» el sistema ve los huecos pero no puede asociar el evento a la Oportunidad por participante.
+1. Activa la sincronización del **calendario** de esa cuenta. La conexión de IONOS está dada de alta como IMAP + SMTP + CalDAV, así que el calendario debería aparecer; si no, revisa que el servidor CalDAV de IONOS esté indicado en la cuenta.
+1. Elige la visibilidad **Share everything** (`SHARE_EVERYTHING`). Con la visibilidad de solo metadatos (`METADATA`), Twenty oculta el título y la descripción de los eventos a quien no es dueño del canal: los huecos y la detección por asistentes siguen funcionando, pero la nota de la Oportunidad diría «sin título».
 1. Espera a la primera sincronización y comprueba que tus eventos aparecen en Twenty.
 1. Crea una reunión de prueba en tu calendario, invita a un contacto de una Oportunidad abierta de prueba y comprueba, en la pasada siguiente (30 minutos), que la Oportunidad pasa a **Meeting**.
 
 > **Precaución:** prueba con una Oportunidad de prueba, no con un cliente real: `meeting-sync` deja una nota y una Task en el workspace real.
 
-> **Importante:** el rol «Agent runtime» debe poder leer los eventos de calendario y sus participantes, sin darle tools ([Rol de la API key](#rol-de-la-api-key-de-twenty)) `[POR CONFIRMAR objetos y permisos]`.
+> **Importante:** el rol «Agent runtime» debe poder **leer** tres objetos de sistema: *Calendar events*, *Calendar event participants* y *Calendar channel event associations*. Con el rol actual se leen los tres (verificado el 2026-11-26). No necesita escribir en ellos ni ninguna tool ([Rol de la API key](#rol-de-la-api-key-de-twenty)). Sin canal sincronizado, `meeting-sync` termina `SKIPPED` con `no_calendar_channel` a coste 0; si el rol no puede leerlos, `SKIPPED` con `calendar_unreadable`.
 
 ## Rotar la API key de Twenty
 

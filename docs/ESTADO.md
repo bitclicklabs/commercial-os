@@ -292,3 +292,15 @@ Origen: última tanda del AI Setter, con el mismo **nivel 1 de autonomía** (el 
 Notas:
 - **Fin del AI Setter por tandas:** con la C, el embudo queda completo en el nivel 1. Subir al nivel 2 exige una decisión nueva del usuario; el resumen semanal aporta los datos para tomarla.
 - **Pendiente al integrar:** reconciliar los `[POR CONFIRMAR]` de los docs con el código (estado inicial de `meeting-brief`, parámetros de `/metrics/setter`, nombre de la tarea del seed, modo prueba).
+
+## Tanda 25 — Limpieza ✅ (cerrada, 2026-11-26; suite 1430, desplegada)
+
+Origen: deudas acumuladas, a petición del usuario tras cerrar el AI Setter. Sin cambios de comportamiento salvo el dedupe de ferias.
+
+| Pieza | Rama | Agente | Estado |
+|---|---|---|---|
+| Dedupe de ferias por nombre normalizado (siglas, ediciones, ordinales, año, ciudades sobrantes; compara año y fechas a ≤10 días; incluye señales descartadas y caducadas). Estreno en vivo: 10 ferias repetidas reconocidas, 0 falsos positivos | `chore/limpieza-codigo` | Opus | ✅ |
+| Un solo helper de Tareas: `upsertReplyTask` sobre `createCrmTask` (`scope: 'open'`, `anchor: 'none'`, `appendOnReuse`), sin cambiar aserciones de tests | `chore/limpieza-codigo` | Opus | ✅ |
+| 94 worktrees de las tandas 2 a 24 movidos a `_archivo-worktrees/` (nada borrado); checkout `commercial-os` al día en `main` y su trabajo de octubre preservado en `archivo/commercial-os-wip-tanda8`; worktrees que compartían `main` fijados en su commit | — | PM | ✅ |
+| Runbook sin `[POR CONFIRMAR]` y sección «Worktrees y archivo» | `chore/tanda25` | PM | ✅ |
+

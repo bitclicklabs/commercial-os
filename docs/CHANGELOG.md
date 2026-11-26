@@ -235,3 +235,11 @@ Integración de `feat/mvp0-bootstrap` en `main` (PR #1).
 - Métricas del setter: endpoint `GET /metrics/setter` y nota semanal en Twenty cada lunes a las 08:45, «Resumen semanal del setter — semana del DD/MM 📊» (tarea `setter-weekly-report`): primeros contactos, seguimientos, respuestas por clase, tasa de respuesta (cohorte de 30 días), interesados, reuniones detectadas, oportunidades por etapa, velocidad de respuesta del comercial (mediana de horas laborables), respuestas sin contestar, tareas vencidas, coste de IA, desglose por feria, comparación con la semana anterior y sección «Para esta semana».
 - Regla de estilo nueva (knowledge `email/trato-vosotros-coherente`, activa desde el 2026-11-26): a una empresa siempre «vosotros» de principio a fin, sin mezclar «te» con «os»; nació de una corrección del comercial a un borrador real.
 - Docs: [ai-setter.md](ai-setter.md) (tanda B hecha, tanda C y la sección «El AI Setter completo» con el embudo de punta a punta), [guía comercial](guia-comercial.md#la-ficha-previa-a-la-reunión-tanda-24) (ficha previa, resumen semanal, «vosotros»), [runbook](runbook-local.md#métricas-del-setter) (tarea nueva del seed, cambios en `meeting-sync`, endpoint, problemas frecuentes), ESTADO y este CHANGELOG. Lo que depende de la implementación queda marcado `[POR CONFIRMAR]`.
+
+## 2026-11-26 — Tanda 25 (cerrada): limpieza
+
+- Scout: dedupe de ferias por nombre normalizado antes de crear la señal (también contra señales descartadas y caducadas: lo que el comercial descartó no vuelve). Contadores `events_duplicated_by_name` / `fairs_duplicated_by_name`. Estreno en vivo: 10 repetidas reconocidas, 0 falsos positivos.
+- Tareas: `createCrmTask` es el único sitio que decide si una Task ya existe; `upsertReplyTask` se apoya en él sin cambiar comportamiento.
+- Orden del repositorio: 94 worktrees archivados (no borrados), checkout principal al día, WIP de octubre en la rama `archivo/commercial-os-wip-tanda8`.
+- Runbook: cerrados los `[POR CONFIRMAR]` de las tandas 21–22; nueva sección «Worktrees y archivo».
+

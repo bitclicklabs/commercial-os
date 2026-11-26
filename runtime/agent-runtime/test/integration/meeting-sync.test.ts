@@ -89,7 +89,7 @@ describe.skipIf(!dbAvailable)('meeting sync: meeting-sync -> MeetingSyncAgent ->
     expect(run.status).toBe('COMPLETED');
     expect(run.output).toMatchObject({ outcome: 'SUCCESS', counters: { detected: 1, stage_moved: 1, tasks_created: 1 } });
     expect(opp.stage).toBe('MEETING');
-    expect(fake.tables.tasks.map((t) => t.title)).toEqual(['🧾 Preparar reunión con Reunión SA']);
+    expect(fake.tables.tasks.map((t) => t.title)).toEqual(['Preparar reunión con Reunión SA 🧾']);
     const rows = await handle.db.select().from(auditLog).where(and(eq(auditLog.tenantId, tenant), eq(auditLog.action, MEETING_SYNC_AUDIT_ACTION)));
     expect(rows).toHaveLength(1);
     expect(rows[0]).toMatchObject({ subjectType: 'opportunity', subjectId: opp.id, actor: 'agent', result: 'ok', payload: { event_key: 'ical:uid-it', stage_from: 'SCREENING', stage_to: 'MEETING' } });

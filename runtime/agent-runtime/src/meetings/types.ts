@@ -27,11 +27,32 @@ export interface MeetingProposal {
   durationMin: number;
   /** Where the proposal comes from: free slots of a calendar, only a booking link, or nothing. */
   source: 'calendar' | 'link' | 'none';
+  /**
+   * Tanda 23: a `window` was asked for but left no free slot, so the slots are those of the normal
+   * horizon (the meeting paragraph says so). Absent / false otherwise.
+   */
+  windowRelaxed?: boolean;
+}
+
+/**
+ * Tanda 23: when the client wants the meeting ("la semana que viene", "por las tardes", "a partir
+ * del 10"). Dates are local `YYYY-MM-DD` (Europe/Madrid), both inclusive. Built BY CODE from closed
+ * categories the model picks (src/meetings/client-window.ts), never from free dates of the model.
+ */
+export interface MeetingWindow {
+  notBefore?: string;
+  notAfter?: string;
+  partOfDay?: 'morning' | 'afternoon';
 }
 
 export interface MeetingAvailability {
-  /** Up to `count` slots after `now`. Must not throw for "no availability": return source `none`. */
-  propose(opts: { now: Date; count: number }): Promise<MeetingProposal>;
+  /**
+   * Up to `count` slots after `now`. Must not throw for "no availability": return source `none`.
+   * With `window` (tanda 23, optional: implementations that ignore it stay valid): only slots inside
+   * it; fewer than `count` when the window has fewer; none in the window -> the normal horizon with
+   * `windowRelaxed: true`.
+   */
+  propose(opts: { now: Date; count: number; window?: MeetingWindow }): Promise<MeetingProposal>;
 }
 
 /** Default duration of the call the draft proposes when nobody says otherwise. */

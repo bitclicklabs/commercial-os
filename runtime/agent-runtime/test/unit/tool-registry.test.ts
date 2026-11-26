@@ -70,7 +70,7 @@ describe('ToolRegistry', () => {
     expect(r.resolve(policy(['read_a', 'write_b'], { maxRiskLevel: 'READ' })).map((t) => t.id)).toEqual(['read_a']);
   });
 
-  it('default registry exposes the 25 Twenty tools, fetch_url, render_url and the 5 catalog tools with their risk classes', () => {
+  it('default registry exposes the 26 Twenty tools, fetch_url, render_url and the 5 catalog tools with their risk classes', () => {
     const r = createDefaultToolRegistry({ twenty: new FakeTwenty().client() });
     const byId = Object.fromEntries(r.list().map((t) => [t.id, t.riskLevel]));
     expect(byId).toEqual({
@@ -96,6 +96,7 @@ describe('ToolRegistry', () => {
       upsert_person: 'LOW_WRITE',
       upsert_opportunity: 'LOW_WRITE',
       create_reply_task: 'LOW_WRITE',
+      record_opportunity_qualification: 'LOW_WRITE',
       list_sent_hypotheses: 'READ',
       list_calendar_events: 'READ',
       list_open_opportunities: 'READ',

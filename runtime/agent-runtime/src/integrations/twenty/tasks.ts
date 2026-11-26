@@ -60,6 +60,27 @@ export interface CreateCrmTaskInput {
    * hypothesis: two hypotheses of one company get one task each.
    */
   anchor?: keyof CrmTaskTargets;
+  /**
+   * Tanda 23: older spellings of the same title that also count as «the same title» (same scope,
+   * anchor and orphan rules). Titles used to start with an emoji, which Twenty draws as a broken
+   * icon; they now end with it, and the task created before the change must still be reused.
+   * Searched one by one with `title[eq]`, after the current title. A reused task keeps its title.
+   */
+  legacyTitles?: readonly string[] | undefined;
+}
+
+/** Trailing emoji of a title (with variation selectors / ZWJ sequences): «Texto 🔔» -> «🔔». */
+const TRAILING_EMOJI_RE = /^(.*?\S)\s+((?:\p{Extended_Pictographic}(?:️|‍\p{Extended_Pictographic}️?)*)+)$/u;
+
+/**
+ * Tanda 23: the old «emoji first» spelling of a title that now ends with its emoji
+ * («Responder a X 📬» -> «📬 Responder a X»); null when the title does not end with an emoji.
+ * Pure: the callers pass it as `legacyTitles` so the records created before the change are found.
+ */
+export function legacyEmojiFirstTitle(title: string): string | null {
+  const m = TRAILING_EMOJI_RE.exec(title.trim());
+  if (!m) return null;
+  return `${m[2]} ${m[1]}`;
 }
 
 export interface CreateCrmTaskResult {
@@ -140,10 +161,17 @@ export async function createCrmTask(
   const today = crmTaskLocalDay(now, tz);
 
   // 1. Same title (today, or ever): reuse the one already on the first target, or adopt an orphan.
-  const { records: sameTitle } = await twenty.list<TwentyTask>(TWENTY_OBJECTS.task, { filter: `title[eq]:${filterValue(title)}`, limit: 20, ...signal });
-  const candidates = sameTitle.filter(
-    (t) => crmTaskTitle(t.title ?? '') === title && (input.scope === 'ever' || (t.createdAt ? crmTaskLocalDay(new Date(t.createdAt), tz) === today : false)),
-  );
+  //    The current title first, then its older spellings (tanda 23, `legacyTitles`).
+  const titles = [title, ...(input.legacyTitles ?? []).map(crmTaskTitle).filter((t) => t.length > 0)].filter((t, i, all) => all.indexOf(t) === i);
+  const candidates: TwentyTask[] = [];
+  for (const wantedTitle of titles) {
+    const { records: sameTitle } = await twenty.list<TwentyTask>(TWENTY_OBJECTS.task, { filter: `title[eq]:${filterValue(wantedTitle)}`, limit: 20, ...signal });
+    for (const t of sameTitle) {
+      if (candidates.some((c) => c.id === t.id)) continue;
+      if (crmTaskTitle(t.title ?? '') !== wantedTitle) continue;
+      if (input.scope === 'ever' || (t.createdAt ? crmTaskLocalDay(new Date(t.createdAt), tz) === today : false)) candidates.push(t);
+    }
+  }
   let task: TwentyTask | null = null;
   let existingTargets: TwentyTaskTarget[] = [];
   let orphan: TwentyTask | null = null;

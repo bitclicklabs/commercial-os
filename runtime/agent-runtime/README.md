@@ -26,7 +26,7 @@ runtime/agent-runtime/
 │   ├── inbound/              Inbound: lector IMAP de solo lectura, clasificador de bajas, reglas de triaje (rebotes, autorrespuestas), clasificador LLM de respuestas, lista de supresión, enlace con email_sends, cursor (inbound_state) y triaje (inbound_triage)
 │   ├── integrations/twenty/  TwentyClient REST tipado, mapeo de objetos de la App y MemoryTwenty (CRM en memoria para los experimentos del optimizador)
 │   ├── integrations/catalog/ Catalog Service (contrato v1.1): tipos zod, cliente REST con exención SSRF de un solo origen, stub fiel, caché TTL en memoria y CatalogService
-│   ├── crm/                  Objetos estándar de Twenty (tanda 19): Personas (nombres, dedupe por email), Oportunidades (primera etapa real, una abierta por empresa, promoción manual) y tareas «📬 Responder a …»
+│   ├── crm/                  Objetos estándar de Twenty (tanda 19): Personas (nombres, dedupe por email), Oportunidades (primera etapa real, una abierta por empresa, promoción manual), tareas «Responder a … 📬» y (tanda 23) cualificación de la Oportunidad
 │   ├── tools/                Interfaz Tool, registry, tool_policy, executor, tools de Twenty y web/ (fetch_url con texto de PDF, render_url y guarda SSRF)
 │   ├── db/                   Esquema Drizzle, cliente y migrador
 │   ├── events/               Event bus: sobre event.envelope.v1, EventBus, payloads, triggers EVENT y GET /events; puente externo (POST /events/external, event_subscriptions y webhooks firmados con guarda SSRF)
@@ -644,7 +644,7 @@ Las skills son objetos versionados en la BD (LLD v0.1 §6.3, MVP-1, sin optimiza
 | `event-source-discovery` | Prospector, modo scout (búsqueda de ferias) | `SCOUT_SEARCH_SYSTEM_PROMPT` |
 | `exhibitor-list-extraction` | Prospector, modo scout (extracción de expositores) | `SCOUT_EXTRACT_SYSTEM_PROMPT` |
 | `email-first-contact-draft` | EmailDrafter | `EMAIL_DRAFTER_SYSTEM_PROMPT` |
-| `email-reply-draft` | InboxAgent (borrador de la contestación, tanda 22) | `REPLY_DRAFT_SYSTEM_PROMPT` |
+| `email-reply-draft` | InboxAgent (borrador de la contestación, tanda 22; v2 DRAFT de la tanda 23 con ventana del cliente y cualificación: `REPLY_DRAFT_V2_SYSTEM_PROMPT`) | `REPLY_DRAFT_SYSTEM_PROMPT` |
 
 `exhibitor-list-extraction` formaba parte de `event-source-discovery` v4 en el código; en la BD es una skill propia para poder versionarla por separado.
 
@@ -2116,9 +2116,9 @@ El resto va al modelo ([src/inbound/reply-classifier.ts](src/inbound/reply-class
 |---|---|
 | `BAJA` | Línea `email — AAAA-MM-DD — baja solicitada (asunto: "...")` en la lista de supresión (igual que el BajasAgent) |
 | `NO_INTERESADO` | Línea `email — AAAA-MM-DD — no interesado (respuesta) (asunto: "...")` en la lista de supresión **y** nota de respuesta |
-| `INTERESADO` | Nota `📬 Respuesta recibida — Interesado (AAAA-MM-DD HH:mm)` + (tanda 19) Persona del remitente, Oportunidad de la empresa y Tarea «📬 Responder a …» + (tanda 22) borrador de la contestación en la tarea |
-| `PREGUNTA` | Nota `📬 Respuesta recibida — Pregunta (AAAA-MM-DD HH:mm)` + (tanda 19) Persona del remitente si el `From` trae nombre y Tarea «📬 Responder a …» + (tanda 22) borrador. **Sin** Oportunidad |
-| `REBOTE` duro | Nota `⚠️ Rebote: el email no existe (AAAA-MM-DD HH:mm)`; la lista de supresión no se toca |
+| `INTERESADO` | Nota `Respuesta recibida — Interesado (AAAA-MM-DD HH:mm) 📬` + (tanda 19) Persona del remitente, Oportunidad de la empresa y Tarea «Responder a … 📬» + (tanda 22) borrador de la contestación en la tarea + (tanda 23, skill v2) nota «Cualificación — <empresa> 🧾» en la Oportunidad |
+| `PREGUNTA` | Nota `Respuesta recibida — Pregunta (AAAA-MM-DD HH:mm) 📬` + (tanda 19) Persona del remitente si el `From` trae nombre y Tarea «Responder a … 📬» + (tanda 22) borrador. **Sin** Oportunidad |
+| `REBOTE` duro | Nota `Rebote: el email no existe (AAAA-MM-DD HH:mm) ⚠️`; la lista de supresión no se toca |
 | `AUTO_REPLY`, rebote blando, `OTRO` | Solo registro |
 
 Las altas en la lista se escriben con **un** `get_note` + **un** `update_note` por ejecución (append-only, deduplicadas, mismo código que el BajasAgent: [src/inbound/suppression-writer.ts](src/inbound/suppression-writer.ts)).
@@ -2163,7 +2163,7 @@ Párrafo de reunión según `source`:
 
 Con `videoUrl`, una línea más con el enlace de la videollamada.
 
-**`meeting_intent`.** El clasificador devuelve además `reunion` (acepta o propone reunión o llamada, o da una fecha). En un `INTERESADO` / `PREGUNTA` añade la señal `meeting_intent` (sin clase nueva): la tarea pasa a llamarse «📅 Cerrar reunión con <empresa>», el borrador se centra en cerrar la fecha (si el cliente propuso día y hora, los acepta y el párrafo de reunión se convierte en la alternativa «Si al final os viene mejor otro momento…»). La Oportunidad **no** cambia de etapa aquí.
+**`meeting_intent`.** El clasificador devuelve además `reunion` (acepta o propone reunión o llamada, o da una fecha). En un `INTERESADO` / `PREGUNTA` añade la señal `meeting_intent` (sin clase nueva): la tarea pasa a llamarse «Cerrar reunión con <empresa> 📅», el borrador se centra en cerrar la fecha (si el cliente propuso día y hora, los acepta y el párrafo de reunión se convierte en la alternativa «Si al final os viene mejor otro momento…»). La Oportunidad **no** cambia de etapa aquí.
 
 **Fallo no bloqueante.** Error del modelo, respuesta inválida dos veces o límite por ejecución: la Tarea se crea igual con `Borrador no disponible: <motivo>.` y el motivo queda en `triaged[].reply_draft` del output. Una Tarea abierta reutilizada (otra respuesta del mismo contacto) recibe al final la nueva respuesta y su borrador (append-only, una vez por respuesta: `reply_task_draft_appended`).
 
@@ -2183,7 +2183,7 @@ Configuración `reply_draft` (sin ella, desactivado: las versiones anteriores si
 Ejemplo de nota:
 
 ```
-📬 Respuesta recibida — Interesado (2026-10-08 10:30)
+Respuesta recibida — Interesado (2026-10-08 10:30) 📬
 
 **Ha respondido carmen@cliente.example.** Clasificación automática: **Interesado** (modelo, confianza 0,93).
 
@@ -2199,6 +2199,48 @@ Qué hacer: Abre el correo en tu bandeja y respóndelo tú hoy: pide lo que falt
 
 El Commercial OS no responde ni envía nada: la respuesta es tuya.
 ```
+
+### Ventana del cliente y cualificación: skill `email-reply-draft` v2 (tanda 23)
+
+Nivel 1 de autonomía, igual que el borrador: el sistema **prepara**; el comercial envía y agenda. Ninguna tool envía correo ni crea eventos, y nunca se inventa un dato del cliente.
+
+La v2 de la skill añade dos peticiones a la **misma** llamada del borrador (no hay llamada nueva al modelo):
+
+- `ventana_cliente`: cuándo quiere hablar el cliente, en categorías cerradas (`semana_que_viene`, `esta_semana`, `manana`, `a_partir_de`, `antes_de` o `ninguna`), con `fecha` solo para `a_partir_de` / `antes_de` y `franja` (`manana` / `tarde`) opcional.
+- `cualificacion`: `cantidad_aprox`, `presupuesto_aprox_eur` (`valor` y `valor_max` para un rango), `fecha_necesaria`, `decisor` y `productos_interes` (5 como mucho). Cada dato lleva su `cita` literal del correo.
+
+> **Importante:** la v2 se crea en el seed como **DRAFT** (`metadata.candidate = reply-window-qualification-v2`) y no se activa sola: sigue el Release Gate como el resto de candidatas (`POST /skills/email-reply-draft/versions/2/activate`, con un experimento `PASS` / `PASS_FORM` o `{ "force": true, "reason": "…" }`). La v1 se conserva y sigue siendo el fallback de código. Mientras la v1 esté `ACTIVE`, el InboxAgent se comporta exactamente como en la tanda 22: el código solo pide y lee los campos nuevos cuando el texto de la skill resuelta lleva los marcadores `[[capacidad:ventana_cliente]]` y `[[capacidad:cualificacion]]` (mismo patrón que el marcador de catálogo del Prospector).
+
+**Ventana → huecos, por código.** `resolveClientWindow` ([src/meetings/client-window.ts](src/meetings/client-window.ts)) calcula las fechas locales (Europe/Madrid) a partir de la fecha de hoy: «la semana que viene», un jueves, es de lunes a viernes de la semana siguiente; «esta semana», de hoy al viernes; «mañana», solo mañana; «a partir del 10», desde ese día; «antes del 20», hasta el 19. La única fecha que da el modelo (`fecha`) se valida: tiene que ser real, no pasada y a 60 días como mucho; si no, se ignora (`client_window_date_ignored:<motivo>`). El resultado va a `MeetingAvailability.propose({ now, count, window })` ([src/meetings/types.ts](src/meetings/types.ts), campo opcional y retrocompatible):
+
+- Solo huecos de los días de la ventana y, con `partOfDay`, de la mañana (antes de las 14:00) o de la tarde (desde las 14:00). La búsqueda puede pasar del horizonte normal para llegar a la ventana, sin superar 30 días desde hoy.
+- Si la ventana deja menos huecos que `count`, se devuelven los que haya.
+- Si no deja ninguno, se usa el horizonte normal y la propuesta lleva `windowRelaxed: true`. El párrafo de reunión empieza entonces por «En las fechas que comentáis no me queda ningún hueco libre, pero si os encaja, lo vemos en una llamada de 30 minutos en alguno de estos:» y la nota de la tarea lo indica.
+
+Señales: `client_window:<tipo>[:morning|afternoon]`, `client_window_relaxed`. Contadores: `client_windows`, `client_windows_relaxed`.
+
+**Cualificación → Oportunidad.** [src/crm/qualification.ts](src/crm/qualification.ts) conserva un dato solo si su cita está **literalmente** en el texto del cliente (se normalizan los espacios, las mayúsculas y las comillas) y, para las cifras, si la cifra aparece escrita en la cita («2.000», «2 000», «3 mil»). Además, la fecha necesaria no puede estar en el pasado ni a más de 18 meses. Lo demás se descarta (`qualification_data_discarded`). Solo para un `INTERESADO` con Oportunidad, la tool `record_opportunity_qualification` (LOW_WRITE, [src/tools/twenty/qualification-tools.ts](src/tools/twenty/qualification-tools.ts)) hace lo siguiente:
+
+1. Crea o reutiliza la nota **«Cualificación — `<empresa>` 🧾»**, enlazada a la Oportunidad, a la empresa y a la Persona. Cada respuesta añade al final una sección `### Respuesta del AAAA-MM-DD HH:mm` con una línea por dato y su cita. No pisa lo que haya y no repite una sección que ya existe.
+1. Rellena los campos **estándar** de la Oportunidad solo si están **vacíos**: `amount` (el presupuesto en EUR, en micros; con un rango, el **extremo inferior**, y el rango completo queda en la nota) y `closeDate` (la fecha necesaria). Nunca sobrescribe un valor puesto por una persona o por una respuesta anterior; la sección lo dice («No se ha tocado el importe: ya tenía un valor.»).
+1. Escribe una fila `opportunity.qualified` en `audit_log` (`subject_type = opportunity`) **sin valores**: solo ids y nombres de campo (`data_fields`, `opportunity_fields_set`, `opportunity_fields_kept`, `discarded_fields`). Nunca importes, fechas ni citas.
+
+No hay cambios de esquema en la Twenty App. Contador: `qualifications_recorded`.
+
+### Títulos: texto primero, emoji al final (tanda 23)
+
+Twenty dibuja el icono de cada Task o nota con el primer carácter del título. Un emoji delante (un par sustituto UTF-16) sale como «?» en un rombo rojo. Por eso los títulos llevan ahora el emoji al final:
+
+| Antes | Ahora |
+|---|---|
+| `📬 Responder a <persona/empresa>` | `Responder a <persona/empresa> 📬` |
+| `📅 Cerrar reunión con <empresa>` | `Cerrar reunión con <empresa> 📅` |
+| `📬 Respuesta recibida — <clase> (AAAA-MM-DD HH:mm)` | `Respuesta recibida — <clase> (AAAA-MM-DD HH:mm) 📬` |
+| `⚠️ Rebote: el email no existe (AAAA-MM-DD HH:mm)` | `Rebote: el email no existe (AAAA-MM-DD HH:mm) ⚠️` |
+| `📅 Reunión detectada — AAAA-MM-DD HH:mm` | `Reunión detectada — AAAA-MM-DD HH:mm 📅` |
+| `🧾 Preparar reunión con <empresa>` | `Preparar reunión con <empresa> 🧾` |
+
+**Retrocompatibilidad.** Todas las búsquedas idempotentes por título encuentran también el formato antiguo: la Task abierta de un contacto (`create_reply_task`), las notas de triaje (`create_note`), la nota de reunión (`mark_opportunity_meeting`) y la tarea de preparación (`create_crm_task`). Para ello usan el campo opcional `legacyTitles` y la función `legacyEmojiFirstTitle` de [src/integrations/twenty/tasks.ts](src/integrations/twenty/tasks.ts). Un registro antiguo reutilizado **conserva su título**: por ejemplo, la Task abierta «📬 Responder a Adpan Europa S.L.» recibe el nuevo borrador al final y no se duplica. El cuerpo de las tareas y las notas puede seguir llevando emojis.
 
 ### Evento `email.reply_received`
 
@@ -2682,7 +2724,7 @@ El calendario que se lee es el de la cuenta del comercial conectada en Twenty (I
 
 ### Huecos para proponer una reunión
 
-`meetingAvailabilityFromEnv()` (`src/meetings/index.ts`) devuelve un `MeetingAvailability` (contrato en `src/meetings/types.ts`) cuyo `propose({ now, count })` responde `{ slots, bookingUrl, videoUrl, durationMin, source }`:
+`meetingAvailabilityFromEnv()` (`src/meetings/index.ts`) devuelve un `MeetingAvailability` (contrato en `src/meetings/types.ts`) cuyo `propose({ now, count, window? })` (la ventana opcional es de la tanda 23: consulta [Ventana del cliente y cualificación](#ventana-del-cliente-y-cualificación-skill-email-reply-draft-v2-tanda-23)) responde `{ slots, bookingUrl, videoUrl, durationMin, source }`:
 
 | `source` | Cuándo | `slots` |
 |---|---|---|
@@ -2715,9 +2757,9 @@ La tarea `meeting-sync` (`CRON */30 * * * *`, `Europe/Madrid`, `max_concurrency 
 
    No casan los asistentes del propio equipo (miembros del workspace y `MEETING_INTERNAL_DOMAINS`), los que han rechazado la invitación ni los eventos cancelados. Si una empresa tiene varias oportunidades abiertas, gana la del punto de contacto; si no, la más antigua.
 4. Por oportunidad, **una reunión por ejecución**: la próxima que viene (o, si todas han pasado, la última). `mark_opportunity_meeting` lee las etapas reales del select `stage` del workspace (como `src/crm/opportunities.ts`) y:
-   - etapa **anterior** a `MEETING` (o vacía): deja la nota **«📅 Reunión detectada — `<fecha>`»** en la oportunidad y en su empresa («📅 Reunión detectada en tu calendario: `<fecha>`, `<título>`», con asistentes y videollamada) y la pasa a `MEETING`;
+   - etapa **anterior** a `MEETING` (o vacía): deja la nota **«Reunión detectada — `<fecha>` 📅»** en la oportunidad y en su empresa («📅 Reunión detectada en tu calendario: `<fecha>`, `<título>`», con asistentes y videollamada) y la pasa a `MEETING`;
    - ya en `MEETING`, en una etapa **posterior**, de cierre o desconocida: no la toca (`skipped_by`: `at_meeting`, `past_meeting`, `closed`, `unknown_stage`). Nunca retrocede una etapa. Sin una etapa de reunión en el workspace (`MEETING`, o una opción con `MEET` o `REUNI`): `no_meeting_stage`.
-5. Si la reunión aún no ha pasado, `create_crm_task` crea **«🧾 Preparar reunión con `<empresa>`»** (`TODO`), con vencimiento a las 09:00 del **día laborable anterior** a la reunión (hoy si ese día ya pasó). El cuerpo lleva fecha, asistentes y enlaces a la empresa, la oportunidad y las hipótesis del tenant; sin LLM. Una reunión que ya pasó (ayer) mueve la etapa y deja la nota, pero no crea tarea.
+5. Si la reunión aún no ha pasado, `create_crm_task` crea **«Preparar reunión con `<empresa>` 🧾»** (`TODO`), con vencimiento a las 09:00 del **día laborable anterior** a la reunión (hoy si ese día ya pasó). El cuerpo lleva fecha, asistentes y enlaces a la empresa, la oportunidad y las hipótesis del tenant; sin LLM. Una reunión que ya pasó (ayer) mueve la etapa y deja la nota, pero no crea tarea.
 6. Una fila `opportunity.meeting_detected` en `audit_log` (`actor = agent`, `subject_type = opportunity`, `subject_id` = la oportunidad, `payload.event_key` = el iCalUID del evento, o su id) y el evento de dominio `opportunity.meeting_detected`.
 
 **Una vez por oportunidad y reunión, para siempre**: la marca de `audit_log` sobrevive a que borres la nota o la tarea, y una oportunidad que devuelves a mano a una etapa anterior no vuelve a avanzar por la misma reunión. Si una ejecución muere a mitad, la siguiente encuentra la nota por título y completa la tarea (`resumed`). Máximo 20 detecciones por ejecución (`MEETING_SYNC_MAX_PER_RUN`).

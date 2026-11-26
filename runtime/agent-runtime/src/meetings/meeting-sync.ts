@@ -6,7 +6,7 @@
  *   in a stage the workspace does not list is never touched.
  * - The meeting stage is read from the workspace's `stage` SELECT at run time: `MEETING` (default
  *   workspace), else the first option that looks like one (`*MEET*`, `*REUNI*`).
- * - One «🧾 Preparar reunión con <empresa>» task, due the working day before the meeting (09:00
+ * - One «Preparar reunión con <empresa> 🧾» task, due the working day before the meeting (09:00
  *   Europe/Madrid; today when that day has passed). No task for a meeting that already happened.
  */
 import { isClosedStage } from '../crm/opportunities.js';
@@ -22,8 +22,17 @@ export const MEETING_DETECTED_EVENT = 'opportunity.meeting_detected';
 export const MEETING_SYNC_LOOKBACK_DAYS = 1;
 export const MEETING_SYNC_LOOKAHEAD_DAYS = 60;
 export const MEETING_SYNC_MAX_PER_RUN = 20;
-export const MEETING_NOTE_PREFIX = '📅 Reunión detectada — ';
-export const MEETING_TASK_PREFIX = '🧾 Preparar reunión con ';
+/**
+ * Tanda 23: TEXT FIRST, emoji at the end (Twenty draws the record icon with the first character of
+ * the title; an emoji there shows as a broken «?»). The LEGACY_* prefixes are the pre-tanda 23
+ * spelling, used only to find the notes and tasks created before the change.
+ */
+export const MEETING_NOTE_PREFIX = 'Reunión detectada — ';
+export const MEETING_NOTE_EMOJI = '📅';
+export const MEETING_TASK_PREFIX = 'Preparar reunión con ';
+export const MEETING_TASK_EMOJI = '🧾';
+export const LEGACY_MEETING_NOTE_PREFIX = `${MEETING_NOTE_EMOJI} ${MEETING_NOTE_PREFIX}`;
+export const LEGACY_MEETING_TASK_PREFIX = `${MEETING_TASK_EMOJI} ${MEETING_TASK_PREFIX}`;
 const TITLE_MAX = 255;
 
 export type StageVerdict = 'advance' | 'at_meeting' | 'past_meeting' | 'closed' | 'unknown_stage' | 'no_meeting_stage';
@@ -53,13 +62,27 @@ const clean = (s: string) => s.replace(/["\\]/g, '').replace(/[\u0000-\u001f\u00
 const plain = (s: string) => s.replace(/[`*_[\]()<>|~#\\]/g, '').replace(/\s+/g, ' ').trim();
 const bounded = (s: string) => (s.length <= TITLE_MAX ? s : `${s.slice(0, TITLE_MAX - 1)}…`);
 
-/** `📅 Reunión detectada — 2026-12-03 10:00` (local time): one note per opportunity and meeting. */
+/** `Reunión detectada — 2026-12-03 10:00 📅` (local time): one note per opportunity and meeting. */
 export function meetingNoteTitle(startsAt: Date, timeZone = MEETING_SYNC_TIMEZONE): string {
-  return `${MEETING_NOTE_PREFIX}${localMinute(startsAt, timeZone)}`;
+  return `${MEETING_NOTE_PREFIX}${localMinute(startsAt, timeZone)} ${MEETING_NOTE_EMOJI}`;
 }
 
+/** The pre-tanda 23 spelling `📅 Reunión detectada — 2026-12-03 10:00` (lookup only). */
+export function legacyMeetingNoteTitle(startsAt: Date, timeZone = MEETING_SYNC_TIMEZONE): string {
+  return `${LEGACY_MEETING_NOTE_PREFIX}${localMinute(startsAt, timeZone)}`;
+}
+
+/** `Preparar reunión con <empresa> 🧾` (the emoji stays at the end when the name is cut). */
 export function meetingTaskTitle(company: string | null | undefined): string {
-  return bounded(`${MEETING_TASK_PREFIX}${clean(company ?? '') || 'la empresa'}`);
+  const suffix = ` ${MEETING_TASK_EMOJI}`;
+  const name = clean(company ?? '') || 'la empresa';
+  const room = TITLE_MAX - MEETING_TASK_PREFIX.length - suffix.length;
+  return `${MEETING_TASK_PREFIX}${name.length <= room ? name : `${name.slice(0, room - 1)}…`}${suffix}`;
+}
+
+/** The pre-tanda 23 spelling `🧾 Preparar reunión con <empresa>` (lookup only). */
+export function legacyMeetingTaskTitle(company: string | null | undefined): string {
+  return bounded(`${LEGACY_MEETING_TASK_PREFIX}${clean(company ?? '') || 'la empresa'}`);
 }
 
 export interface MeetingTextInput {
@@ -86,7 +109,7 @@ function when(b: MeetingTextInput): string {
   return `${start}${end ? `–${sameDay ? end.slice(11) : end}` : ''} (${tz})`;
 }
 
-/** Body of the 📅 note on the opportunity. */
+/** Body of the «Reunión detectada … 📅» note on the opportunity. */
 export function meetingNoteBody(b: MeetingTextInput & { stageFrom: string | null; stageTo: string | null; via: string }): string {
   const title = b.title ? plain(b.title) : '';
   return [
@@ -102,7 +125,7 @@ export function meetingNoteBody(b: MeetingTextInput & { stageFrom: string | null
   ].join('\n');
 }
 
-/** Body of the 🧾 task: date, attendees and links (no LLM). */
+/** Body of the «Preparar reunión … 🧾» task: date, attendees and links (no LLM). */
 export function meetingTaskBody(b: MeetingTextInput & { company: string | null; links: Array<{ label: string; url: string }> }): string {
   const title = b.title ? plain(b.title) : '';
   return [

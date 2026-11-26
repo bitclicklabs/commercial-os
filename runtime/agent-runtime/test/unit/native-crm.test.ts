@@ -189,7 +189,7 @@ describe('reply task', () => {
     const client = fake.client();
     const input = { title: replyTaskTitle('Carmen Ruiz'), bodyMarkdown: 'Responder', dueAt: '2026-10-12T07:00:00.000Z', companyId: 'c1', opportunityId: 'o1', personId: 'p1' };
     const a = await upsertReplyTask(client, input, signal());
-    expect(a).toMatchObject({ created: true, task: { title: '📬 Responder a Carmen Ruiz', status: 'TODO', dueAt: '2026-10-12T07:00:00.000Z' } });
+    expect(a).toMatchObject({ created: true, task: { title: 'Responder a Carmen Ruiz 📬', status: 'TODO', dueAt: '2026-10-12T07:00:00.000Z' } });
     expect(fake.tables.taskTargets.map((t) => [t.targetOpportunityId, t.targetCompanyId, t.targetPersonId])).toEqual([
       ['o1', null, null],
       [null, 'c1', null],
@@ -203,7 +203,7 @@ describe('reply task', () => {
     // An orphan (died between the POSTs) is adopted, not duplicated.
     const orphan = fake.seed('tasks', { title: replyTaskTitle('Otra'), status: 'TODO', bodyV2: null, dueAt: null });
     expect(await upsertReplyTask(client, { ...input, title: replyTaskTitle('Otra') }, signal())).toMatchObject({ created: false, task: { id: orphan.id } });
-    expect(replyTaskTitle('Ana "la" \\ Ruiz')).toBe('📬 Responder a Ana la Ruiz');
+    expect(replyTaskTitle('Ana "la" \\ Ruiz')).toBe('Responder a Ana la Ruiz 📬');
   });
 
   it('create_reply_task tool: links the note and the opportunity in the body', async () => {

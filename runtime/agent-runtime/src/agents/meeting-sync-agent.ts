@@ -15,7 +15,7 @@
  *    moved back by a person is not moved forward again for the same meeting).
  * 4. Per opportunity, ONE meeting per run (the next one to come, else the latest past one):
  *    `mark_opportunity_meeting` (LOW_WRITE) writes the 📅 note and moves it to the meeting stage
- *    ONLY from an earlier stage; then `create_crm_task` «🧾 Preparar reunión con <empresa>», due the
+ *    ONLY from an earlier stage; then `create_crm_task` «Preparar reunión con <empresa> 🧾», due the
  *    working day before (not for a meeting that already happened); then the audit row and the
  *    domain event `opportunity.meeting_detected`.
  */
@@ -36,6 +36,7 @@ import {
   MEETING_SYNC_LOOKBACK_DAYS,
   MEETING_SYNC_MAX_PER_RUN,
   MEETING_SYNC_TIMEZONE,
+  legacyMeetingTaskTitle,
   meetingTaskBody,
   meetingTaskTitle,
   prepDueDay,
@@ -263,6 +264,8 @@ export class MeetingSyncAgent implements AgentImplementation {
         ];
         const created = await tools.call('create_crm_task', {
           title: meetingTaskTitle(opp.companyName ?? opp.name),
+          // Tanda 23: the task created before the change («🧾 Preparar reunión con …») is reused.
+          legacyTitles: [legacyMeetingTaskTitle(opp.companyName ?? opp.name)],
           bodyMarkdown: meetingTaskBody({ startsAt: start, endsAt: ev.endsAt ? new Date(ev.endsAt) : null, title: ev.title, attendees, location: ev.location, conferenceUrl: ev.conferenceUrl, company: opp.companyName ?? opp.name, links, timezone }),
           dueAt: taskDue,
           targets: { ...(opp.companyId ? { companyId: opp.companyId } : {}), opportunityId: opp.id },

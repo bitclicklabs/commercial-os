@@ -228,7 +228,7 @@ describe('meeting_intent (triage signal, no new class)', () => {
   });
 
   it('meeting task title', () => {
-    expect(meetingTaskTitle('Cliente "SA"')).toBe('📅 Cerrar reunión con Cliente SA');
+    expect(meetingTaskTitle('Cliente "SA"')).toBe('Cerrar reunión con Cliente SA 📅');
   });
 });
 
@@ -404,7 +404,7 @@ describe('InboxAgent: reply drafts (tanda 22)', () => {
     expect(prompt).toContain('tres huecos concretos');
 
     const task = s.fake.tables.tasks[0]!;
-    expect(task.title).toBe('📬 Responder a Carmen');
+    expect(task.title).toBe('Responder a Carmen 📬');
     const body = s.md(task);
     expect(body).toContain('### Borrador de respuesta (a la respuesta del 2026-10-08 10:30)');
     expect(body).toContain('**Para:** carmen@cliente.example');
@@ -459,7 +459,7 @@ describe('InboxAgent: reply drafts (tanda 22)', () => {
     expect(r.output.counters).toMatchObject({ meeting_tasks: 1, reply_drafts_created: 1, opportunities_created: 1 });
     expect(s.provider.draftRequests[0]!.messages[0]!.content).toContain('quiere_reunion: true');
     const task = s.fake.tables.tasks[0]!;
-    expect(task.title).toBe('📅 Cerrar reunión con Cliente SA');
+    expect(task.title).toBe('Cerrar reunión con Cliente SA 📅');
     expect(s.md(task)).toContain('quiere reunirse.** Cierra tú la fecha');
     expect(s.md(task)).toContain('Si al final os viene mejor otro momento, decidme qué día y hora');
     // The opportunity keeps its first stage: the calendar agent moves it when the event exists.

@@ -29,7 +29,7 @@ import {
   type TwentyPerson,
 } from '../../integrations/twenty/index.js';
 import { readCalendarEvents } from '../../meetings/calendar.js';
-import { meetingNoteBody, meetingNoteTitle, meetingStageOf, stageVerdict } from '../../meetings/meeting-sync.js';
+import { legacyMeetingNoteTitle, meetingNoteBody, meetingNoteTitle, meetingStageOf, stageVerdict } from '../../meetings/meeting-sync.js';
 import type { OpenOpportunityView } from '../../meetings/match.js';
 import { defineTool } from '../types.js';
 import { RecordId, withTwenty, type TwentyToolDeps } from './shared.js';
@@ -275,9 +275,16 @@ export const MarkOpportunityMeetingOutput = z.object({
 });
 export type MarkOpportunityMeetingOutput = z.infer<typeof MarkOpportunityMeetingOutput>;
 
-/** The 📅 note with this title already attached to the opportunity, or null. */
-async function findMeetingNote(twenty: TwentyClient, title: string, opportunityId: string, signal: AbortSignal): Promise<TwentyNote | null> {
-  const { records } = await twenty.list<TwentyNote>(TWENTY_OBJECTS.note, { filter: `title[eq]:${filterValue(title)}`, limit: 20, signal });
+/**
+ * The meeting note with one of these titles (the current one first, then the pre-tanda 23
+ * emoji-first spelling) already attached to the opportunity, or null.
+ */
+async function findMeetingNote(twenty: TwentyClient, titles: readonly string[], opportunityId: string, signal: AbortSignal): Promise<TwentyNote | null> {
+  const records: TwentyNote[] = [];
+  for (const title of titles) {
+    const { records: found } = await twenty.list<TwentyNote>(TWENTY_OBJECTS.note, { filter: `title[eq]:${filterValue(title)}`, limit: 20, signal });
+    for (const n of found) if (!records.some((r) => r.id === n.id)) records.push(n);
+  }
   for (const n of records) {
     if (n.deletedAt) continue;
     const { records: targets } = await twenty.list<TwentyNoteTarget>(TWENTY_OBJECTS.noteTarget, { filter: `noteId[eq]:${filterValue(n.id)}`, limit: 50, signal });
@@ -315,7 +322,7 @@ export function createMarkOpportunityMeetingTool(deps: TwentyToolDeps) {
         const verdict = stageVerdict(stageFrom, stages);
         const start = new Date(input.startsAt);
         const title = meetingNoteTitle(start);
-        const existing = await findMeetingNote(twenty, title, opp.id, ctx.signal);
+        const existing = await findMeetingNote(twenty, [title, legacyMeetingNoteTitle(start)], opp.id, ctx.signal);
         // A previous run moved it and wrote the note, then stopped before the task: carry on.
         if (verdict === 'at_meeting' && existing) {
           return { status: 'ok' as const, output: { verdict: 'resumed' as const, changed: false, stageFrom, stageTo: stageFrom, stageSource: source, noteId: existing.id, noteCreated: false, companyId } };

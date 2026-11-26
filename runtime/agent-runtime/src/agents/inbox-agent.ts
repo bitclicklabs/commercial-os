@@ -15,15 +15,15 @@
  *    - BAJA and explicit NO_INTERESADO -> append-only entry in the suppression note (one
  *      get_note + one update_note per run, deduped), motives "baja solicitada" / "no interesado
  *      (respuesta)";
- *    - INTERESADO / PREGUNTA / NO_INTERESADO -> note "📬 Respuesta recibida — <clase>" on the
+ *    - INTERESADO / PREGUNTA / NO_INTERESADO -> note "Respuesta recibida — <clase> (…) 📬" on the
  *      company (+ hypothesis) of the send it answers (`email_sends`), or of the company found by
  *      the sender's domain in Twenty;
- *    - hard bounce -> note "⚠️ Rebote: el email no existe" on the company of the send (the
+ *    - hard bounce -> note "Rebote: el email no existe (…) ⚠️" on the company of the send (the
  *      suppression list is NOT touched);
  *    - native CRM records (tanda 19), after the 📬 note, when the reply is linked to a company:
  *      INTERESADO -> Person of the sender (From name + address; none for info@/comercial@...),
  *      the company's OPEN Opportunity (created at the first stage of the pipeline, or reused:
- *      never duplicated) with the note attached, a Task «📬 Responder a <persona/empresa>» (TODO,
+ *      never duplicated) with the note attached, a Task «Responder a <persona/empresa> 📬» (TODO,
  *      due in 2 working days) and the event `opportunity.created` when it is new;
  *      PREGUNTA -> Person (only when the From header carries a name) + the same Task, NO
  *      Opportunity. The 📬 note stays: it is the record with the excerpt, the Task is the action;
@@ -56,7 +56,7 @@ import { DEFAULT_REPLY_THRESHOLDS, MEETING_INTENT_SIGNAL, REPLY_CLASSIFICATION_J
 import { DrizzleSendLookup, FREEMAIL_DOMAINS, type SendLookup, type SendMatch } from '../inbound/reply-links.js';
 import { localDate, noInterestLine, sanitizeSubject, suppressionLine } from '../inbound/suppression-list.js';
 import { appendSuppressionEntries, toolError } from '../inbound/suppression-writer.js';
-import { bounceNoteBody, bounceNoteTitle, NOTE_CLASSES, replyNoteBody, replyNoteTitle, sanitizeExcerpt } from '../inbound/triage-notes.js';
+import { bounceNoteBody, bounceNoteTitle, legacyBounceNoteTitle, legacyReplyNoteTitle, NOTE_CLASSES, replyNoteBody, replyNoteTitle, sanitizeExcerpt } from '../inbound/triage-notes.js';
 import { cleanPersonName, personDisplayName, type PersonSummary } from '../crm/people.js';
 import { opportunityCreatedEvent } from '../crm/opportunities.js';
 import { addBusinessDays, REPLY_TASK_BUSINESS_DAYS, replyTaskBody } from '../crm/reply-task.js';
@@ -609,6 +609,7 @@ export class InboxAgent implements AgentImplementation {
         const note = isBounce
           ? {
               title: bounceNoteTitle(receivedLocal),
+              legacyTitles: [legacyBounceNoteTitle(receivedLocal)],
               bodyMarkdown: bounceNoteBody({
                 recipient: subjectAddress!,
                 status: d.bounce?.status ?? null,
@@ -620,6 +621,7 @@ export class InboxAgent implements AgentImplementation {
             }
           : {
               title: replyNoteTitle(d.class, receivedLocal),
+              legacyTitles: [legacyReplyNoteTitle(d.class, receivedLocal)],
               bodyMarkdown: replyNoteBody({
                 class: d.class,
                 method: d.method,
@@ -801,7 +803,7 @@ ${replyDraftNoteSection(prepared.outcome)}
       }
     }
 
-    // 3. Task «📬 Responder a <persona/empresa>» (or, tanda 22, «📅 Cerrar reunión con <empresa>»
+    // 3. Task «Responder a <persona/empresa> 📬» (or, tanda 22, «Cerrar reunión con <empresa> 📅»
     //    when the client accepts or proposes a meeting), due in 2 working days, with the draft.
     let companyName = r.companyName;
     const company = async (): Promise<string> => {

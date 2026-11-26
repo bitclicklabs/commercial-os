@@ -1,5 +1,5 @@
 /**
- * Native Twenty `Task` «📬 Responder a <persona/empresa>» of the inbound triage (tanda 19):
+ * Native Twenty `Task` «Responder a <persona/empresa> 📬» of the inbound triage (tanda 19):
  * what the commercial has to DO about a reply (the 📬 note stays as the record with the
  * excerpt). Created by the triage for INTERESADO and PREGUNTA replies, linked through
  * `taskTargets` to the opportunity (if any), the company and the person.
@@ -10,36 +10,61 @@
  * `{ title, bodyV2: { markdown }, dueAt, status TODO|IN_PROGRESS|DONE, assigneeId }`,
  * TaskTarget `{ taskId, targetCompanyId, targetPersonId, targetOpportunityId, ... }`.
  *
- * Idempotent: an open task (TODO / IN_PROGRESS) with the same title that already targets the
+ * Idempotent: an open task (TODO / IN_PROGRESS) with the same title (or its pre-tanda 23
+ * spelling, `legacyTitles`) that already targets the
  * same opportunity (or, without one, the same company) is reused and only its missing targets
  * are added. A retried run never duplicates it.
  */
 import { TWENTY_OBJECTS, filterValue, type TwentyClient, type TwentyTask, type TwentyTaskTarget } from '../integrations/twenty/index.js';
 
-export const REPLY_TASK_PREFIX = '📬 Responder a ';
+/**
+ * Tanda 23: TEXT FIRST, emoji at the end. Twenty draws the icon of a Task / note with the first
+ * character of its title and an emoji there (a UTF-16 surrogate pair) shows as a broken «?»:
+ * «Responder a Adpan Europa S.L. 📬», «Cerrar reunión con X 📅». The tasks created before keep
+ * the old title («📬 Responder a …»): `legacyReplyTaskTitle` / `legacyMeetingTaskTitle` give the old spelling, and
+ * `upsertReplyTask` reuses an open task with either.
+ */
+export const REPLY_TASK_PREFIX = 'Responder a ';
+export const REPLY_TASK_EMOJI = '📬';
 /** Tanda 22: the client accepts or proposes a meeting (`meeting_intent`): the task is to close it. */
-export const MEETING_TASK_PREFIX = '📅 Cerrar reunión con ';
+export const MEETING_TASK_PREFIX = 'Cerrar reunión con ';
+export const MEETING_TASK_EMOJI = '📅';
+/** Titles before tanda 23 (emoji first). Only to FIND the tasks created then; never written. */
+export const LEGACY_REPLY_TASK_PREFIX = `${REPLY_TASK_EMOJI} ${REPLY_TASK_PREFIX}`;
+export const LEGACY_MEETING_TASK_PREFIX = `${MEETING_TASK_EMOJI} ${MEETING_TASK_PREFIX}`;
 export const TASK_TITLE_MAX = 255;
 export const REPLY_TASK_BUSINESS_DAYS = 2;
 
-/** `📬 Responder a <who>`: no quotes or backslashes (filter values cannot carry them), bounded. */
+/** `Responder a <who> 📬`: no quotes or backslashes (filter values cannot carry them), bounded. */
 export function replyTaskTitle(who: string): string {
-  return taskTitle(REPLY_TASK_PREFIX, who, 'la respuesta');
+  return taskTitle(REPLY_TASK_PREFIX, who, 'la respuesta', ` ${REPLY_TASK_EMOJI}`);
 }
 
-/** `📅 Cerrar reunión con <empresa>` (same sanitising as the reply task). */
+/** `Cerrar reunión con <empresa> 📅` (same sanitising as the reply task). */
 export function meetingTaskTitle(company: string): string {
-  return taskTitle(MEETING_TASK_PREFIX, company, 'el cliente');
+  return taskTitle(MEETING_TASK_PREFIX, company, 'el cliente', ` ${MEETING_TASK_EMOJI}`);
 }
 
-function taskTitle(prefix: string, who: string, empty: string): string {
+/** The old spelling `📬 Responder a <who>` (to find a task created before tanda 23). */
+export function legacyReplyTaskTitle(who: string): string {
+  return taskTitle(LEGACY_REPLY_TASK_PREFIX, who, 'la respuesta', '');
+}
+
+/** The old spelling `📅 Cerrar reunión con <empresa>`. */
+export function legacyMeetingTaskTitle(company: string): string {
+  return taskTitle(LEGACY_MEETING_TASK_PREFIX, company, 'el cliente', '');
+}
+
+function taskTitle(prefix: string, who: string, empty: string, suffix: string): string {
   const w = who
     .replace(/["\\]/g, '')
     .replace(/[\u0000-\u001f\u007f]/g, ' ')
     .replace(/\s+/g, ' ')
     .trim();
-  const title = `${prefix}${w || empty}`;
-  return title.length <= TASK_TITLE_MAX ? title : `${title.slice(0, TASK_TITLE_MAX - 1)}…`;
+  const room = TASK_TITLE_MAX - prefix.length - suffix.length;
+  const body = w || empty;
+  // The emoji stays at the end even when the name is cut.
+  return `${prefix}${body.length <= room ? body : `${body.slice(0, room - 1)}…`}${suffix}`;
 }
 
 function localParts(date: Date, timeZone: string): { y: number; m: number; d: number; hh: number; mm: number } {
@@ -89,7 +114,7 @@ export interface ReplyTaskBodyInput {
   timezone: string;
   /** The send it answers, when known. */
   sendSubject: string | null;
-  /** Tanda 22: the client accepts or proposes a meeting (the task is «📅 Cerrar reunión con …»). */
+  /** Tanda 22: the client accepts or proposes a meeting (the task is «Cerrar reunión con … 📅»). */
   meetingIntent?: boolean;
   /** Tanda 22: the «Borrador de respuesta» section (src/agents/reply-draft.ts), already markdown. */
   draftSection?: string | null;
@@ -135,6 +160,11 @@ export function twentyRecordUrl(baseUrl: string, objectSingular: 'note' | 'oppor
 
 export interface ReplyTaskInput {
   title: string;
+  /**
+   * Tanda 23: older spellings of `title` (emoji first) that also identify the task: an open task
+   * created before the change is reused (and keeps its title).
+   */
+  legacyTitles?: readonly string[];
   bodyMarkdown: string;
   dueAt: string;
   companyId?: string | null;
@@ -164,7 +194,13 @@ async function targetsOf(twenty: TwentyClient, taskId: string, signal?: AbortSig
 export async function upsertReplyTask(twenty: TwentyClient, input: ReplyTaskInput, signal?: AbortSignal): Promise<ReplyTaskResult> {
   const opts = signal ? { signal } : {};
   const anchor = input.opportunityId ? { key: 'targetOpportunityId' as const, id: input.opportunityId } : input.companyId ? { key: 'targetCompanyId' as const, id: input.companyId } : null;
-  const { records: sameTitle } = await twenty.list<TwentyTask>(TWENTY_OBJECTS.task, { filter: `title[eq]:${filterValue(input.title)}`, limit: 20, ...opts });
+  // The current title first, then the older spellings (tanda 23).
+  const titles = [input.title, ...(input.legacyTitles ?? [])].filter((t, i, all) => t.length > 0 && all.indexOf(t) === i);
+  const sameTitle: TwentyTask[] = [];
+  for (const title of titles) {
+    const { records } = await twenty.list<TwentyTask>(TWENTY_OBJECTS.task, { filter: `title[eq]:${filterValue(title)}`, limit: 20, ...opts });
+    for (const r of records) if (!sameTitle.some((x) => x.id === r.id)) sameTitle.push(r);
+  }
   let task: TwentyTask | null = null;
   let targets: TwentyTaskTarget[] = [];
   let orphan: TwentyTask | null = null;

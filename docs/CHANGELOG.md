@@ -228,7 +228,7 @@ Integración de `feat/mvp0-bootstrap` en `main` (PR #1).
 - Títulos sin emoji delante: Twenty dibujaba un «?» en un rombo rojo como icono de las Tasks cuyo título empezaba por emoji; ahora texto primero y emoji al final («Responder a Adpan Europa S.L. 📬»). Las Tasks antiguas se siguen reconociendo.
 - Docs: [ai-setter.md](ai-setter.md) (tanda A hecha y probada, tanda B, tanda C como siguiente), [seguimiento-leads.md](seguimiento-leads.md) (secuencia y regla del último toque enviado), [guía comercial](guia-comercial.md#seguimiento-de-lo-que-has-enviado) (Tasks «Seguimiento N», cualificación, títulos) y [runbook](runbook-local.md#variables-del-runtime) (`FOLLOWUP_MAX_TOUCHES`, problema «no se genera el segundo seguimiento»). Lo que depende de la implementación va marcado `[POR CONFIRMAR]`.
 
-## 2026-11-26 — Tanda 24 (en curso)
+## 2026-11-26 — Tanda 24 (cerrada)
 
 - AI Setter, tanda C, la última (diseño cerrado; implementación en curso, nivel 1: el sistema prepara, el humano envía y agenda). La tanda B queda marcada como **hecha**: «Retomar conversación» se estrenó con Adpan (Task real creada, correo enviado por el comercial, insistencia agotada con 2 salientes seguidos sin respuesta por decisión del usuario).
 - Ficha previa a la reunión: la Task «Preparar reunión con {empresa} 🧾» trae una ficha generada por la skill versionada `meeting-brief` (v1): quién es, de dónde viene (feria o señal y por qué ahora), la conversación en 3-5 viñetas con citas literales, datos de cualificación, lo que falta saber, 3 preguntas sugeridas, agenda de 30 minutos y qué llevar. Nunca inventa datos ni precios. Si entran correos nuevos antes de la reunión, añade «Actualización — fecha». Si el modelo falla, ficha mínima por código. Modo prueba con una Oportunidad concreta.

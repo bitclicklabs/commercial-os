@@ -277,7 +277,7 @@ Notas:
 - **Riesgo a vigilar:** el segundo seguimiento depende de que Twenty importe los correos enviados del buzón y de que el rol «Agent runtime» pueda leerlos `[POR CONFIRMAR]`.
 - **Decisión de producto:** se mantiene el nivel 1 de autonomía; nada sale sin un clic humano.
 
-## Tanda 24 — AI Setter, tanda C: ficha previa y métricas 🚧 (en curso, 2026-11-26)
+## Tanda 24 — AI Setter, tanda C: ficha previa y métricas ✅ (cerrada, 2026-11-26; suite 1417, desplegada; ensayos en vivo: ficha previa de Adpan y resumen semanal de la semana del 23/11; el AI Setter queda completo)
 
 Origen: última tanda del AI Setter, con el mismo **nivel 1 de autonomía** (el sistema prepara, el humano envía y agenda). La tanda B (tanda 23) queda **hecha**: seguimientos en hilo y «Retomar conversación» desplegados; esta última se estrenó el 2026-11-26 con Adpan (Task real creada, correo enviado por el comercial, insistencia agotada con 2 salientes seguidos sin respuesta por decisión del usuario). La tanda C cierra el embudo: el traspaso a la reunión y la medición. Modelo completo en [ai-setter.md](ai-setter.md#el-ai-setter-completo).
 

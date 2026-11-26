@@ -22,6 +22,14 @@ describe('decideRecovery', () => {
     expect(decideRecovery({ ...base, status: 'QUEUED', ageMs: 1_000 })).toBe('none');
   });
 
+  it('leaves a RUNNING run with a fresh heartbeat alone even when its job is missing', () => {
+    // A 20-minute scout run processed by another queue/process: ageMs is heartbeat
+    // staleness (the worker bumps updated_at every RUN_HEARTBEAT_INTERVAL_MS), so a
+    // beating run never ages past graceMs no matter how long it has been RUNNING.
+    expect(decideRecovery({ ...base, jobState: null, ageMs: 30_000, graceMs: 120_000 })).toBe('none');
+    expect(decideRecovery({ ...base, jobState: 'failed', ageMs: 30_000, graceMs: 120_000 })).toBe('none');
+  });
+
   it('does nothing while BullMQ still owns the job (stalled jobs are handled by BullMQ)', () => {
     for (const jobState of ['waiting', 'active', 'delayed', 'prioritized', 'waiting-children'] as const) {
       expect(decideRecovery({ ...base, jobState })).toBe('none');

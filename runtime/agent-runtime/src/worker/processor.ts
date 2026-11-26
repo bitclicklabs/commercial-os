@@ -1,4 +1,4 @@
-import { and, eq, inArray, sql } from 'drizzle-orm';
+import { and, eq, inArray, or, sql } from 'drizzle-orm';
 import { resolveAgentImplementation } from '../agents/stub-agent.js';
 import type { AgentResult } from '../agents/agent.js';
 import type { Db } from '../db/client.js';
@@ -30,7 +30,7 @@ import type { RunJob } from '../queue/run-queue.js';
 import { resolveSkillRefs, type SkillSet } from '../skills/resolver.js';
 import { createDefaultToolRegistry, parseToolPolicy, ToolExecutor, type ToolRegistry } from '../tools/index.js';
 import { EntityLocks } from './entity-locks.js';
-import { recoverOrphanRun } from './recovery.js';
+import { ORPHANED_RUN_ERROR_NAME, recoverOrphanRun } from './recovery.js';
 import { policyRequiresTwenty, twentyGateFromEnv, type TwentyGate, type TwentyWaitState } from './twenty-gate.js';
 
 export interface ProcessorLogger {
@@ -40,6 +40,25 @@ export interface ProcessorLogger {
 }
 
 const silentLogger: ProcessorLogger = { info() {}, warn() {}, error() {} };
+
+export interface ProcessorOptions {
+  /**
+   * While an attempt is in flight the processor bumps `updated_at` on the run and the
+   * execution at this interval, so the orphan reconciler (whose grace window keys on
+   * `updated_at`) can tell a live long run from a dead one. Must be well under
+   * RECONCILE_GRACE_MS.
+   */
+  heartbeatIntervalMs?: number;
+  /**
+   * A RUNNING run whose `updated_at` is younger than this is treated as alive when a
+   * stalled job is re-delivered (the previous attempt is still processing: its lock
+   * expired but the worker did not die). Should equal RECONCILE_GRACE_MS.
+   */
+  orphanGraceMs?: number;
+}
+
+export const DEFAULT_HEARTBEAT_INTERVAL_MS = 30_000;
+export const DEFAULT_ORPHAN_GRACE_MS = 120_000;
 
 export interface AttemptInfo {
   /** 1-based attempt number. */
@@ -118,6 +137,7 @@ export class RunProcessor {
     private readonly tools: ToolRegistry = createDefaultToolRegistry(),
     /** Holds runs that need Twenty until it is healthy; null disables it. Defaults to env. */
     private readonly twentyGate: TwentyGate | null = twentyGateFromEnv(),
+    private readonly opts: ProcessorOptions = {},
   ) {
     this.locks = new EntityLocks(db);
   }
@@ -145,8 +165,16 @@ export class RunProcessor {
 
     if (run.status === 'RUNNING') {
       // The job id is unique per run and every other path leaves the run QUEUED before the
-      // job is delivered again, so a RUNNING run here means BullMQ re-delivered a stalled job:
-      // the previous attempt died. Recover it (RUNNING -> QUEUED | FAILED) and go on.
+      // job is delivered again, so a RUNNING run here means BullMQ re-delivered a stalled
+      // job. A fresh heartbeat means the previous attempt did NOT die — its lock lapsed
+      // while the worker kept processing (slow tick, Redis hiccup). Leave it alone; if it
+      // dies later its heartbeat stops and the reconciler requeues the run.
+      const heartbeatAgeMs = Date.now() - run.updatedAt.getTime();
+      if (heartbeatAgeMs < (this.opts.orphanGraceMs ?? DEFAULT_ORPHAN_GRACE_MS)) {
+        this.logger.warn({ taskRunId, heartbeatAgeMs }, 'stalled job re-delivered but attempt is alive; dropping job');
+        return;
+      }
+      // Heartbeat stale: the previous attempt died. Recover it (RUNNING -> QUEUED | FAILED).
       const outcome = await recoverOrphanRun(this.db, run, maxAttempts, 'stalled job re-delivered');
       this.logger.warn({ taskRunId, outcome }, 'recovered stalled task run');
       if (outcome !== 'requeued') return;
@@ -223,6 +251,7 @@ export class RunProcessor {
     await this.events.emit(executionStartedEvent(execution, this.eventContext(resolved.agent, resolved.version, run.id, task.id)));
 
     let outcome: Outcome;
+    const stopHeartbeat = this.startHeartbeat(run.id, execution.id);
     try {
       outcome = await this.runAgent(execution, resolved.agent, resolved.version, task.timeoutMs, skills);
       await this.persistOutcome(execution, resolved.agent, resolved.version, outcome, {
@@ -230,6 +259,7 @@ export class RunProcessor {
         taskDefinitionId: task.id,
       }, skills);
     } finally {
+      stopHeartbeat();
       await this.releaseLocks(execution.id);
     }
 
@@ -238,12 +268,13 @@ export class RunProcessor {
       await this.finishTaskRun(run.id, 'COMPLETED', {
         skillVersions: skills.runRecords(),
         output: r.output,
+        error: null,
         cost: r.modelCost + r.toolCost,
         inputTokens: r.usage.inputTokens,
         outputTokens: r.usage.outputTokens,
         cachedTokens: r.usage.cachedTokens,
         latencyMs: outcome.latencyMs,
-      });
+      }, execution.id);
       return;
     }
 
@@ -258,7 +289,12 @@ export class RunProcessor {
       throw new RetryableRunError(String(outcome.error?.message ?? 'execution failed'));
     }
 
-    await this.finishTaskRun(run.id, outcome.status, { skillVersions: skills.runRecords(), error: outcome.error ?? null, latencyMs: outcome.latencyMs });
+    await this.finishTaskRun(
+      run.id,
+      outcome.status,
+      { skillVersions: skills.runRecords(), error: outcome.error ?? null, latencyMs: outcome.latencyMs },
+      execution.id,
+    );
   }
 
   // -------------------------------------------------------------------------
@@ -293,12 +329,43 @@ export class RunProcessor {
     }
     await this.events.emit(executionStartedEvent(execution, this.eventContext(agent, version, null, null)));
     const skills = await this.resolveSkills(tenantId, version);
+    const stopHeartbeat = this.startHeartbeat(null, execution.id);
     try {
       const outcome = await this.runAgent(execution, agent, version, 300_000, skills);
       await this.persistOutcome(execution, agent, version, outcome, {}, skills);
     } finally {
+      stopHeartbeat();
       await this.releaseLocks(execution.id);
     }
+  }
+
+  /**
+   * Liveness heartbeat of an in-flight attempt: bumps `updated_at` on the run and the
+   * execution (guarded by status RUNNING, so it never resurrects a row another process
+   * closed) until the returned stop function is called. The orphan reconciler keys its
+   * grace window on `updated_at`, so a beating run is never treated as orphaned — even
+   * by a reconciler whose queue cannot see this worker's job.
+   */
+  private startHeartbeat(taskRunId: string | null, executionId: string): () => void {
+    const beat = async () => {
+      try {
+        if (taskRunId) {
+          await this.db
+            .update(taskRuns)
+            .set({ updatedAt: new Date() })
+            .where(and(eq(taskRuns.id, taskRunId), eq(taskRuns.status, 'RUNNING')));
+        }
+        await this.db
+          .update(agentExecutions)
+          .set({ updatedAt: new Date() })
+          .where(and(eq(agentExecutions.id, executionId), eq(agentExecutions.status, 'RUNNING')));
+      } catch (err) {
+        this.logger.warn({ taskRunId, executionId, err: errorPayload(err) }, 'run heartbeat failed');
+      }
+    };
+    const timer = setInterval(() => void beat(), this.opts.heartbeatIntervalMs ?? DEFAULT_HEARTBEAT_INTERVAL_MS);
+    timer.unref();
+    return () => clearInterval(timer);
   }
 
   /**
@@ -500,8 +567,18 @@ export class RunProcessor {
           finishedAt: new Date(),
           updatedAt: new Date(),
         })
-        // Guarded: a concurrent cancel (RUNNING -> CANCELLED) wins.
-        .where(and(eq(agentExecutions.id, execution.id), eq(agentExecutions.status, 'RUNNING')))
+        // Guarded: a concurrent cancel (RUNNING -> CANCELLED) wins. A FAILED written by
+        // orphan recovery does NOT win: this worker is alive and actually finished, so the
+        // real outcome (cost included) replaces the reconciler's false verdict.
+        .where(
+          and(
+            eq(agentExecutions.id, execution.id),
+            or(
+              eq(agentExecutions.status, 'RUNNING'),
+              and(eq(agentExecutions.status, 'FAILED'), sql`${agentExecutions.error}->>'name' = ${ORPHANED_RUN_ERROR_NAME}`),
+            ),
+          ),
+        )
         .returning({ id: agentExecutions.id });
       return Boolean(row);
     });
@@ -526,6 +603,11 @@ export class RunProcessor {
       .where(and(eq(agentExecutions.id, id), inArray(agentExecutions.status, allowedSources(status))));
   }
 
+  /**
+   * When `reclaimExecutionId` is given, a run that orphan recovery falsely FAILED may also
+   * be closed with the real outcome — but only while `execution_id` still points at this
+   * attempt (a requeued run whose next attempt took over belongs to that attempt).
+   */
   private async finishTaskRun(
     id: string,
     status: Extract<RunStatus, 'COMPLETED' | 'FAILED' | 'TIMED_OUT'>,
@@ -539,11 +621,23 @@ export class RunProcessor {
       cachedTokens: number;
       latencyMs: number;
     }>,
+    reclaimExecutionId?: string,
   ): Promise<void> {
+    const fromLiveStatus = inArray(taskRuns.status, allowedSources(status));
+    const guard = reclaimExecutionId
+      ? or(
+          fromLiveStatus,
+          and(
+            eq(taskRuns.status, 'FAILED'),
+            sql`${taskRuns.error}->>'name' = ${ORPHANED_RUN_ERROR_NAME}`,
+            eq(taskRuns.executionId, reclaimExecutionId),
+          ),
+        )
+      : fromLiveStatus;
     const [row] = await this.db
       .update(taskRuns)
       .set({ ...patch, status, finishedAt: new Date(), updatedAt: new Date() })
-      .where(and(eq(taskRuns.id, id), inArray(taskRuns.status, allowedSources(status))))
+      .where(and(eq(taskRuns.id, id), guard))
       .returning();
     if (row) await this.events.emit(taskFinishedEvent(row));
   }

@@ -145,21 +145,14 @@ La versión activa anterior pasa a `DEPRECATED` en la misma transacción. Las ej
 ## 7. Mide la aceptación por versión
 
 - `GET /metrics/agents` agrupa por versión de **agente**. Activar una versión de skill no crea una versión de agente, así que esa vista mezcla las dos versiones de la skill. Úsala para volumen y coste y separa por la hora de activación.
-- La aceptación por versión de **skill** sale de cruzar `evaluations` con `traces.skill_versions` (solo lectura):
+- La aceptación por versión de **skill** la da `GET /metrics/skills` (solo lectura, cruza `evaluations` con `traces.skill_versions`, solo `source: 'db'` y veredictos humanos):
 
-  ```sql
-  select sv->>'version' as skill_version, ev.feedback, count(*) as n
-  from evaluations ev
-  join traces t on t.execution_id = ev.agent_execution_id
-  cross join lateral jsonb_array_elements(t.skill_versions) sv
-  where ev.tenant_id = 'publiexpe'
-    and sv->>'name' = '<skill>'
-    and (ev.details->'actor'->>'human')::boolean
-  group by 1, 2
-  order by 1, 2;
+  ```sh
+  curl -s "http://127.0.0.1:4020/metrics/skills?skill=<skill>" -H 'x-tenant-id: publiexpe'
   ```
 
-- Mira también `details.edited_fields`: qué campos corrige el comercial con cada versión.
+  Por cada versión devuelve `executions`, `human_feedback` (`accepted`/`edited`/`discarded`, `acceptance_rate`, `useful_rate`, con las mismas definiciones que `/metrics/agents`) y `edited_fields`: qué campos corrige el comercial con cada versión, ordenados por frecuencia. Acepta `since`/`until` (por `agent_executions.created_at`); la consulta SQL equivalente vive en `runtime/agent-runtime/src/metrics/queries.ts` (`metricsSkills`).
+
 - Espera al menos 30 hipótesis revisadas por versión antes de concluir, y compara en la misma ventana de tiempo.
 
 ## 8. Rollback

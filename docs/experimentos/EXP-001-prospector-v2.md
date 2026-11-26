@@ -230,7 +230,7 @@ Siguiente paso propuesto (decisión humana):
 Si se activa una versión candidata, mide su aceptación humana frente a la anterior:
 
 - **`GET /metrics/agents` no basta por sí solo.** Agrupa por versión de *agente*, y activar una versión de skill no crea una versión de agente nueva: v1 y v2 de la skill quedarían mezcladas en la misma fila. Úsalo para el contexto (volumen, coste por run) y anota la hora de activación.
-- **Aceptación por versión de skill**, con SQL de solo lectura sobre `evaluations` y `traces.skill_versions`:
+- **Aceptación por versión de skill**: `GET /metrics/skills?skill=prospector-event-exhibitors` (ver la sección 7 de `docs/ciclo-mejora-skills.md`) devuelve por versión las ejecuciones, la aceptación humana y los campos editados. Equivale a este SQL de solo lectura sobre `evaluations` y `traces.skill_versions`:
 
   ```sql
   select sv->>'version' as skill_version, ev.feedback, count(*) as n

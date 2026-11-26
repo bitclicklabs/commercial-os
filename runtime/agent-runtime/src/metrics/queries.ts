@@ -449,6 +449,114 @@ export async function metricsAgents(db: Db, w: Window & AgentFilter) {
 }
 
 // ---------------------------------------------------------------------------
+// GET /metrics/skills
+// ---------------------------------------------------------------------------
+export interface SkillMetricsOptions extends Window, AgentFilter {
+  /** Restrict to one skill name (kebab-case); all db-resolved skills otherwise. */
+  skill?: string | undefined;
+}
+
+/**
+ * Acceptance per SKILL version (docs/ciclo-mejora-skills.md section 7): activating a skill
+ * version does not create an agent version, so /metrics/agents mixes two skill versions in
+ * the same row. This crosses `traces.skill_versions` (entries with `source = 'db'` only)
+ * with the verdicts on the subjects produced by the executions of the window. Only HUMAN
+ * verdicts count (`details.actor.human = true`, set by the Twenty webhook); verdicts
+ * recorded without `details.actor` are left out.
+ */
+export async function metricsSkills(db: Db, o: SkillMetricsOptions) {
+  const exWhere = windowWhere('e', 'created_at', o);
+  const skillWhere = o.skill === undefined ? sql`` : sql` and sv->>'name' = ${o.skill}`;
+  // One row per (execution, db skill version it injected), from the execution's trace.
+  const exCte = sql`ex as (
+    select e.id, e.created_at, sv->>'name' as name, (sv->>'version')::int as version,
+           sv->>'skill_version_id' as skill_version_id
+    from agent_executions e
+    join traces t on t.execution_id = e.id and t.tenant_id = e.tenant_id
+    join agents a on a.id = e.agent_id
+    cross join lateral jsonb_array_elements(t.skill_versions) sv
+    where ${exWhere}${archivedAgentsWhere('a', o)} and sv->>'source' = 'db'${skillWhere}
+  )`;
+  // Human verdicts on the subjects those executions produced, tagged with the skill version.
+  const linkedCte = sql`linked as (
+    select ex.name, ex.version, ev.subject_type, ev.subject_id, ev.feedback, ev.score, ev.occurred_at, ev.created_at,
+           case when jsonb_typeof(ev.details->'edited_fields') = 'object' then ev.details->'edited_fields' end as edited_fields
+    from evaluations ev join ex on ex.id = ev.agent_execution_id
+    where ev.tenant_id = ${o.tenantId} and (ev.details->'actor'->>'human')::boolean
+  )`;
+
+  const usage = await rows(
+    db,
+    sql`with ${exCte}
+    select ex.name, ex.version, max(ex.skill_version_id) as skill_version_id,
+           count(distinct ex.id) as executions, max(ex.created_at) as last_execution_at,
+           max(kv.status) as version_status, max(kv.activated_at) as activated_at
+    from ex left join skill_versions kv on kv.id::text = ex.skill_version_id and kv.tenant_id = ${o.tenantId}
+    group by ex.name, ex.version
+    order by ex.name, ex.version nulls first`,
+  );
+  const verdicts = await rows(
+    db,
+    sql`with ${exCte}, ${linkedCte},
+    latest as (
+      select distinct on (name, subject_type, subject_id) name, version, feedback, score
+      from linked order by name, subject_type, subject_id, occurred_at desc, created_at desc
+    ),
+    totals as (
+      select name, version, count(*) as verdicts from linked group by 1, 2
+    )
+    select l.name, l.version,
+           count(*) filter (where l.feedback = 'ACCEPTED') as accepted,
+           count(*) filter (where l.feedback = 'EDITED') as edited,
+           count(*) filter (where l.feedback = 'DISCARDED') as discarded,
+           avg(l.score::float8) as avg_score,
+           max(t.verdicts) as verdicts
+    from latest l join totals t on t.name = l.name and t.version is not distinct from l.version
+    group by l.name, l.version`,
+  );
+  // Fields the salesperson corrected: keys of `details.edited_fields` ({field: {before, after}}),
+  // over EVERY human verdict row (an edit followed by a discard still counts as an edit).
+  const edits = await rows(
+    db,
+    sql`with ${exCte}, ${linkedCte}
+    select name, version, f.field, count(*) as edits
+    from linked cross join lateral jsonb_object_keys(edited_fields) as f(field)
+    group by name, version, f.field
+    order by name, version, count(*) desc, f.field`,
+  );
+
+  const key = (name: unknown, version: unknown) => `${String(name)}|${version === null || version === undefined ? '' : String(version)}`;
+  const verdictByKey = new Map(verdicts.map((v) => [key(v.name, v.version), v]));
+  const editsByKey = new Map<string, Array<{ field: string; edits: number }>>();
+  for (const e of edits) {
+    const k = key(e.name, e.version);
+    if (!editsByKey.has(k)) editsByKey.set(k, []);
+    editsByKey.get(k)!.push({ field: String(e.field), edits: n(e.edits) });
+  }
+
+  return {
+    tenant_id: o.tenantId,
+    window: { since: o.since?.toISOString() ?? null, until: o.until?.toISOString() ?? null, field: 'agent_executions.created_at' },
+    include_archived: Boolean(o.includeArchived),
+    skill: o.skill ?? null,
+    source: 'db',
+    human_verdicts_only: true,
+    items: usage.map((r) => ({
+      skill_name: r.name,
+      skill_version: nOrNull(r.version),
+      version_label: r.version === null || r.version === undefined ? null : `v${String(r.version)}`,
+      skill_version_id: r.skill_version_id ?? null,
+      version_status: r.version_status ?? null,
+      activated_at: iso(r.activated_at),
+      executions: n(r.executions),
+      last_execution_at: iso(r.last_execution_at),
+      human_feedback: feedbackCounts(verdictByKey.get(key(r.name, r.version))),
+      edited_fields: editsByKey.get(key(r.name, r.version)) ?? [],
+    })),
+  };
+}
+
+// ---------------------------------------------------------------------------
 // GET /metrics/evaluations
 // ---------------------------------------------------------------------------
 export interface EvaluationsOptions extends Window {

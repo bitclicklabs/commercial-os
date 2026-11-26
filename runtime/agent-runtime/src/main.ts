@@ -67,6 +67,9 @@ async function main(): Promise<void> {
         geminiModel: config.geminiModel,
       }),
       logger,
+      undefined,
+      undefined,
+      { heartbeatIntervalMs: config.runHeartbeatIntervalMs, orphanGraceMs: config.reconcileGraceMs },
     );
     processor.events = eventBus;
     worker = startBullWorker(processor, {

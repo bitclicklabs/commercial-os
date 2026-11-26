@@ -3,6 +3,9 @@
  * - GET /metrics/summary      - runs by status/task/outcome, cost, tokens, latency, funnel, feedback.
  * - GET /metrics/agents       - per agent and version: runs, cost, outcome and human acceptance.
  *                               ARCHIVED agents are hidden unless `include_archived=true`.
+ * - GET /metrics/skills       - per skill name and SKILL version (traces.skill_versions,
+ *                               source 'db'): executions, human acceptance and edited fields.
+ *                               Same `include_archived` rule. Optional `skill=<name>` filter.
  * - GET /metrics/evaluations  - human verdicts per day and per subject.
  * - GET /metrics/runs         - latest TaskRuns (compact) with the link to their trace (same
  *                               `include_archived` rule). /metrics/summary always counts every run.
@@ -11,7 +14,8 @@
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { z } from 'zod';
 import { DASHBOARD_HTML } from '../../metrics/dashboard.js';
-import { metricsAgents, metricsEvaluations, metricsSummary, recentRuns } from '../../metrics/queries.js';
+import { metricsAgents, metricsEvaluations, metricsSkills, metricsSummary, recentRuns } from '../../metrics/queries.js';
+import { SKILL_NAME_RE } from '../../skills/service.js';
 import type { ApiContext } from '../context.js';
 import { HttpError, parse, tenantOf } from '../http.js';
 
@@ -41,6 +45,14 @@ const windowFields = {
 
 export const MetricsAgentsQuery = z
   .object({ ...windowFields, include_archived: IncludeArchived })
+  .refine((q) => !q.since || !q.until || new Date(q.since) < new Date(q.until), { message: 'since must be before until' });
+
+export const MetricsSkillsQuery = z
+  .object({
+    ...windowFields,
+    skill: z.string().max(100).regex(SKILL_NAME_RE, 'skill must be kebab-case (a-z, 0-9, -)').optional(),
+    include_archived: IncludeArchived,
+  })
   .refine((q) => !q.since || !q.until || new Date(q.since) < new Date(q.until), { message: 'since must be before until' });
 
 export const MetricsEvaluationsQuery = z
@@ -96,6 +108,12 @@ export async function metricsRoutes(app: FastifyInstance, ctx: ApiContext): Prom
     const tenantId = tenantOf(req, ctx.config.defaultTenantId);
     const q = parse(MetricsAgentsQuery, req.query);
     return metricsAgents(db, { tenantId, since: toDate(q.since), until: toDate(q.until), includeArchived: q.include_archived });
+  });
+
+  app.get('/metrics/skills', async (req) => {
+    const tenantId = tenantOf(req, ctx.config.defaultTenantId);
+    const q = parse(MetricsSkillsQuery, req.query);
+    return metricsSkills(db, { tenantId, since: toDate(q.since), until: toDate(q.until), includeArchived: q.include_archived, skill: q.skill });
   });
 
   app.get('/metrics/evaluations', async (req) => {

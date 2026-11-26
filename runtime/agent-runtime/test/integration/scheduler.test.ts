@@ -371,6 +371,9 @@ describe.skipIf(!available)('scheduler + concurrency + recovery (PostgreSQL + Re
         status: 'RUNNING',
         attempts: 1,
         scheduledAt: new Date('2026-10-06T11:00:00Z'),
+        // The dead attempt's heartbeat stopped long ago; a fresh updated_at would mean
+        // the attempt is alive and the re-delivered job would (rightly) be dropped.
+        updatedAt: new Date(Date.now() - 10 * 60_000),
       })
       .returning();
     const processor = new RunProcessor(handle.db, createProviderRegistry());

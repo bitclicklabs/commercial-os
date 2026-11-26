@@ -89,7 +89,8 @@ Requisitos: Node.js 22, pnpm, y los contenedores `pxos-postgres` (127.0.0.1:5440
 | `WORKER_CONCURRENCY` | `4` | Jobs simultáneos por worker |
 | `SCHEDULER_SYNC_INTERVAL_MS` | `60000` | Cada cuánto el scheduler reconcilia todas las tareas con BullMQ |
 | `RECONCILE_INTERVAL_MS` | `60000` | Cada cuánto el worker busca `TaskRun` huérfanos |
-| `RECONCILE_GRACE_MS` | `120000` | Antigüedad mínima de un `TaskRun` para considerarlo huérfano |
+| `RECONCILE_GRACE_MS` | `120000` | Antigüedad mínima del último latido (`updated_at`) de un `TaskRun` para considerarlo huérfano |
+| `RUN_HEARTBEAT_INTERVAL_MS` | `30000` | Cada cuánto un intento en curso refresca `updated_at` del run y de la ejecución (debe ser muy inferior a `RECONCILE_GRACE_MS`) |
 | `CONCURRENCY_DEFER_MS` | `2000` | Espera antes de reintentar un job aplazado por `max_concurrency` |
 | `STALLED_INTERVAL_MS` | `30000` | Frecuencia del chequeo de jobs stalled de BullMQ |
 | `MAX_STALLED_COUNT` | `1` | Veces que un job puede quedar stalled antes de que BullMQ lo marque `failed` |
@@ -224,6 +225,7 @@ Cabecera opcional `x-tenant-id` en todas las rutas. Las respuestas usan `snake_c
 | `GET /evaluations` | Lista evaluaciones. Filtros: `subject_id`, `subject_type`, `feedback`, `agent_execution_id`, `since`, `limit` |
 | `GET /metrics/summary` | Runs por estado, tarea y outcome; coste, tokens, latencia, embudo comercial, feedback y bloque `email` (envíos y warm-up). Filtros `since`, `until` |
 | `GET /metrics/agents` | Por agente y versión: runs, coste medio, outcome y tasa de aceptación humana. Filtros `since`, `until` |
+| `GET /metrics/skills` | Por **versión de skill** (`traces.skill_versions`, solo `source: 'db'`): ejecuciones, aceptación humana y campos editados. Filtros `skill`, `since`, `until` |
 | `GET /metrics/evaluations` | Veredictos por día y por sujeto. Filtros `since`, `until`, `tz`, `subject_limit` |
 | `GET /metrics/runs` | Últimos `TaskRun` (`limit`, 10 por defecto) con coste, duración y enlace al trace |
 | `GET /dashboard` | Mini dashboard HTML. Solo para peticiones locales |
@@ -295,7 +297,9 @@ Aún no hay tools que lo usen. El processor expone la instancia en `RunProcessor
 
 ### Recuperación de huérfanos
 
-El rol `worker` (o `all`) ejecuta `OrphanReconciler` al arrancar y cada `RECONCILE_INTERVAL_MS`. Para cada `TaskRun` `QUEUED` o `RUNNING` sin cambios durante `RECONCILE_GRACE_MS`, consulta el estado de su job en BullMQ:
+El rol `worker` (o `all`) ejecuta `OrphanReconciler` al arrancar y cada `RECONCILE_INTERVAL_MS`. Mientras un intento está en curso, el processor refresca `updated_at` del `TaskRun` y de su `AgentExecution` cada `RUN_HEARTBEAT_INTERVAL_MS` (latido de vida, guardado por `status = 'RUNNING'`). Así, "sin cambios durante `RECONCILE_GRACE_MS`" significa "ningún worker lo ha tocado en todo ese tiempo": un run largo (un scout de 8-25 min) nunca envejece mientras su worker vive, aunque ese worker procese en otra cola o en otro proceso (por ejemplo los tests live, que usan `MemoryRunQueue` contra la misma base de datos) y su job no exista en la cola del reconciliador.
+
+Para cada `TaskRun` `QUEUED` o `RUNNING` sin latido durante `RECONCILE_GRACE_MS`, consulta el estado de su job en BullMQ:
 
 | Estado del run | Job de BullMQ | Acción |
 |---|---|---|
@@ -305,7 +309,9 @@ El rol `worker` (o `all`) ejecuta `OrphanReconciler` al arrancar y cada `RECONCI
 
 La ejecución (`AgentExecution`) del intento muerto pasa a `FAILED` con `error.name = "OrphanedRun"`. Todas las transiciones son `UPDATE` guardados por estado en SQL, así que el reconciliador nunca pisa a un worker que haya terminado entre medias.
 
-Los jobs `active` de un worker caído los gestiona el chequeo de stalled de BullMQ (`STALLED_INTERVAL_MS`, `MAX_STALLED_COUNT`): los devuelve a `wait`. Cuando el processor recibe un job cuyo run sigue `RUNNING`, sabe que el intento anterior murió y aplica la misma recuperación antes de continuar. Si BullMQ lo marca `failed` por superar `MAX_STALLED_COUNT`, lo recoge el reconciliador.
+Si aun así el reconciliador gana la carrera contra un worker vivo (por ejemplo, el worker perdió la conexión a PostgreSQL y dejó de latir), el resultado real no se pierde: cuando ese worker termina, reclama el falso `FAILED`. `persistOutcome` cierra también una ejecución `FAILED` con `error.name = "OrphanedRun"` (estado real, coste, tokens y output incluidos — `/metrics` suma `agent_executions.total_cost`), y el `TaskRun` solo se reclama si su `execution_id` sigue apuntando a ese intento; si el reconciliador lo re-encoló y otro intento lo tomó, el run pertenece al intento nuevo.
+
+Los jobs `active` de un worker caído los gestiona el chequeo de stalled de BullMQ (`STALLED_INTERVAL_MS`, `MAX_STALLED_COUNT`): los devuelve a `wait`. Cuando el processor recibe un job cuyo run sigue `RUNNING`, mira el latido: si es reciente (menos de `RECONCILE_GRACE_MS`), el intento anterior sigue vivo (su lock caducó sin que el worker muriera) y descarta el job; si está caducado, el intento anterior murió y aplica la misma recuperación antes de continuar. Si BullMQ lo marca `failed` por superar `MAX_STALLED_COUNT`, lo recoge el reconciliador.
 
 ### Espera a Twenty al arrancar
 
@@ -1285,6 +1291,7 @@ Primeras métricas del sistema (LLD v0.1 secciones 17.2 y 17.3, criterios AC-15 
   - `acceptance`: AC-15 (coste por run, umbral 3,00 EUR), AC-16 (duración, umbral 30 min) y AC-17 (coste por hipótesis nueva).
   - `direct_executions` (ejecuciones sin `TaskRun`) y `last_run`.
 - **`GET /metrics/agents`** filtra por `agent_executions.created_at` y agrupa por agente y versión (`version_label` `v1`, `v2`...): runs, estados, `completion_rate`, outcome y `success_rate`, coste medio, tokens, latencia y `human_feedback` de los sujetos que produjeron esas ejecuciones (cruce por `evaluations.agent_execution_id`). Es la métrica para comparar versiones: «¿el agente mejora?».
+- **`GET /metrics/skills`** filtra por `agent_executions.created_at` y agrupa por **versión de skill** (`traces.skill_versions`, solo las entradas con `source: 'db'`). Activar una versión de skill no crea una versión de agente, así que `/metrics/agents` mezcla dos versiones de skill en la misma fila; esta vista las separa. Por cada `skill_name` y `skill_version` devuelve: estado y `activated_at` de la versión, `executions`, `human_feedback` (mismas definiciones que `/metrics/agents`, pero **solo veredictos humanos**: `details.actor.human = true`, el que pone el webhook de Twenty; un veredicto grabado por API sin `details.actor` no cuenta) y `edited_fields` (los campos de `details.edited_fields` que corrigió el comercial, ordenados por frecuencia; una edición seguida de un descarte sigue contando como edición). Filtro opcional `skill=<nombre>` (kebab-case) y la misma regla `include_archived` que `/metrics/agents`. Es la métrica de la sección 7 de `docs/ciclo-mejora-skills.md`: «¿la skill mejora?».
 - **`GET /metrics/evaluations`** filtra por `evaluations.occurred_at`: `totals`, `by_day` (serie diaria en la zona `tz`, `Europe/Madrid` por defecto), `by_subject_type` y `subjects` (último veredicto, historial y ejecución vinculada de cada sujeto, hasta `subject_limit`).
 - **`GET /metrics/runs`** devuelve los últimos `TaskRun` con tarea, agente, versión, estado, outcome, coste, duración y `trace_url` (`/task-runs/:id`).
 
@@ -1305,7 +1312,7 @@ curl -s "http://127.0.0.1:4020/metrics/agents?since=2026-10-01T00:00:00%2B02:00"
 | `useful_rate` | `(ACCEPTED + EDITED) / revisadas` (AC-20) |
 | `avg_score` | Media del `score` (1.0, 0.5, 0.0) |
 
-Las tasas usan el **último veredicto de cada sujeto** (`subject_type`, `subject_id`): una hipótesis editada y después descartada cuenta una vez, como `DISCARDED`. `verdicts` cuenta todas las filas. En `/metrics/agents` solo cuentan los veredictos vinculados a una ejecución; en `/metrics/summary` cuentan todos.
+Las tasas usan el **último veredicto de cada sujeto** (`subject_type`, `subject_id`): una hipótesis editada y después descartada cuenta una vez, como `DISCARDED`. `verdicts` cuenta todas las filas. En `/metrics/agents` solo cuentan los veredictos vinculados a una ejecución; en `/metrics/skills`, además, solo los humanos (`details.actor.human = true`); en `/metrics/summary` cuentan todos.
 
 ### Dashboard
 
@@ -1327,11 +1334,11 @@ No hace falta migración. Con `EXPLAIN ANALYZE` sobre la BD de desarrollo (219 `
 
 ### Tests
 
-`test/integration/metrics.test.ts` siembra dos tenants (versiones `v1` y `v2` de un mismo agente, un run con reintento y veredictos encadenados) y comprueba la tasa de aceptación por versión, el coste medio, la serie diaria por zona horaria, el aislamiento entre tenants y el HTML del dashboard. Usa por defecto su propia base `agentos_wt4_metrics`:
+`test/integration/metrics.test.ts` siembra dos tenants (versiones `v1` y `v2` de un mismo agente, un run con reintento y veredictos encadenados) y comprueba la tasa de aceptación por versión, el coste medio, la serie diaria por zona horaria, el aislamiento entre tenants y el HTML del dashboard. `test/integration/metrics-skills.test.ts` siembra traces con `skill_versions` (dos versiones de una skill, una entrada `source: 'code'`, un agente `ARCHIVED` y veredictos humanos y no humanos) y comprueba `/metrics/skills`: aceptación y campos editados por versión de skill, filtro `skill`, ventana y aislamiento. Ambos usan por defecto su propia base `agentos_wt4_metrics`:
 
 ```sh
 docker exec pxos-postgres psql -U agentos -d postgres -c "create database agentos_wt4_metrics"   # una vez
-pnpm vitest run test/integration/metrics.test.ts test/unit/metrics-local.test.ts
+pnpm vitest run test/integration/metrics.test.ts test/integration/metrics-skills.test.ts test/unit/metrics-local.test.ts test/unit/metrics-skills-query.test.ts
 ```
 
 ## Borradores de email

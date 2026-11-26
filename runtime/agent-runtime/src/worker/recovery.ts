@@ -14,8 +14,18 @@
  * run is still RUNNING it knows the previous attempt died and applies the same
  * `recoverOrphanRun` transition before continuing (see RunProcessor).
  *
+ * Liveness is the run row's `updated_at`: while an attempt is in flight the processor bumps
+ * it every `heartbeatIntervalMs` (RUN_HEARTBEAT_INTERVAL_MS << RECONCILE_GRACE_MS). So "older
+ * than graceMs" means "no worker has touched this run for graceMs", which holds across
+ * processes and queues — a long scout run (minutes) processed elsewhere (another queue name,
+ * an in-process test worker) is NOT an orphan as long as its heartbeat is fresh, even though
+ * this reconciler's queue has no job for it.
+ *
  * Every transition is a guarded UPDATE (`WHERE status = 'RUNNING'`), so the reconciler never
- * overrides a worker that finished in the meantime and never leaves the state machine.
+ * overrides a worker that finished in the meantime and never leaves the state machine. If the
+ * reconciler still wins against a live worker (heartbeat lost, e.g. DB partition), the worker
+ * reclaims the false FAILED when it finishes: see RunProcessor.persistOutcome, which matches
+ * on `error->>'name' = ORPHANED_RUN_ERROR_NAME` so the real result (cost included) is kept.
  */
 import { and, eq, inArray, lt, sql } from 'drizzle-orm';
 import type { Db } from '../db/client.js';
@@ -27,12 +37,15 @@ import type { ProcessorLogger } from './processor.js';
 
 export type RecoveryAction = 'none' | 'enqueue' | 'requeue' | 'fail';
 
+/** `error.name` written on runs/executions closed by orphan recovery. */
+export const ORPHANED_RUN_ERROR_NAME = 'OrphanedRun';
+
 export interface RecoveryInput {
   status: RunStatus;
   attempts: number;
   maxAttempts: number;
   jobState: QueueJobState | null;
-  /** Time since the run row was last updated. */
+  /** Time since the run row was last updated — i.e. heartbeat staleness for RUNNING runs. */
   ageMs: number;
   /** Runs younger than this are left alone (an API call or worker may be mid-flight). */
   graceMs: number;
@@ -63,7 +76,7 @@ export async function recoverOrphanRun(
 ): Promise<RecoveryOutcome> {
   const exhausted = run.attempts >= maxAttempts;
   const to: RunStatus = exhausted ? 'FAILED' : 'QUEUED';
-  const error = { name: 'OrphanedRun', message: reason, attempts: run.attempts, max_attempts: maxAttempts };
+  const error = { name: ORPHANED_RUN_ERROR_NAME, message: reason, attempts: run.attempts, max_attempts: maxAttempts };
   return db.transaction(async (tx) => {
     const [updated] = await tx
       .update(taskRuns)

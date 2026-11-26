@@ -41,6 +41,11 @@ export const CreateCrmTaskInput = z.object({
   scope: z.enum(['day', 'ever']).optional(),
   /** Target a same-title task must already point to (default: the first given, company first). */
   anchor: z.enum(['companyId', 'personId', 'opportunityId', 'signalId', 'hypothesisId']).optional(),
+  /**
+   * Tanda 23: older spellings of the title that also count as the same task (e.g. the «emoji
+   * first» title from before the change, `legacyEmojiFirstTitle`). A reused task keeps its title.
+   */
+  legacyTitles: z.array(z.string().trim().min(1).max(255)).max(4).optional(),
 });
 
 export const CreateCrmTaskOutput = z.object({
@@ -85,7 +90,7 @@ export function createCreateCrmTaskTool(deps: TwentyToolDeps) {
         if (input.anchor && !t[input.anchor]) return { status: 'error' as const, code: 'INVALID_ANCHOR', message: `anchor ${input.anchor} is not among the targets`, retryable: false };
         const task = await createCrmTask(
           twenty,
-          { title: input.title, body: input.bodyMarkdown, dueAt: input.dueAt, targets: t, ...(input.scope ? { scope: input.scope } : {}), ...(input.anchor ? { anchor: input.anchor } : {}) },
+          { title: input.title, body: input.bodyMarkdown, dueAt: input.dueAt, targets: t, ...(input.scope ? { scope: input.scope } : {}), ...(input.anchor ? { anchor: input.anchor } : {}), ...(input.legacyTitles ? { legacyTitles: input.legacyTitles } : {}) },
           { signal: ctx.signal },
         );
         ctx.logger.info('crm task', { taskId: task.taskId, created: task.created, adopted: task.adopted, targets: task.targetIds.length });

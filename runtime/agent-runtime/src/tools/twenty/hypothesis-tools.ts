@@ -40,6 +40,9 @@ export const HypothesisDetail = z.object({
   /** Draft fields of the send-from-Twenty flow (null when empty or not synced yet). */
   emailTo: z.string().nullable().default(null),
   emailStatus: z.string().nullable().default(null),
+  /** Tanda 22: subject and body of the first email (the InboxAgent drafts the answer with them). */
+  emailSubject: z.string().nullable().default(null),
+  emailBody: z.string().nullable().default(null),
 });
 export type HypothesisDetail = z.infer<typeof HypothesisDetail>;
 
@@ -144,6 +147,8 @@ export function createGetHypothesisTool(deps: TwentyToolDeps) {
               updatedAt: h.updatedAt,
               emailTo: text(h.emailTo),
               emailStatus: text(h.emailStatus),
+              emailSubject: text(h.emailSubject),
+              emailBody: text(h.emailBody),
             },
             company: h.company ? toCompanySummary(h.company) : null,
             signal: s

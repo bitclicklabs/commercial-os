@@ -19,7 +19,7 @@ import { z } from 'zod';
 import { OPPORTUNITY_NAME_MAX } from '../../crm/opportunities.js';
 import { openOpportunityFor, PromotionError } from '../../crm/promote.js';
 import { personMailbox, upsertPerson } from '../../crm/people.js';
-import { replyTaskTitle, twentyRecordUrl, upsertReplyTask } from '../../crm/reply-task.js';
+import { meetingTaskTitle, replyTaskTitle, twentyRecordUrl, upsertReplyTask } from '../../crm/reply-task.js';
 import { defineTool } from '../types.js';
 import { errorResult, RecordId, withTwenty, type TwentyToolDeps } from './shared.js';
 
@@ -151,10 +151,18 @@ export const CreateReplyTaskInput = z.object({
   personId: RecordId.nullable().optional(),
   /** The 📬 note of the reply: its link (and the opportunity's) is appended to the body. */
   noteId: RecordId.nullable().optional(),
+  /**
+   * Tanda 22: `meeting` = the client accepts or proposes a meeting; title «📅 Cerrar reunión con
+   * <who>» (`who` = the company). Default `reply`: «📬 Responder a <who>».
+   */
+  kind: z.enum(['reply', 'meeting']).optional().default('reply'),
+  /** Tanda 22: appended (once, by marker) to the body of an open task that is reused. */
+  appendOnReuse: z.object({ markdown: z.string().trim().min(1).max(10_000), marker: z.string().trim().min(1).max(300) }).nullable().optional(),
 });
 
 export const CreateReplyTaskOutput = z.object({
   created: z.boolean(),
+  appended: z.boolean().optional(),
   task: z.object({ id: z.string(), title: z.string(), status: z.string().nullable(), dueAt: z.string().nullable() }),
   targetIds: z.array(z.string()),
 });
@@ -165,7 +173,7 @@ export function createCreateReplyTaskTool(deps: TwentyToolDeps) {
     name: 'Create reply task',
     version: '1.0.0',
     description:
-      'Create the CRM task «📬 Responder a <who>» (status TODO, with a due date) linked to the opportunity, company and person of a reply. An open task with the same title on the same opportunity/company is reused. Never sends anything.',
+      'Create the CRM task «📬 Responder a <who>» (or «📅 Cerrar reunión con <who>» for kind meeting; status TODO, with a due date) linked to the opportunity, company and person of a reply. An open task with the same title on the same opportunity/company is reused. Never sends anything.',
     inputSchema: CreateReplyTaskInput,
     outputSchema: CreateReplyTaskOutput,
     riskLevel: 'LOW_WRITE',
@@ -181,7 +189,7 @@ export function createCreateReplyTaskTool(deps: TwentyToolDeps) {
         const r = await upsertReplyTask(
           deps.twenty,
           {
-            title: replyTaskTitle(input.who),
+            title: input.kind === 'meeting' ? meetingTaskTitle(input.who) : replyTaskTitle(input.who),
             bodyMarkdown: [
               input.bodyMarkdown,
               ...(input.noteId || input.opportunityId ? [''] : []),
@@ -192,6 +200,7 @@ export function createCreateReplyTaskTool(deps: TwentyToolDeps) {
             companyId: input.companyId ?? null,
             opportunityId: input.opportunityId ?? null,
             personId: input.personId ?? null,
+            appendOnReuse: input.appendOnReuse ?? null,
           },
           ctx.signal,
         );

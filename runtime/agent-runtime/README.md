@@ -637,6 +637,7 @@ Las skills son objetos versionados en la BD (LLD v0.1 §6.3, MVP-1, sin optimiza
 | `event-source-discovery` | Prospector, modo scout (búsqueda de ferias) | `SCOUT_SEARCH_SYSTEM_PROMPT` |
 | `exhibitor-list-extraction` | Prospector, modo scout (extracción de expositores) | `SCOUT_EXTRACT_SYSTEM_PROMPT` |
 | `email-first-contact-draft` | EmailDrafter | `EMAIL_DRAFTER_SYSTEM_PROMPT` |
+| `email-reply-draft` | InboxAgent (borrador de la contestación, tanda 22) | `REPLY_DRAFT_SYSTEM_PROMPT` |
 
 `exhibitor-list-extraction` formaba parte de `event-source-discovery` v4 en el código; en la BD es una skill propia para poder versionarla por separado.
 
@@ -1238,7 +1239,7 @@ El código pide un **rol**, nunca un modelo (LLD v0.1 §18). `src/providers/mode
 
 | Rol | Quién lo pide | Modelo por defecto |
 |---|---|---|
-| `executor_cheap` | EmailDrafter, BajasAgent, agentes stub y smoke | `gemini:gemini-flash-latest` |
+| `executor_cheap` | EmailDrafter, BajasAgent, borradores de respuesta del InboxAgent (tanda 22), agentes stub y smoke | `gemini:gemini-flash-latest` |
 | `executor_reasoner` | Prospector (con EventScout) y el ejecutor de `experiment:run`, `skill:compare` y el Skill Optimizer | `gemini:gemini-flash-latest` |
 | `triage` | Clasificador de respuestas del InboxAgent | `gemini:gemini-flash-latest` |
 | `judge` | Evaluadores `LLM_JUDGE` (`pnpm evaluate`, experimentos, optimizador) | `gemini:gemini-pro-latest` |
@@ -2104,8 +2105,8 @@ El resto va al modelo ([src/inbound/reply-classifier.ts](src/inbound/reply-class
 |---|---|
 | `BAJA` | Línea `email — AAAA-MM-DD — baja solicitada (asunto: "...")` en la lista de supresión (igual que el BajasAgent) |
 | `NO_INTERESADO` | Línea `email — AAAA-MM-DD — no interesado (respuesta) (asunto: "...")` en la lista de supresión **y** nota de respuesta |
-| `INTERESADO` | Nota `📬 Respuesta recibida — Interesado (AAAA-MM-DD HH:mm)` + (tanda 19) Persona del remitente, Oportunidad de la empresa y Tarea «📬 Responder a …» |
-| `PREGUNTA` | Nota `📬 Respuesta recibida — Pregunta (AAAA-MM-DD HH:mm)` + (tanda 19) Persona del remitente si el `From` trae nombre y Tarea «📬 Responder a …». **Sin** Oportunidad |
+| `INTERESADO` | Nota `📬 Respuesta recibida — Interesado (AAAA-MM-DD HH:mm)` + (tanda 19) Persona del remitente, Oportunidad de la empresa y Tarea «📬 Responder a …» + (tanda 22) borrador de la contestación en la tarea |
+| `PREGUNTA` | Nota `📬 Respuesta recibida — Pregunta (AAAA-MM-DD HH:mm)` + (tanda 19) Persona del remitente si el `From` trae nombre y Tarea «📬 Responder a …» + (tanda 22) borrador. **Sin** Oportunidad |
 | `REBOTE` duro | Nota `⚠️ Rebote: el email no existe (AAAA-MM-DD HH:mm)`; la lista de supresión no se toca |
 | `AUTO_REPLY`, rebote blando, `OTRO` | Solo registro |
 
@@ -2128,6 +2129,45 @@ Registros nativos de Twenty (tanda 19), después de la nota y solo si la respues
 Todo es idempotente: un fallo de Twenty a mitad para la ejecución (`FAILED`, el mensaje no se marca como triado) y la siguiente lo completa sin duplicar Persona, Oportunidad, Tarea ni evento. Una versión del agente sembrada antes de la tanda 19 (sin estas tools en su política) solo deja la nota. `NO_INTERESADO`, rebotes y respuestas sin empresa no crean nada nativo. Contadores nuevos: `people_created`, `people_existing`, `opportunities_created`, `opportunities_reused`, `reply_tasks`; cada mensaje de `triaged` lleva `person_id`, `opportunity_id`, `opportunity_created` y `task_id`.
 
 La hipótesis **no se marca**. El único campo de estado de email (`emailStatus`: `DRAFT`, `READY`, `SENDING`, `SENT`) es el del flujo de envío y no tiene un valor de "respondido"; cambiarlo rompería el workflow de Twenty, y no se añaden campos a la Twenty App.
+
+### Borrador de respuesta (tanda 22)
+
+Nivel 1 de autonomía: **el sistema prepara, el humano envía**. Para cada `INTERESADO` y `PREGUNTA` con registros nativos (nunca para `NO_INTERESADO`, `BAJA`, `REBOTE`, `AUTO_REPLY` u `OTRO`), el InboxAgent redacta la contestación y la deja en el **cuerpo de la Tarea**, en la sección `### Borrador de respuesta (a la respuesta del AAAA-MM-DD HH:mm)`: destinatario, asunto `Re: …` y cuerpo, listos para copiar y responder en el hilo desde Twenty o el webmail. La nota 📬 lleva el mismo borrador resumido. No se escribe ningún campo de la hipótesis: `emailSubject` / `emailBody` son del primer email y los lee el workflow de envío. Ninguna tool envía correo.
+
+Flujo, antes de crear la nota:
+
+1. `get_company` (nombre) y, si el envío tiene hipótesis, `get_hypothesis` (READ, opcional): `need`, `whyNow` y el primer email (`emailSubject` / `emailBody`; si no, el asunto de `email_sends`).
+1. Propuesta de reunión: `MeetingAvailability.propose({ now, count: 3 })` ([src/meetings/types.ts](src/meetings/types.ts)). Se inyecta como `deps.availability` del InboxAgent; por defecto `NULL_AVAILABILITY` (sin agenda). Un error de la disponibilidad cae a «sin agenda» (`availability_error`).
+1. **Una** llamada al modelo con la skill `email-reply-draft` (BD, v1 ACTIVE; fallback `REPLY_DRAFT_SYSTEM_PROMPT`) más el conocimiento `ACTIVE` de los dominios `email` y `prospeccion`. Modelo: el del rol de redacción del router (`reply_draft.model_role`, por defecto `executor_cheap`, es decir `MODEL_ROUTE_EXECUTOR_CHEAP`); si ese rol apunta a otro proveedor que el de la ejecución, se usa el modelo de la versión (`draft_route_other_provider`). El correo del cliente y los datos del CRM van en bloques `<<<DATOS_NO_CONFIABLES …>>>` separados.
+1. Reglas comprobadas por código ([src/agents/reply-draft.ts](src/agents/reply-draft.ts)): sin «plazo», «urgente», «prisa» ni variantes; sin importes, `€` ni porcentajes (no hay precios en los datos: se promete enviarlos); sin enlaces ni direcciones. Una respuesta que las incumple se devuelve una vez al modelo con el error (`max_attempts` 2).
+1. El código añade el asunto `Re: <asunto del cliente>`, el **párrafo de reunión** ([src/inbound/meeting-paragraph.ts](src/inbound/meeting-paragraph.ts)), «Un saludo,» y la firma `Jesús Abril` / `PubliEXPE · expertos en merchandising para empresas` / `www.publiexpe.com`. Quita la despedida o la firma que escriba el modelo y un nombre inventado en el saludo.
+
+Párrafo de reunión según `source`:
+
+| `source` | Texto |
+|---|---|
+| `calendar` | 3 huecos concretos («jueves 3 de diciembre, a las 10:30») y, si hay `bookingUrl`, «o, si os encaja mejor, reservad directamente aquí: <url>» |
+| `link` | Solo el enlace de reserva |
+| `none` | «¿Qué día y hora os vendría bien para una llamada de <durationMin> minutos?» |
+
+Con `videoUrl`, una línea más con el enlace de la videollamada.
+
+**`meeting_intent`.** El clasificador devuelve además `reunion` (acepta o propone reunión o llamada, o da una fecha). En un `INTERESADO` / `PREGUNTA` añade la señal `meeting_intent` (sin clase nueva): la tarea pasa a llamarse «📅 Cerrar reunión con <empresa>», el borrador se centra en cerrar la fecha (si el cliente propuso día y hora, los acepta y el párrafo de reunión se convierte en la alternativa «Si al final os viene mejor otro momento…»). La Oportunidad **no** cambia de etapa aquí.
+
+**Fallo no bloqueante.** Error del modelo, respuesta inválida dos veces o límite por ejecución: la Tarea se crea igual con `Borrador no disponible: <motivo>.` y el motivo queda en `triaged[].reply_draft` del output. Una Tarea abierta reutilizada (otra respuesta del mismo contacto) recibe al final la nueva respuesta y su borrador (append-only, una vez por respuesta: `reply_task_draft_appended`).
+
+Contadores: `reply_drafts_created`, `reply_drafts_failed`, `meeting_tasks`. Señales en `inbound_triage.signals`: `meeting_intent`, `reply_draft_created`, `reply_draft_failed`, `draft_hypothesis_*`. El coste de la llamada se suma al `cost_eur` de la fila del mensaje y al coste de la ejecución (`llm_calls` cuenta las dos llamadas).
+
+Configuración `reply_draft` (sin ella, desactivado: las versiones anteriores siguen igual):
+
+| Clave | Por defecto (seed) | Uso |
+|---|---|---|
+| `enabled` | `true` | Redacta los borradores |
+| `model_role` / `model` | `executor_cheap` / rol | Rol del router y modelo fijado opcional |
+| `max_per_run` | `40` | Borradores por ejecución |
+| `max_attempts` / `max_output_tokens` / `text_max` | `2` / `2048` / `3000` | Presupuesto por borrador |
+| `slots` | `3` | Huecos pedidos a la disponibilidad |
+| `sender` | Jesús Abril, PubliEXPE, `expertos en merchandising para empresas`, `www.publiexpe.com` | Firma |
 
 Ejemplo de nota:
 
@@ -2186,12 +2226,13 @@ Migración `0014_inbound_triage`. Es append-only: hay triggers que rechazan `UPD
 | `lookup_company_by_domain` | `true` | `find_company` por dominio si no hay envío |
 | `emit_events` | `true` | Emite `email.reply_received` |
 
-El resto de claves (`suppression_note_id`, `own_domains`, `imap_mailbox`, `initial_since`, límites de mensajes, `mark_seen`, `timezone`) son las del BajasAgent. Tool policy: `get_note` y `update_note` (1 cada una), `create_note` y `find_company` (40 cada una), `LOW_WRITE`.
+El resto de claves (`suppression_note_id`, `own_domains`, `imap_mailbox`, `initial_since`, límites de mensajes, `mark_seen`, `timezone`) son las del BajasAgent. Tool policy: `get_note` y `update_note` (1 cada una), `create_note`, `find_company`, `upsert_person`, `upsert_opportunity`, `get_company`, `create_reply_task` y (tanda 22) `get_hypothesis` (40 cada una), `LOW_WRITE`. La configuración de los borradores (`reply_draft`, `knowledge_domains`, `skill_refs`) está en [Borrador de respuesta](#borrador-de-respuesta-tanda-22).
 
 ### Tests del triaje
 
 - `test/unit/inbound-triage.test.ts`: reglas con cabeceras reales (fuera de oficina de Exchange y Gmail, autorrespondedores, boletines, rebotes de Exim/IONOS, Postfix y Gmail, acuses de lectura), parseo DSN, prompt con bloque no confiable e intento de inyección, confianza baja → `OTRO`, notas y extracto saneado, enlace con envíos, y el InboxAgent con buzón falso, FakeTwenty y StubProvider (lote mixto, idempotencia, presupuesto LLM, fallo de Twenty, error del modelo, remitentes sin empresa, `\Seen`).
-- `test/integration/inbound-triage.test.ts` (PostgreSQL): seed, `process-inbox` → `RunProcessor` → InboxAgent → servidor IMAP falso → StubProvider → notas y lista en FakeTwenty → filas de `inbound_triage`, eventos en `events`, cursor, idempotencia tras un cambio de `UIDVALIDITY` y triggers append-only.
+- `test/integration/inbound-triage.test.ts` (PostgreSQL): seed, `process-inbox` → `RunProcessor` → InboxAgent → servidor IMAP falso → StubProvider → notas y lista en FakeTwenty → filas de `inbound_triage`, eventos en `events`, cursor, idempotencia tras un cambio de `UIDVALIDITY`, triggers append-only y (tanda 22) el borrador en la tarea.
+- `test/unit/reply-drafts.test.ts` (tanda 22): párrafo de reunión en sus tres variantes (`calendar`, `link`, `none`), vídeo y fallbacks; palabras prohibidas (test literal), importes y enlaces; firma; prompt con bloques no confiables; `meeting_intent`; y el InboxAgent con borrador en la tarea y la nota, tarea «📅 Cerrar reunión», fallo no bloqueante, reintento con el error, tarea reutilizada y modelo del rol de redacción.
 
 ## Docker
 

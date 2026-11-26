@@ -9,7 +9,7 @@ import { createCreateReplyTaskTool, createUpsertOpportunityTool, createUpsertPer
 import { createCreateSignalNoteTool, createExpireSignalTool, createListEventSignalsTool } from './twenty/signal-tools.js';
 import { createExpireHypothesisTool, createListHypothesesForExpiryTool } from './twenty/hypothesis-expiry-tools.js';
 import { createCreateCrmTaskTool } from './twenty/task-tools.js';
-import { createListSentHypothesesTool } from './twenty/followup-tools.js';
+import { createListEmailMessagesTool, createListOpportunityFollowUpContextTool, createListSentHypothesesTool } from './twenty/followup-tools.js';
 import { createListCalendarEventsTool, createListOpenOpportunitiesTool, createMarkOpportunityMeetingTool } from './twenty/meeting-tools.js';
 import {
   createCreateAgentRunSummaryTool,
@@ -73,6 +73,9 @@ export function registerTwentyTools(registry: ToolRegistry, twenty: TwentyClient
   registry.register(createCreateReplyTaskTool(deps));
   // Lead follow-up (tanda 21): the SENT hypotheses, read only.
   registry.register(createListSentHypothesesTool(deps));
+  // Follow-up sequence and «retomar conversación» (tanda 23): imported emails and opportunity context, read only.
+  registry.register(createListEmailMessagesTool(deps));
+  registry.register(createListOpportunityFollowUpContextTool(deps));
   // Meeting sync (tanda 22): the calendar is read only; the opportunity gets a note and the meeting stage.
   registry.register(createListCalendarEventsTool(deps));
   registry.register(createListOpenOpportunitiesTool(deps));

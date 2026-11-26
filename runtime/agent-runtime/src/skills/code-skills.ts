@@ -14,6 +14,7 @@ import {
   SCOUT_SKILL_VERSION,
 } from '../agents/event-scout-prompt.js';
 import { REPLY_DRAFT_SKILL_ID, REPLY_DRAFT_SKILL_VERSION, REPLY_DRAFT_SYSTEM_PROMPT } from '../agents/reply-draft-prompt.js';
+import { FOLLOWUP_DRAFT_SKILL_ID, FOLLOWUP_DRAFT_SKILL_VERSION, FOLLOWUP_DRAFT_SYSTEM_PROMPT } from '../agents/followup-draft-prompt.js';
 import { PROSPECTOR_SKILL_ID, PROSPECTOR_SKILL_VERSION, PROSPECTOR_SYSTEM_PROMPT } from '../agents/prospector-prompt.js';
 
 export interface CodeSkill {
@@ -61,6 +62,14 @@ export const CODE_SKILLS: readonly CodeSkill[] = [
     domain: 'outreach',
     text: REPLY_DRAFT_SYSTEM_PROMPT,
     source: { file: 'src/agents/reply-draft-prompt.ts', constant: 'REPLY_DRAFT_SYSTEM_PROMPT', legacy_skill_id: REPLY_DRAFT_SKILL_ID, legacy_version: REPLY_DRAFT_SKILL_VERSION },
+  },
+  {
+    // Tanda 23: born in the database (v1 = this text); the constant is only its fallback.
+    name: FOLLOWUP_DRAFT_SKILL_ID,
+    description: 'FollowUpAgent: borrador de un seguimiento (recordatorio, cierre o retomar conversación) para responder en el mismo hilo (cuerpo; reunión, despedida y firma por código; nunca se envía).',
+    domain: 'outreach',
+    text: FOLLOWUP_DRAFT_SYSTEM_PROMPT,
+    source: { file: 'src/agents/followup-draft-prompt.ts', constant: 'FOLLOWUP_DRAFT_SYSTEM_PROMPT', legacy_skill_id: FOLLOWUP_DRAFT_SKILL_ID, legacy_version: FOLLOWUP_DRAFT_SKILL_VERSION },
   },
 ];
 

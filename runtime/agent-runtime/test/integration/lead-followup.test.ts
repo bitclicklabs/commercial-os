@@ -9,6 +9,7 @@ import { randomUUID } from 'node:crypto';
 import pg from 'pg';
 import { and, eq } from 'drizzle-orm';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { recordAudit } from '../../src/audit/service.js';
 import { FOLLOWUP_AUDIT_ACTION } from '../../src/crm/followup.js';
 import { DrizzleFollowUpStore } from '../../src/crm/followup-store.js';
 import { createDb, type DbHandle } from '../../src/db/client.js';
@@ -114,17 +115,17 @@ describe.skipIf(!dbAvailable)('lead follow-up: lead-followup-check -> FollowUpAg
     const run = await runOnce();
     expect(run.status).toBe('COMPLETED');
     expect(run.output).toMatchObject({ outcome: 'SUCCESS', sends_email: false, counters: { sent_hypotheses: 3, tasks_created: 1, skipped_by: { replied: 1, too_recent: 1 } } });
-    expect(fake.tables.tasks.map((t) => t.title)).toEqual(['🔔 Seguimiento — Callada SA']);
+    expect(fake.tables.tasks.map((t) => t.title)).toEqual(['Seguimiento 1 — Callada SA 🔔']);
     const targets = fake.tables.taskTargets.filter((t) => t.taskId === fake.tables.tasks[0]!.id);
     expect(targets.map((t) => t.targetCompanyId ?? t.targetCommercialHypothesisId).sort()).toEqual([String(quiet.id), String(hQuiet.id)].sort());
     const rows = await audited();
     expect(rows.map((r) => r.subjectId)).toEqual([hQuiet.id]);
-    expect(rows[0]!.payload).toMatchObject({ task_id: fake.tables.tasks[0]!.id, task_created: true });
+    expect(rows[0]!.payload).toMatchObject({ task_id: fake.tables.tasks[0]!.id, task_created: true, touch: 2 });
 
     // Deleted in Twenty: the audit row still says «done».
     fake.tables.tasks.length = 0;
     const again = await runOnce();
-    expect(again.output).toMatchObject({ outcome: 'SUCCESS', counters: { tasks_created: 0, skipped_by: { task_exists: 1 } } });
+    expect(again.output).toMatchObject({ outcome: 'SUCCESS', counters: { tasks_created: 0, skipped_by: { messages_unavailable: 1 } } });
     expect(fake.tables.tasks).toHaveLength(0);
     expect(await audited()).toHaveLength(1);
   });
@@ -134,6 +135,13 @@ describe.skipIf(!dbAvailable)('lead follow-up: lead-followup-check -> FollowUpAg
     expect((await store.replies(tenant, { hypothesisId: 'other', companyIds: [String(talks.id)], since: longAgo })).map((r) => r.class)).toEqual(['NO_INTERESADO']);
     expect(await store.replies(tenant, { hypothesisId: String(hTalks.id), companyIds: [], since: new Date() })).toEqual([]);
     expect((await store.sends(tenant, [String(hQuiet.id)])).map((s) => s.toEmail)).toEqual(['ana@callada.example']);
-    expect([...(await store.alreadyFollowedUp(tenant, [String(hQuiet.id), String(hTalks.id)]))]).toEqual([hQuiet.id]);
+    // Tanda 23: touch 3 and «retomar conversación» marks.
+    const mark = (subjectType: string, subjectId: string, payload: Record<string, unknown>) =>
+      recordAudit(handle.db, { tenantId: tenant, actor: 'agent', actorLabel: 'FollowUpAgent', action: FOLLOWUP_AUDIT_ACTION, subjectType, subjectId, method: 'AGENT', route: 'agent:lead_followup', result: 'ok', statusCode: 200, payload });
+    await mark('commercial_hypothesis', 'h-touch3', { touch: 3 });
+    await mark('opportunity', 'opp-1', { kind: 'conversation', last_outbound_message_id: 'msg-9' });
+    expect((await store.followUpTouches(tenant, ['h-touch3'])).get('h-touch3')).toEqual(new Set([3]));
+    expect((await store.conversationMarks(tenant, ['opp-1', 'opp-2'])).get('opp-1')).toEqual(new Set(['msg-9']));
+    expect([...(await store.followUpTouches(tenant, [String(hQuiet.id), String(hTalks.id)])).entries()]).toEqual([[hQuiet.id, new Set([2])]]);
   });
 });

@@ -14,7 +14,9 @@
  * `draft-email-on-validated`, the BajasAgent with its task `process-unsubscribes` (kept
  * DISABLED since the inbound triage) and the InboxAgent with its task `process-inbox` (CRON
  * every 2 hours), the ContactFinder and the FollowUpAgent with its task `lead-followup-check` (CRON
- * 08:30, tanda 21: one «🔔 Seguimiento» task per first email without a reply; all idempotent).
+ * 08:30, tanda 21: one «🔔 Seguimiento» task per first email without a reply) and the MeetingSyncAgent
+ * with its task `meeting-sync` (CRON every 30 minutes, tanda 22: meetings booked in the calendar
+ * synced in Twenty move their open Opportunity to MEETING; all idempotent).
  * The daily task default input is `{ mode: 'signals' }` (tanda 15: the fairs QUALIFIED in Twenty);
  * `--input` still accepts a direct-mode fixture (`{ event, exhibitors[] }`, e.g.
  * `test/fixtures/feria-ejemplo.json`) for a demo tenant.
@@ -34,6 +36,7 @@ import { seedHarnesses } from './harness-seed.js';
 import { seedInbox } from './inbox-seed.js';
 import { seedKnowledge } from './knowledge-seed.js';
 import { seedLeadTimeCandidates } from './lead-time-seed.js';
+import { seedMeetingSync } from './meeting-sync-seed.js';
 import { seedProspectOnQualified } from './prospect-on-qualified-seed.js';
 import { seedProspector } from './prospector-seed.js';
 import { seedSkills } from './skills-seed.js';
@@ -74,6 +77,8 @@ if (isMain) {
     .then(async (r) => ({ ...r, contactFinder: await seedContactFinder(handle.db, { tenantId, log }) }))
     // Lead follow-up (tanda 21): CRON task `lead-followup-check` (08:30), one 🔔 task per unanswered send.
     .then(async (r) => ({ ...r, followUp: await seedFollowUp(handle.db, { tenantId, log }) }))
+    // Meeting sync (tanda 22): CRON task `meeting-sync` (every 30 min), meetings booked -> MEETING stage + 🧾 task.
+    .then(async (r) => ({ ...r, meetingSync: await seedMeetingSync(handle.db, { tenantId, log }) }))
     .then((r) => console.log(JSON.stringify({ tenant: tenantId, ...r }, null, 2)))
     .catch((err: unknown) => {
       console.error('[seed] failed', err);

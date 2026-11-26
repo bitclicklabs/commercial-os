@@ -17,6 +17,11 @@
  * `scope: 'ever'` reuses a same-title task of any day (the promotion proposal: one per version).
  * With targets, a same-title task must already point to the first target (or have no targets at
  * all: an orphan from a call that died between the two POSTs, adopted). Nothing is ever deleted.
+ *
+ * Tanda 25: this is the ONLY place that decides «does this Task already exist?». The reply / meeting
+ * task of the inbox (src/crm/reply-task.ts) is built on it with `scope: 'open'` (any day, only a task
+ * not DONE), `anchor` (the opportunity, else the company, else `'none'`: only an orphan is adopted)
+ * and `appendOnReuse` (the only edit ever made: text appended, once, to the body of a reused task).
  */
 import { localMidnight } from '../../metrics/twenty-sync.js';
 import { filterValue, type TwentyClient } from './client.js';
@@ -52,14 +57,19 @@ export interface CreateCrmTaskInput {
   dueAt?: string | Date | null | undefined;
   targets?: CrmTaskTargets | undefined;
   status?: TaskStatus;
-  /** 'day' (default): same title created the same local day. 'ever': same title, any day. */
-  scope?: 'day' | 'ever';
+  /**
+   * 'day' (default): same title created the same local day. 'ever': same title, any day.
+   * 'open' (tanda 25, the reply task): same title, any day, only a task that is not DONE nor deleted.
+   */
+  scope?: 'day' | 'ever' | 'open';
   /**
    * Target that identifies the task among same-title ones (default: the first of company, person,
    * opportunity, signal, hypothesis that is given). The lead follow-up (tanda 21) anchors on the
    * hypothesis: two hypotheses of one company get one task each.
+   * `'none'` (tanda 25, a reply task without opportunity nor company): a same-title task that has
+   * targets is never reused; only an orphan (no targets at all) is adopted.
    */
-  anchor?: keyof CrmTaskTargets;
+  anchor?: keyof CrmTaskTargets | 'none';
   /**
    * Tanda 23: older spellings of the same title that also count as «the same title» (same scope,
    * anchor and orphan rules). Titles used to start with an emoji, which Twenty draws as a broken
@@ -67,6 +77,12 @@ export interface CreateCrmTaskInput {
    * Searched one by one with `title[eq]`, after the current title. A reused task keeps its title.
    */
   legacyTitles?: readonly string[] | undefined;
+  /**
+   * Tanda 22 / 25: markdown appended to the body when a task is reused or adopted (another reply of
+   * the same contact). Append-only (what a person wrote stays) and idempotent: skipped when the
+   * body already contains `marker`. Without it a reused task is never edited.
+   */
+  appendOnReuse?: { markdown: string; marker: string } | null | undefined;
 }
 
 /** Trailing emoji of a title (with variation selectors / ZWJ sequences): «Texto 🔔» -> «🔔». */
@@ -91,6 +107,10 @@ export interface CreateCrmTaskResult {
   adopted: boolean;
   dueAt: string | null;
   targetIds: string[];
+  /** Tanda 25: the task record (after the append, if any). */
+  task: TwentyTask;
+  /** Tanda 25: `appendOnReuse` was given and the reused task got it appended (absent without `appendOnReuse`). */
+  appended?: boolean;
 }
 
 /** Title as stored: filter values cannot carry quotes or backslashes, so they are dropped. */
@@ -125,14 +145,14 @@ export function dueInDays(now: Date, days: number, timeZone = CRM_TASK_TIMEZONE)
   return crmTaskDueAt(addCalendarDays(crmTaskLocalDay(now, timeZone), days), timeZone)!;
 }
 
-function targetEntries(targets: CrmTaskTargets | undefined, anchor?: keyof CrmTaskTargets): Array<[keyof TwentyTaskTarget, string]> {
+function targetEntries(targets: CrmTaskTargets | undefined, anchor?: keyof CrmTaskTargets | 'none'): Array<[keyof TwentyTaskTarget, string]> {
   const out: Array<[keyof TwentyTaskTarget, string]> = [];
   for (const [key, column] of Object.entries(TARGET_COLUMN) as Array<[keyof CrmTaskTargets, keyof TwentyTaskTarget]>) {
     const v = targets?.[key];
     if (typeof v === 'string' && v.length > 0) out.push([column, v]);
   }
   // The anchor goes first: it is the target a same-title task must already point to.
-  const at = anchor ? out.findIndex(([column]) => column === TARGET_COLUMN[anchor]) : -1;
+  const at = anchor && anchor !== 'none' ? out.findIndex(([column]) => column === TARGET_COLUMN[anchor]) : -1;
   if (at > 0) out.unshift(...out.splice(at, 1));
   return out;
 }
@@ -159,6 +179,15 @@ export async function createCrmTask(
   if (title.length === 0) throw new Error('task title is empty');
   const wanted = targetEntries(input.targets, input.anchor);
   const today = crmTaskLocalDay(now, tz);
+  const anchored = input.anchor !== 'none';
+  const inScope = (t: TwentyTask): boolean =>
+    input.scope === 'ever'
+      ? true
+      : input.scope === 'open'
+        ? !t.deletedAt && t.status !== 'DONE'
+        : t.createdAt
+          ? crmTaskLocalDay(new Date(t.createdAt), tz) === today
+          : false;
 
   // 1. Same title (today, or ever): reuse the one already on the first target, or adopt an orphan.
   //    The current title first, then its older spellings (tanda 23, `legacyTitles`).
@@ -169,15 +198,15 @@ export async function createCrmTask(
     for (const t of sameTitle) {
       if (candidates.some((c) => c.id === t.id)) continue;
       if (crmTaskTitle(t.title ?? '') !== wantedTitle) continue;
-      if (input.scope === 'ever' || (t.createdAt ? crmTaskLocalDay(new Date(t.createdAt), tz) === today : false)) candidates.push(t);
+      if (inScope(t)) candidates.push(t);
     }
   }
   let task: TwentyTask | null = null;
   let existingTargets: TwentyTaskTarget[] = [];
   let orphan: TwentyTask | null = null;
   for (const candidate of candidates) {
-    const t = wanted.length > 0 ? await targetsOf(twenty, candidate.id, opts.signal) : [];
-    if (wanted.length === 0 || t.some((x) => x[wanted[0]![0]] === wanted[0]![1])) {
+    const t = wanted.length > 0 || !anchored ? await targetsOf(twenty, candidate.id, opts.signal) : [];
+    if (anchored && (wanted.length === 0 || t.some((x) => x[wanted[0]![0]] === wanted[0]![1]))) {
       task = candidate;
       existingTargets = t;
       break;
@@ -188,14 +217,23 @@ export async function createCrmTask(
   const adopted = !task && orphan !== null;
   if (!task) task = orphan;
 
-  // 2. New task.
+  // 2. New task, or (reused / adopted) the append-only addition to its body.
   const dueAt = crmTaskDueAt(input.dueAt, tz);
+  let appended = false;
   if (!task) {
     task = await twenty.create<TwentyTask>(
       TWENTY_OBJECTS.task,
       { title, bodyV2: { markdown: input.body }, status: input.status ?? 'TODO', ...(dueAt ? { dueAt } : {}) },
       signal,
     );
+  } else if (input.appendOnReuse) {
+    const current = task.bodyV2?.markdown ?? '';
+    if (!current.includes(input.appendOnReuse.marker)) {
+      const markdown = `${current.replace(/\s+$/, '')}\n\n---\n\n${input.appendOnReuse.markdown}`;
+      const updated = await twenty.update<TwentyTask>(TWENTY_OBJECTS.task, task.id, { bodyV2: { markdown } }, signal);
+      task = { ...task, ...updated };
+      appended = true;
+    }
   }
 
   // 3. Missing targets only.
@@ -205,5 +243,5 @@ export async function createCrmTask(
     const row = await twenty.create<TwentyTaskTarget>(TWENTY_OBJECTS.taskTarget, { taskId: task.id, [column]: id }, signal);
     targetIds.push(row.id);
   }
-  return { taskId: task.id, title, created, adopted, dueAt: task.dueAt ?? dueAt, targetIds };
+  return { taskId: task.id, title, created, adopted, dueAt: task.dueAt ?? dueAt, targetIds, task, ...(input.appendOnReuse ? { appended } : {}) };
 }

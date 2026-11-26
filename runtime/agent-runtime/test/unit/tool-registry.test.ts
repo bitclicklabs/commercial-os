@@ -107,6 +107,9 @@ describe('ToolRegistry', () => {
       // Tanda 24: the meeting brief (context read only; the 🧾 task section append-only).
       get_meeting_brief_context: 'READ',
       append_crm_task_section: 'LOW_WRITE',
+      // Tanda 24: the weekly setter report (reads, one untargeted note).
+      read_setter_crm: 'READ',
+      create_report_note: 'LOW_WRITE',
       fetch_url: 'READ',
       render_url: 'READ',
       find_contact: 'READ',

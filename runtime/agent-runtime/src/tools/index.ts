@@ -13,6 +13,7 @@ import { createCreateCrmTaskTool } from './twenty/task-tools.js';
 import { createListEmailMessagesTool, createListOpportunityFollowUpContextTool, createListSentHypothesesTool } from './twenty/followup-tools.js';
 import { createListCalendarEventsTool, createListOpenOpportunitiesTool, createMarkOpportunityMeetingTool } from './twenty/meeting-tools.js';
 import { createAppendCrmTaskSectionTool, createGetMeetingBriefContextTool } from './twenty/meeting-brief-tools.js';
+import { createCreateReportNoteTool, createReadSetterCrmTool } from './twenty/setter-tools.js';
 import {
   createCreateAgentRunSummaryTool,
   createCreateHypothesisTool,
@@ -40,6 +41,7 @@ export * from './twenty/crm-tools.js';
 export * from './twenty/followup-tools.js';
 export * from './twenty/meeting-tools.js';
 export * from './twenty/meeting-brief-tools.js';
+export * from './twenty/setter-tools.js';
 export * from './web/fetch-url.js';
 export * from './web/ip-guard.js';
 export * from './web/html-text.js';
@@ -87,6 +89,9 @@ export function registerTwentyTools(registry: ToolRegistry, twenty: TwentyClient
   // Meeting brief (tanda 24): the context of one opportunity (read only) and the append-only section of the 🧾 task.
   registry.register(createGetMeetingBriefContextTool(deps));
   registry.register(createAppendCrmTaskSectionTool(deps));
+  // Setter metrics (tanda 24): the weekly report reads its CRM sources and writes one untargeted note.
+  registry.register(createReadSetterCrmTool(deps));
+  registry.register(createCreateReportNoteTool(deps));
   return registry;
 }
 

@@ -9,6 +9,7 @@ import { INBOX_IMPLEMENTATION, InboxAgent } from './inbox-agent.js';
 import { MEETING_SYNC_IMPLEMENTATION, MeetingSyncAgent } from './meeting-sync-agent.js';
 import { meetingAvailabilityFromEnv } from '../meetings/index.js';
 import { ProspectorAgent } from './prospector-agent.js';
+import { SETTER_REPORT_IMPLEMENTATION, SetterReportAgent } from './setter-report-agent.js';
 import { SmokeAgent } from './smoke-agent.js';
 
 /**
@@ -111,6 +112,9 @@ export function resolveAgentImplementation(configuration: Record<string, unknown
     case MEETING_SYNC_IMPLEMENTATION:
       // Meeting sync (tanda 22): the «already detected» marks live in audit_log; emits opportunity.meeting_detected.
       return new MeetingSyncAgent({ ...(deps.db ? { db: deps.db } : {}), ...(deps.events ? { events: deps.events } : {}) });
+    case SETTER_REPORT_IMPLEMENTATION:
+      // Setter metrics (tanda 24): email_sends, inbound_triage, audit_log and agent_executions live in the database.
+      return new SetterReportAgent(deps.db ? { db: deps.db } : {});
     default:
       throw new Error(`Unknown agent implementation: ${kind}`);
   }

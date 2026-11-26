@@ -17,7 +17,8 @@
  * 08:30, tanda 21: one «🔔 Seguimiento» task per first email without a reply) and the MeetingSyncAgent
  * with its task `meeting-sync` (CRON every 30 minutes, tanda 22: meetings booked in the calendar
  * synced in Twenty move their open Opportunity to MEETING; tanda 24: the 🧾 task carries the «Ficha previa»,
- * skill `meeting-brief` v1 seeded ACTIVE with the other code skills; all idempotent).
+ * skill `meeting-brief` v1 seeded ACTIVE with the other code skills) and the SetterReportAgent with its task
+ * `setter-weekly-report` (CRON Monday 08:45, tanda 24: weekly setter summary note); all idempotent.
  * The daily task default input is `{ mode: 'signals' }` (tanda 15: the fairs QUALIFIED in Twenty);
  * `--input` still accepts a direct-mode fixture (`{ event, exhibitors[] }`, e.g.
  * `test/fixtures/feria-ejemplo.json`) for a demo tenant.
@@ -41,6 +42,7 @@ import { seedReplyDraftV2 } from './reply-draft-v2-seed.js';
 import { seedMeetingSync } from './meeting-sync-seed.js';
 import { seedProspectOnQualified } from './prospect-on-qualified-seed.js';
 import { seedProspector } from './prospector-seed.js';
+import { seedSetterReport } from './setter-report-seed.js';
 import { seedSkills } from './skills-seed.js';
 
 /** Works from src/seed (tsx) and dist/seed (node). */
@@ -83,6 +85,8 @@ if (isMain) {
     .then(async (r) => ({ ...r, followUp: await seedFollowUp(handle.db, { tenantId, log }) }))
     // Meeting sync (tanda 22): CRON task `meeting-sync` (every 30 min), meetings booked -> MEETING stage + 🧾 task.
     .then(async (r) => ({ ...r, meetingSync: await seedMeetingSync(handle.db, { tenantId, log }) }))
+    // Setter metrics (tanda 24): CRON task `setter-weekly-report` (Monday 08:45), weekly summary note in Twenty.
+    .then(async (r) => ({ ...r, setterReport: await seedSetterReport(handle.db, { tenantId, log }) }))
     .then((r) => console.log(JSON.stringify({ tenant: tenantId, ...r }, null, 2)))
     .catch((err: unknown) => {
       console.error('[seed] failed', err);

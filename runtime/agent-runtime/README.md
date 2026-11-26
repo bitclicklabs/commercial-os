@@ -286,6 +286,7 @@ Cabecera opcional `x-tenant-id` en todas las rutas. Las respuestas usan `snake_c
 | `GET /metrics/summary` | Runs por estado, tarea y outcome; coste, tokens, latencia, embudo comercial, feedback y bloque `email` (envíos y warm-up). Filtros `since`, `until` |
 | `GET /metrics/agents` | Por agente y versión: runs, coste medio, outcome y tasa de aceptación humana. Filtros `since`, `until` |
 | `GET /metrics/evaluations` | Veredictos por día y por sujeto. Filtros `since`, `until`, `tz`, `subject_limit` |
+| `GET /metrics/setter` | Métricas de negocio del setter (tanda 24) para `from`/`to` (días locales, `to` exclusivo; por defecto los últimos 7 días). Consulta [Métricas de setter](#métricas-de-setter-tanda-24) |
 | `GET /metrics/runs` | Últimos `TaskRun` (`limit`, 10 por defecto) con coste, duración y enlace al trace |
 | `GET /dashboard` | Mini dashboard HTML. Solo para peticiones locales |
 | `GET /skills`, `GET /skills/:id` | Lista de skills o detalle con versiones. `:id` admite el uuid o el nombre |
@@ -1465,6 +1466,8 @@ Las de Twenty usan `TWENTY_BASE_URL` y `TWENTY_API_KEY` y tienen `outputTrust = 
 | `mark_opportunity_meeting` | `LOW_WRITE` | Sí | Nota «📅 Reunión detectada — <fecha>» por oportunidad (buscada por título): deja la nota y pasa a la etapa de reunión **solo desde una etapa anterior**; nunca retrocede ni toca etapas posteriores o de cierre. Solo el MeetingSyncAgent |
 | `get_meeting_brief_context` | `READ` | No | — (tanda 24: etapa, importe y cierre de una Oportunidad, empresa, punto de contacto con cargo, Personas, hipótesis del tenant con su origen, nota de cualificación y, si se pide, el estado de una tarea; salida `untrusted`). Solo el MeetingSyncAgent |
 | `append_crm_task_section` | `LOW_WRITE` | Sí | Tanda 24: añade una sección markdown **al final** del cuerpo de una tarea vinculada a la Oportunidad indicada, una vez por cabecera; nunca cambia el texto existente, el título, el estado ni el vencimiento, y no escribe en una tarea `DONE`. Solo el MeetingSyncAgent |
+| `read_setter_crm` | `READ` | No | — (una lectura por `op`: buzón de una ventana, direcciones con mensajes anteriores, mensajes de unas direcciones, oportunidades abiertas por etapa, tareas del sistema vencidas, señal de unas hipótesis, nombres de empresa; lo ilegible vuelve como `no_disponible`; salida `untrusted`). Solo el SetterReportAgent |
+| `create_report_note` | `LOW_WRITE` | Sí | Nota interna **sin destinos** (no se vincula a ningún registro), idempotente por título entre las notas de los últimos 14 días; una existente se devuelve sin editarla. Solo el SetterReportAgent |
 | `fetch_url` | `READ` | No | — (consulta [Seguridad del contenido web](#seguridad-del-contenido-web)) |
 | `render_url` | `READ` | No | — (consulta [Render de JavaScript](#render-de-javascript-render_url)) |
 | `catalog_search_products` | `READ` | No | — (consulta [Catálogo](#catálogo-catalog-service); salida `untrusted`) |
@@ -1930,6 +1933,8 @@ Es idempotente:
 - **Agente `InboxAgent` y tarea `process-inbox`**: `CRON 0 */2 * * *` en `Europe/Madrid`, Gemini Flash solo para las respuestas que las reglas no deciden, tool policy `get_note` + `update_note` + `create_note` + `find_company`. Consulta [Triaje del buzón](#triaje-del-buzón).
 - **Agente `FollowUpAgent` y tarea `lead-followup-check`** (tanda 21): `CRON 30 8 * * *` en `Europe/Madrid`, sin LLM (`model_provider = stub`), tool policy `list_sent_hypotheses` + `get_note` (una cada una) + `create_crm_task` (20). Consulta [Seguimiento de envíos sin respuesta](#seguimiento-de-envíos-sin-respuesta-tanda-21).
 - **Agente `MeetingSyncAgent` y tarea `meeting-sync`** (tanda 22): `CRON */30 * * * *` en `Europe/Madrid`, en la tanda 22 sin LLM (`model_provider = stub`), tool policy `list_calendar_events` + `list_open_opportunities` (una cada una) + `mark_opportunity_meeting` y `create_crm_task` (20 cada una). Sin calendario sincronizado termina `SKIPPED` (`no_calendar_channel`) sin coste. Tanda 24: versión nueva con `model_provider = gemini` (rol `executor_cheap`), skill `meeting-brief`, `meeting_brief.enabled` y las tools `get_meeting_brief_context`, `list_crm_messages` y `append_crm_task_section` (10 fichas por ejecución); la versión de la tanda 22 se conserva. Consulta [Reuniones: huecos y detección](#reuniones-huecos-y-detección-tanda-22).
+- **Agente `SetterReportAgent` y tarea `setter-weekly-report`** (tanda 24): `CRON 45 8 * * 1` (lunes 08:45) en `Europe/Madrid`, sin LLM (`model_provider = stub`), tool policy `read_setter_crm` (12) + `create_report_note` (1). Consulta [Métricas de setter](#métricas-de-setter-tanda-24).
+- **Agente `MeetingSyncAgent` y tarea `meeting-sync`** (tanda 22): `CRON */30 * * * *` en `Europe/Madrid`, sin LLM (`model_provider = stub`), tool policy `list_calendar_events` + `list_open_opportunities` (una cada una) + `mark_opportunity_meeting` y `create_crm_task` (20 cada una). Sin calendario sincronizado termina `SKIPPED` (`no_calendar_channel`) sin coste. Consulta [Reuniones: huecos y detección](#reuniones-huecos-y-detección-tanda-22).
 
 Las dos tareas usan la misma versión del agente. La versión del seed añade `fetch_url` a la tool policy, la configuración `scout` y la skill `event-source-discovery` v1, y sube la skill `prospector-event-exhibitors` a v2 (datos en bloques `DATOS_NO_CONFIABLES`): al ejecutar el seed sobre una BD existente se crea una versión nueva del agente.
 
@@ -2655,6 +2660,72 @@ No hace falta migración. Con `EXPLAIN ANALYZE` sobre la BD de desarrollo (219 `
 docker exec pxos-postgres psql -U agentos -d postgres -c "create database agentos_wt4_metrics"   # una vez
 pnpm vitest run test/integration/metrics.test.ts test/unit/metrics-local.test.ts
 ```
+
+## Métricas de setter (tanda 24)
+
+Métricas de **negocio** del AI Setter (nivel 1: el sistema prepara, el comercial envía): cuántos contactos, cuántas respuestas, cuántas reuniones y si el comercial responde rápido. Son de solo lectura. El código está en `src/metrics/setter.ts` (cálculo puro y lectores de la BD), `src/metrics/setter-crm.ts` (lecturas de Twenty) y `src/metrics/setter-report.ts` (la nota semanal).
+
+### Endpoint
+
+`GET /metrics/setter?from=AAAA-MM-DD&to=AAAA-MM-DD` usa días locales de `Europe/Madrid`; `from` es inclusivo y `to` exclusivo. Sin parámetros, devuelve los últimos 7 días con hoy incluido. El periodo admite como máximo 92 días; `from` sin `to` (o al revés) responde `400`. Es un `GET`: no pasa por `audit_log`.
+
+```sh
+curl -s "http://127.0.0.1:4020/metrics/setter?from=2026-11-16&to=2026-11-23" -H 'x-tenant-id: publiexpe'
+```
+
+La API lee Twenty con su cliente (`TWENTY_API_KEY`). Sin Twenty, o si Twenty no responde, las métricas que dependen de él salen a `null` y aparecen en `no_disponible` con el motivo. **Nunca se rellenan con ceros.** `truncado` lista las fuentes que se leyeron solo en parte (más de 1.000 registros): sus números son un mínimo.
+
+### Cómo se calcula cada métrica
+
+| Métrica | Fuente y cálculo |
+|---|---|
+| `primeros_contactos` | Destinatarios de `email_sends` del periodo (primer envío desde el workflow de Twenty) más los mensajes **salientes** del buzón importado por Twenty a una dirección sin mensajes previos (en cualquier sentido) y sin `email_sends` previo. Uno por destinatario. Un saliente del buzón al mismo destinatario a ±15 minutos de un `email_sends` es el mismo email (la copia de «Enviados»). `desde_buzon` es `null` sin buzón; `completo` indica si se pudo comprobar el historial |
+| `seguimientos_enviados` | El resto de salientes del periodo (a una dirección que ya tenía mensajes) y los `email_sends` a un destinatario ya contactado. `null` sin buzón |
+| `respuestas` | Filas de `inbound_triage` recibidas en el periodo, por clase. `humanas` = INTERESADO + PREGUNTA + NO_INTERESADO + BAJA; REBOTE en `por_clase`; AUTO_REPLY y OTRO en `aparte` |
+| `tasa_respuesta` | Por **cohorte**: de los primeros contactos del periodo, cuántos tienen una respuesta humana (misma dirección, o el mismo envío o hipótesis según el triaje) en los 30 días siguientes al contacto. `valor` es `null` sin cohorte. Hasta 30 días después del fin del periodo la cohorte sigue abierta (`cohorte_cerrada: false`) y el valor puede subir. `explicacion` lo cuenta en texto |
+| `interesados` | Respuestas INTERESADO del periodo |
+| `reuniones_detectadas` | Filas `opportunity.meeting_detected` de `audit_log` del periodo (tarea `meeting-sync`) |
+| `oportunidades_abiertas` | Oportunidades de Twenty que no están ganadas, perdidas ni cerradas, por etapa, en el momento de la consulta |
+| `velocidad_respuesta_comercial` | Para las respuestas que esperan contestación (INTERESADO y PREGUNTA) recibidas en el periodo: horas laborables (L-V 9:00-18:00 `Europe/Madrid`, sin festivos) hasta nuestro siguiente saliente a esa dirección en el buzón, en el mismo hilo si se puede saber y, si no, el siguiente a la dirección. Devuelve `mediana_horas_laborables`, `contestadas` y `sin_contestar_en_periodo`. Además, **ahora**: las respuestas de los últimos 30 días sin contestar con más de un día laborable (9 horas laborables) de espera (`sin_contestar_mas_1_dia`, `sin_contestar`) |
+| `tareas_vencidas` | Tareas abiertas (TODO o IN_PROGRESS) creadas por el sistema con vencimiento pasado: «Responder a… 📬», «Cerrar reunión con… 📅», «Seguimiento N —… 🔔» y «Retomar conversación con… 🔔», en el formato nuevo (emoji al final) y el antiguo (emoji al principio). Una tarea escrita a mano sin el emoji no cuenta |
+| `coste_llm_eur` | `agent_executions` creadas en el periodo, con la misma regla de EUR que `/metrics/summary` |
+| `por_origen` | `email_sends` → hipótesis → `commercialSignal` (la feria). Los contactos del buzón y las hipótesis sin señal van a «sin atribuir». Las reuniones se atribuyen por la empresa (último envío a esa empresa) |
+
+### Resumen semanal en Twenty: tarea `setter-weekly-report`
+
+El **SetterReportAgent** (`implementation = "setter_report"`, `src/agents/setter-report-agent.ts`) se ejecuta cada lunes a las 08:45 (`CRON 45 8 * * 1`, `Europe/Madrid`). Es determinista: **no llama a ningún modelo** y no envía nada.
+
+1. Calcula las métricas de la semana anterior (lunes a domingo) y de la previa. Las tablas del runtime se leen de la BD; Twenty, con la tool `read_setter_crm` (cada lectura es un paso `TOOL` de la traza).
+1. Escribe la nota **«Resumen semanal del setter — semana del DD/MM 📊»** sin destinos (`create_report_note`). Lleva una tabla con la comparación (↑, ↓ o = y la diferencia), las oportunidades abiertas, las respuestas por clase, el desglose por feria y la sección **«Para esta semana»**, que genera el código: respuestas sin contestar con más de un día laborable, tareas vencidas y reuniones de los próximos 7 días (marcas `opportunity.meeting_detected` con `starts_at` futuro). Lo no disponible sale como «n/d» y el motivo va al pie.
+1. Registra la marca `metrics.setter_weekly` en `audit_log` (`subject_type = setter_weekly_report`, `subject_id` = el lunes de la semana). Con la marca, la siguiente ejecución de esa semana termina `SKIPPED` (`already_reported`). Si la marca falla, la nota se reutiliza por título.
+
+No cambia el esquema de la Twenty App ni necesita migraciones. Para crear el agente y la tarea, ejecuta `pnpm seed` (idempotente).
+
+### Modo prueba
+
+Lanza la tarea a mano con `dry_run`. La nota sale en `output.note.markdown` y no se escribe nada. `week_of` es cualquier día de la semana que quieres ver; sin él, es la semana anterior:
+
+```sh
+curl -s -X POST "http://127.0.0.1:4020/tasks/<id de setter-weekly-report>/run" \
+  -H 'x-tenant-id: publiexpe' -H 'content-type: application/json' \
+  -d '{ "input": { "dry_run": true, "week_of": "2026-11-16" } }'
+```
+
+`dry_run` no consulta la marca: puedes repetirlo las veces que quieras.
+
+### Dominios propios
+
+Un mensaje es **nuestro** (saliente) si su remitente es de uno de los dominios de `MEETING_INTERNAL_DOMAINS` (por defecto `publiexpe.info` y `publiexpe.com`) o del dominio de `IONOS_IMAP_USER`. Es la misma regla que el seguimiento de la tanda 23.
+
+### Limitaciones
+
+- La velocidad de respuesta empareja la respuesta del cliente con el buzón de Twenty por dirección y hora (±15 minutos). El lector guarda los 12 mensajes más recientes por dirección, así que un contacto con muchísimo correo puede salir como no contestado.
+- Las tareas y las oportunidades son objetos estándar de Twenty sin `tenantId`: se cuentan las de todo el workspace.
+- El cálculo de horas laborables no tiene festivos.
+
+### Tests
+
+`test/unit/setter-metrics.test.ts` cubre las horas laborables y el cambio de hora, los títulos de tareas, el cálculo completo con y sin buzón, los lectores de Twenty contra el Twenty simulado, la nota y el agente (`dry_run`, una sola nota, `already_reported`). `test/integration/setter-metrics.test.ts` cubre el endpoint con y sin Twenty, el seed, el `RunProcessor` y `audit_log` en PostgreSQL.
 
 ## Tareas de Twenty para las alertas accionables (tanda 19)
 

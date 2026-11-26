@@ -107,6 +107,7 @@ export function desiredProspectorVersion() {
           catalog_estimate_customization: 20,
           catalog_list_families: 5,
           catalog_describe: 5,
+          // Signals mode: 1 listing; scout search (tanda 25): 1 listing per run for the dedupe by name.
           list_event_signals: 2,
           expire_signal: MAX_EXPIRATIONS_PER_RUN,
           list_hypotheses_for_expiry: 2,

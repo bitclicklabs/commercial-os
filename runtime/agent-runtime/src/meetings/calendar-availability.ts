@@ -16,8 +16,9 @@
 import { TwentyApiError, type TwentyClient } from '../integrations/twenty/index.js';
 import { readCalendarEvents, type CalendarRead } from './calendar.js';
 import type { MeetingConfig } from './config.js';
-import { computeSlots } from './slots.js';
-import type { MeetingAvailability, MeetingProposal } from './types.js';
+import { localDay } from '../crm/followup.js';
+import { computeSlots, slotSearchSpanDays } from './slots.js';
+import type { MeetingAvailability, MeetingProposal, MeetingWindow } from './types.js';
 
 const CACHE_MS = 5 * 60_000;
 const DAY = 86_400_000;
@@ -43,35 +44,52 @@ export class CalendarAvailability implements MeetingAvailability {
     return { ...base, source: this.config.bookingUrl ? 'link' : 'none' };
   }
 
-  private async read(now: Date): Promise<CalendarRead> {
+  private async read(now: Date, spanDays: number): Promise<CalendarRead> {
     // From yesterday (an event that started before today can still run into tomorrow morning) to
-    // one day past the horizon.
+    // one day past the horizon (or past the client's window, tanda 23).
     const from = new Date(now.getTime() - DAY);
-    const to = new Date(now.getTime() + (this.config.horizonDays + 1) * DAY);
-    const key = `${from.toISOString().slice(0, 13)}:${this.config.horizonDays}`;
+    const to = new Date(now.getTime() + (spanDays + 1) * DAY);
+    const key = `${from.toISOString().slice(0, 13)}:${spanDays}`;
     if (this.cache && this.cache.key === key && now.getTime() - this.cache.at < CACHE_MS) return this.cache.read;
     const read = await readCalendarEvents(this.twenty, { from, to }, this.opts.signal);
     this.cache = { at: now.getTime(), key, read };
     return read;
   }
 
-  async propose(opts: { now: Date; count: number }): Promise<MeetingProposal> {
+  async propose(opts: { now: Date; count: number; window?: MeetingWindow }): Promise<MeetingProposal> {
     if (!this.twenty.isConfigured()) {
       this.lastDiagnostics = { calendar: 'not_configured' };
       return this.fallback();
     }
+    const today = localDay(opts.now, this.config.timezone);
+    // Read enough for the window AND the normal horizon (the relaxed proposal needs it).
+    const span = Math.max(this.config.horizonDays, slotSearchSpanDays(today, this.config.horizonDays, opts.window));
     let read: CalendarRead;
     try {
-      read = await this.read(opts.now);
+      read = await this.read(opts.now, span);
     } catch (err) {
       this.lastDiagnostics = { calendar: 'error', detail: err instanceof TwentyApiError ? err.code : 'unexpected' };
       return this.fallback();
     }
     this.lastDiagnostics = { calendar: read.status, ...(read.status === 'unreadable' ? { detail: read.code } : {}) };
     if (read.status !== 'ok') return this.fallback();
-    const slots = computeSlots({ now: opts.now, count: opts.count, config: this.config, events: read.events });
+    const base = { now: opts.now, count: opts.count, config: this.config, events: read.events };
+    let slots = computeSlots({ ...base, window: opts.window });
+    // Tanda 23: a window with no free slot falls back to the normal horizon, and says so.
+    let windowRelaxed = false;
+    if (slots.length === 0 && opts.window) {
+      slots = computeSlots(base);
+      windowRelaxed = slots.length > 0;
+    }
     if (slots.length === 0) return this.fallback();
-    return { slots, bookingUrl: this.config.bookingUrl, videoUrl: this.config.videoUrl, durationMin: this.config.durationMin, source: 'calendar' };
+    return {
+      slots,
+      bookingUrl: this.config.bookingUrl,
+      videoUrl: this.config.videoUrl,
+      durationMin: this.config.durationMin,
+      source: 'calendar',
+      ...(windowRelaxed ? { windowRelaxed: true } : {}),
+    };
   }
 }
 

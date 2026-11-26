@@ -62,7 +62,13 @@ export function meetingParagraph(p: MeetingProposal, opts: { clientProposedTime?
   const alt = opts.clientProposedTime === true;
   const lines: string[] = [];
   if (source === 'calendar') {
-    lines.push(alt ? `Si al final os viene mejor otro momento, estos huecos para una llamada de ${duration} minutos también me encajan:` : `¿Lo vemos en una llamada de ${duration} minutos? Os propongo estos huecos:`);
+    lines.push(
+      alt
+        ? `Si al final os viene mejor otro momento, estos huecos para una llamada de ${duration} minutos también me encajan:`
+        : p.windowRelaxed === true
+          ? `En las fechas que comentáis no me queda ningún hueco libre, pero si os encaja, lo vemos en una llamada de ${duration} minutos en alguno de estos:`
+          : `¿Lo vemos en una llamada de ${duration} minutos? Os propongo estos huecos:`,
+    );
     lines.push(...slots.map((s) => `- ${s}`));
     if (booking) lines.push(`o, si os encaja mejor, reservad directamente aquí: ${booking}`);
   } else if (source === 'link') {

@@ -10,13 +10,18 @@
  *   Cancelled events do not count, nor do the events every internal participant declined.
  * - `count` slots on DIFFERENT days (never three on the same day), the earliest days first; inside
  *   a day the morning band is preferred. With fewer free days than `count`, fewer slots.
+ * - Tanda 23, optional `window` (src/meetings/types.ts `MeetingWindow`): only days in
+ *   [notBefore, notAfter] and, with `partOfDay`, only slots starting before 14:00 (morning) or from
+ *   14:00 (afternoon). A window may reach past the normal horizon ("a partir del 10"): the search
+ *   then runs to `notAfter`, or `horizonDays` after `notBefore`, never more than 30 days from today.
+ *   Relaxing an empty window is the caller's job (CalendarAvailability).
  */
 import { addBusinessDays } from '../crm/reply-task.js';
 import { localDay } from '../crm/followup.js';
 import { emailDomain } from '../inbound/unsubscribe-classifier.js';
 import type { CalendarEventView } from './calendar.js';
 import type { MeetingConfig } from './config.js';
-import type { MeetingSlot } from './types.js';
+import type { MeetingSlot, MeetingWindow } from './types.js';
 
 const MIN = 60_000;
 /** Duration assumed for an event without an end. */
@@ -86,6 +91,33 @@ export interface SlotQuery {
   count: number;
   config: MeetingConfig;
   events: readonly CalendarEventView[];
+  /** Tanda 23: only slots inside this window. */
+  window?: MeetingWindow | undefined;
+}
+
+/** Furthest day a window can make the search reach, counted from today. */
+export const MAX_WINDOW_DAYS = 30;
+/** Local minute that splits the morning from the afternoon (14:00). */
+export const AFTERNOON_FROM_MIN = 14 * 60;
+
+const YMD_RE = /^\d{4}-\d{2}-\d{2}$/;
+const ymdOrNull = (s: string | undefined) => (s && YMD_RE.test(s) ? s : null);
+
+/** Last local day the search reaches (inclusive): the horizon, or what the window asks for (capped). */
+export function slotSearchLastDay(today: string, horizonDays: number, window?: MeetingWindow): string {
+  const normal = addDaysToDate(today, horizonDays);
+  if (!window) return normal;
+  const cap = addDaysToDate(today, MAX_WINDOW_DAYS);
+  const notBefore = ymdOrNull(window.notBefore);
+  const notAfter = ymdOrNull(window.notAfter);
+  const last = notAfter ?? (notBefore && notBefore > today ? addDaysToDate(notBefore, horizonDays) : normal);
+  return last < cap ? last : cap;
+}
+
+/** Calendar days from `today` to the last day of the search (to size the calendar read). */
+export function slotSearchSpanDays(today: string, horizonDays: number, window?: MeetingWindow): number {
+  const last = slotSearchLastDay(today, horizonDays, window);
+  return Math.max(0, Math.round((Date.parse(`${last}T00:00:00Z`) - Date.parse(`${today}T00:00:00Z`)) / 86_400_000));
 }
 
 export function computeSlots(q: SlotQuery): MeetingSlot[] {
@@ -94,18 +126,22 @@ export function computeSlots(q: SlotQuery): MeetingSlot[] {
   if (count === 0) return [];
   const tz = cfg.timezone;
   const today = localDay(q.now, tz);
-  const lastDay = addDaysToDate(today, cfg.horizonDays);
+  const w = q.window;
+  const lastDay = slotSearchLastDay(today, cfg.horizonDays, w);
+  const notBefore = ymdOrNull(w?.notBefore);
   const { intervals, blockedDays } = busyFromEvents(q.events, cfg);
   const free = (start: number, end: number) => !intervals.some((b) => b.start < end && start < b.end);
+  const inPartOfDay = (t: number) => !w?.partOfDay || (w.partOfDay === 'morning' ? t < AFTERNOON_FROM_MIN : t >= AFTERNOON_FROM_MIN);
   const slots: MeetingSlot[] = [];
-  for (let k = 1; slots.length < count && k <= cfg.horizonDays + 1; k++) {
+  for (let k = 1; slots.length < count && k <= MAX_WINDOW_DAYS + 1; k++) {
     const midnight = addBusinessDays(q.now, k, tz, 0);
     const day = localDay(midnight, tz);
     if (day > lastDay) break;
-    if (blockedDays.has(day)) continue;
+    if (blockedDays.has(day) || (notBefore !== null && day < notBefore)) continue;
     let picked: MeetingSlot | null = null;
     for (const band of cfg.bands) {
       for (let t = band.startMin; !picked && t + cfg.durationMin <= band.endMin; t += cfg.stepMin) {
+        if (!inPartOfDay(t)) continue;
         // The local hour comes from the DST-safe helper; the minutes are added on top (no DST
         // change ever happens inside the working bands).
         const start = addBusinessDays(q.now, k, tz, Math.floor(t / 60)).getTime() + (t % 60) * MIN;

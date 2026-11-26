@@ -13,6 +13,7 @@ export * from './config.js';
 export * from './calendar.js';
 export * from './slots.js';
 export * from './calendar-availability.js';
+export * from './client-window.js';
 
 /**
  * The availability the runtime uses: the calendar in Twenty when an API key is configured (it

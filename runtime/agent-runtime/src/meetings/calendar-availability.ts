@@ -72,8 +72,11 @@ export class CalendarAvailability implements MeetingAvailability {
       return this.fallback();
     }
     this.lastDiagnostics = { calendar: read.status, ...(read.status === 'unreadable' ? { detail: read.code } : {}) };
-    if (read.status !== 'ok') return this.fallback();
-    const base = { now: opts.now, count: opts.count, config: this.config, events: read.events };
+    // A readable but EMPTY synced calendar looks like «no channel» through the REST API; the
+    // operator's MEETING_CALENDAR_SYNCED says it is an agenda with every slot free.
+    const events = read.status === 'ok' ? read.events : read.status === 'no_channel' && this.config.calendarSynced ? [] : null;
+    if (events === null) return this.fallback();
+    const base = { now: opts.now, count: opts.count, config: this.config, events };
     let slots = computeSlots({ ...base, window: opts.window });
     // Tanda 23: a window with no free slot falls back to the normal horizon, and says so.
     let windowRelaxed = false;

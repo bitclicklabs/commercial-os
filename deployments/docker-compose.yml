@@ -199,6 +199,13 @@ services:
       LEADTIME_MAX_DAYS: ${LEADTIME_MAX_DAYS:-210}
       # Seguimiento de envíos sin respuesta (tanda 21): días laborables; 0 desactiva el chequeo diario.
       FOLLOWUP_AFTER_BUSINESS_DAYS: ${FOLLOWUP_AFTER_BUSINESS_DAYS:-5}
+      # Reuniones (tanda 22): huecos desde el calendario sincronizado en Twenty (solo lectura) y tarea meeting-sync.
+      MEETING_HORIZON_DAYS: ${MEETING_HORIZON_DAYS:-7}
+      MEETING_HOURS: ${MEETING_HOURS:-10:00-13:30,16:00-18:00}
+      MEETING_DURATION_MIN: ${MEETING_DURATION_MIN:-30}
+      MEETING_BOOKING_URL: ${MEETING_BOOKING_URL:-}
+      MEETING_VIDEO_URL: ${MEETING_VIDEO_URL:-}
+      MEETING_INTERNAL_DOMAINS: ${MEETING_INTERNAL_DOMAINS:-publiexpe.info,publiexpe.com}
       CATCHUP_MAX_SLOTS: ${CATCHUP_MAX_SLOTS:-1}
       CATCHUP_MAX_AGE_MS: ${CATCHUP_MAX_AGE_MS:-172800000}
       ENRICH_PROVIDER: ${ENRICH_PROVIDER:-stub}

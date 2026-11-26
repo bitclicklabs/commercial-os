@@ -10,7 +10,8 @@
  * Company.domainName and enforces its uniqueness, rejects unknown SELECT values and returns
  * 404 for unknown ids, like the server. No DELETE (the tools never delete). Since tanda 19 it also
  * holds the standard `opportunities` / `tasks` / `taskTargets` and serves the stage options of
- * `GET /rest/open-api/core`.
+ * `GET /rest/open-api/core`. Since tanda 22 it also has the (empty) calendar objects and the `[in]`
+ * and range filters: an experiment run sees «no calendar channel», like a workspace without one.
  */
 import { randomUUID } from 'node:crypto';
 import { TwentyClient } from './client.js';
@@ -29,6 +30,9 @@ const SINGULAR: Record<string, string> = {
   opportunities: 'Opportunity',
   tasks: 'Task',
   taskTargets: 'TaskTarget',
+  calendarEvents: 'CalendarEvent',
+  calendarEventParticipants: 'CalendarEventParticipant',
+  calendarChannelEventAssociations: 'CalendarChannelEventAssociation',
 };
 /** `opportunity.stage` options of a default Twenty workspace, in order (tanda 19). */
 const OPPORTUNITY_STAGES = ['NEW', 'SCREENING', 'MEETING', 'PROPOSAL', 'CUSTOMER'];
@@ -69,12 +73,25 @@ function matches(rec: Rec, filter: string): boolean {
   const f = filter.trim();
   if (f.startsWith('and(') && f.endsWith(')')) return splitTopLevel(f.slice(4, -1)).every((c) => matches(rec, c));
   if (f.startsWith('or(') && f.endsWith(')')) return splitTopLevel(f.slice(3, -1)).some((c) => matches(rec, c));
-  const m = /^([\w.]+)\[(eq|ilike|is)\]:(?:"(.*)"|(NULL))$/.exec(f);
+  const inList = /^([\w.]+)\[in\]:\[(.*)\]$/.exec(f);
+  if (inList) {
+    const values = [...inList[2]!.matchAll(/"([^"]*)"/g)].map((x) => x[1]);
+    return values.includes(getPath(rec, inList[1]!) as string);
+  }
+  const m = /^([\w.]+)\[(eq|ilike|is|gte|lte|gt|lt)\]:(?:"(.*)"|(NULL))$/.exec(f);
   if (!m) throw new Error(`memory-twenty: unsupported filter ${f}`);
   const [, path, op, value] = m;
   const actual = getPath(rec, path!);
   if (op === 'is') return actual === null || actual === undefined;
   if (op === 'eq') return actual === value;
+  // Range filters (ISO dates): compared as instants when both parse, else as strings.
+  if (op === 'gte' || op === 'lte' || op === 'gt' || op === 'lt') {
+    if (typeof actual !== 'string' || value === undefined) return false;
+    const a = Date.parse(actual);
+    const b = Date.parse(value);
+    const cmp = Number.isNaN(a) || Number.isNaN(b) ? actual.localeCompare(value) : a - b;
+    return op === 'gte' ? cmp >= 0 : op === 'lte' ? cmp <= 0 : op === 'gt' ? cmp > 0 : cmp < 0;
+  }
   const needle = (value ?? '').replace(/^%|%$/g, '').toLowerCase();
   return typeof actual === 'string' && actual.toLowerCase().includes(needle);
 }

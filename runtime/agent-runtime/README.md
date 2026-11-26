@@ -156,6 +156,12 @@ Requisitos: Node.js 22, pnpm, y los contenedores `pxos-postgres` (127.0.0.1:5440
 | `OPTIMIZER_SCHEDULE_CRON` | `0 9 * * 3` | Cuándo se encola el run programado (CRON de 5 campos, hora de `Europe/Madrid`): miércoles a las 09:00 |
 | `OPTIMIZER_SCHEDULE_SKILLS` | `prospector-event-exhibitors` | Skills que optimiza el run programado, separadas por comas. Solo las que tienen runner de experimentos |
 | `FOLLOWUP_AFTER_BUSINESS_DAYS` | `5` | Días laborables (lunes a viernes, Europe/Madrid, sin festivos) desde el primer envío tras los que `lead-followup-check` crea la tarea «🔔 Seguimiento» si no hay respuesta. `0` desactiva el chequeo; un valor no válido (no entero entre 0 y 60) vuelve a 5. Consulta [Seguimiento de envíos sin respuesta](#seguimiento-de-envíos-sin-respuesta-tanda-21) |
+| `MEETING_HORIZON_DAYS` | `7` | Días naturales tras hoy en los que se proponen huecos de reunión (1 a 30), empezando por el siguiente día laborable. Consulta [Reuniones: huecos y detección](#reuniones-huecos-y-detección-tanda-22) |
+| `MEETING_HOURS` | `10:00-13:30,16:00-18:00` | Franjas locales (Europe/Madrid) para proponer reuniones, `HH:MM-HH:MM` separadas por comas. La primera es la de mañana (preferida). Un valor no válido vuelve al de por defecto |
+| `MEETING_DURATION_MIN` | `30` | Duración de la reunión propuesta, en minutos (15 a 240) |
+| `MEETING_BOOKING_URL` | _(vacío)_ | Página de reservas (Calendly, citas de Google...). Se ofrece cuando no se puede leer el calendario. Solo `http(s)` |
+| `MEETING_VIDEO_URL` | _(vacío)_ | Sala fija de videollamada (Meet, Teams o Zoom) que acompaña a la propuesta. Solo `http(s)` |
+| `MEETING_INTERNAL_DOMAINS` | `publiexpe.info,publiexpe.com` | Dominios del propio equipo: sus asistentes nunca casan con una oportunidad de cliente |
 
 ## Migraciones
 
@@ -480,6 +486,7 @@ Todos los eventos viajan con este sobre. Los campos del sobre y de `data` usan `
 | `signal.qualified` | Webhook de Twenty, cuando una persona pasa una señal de feria (`commercialSignal` sin empresa, tipo `FAIR`, `CONGRESS` o `EVENT`, con URL) a `QUALIFIED`, o la crea ya calificada. Como mucho una vez por señal cada 24 h (`idempotencyKey` `evt:signal.qualified:{signal_id}:{evento_anterior\|first}`) | `signal_id`, `name` (sin el sufijo ` (feria)`), `event_url`, `event_date`, `signal_type`, `transition` (`updated_fields` o `status_only`), `twenty` (`webhook_id`, `workspace_id`, `event_date`), `chainDepth` 0 |
 | `hypothesis.status_changed` | Webhook de Twenty, cuando una `commercialHypothesis` pasa a `EXPIRED` (o se reabre a `PROPOSED` desde otro estado). Nunca es una evaluación: solo recuerda el estado para el siguiente cambio (`idempotencyKey` `evt:hypothesis.status_changed:{id}:{estado}:{updatedAt}`). Namespace `hypothesis.` reservado | `hypothesis_id`, `to_status`, `verdict` (`false`), `actor_human`, `updated_at`, `twenty_webhook_id` |
 | `opportunity.created` | Triaje del buzón (respuesta `INTERESADO`, `origin: "reply"`) o `POST /opportunities/promote` (`origin: "manual"`), solo cuando se **crea** una Oportunidad nativa en Twenty (reutilizar una abierta no emite nada). `idempotencyKey` `evt:opportunity.created:{opportunityId}`. Namespace `opportunity.` reservado | `opportunityId`, `name`, `stage`, `companyId`, `pointOfContactId`, `hypothesisId`, `taskId` (`null`), `origin`. Nunca una dirección |
+| `opportunity.meeting_detected` | Tarea `meeting-sync` (tanda 22): una reunión del calendario casó con una Oportunidad abierta y se registró (nota 📅, etapa de reunión si venía de una anterior, tarea 🧾). Una vez por oportunidad y reunión: `idempotencyKey` `evt:opportunity.meeting_detected:{opportunityId}:{eventKey}` | `opportunityId`, `companyId`, `calendarEventId`, `startsAt`, `stageFrom`, `stageTo`, `noteId`, `taskId`, `via`. Nunca una dirección |
 | `experiment.revalidation_failed` | Revalidación de un `PASS_FORM` con veredicto `REFUTED` cuya versión sigue `ACTIVE` o en canario (una vez por revalidación nueva) | `revalidationId`, `experimentId`, `experimentName`, `subjectType`, `subjectName`, `baselineVersion`, `candidateVersion`, `verdict`, `baselineAccuracy`, `candidateAccuracy`, `labels`, `versionState` (`ACTIVE` o `CANARY`), `taskId` (tanda 19; `noteId` sigue en el payload, siempre `null`) |
 
 
@@ -1449,6 +1456,9 @@ Las de Twenty usan `TWENTY_BASE_URL` y `TWENTY_API_KEY` y tienen `outputTrust = 
 | `upsert_opportunity` | `LOW_WRITE` | Sí | Por empresa: reutiliza su Oportunidad **abierta** (etapa que no sea de cierre); si no hay, la crea en la primera etapa del pipeline, sin importe. Engancha la nota de la respuesta. Solo el InboxAgent |
 | `create_reply_task` | `LOW_WRITE` | Sí | Título «📬 Responder a <persona/empresa>» + oportunidad (o empresa): una tarea abierta igual se reutiliza; adopta una huérfana. Solo el InboxAgent |
 | `list_sent_hypotheses` | `READ` | No | — (hipótesis del tenant con `emailStatus = SENT`, con empresa, `need`, `whyNow`, destinatario y asunto; salida `untrusted`). Solo el FollowUpAgent |
+| `list_calendar_events` | `READ` | No | — (eventos del calendario sincronizado en Twenty que empiezan en una ventana, con asistentes; `calendar: no_channel` sin canal sincronizado; salida `untrusted`). **Nunca crea, cambia ni responde un evento**. Solo el MeetingSyncAgent |
+| `list_open_opportunities` | `READ` | No | — (oportunidades abiertas con empresa, dominio, Personas y sus emails, punto de contacto e hipótesis del tenant; salida `untrusted`). Solo el MeetingSyncAgent |
+| `mark_opportunity_meeting` | `LOW_WRITE` | Sí | Nota «📅 Reunión detectada — <fecha>» por oportunidad (buscada por título): deja la nota y pasa a la etapa de reunión **solo desde una etapa anterior**; nunca retrocede ni toca etapas posteriores o de cierre. Solo el MeetingSyncAgent |
 | `fetch_url` | `READ` | No | — (consulta [Seguridad del contenido web](#seguridad-del-contenido-web)) |
 | `render_url` | `READ` | No | — (consulta [Render de JavaScript](#render-de-javascript-render_url)) |
 | `catalog_search_products` | `READ` | No | — (consulta [Catálogo](#catálogo-catalog-service); salida `untrusted`) |
@@ -1913,6 +1923,7 @@ Es idempotente:
 - **Agente `BajasAgent` y tarea `process-unsubscribes`**: `CRON 0 */2 * * *` en `Europe/Madrid`, sin LLM (`model_provider = stub`), tool policy `get_note` + `update_note` (una escritura por ejecución). Desde la tanda 12 la tarea queda **desactivada** (`enabled = false`). Consulta [Inbound de bajas](#inbound-de-bajas).
 - **Agente `InboxAgent` y tarea `process-inbox`**: `CRON 0 */2 * * *` en `Europe/Madrid`, Gemini Flash solo para las respuestas que las reglas no deciden, tool policy `get_note` + `update_note` + `create_note` + `find_company`. Consulta [Triaje del buzón](#triaje-del-buzón).
 - **Agente `FollowUpAgent` y tarea `lead-followup-check`** (tanda 21): `CRON 30 8 * * *` en `Europe/Madrid`, sin LLM (`model_provider = stub`), tool policy `list_sent_hypotheses` + `get_note` (una cada una) + `create_crm_task` (20). Consulta [Seguimiento de envíos sin respuesta](#seguimiento-de-envíos-sin-respuesta-tanda-21).
+- **Agente `MeetingSyncAgent` y tarea `meeting-sync`** (tanda 22): `CRON */30 * * * *` en `Europe/Madrid`, sin LLM (`model_provider = stub`), tool policy `list_calendar_events` + `list_open_opportunities` (una cada una) + `mark_opportunity_meeting` y `create_crm_task` (20 cada una). Sin calendario sincronizado termina `SKIPPED` (`no_calendar_channel`) sin coste. Consulta [Reuniones: huecos y detección](#reuniones-huecos-y-detección-tanda-22).
 
 Las dos tareas usan la misma versión del agente. La versión del seed añade `fetch_url` a la tool policy, la configuración `scout` y la skill `event-source-discovery` v1, y sube la skill `prospector-event-exhibitors` a v2 (datos en bloques `DATOS_NO_CONFIABLES`): al ejecutar el seed sobre una BD existente se crea una versión nueva del agente.
 
@@ -2621,6 +2632,66 @@ Lunes a viernes en `Europe/Madrid`, **sin festivos**, contados de día local a d
 ### Tests
 
 `test/unit/lead-followup.test.ts` (reglas, ancla de `createCrmTask` y agente contra el Twenty simulado) y `test/integration/lead-followup.test.ts` (seed, `RunProcessor`, `email_sends`, `inbound_triage` y `audit_log` en PostgreSQL).
+
+## Reuniones: huecos y detección (tanda 22)
+
+> **Importante:** nivel 1 de autonomía. El sistema **solo lee** el calendario: nunca crea eventos ni envía invitaciones. Propone huecos y registra en el CRM las reuniones que el comercial ya agendó; agendar y enviar lo hace siempre una persona.
+
+El calendario que se lee es el de la cuenta del comercial conectada en Twenty (IMAP/SMTP/CalDAV) una vez que activas su sincronización de calendario. Twenty guarda los eventos en los objetos estándar `calendarEvent` y `calendarEventParticipant` (REST `/rest/calendarEvents`, `/rest/calendarEventParticipants`). Todo degrada sin ruido mientras el canal no esté activo.
+
+### Huecos para proponer una reunión
+
+`meetingAvailabilityFromEnv()` (`src/meetings/index.ts`) devuelve un `MeetingAvailability` (contrato en `src/meetings/types.ts`) cuyo `propose({ now, count })` responde `{ slots, bookingUrl, videoUrl, durationMin, source }`:
+
+| `source` | Cuándo | `slots` |
+|---|---|---|
+| `calendar` | Hay un canal de calendario sincronizado y se han leído sus eventos | Los huecos libres, en ISO con la zona de Madrid (`2026-11-27T10:00:00+01:00`) |
+| `link` | No hay calendario legible (o no queda ningún hueco libre) y `MEETING_BOOKING_URL` está definida | Vacío: se ofrece la página de reservas |
+| `none` | Ni calendario ni página de reservas | Vacío: el borrador pide al destinatario que proponga hora |
+
+Reglas de los huecos (`src/meetings/slots.ts`):
+
+- Lunes a viernes en `Europe/Madrid`, sin festivos, desde el **siguiente día laborable** hasta `MEETING_HORIZON_DAYS` días naturales después de hoy (7 por defecto).
+- Franjas `MEETING_HOURS` (por defecto 10:00–13:30 y 16:00–18:00), inicios cada 30 minutos desde el inicio de la franja; la reunión de `MEETING_DURATION_MIN` minutos (30) tiene que terminar dentro de la franja.
+- **15 minutos de margen** antes y después de cada evento. Un evento de día completo bloquea el día. No cuentan los eventos cancelados ni los que el propio equipo ha rechazado.
+- Los `count` huecos caen en **días distintos** (los primeros días libres) y, dentro de cada día, se prefiere la mañana. Si hay menos días libres que `count`, se devuelven menos huecos: nunca se inventan.
+- Sin canal sincronizado no hay huecos de calendario: no se proponen huecos «libres» de un calendario que el runtime no ve.
+
+`MEETING_VIDEO_URL` (opcional) acompaña a cualquier propuesta. La lectura del calendario se guarda 5 minutos por instancia y un fallo de Twenty cae a `link` o `none` (nunca lanza).
+
+### Detección de reuniones agendadas: tarea `meeting-sync`
+
+La tarea `meeting-sync` (`CRON */30 * * * *`, `Europe/Madrid`, `max_concurrency = 1`) ejecuta el **MeetingSyncAgent** (`implementation = "meeting_sync"`, `src/agents/meeting-sync-agent.ts`). Es determinista: **no llama a ningún modelo**.
+
+1. `list_calendar_events` (READ): eventos que empiezan desde **ayer hasta 60 días vista**, con sus asistentes.
+   - Sin canal sincronizado: termina `SKIPPED` con `reason: no_calendar_channel`, coste 0 y sin leer nada más.
+   - Si el rol de la API key no puede leer los objetos de calendario: `SKIPPED` con `reason: calendar_unreadable` y el `code` de Twenty.
+2. `list_open_opportunities` (READ): oportunidades abiertas (ni ganadas, ni perdidas, ni cerradas) con su empresa, dominio, Personas y punto de contacto.
+3. Casado por asistente (`src/meetings/match.ts`), de más a menos fuerte:
+   1. el email (o la Persona) del **punto de contacto** de la oportunidad;
+   1. el email (o la Persona) de una **Persona de la empresa**;
+   1. el **dominio de la empresa** (o un subdominio), nunca para dominios genéricos (gmail.com, hotmail.com, outlook.com...: `FREEMAIL_DOMAINS` de `src/inbound/reply-links.ts`).
+
+   No casan los asistentes del propio equipo (miembros del workspace y `MEETING_INTERNAL_DOMAINS`), los que han rechazado la invitación ni los eventos cancelados. Si una empresa tiene varias oportunidades abiertas, gana la del punto de contacto; si no, la más antigua.
+4. Por oportunidad, **una reunión por ejecución**: la próxima que viene (o, si todas han pasado, la última). `mark_opportunity_meeting` lee las etapas reales del select `stage` del workspace (como `src/crm/opportunities.ts`) y:
+   - etapa **anterior** a `MEETING` (o vacía): deja la nota **«📅 Reunión detectada — `<fecha>`»** en la oportunidad y en su empresa («📅 Reunión detectada en tu calendario: `<fecha>`, `<título>`», con asistentes y videollamada) y la pasa a `MEETING`;
+   - ya en `MEETING`, en una etapa **posterior**, de cierre o desconocida: no la toca (`skipped_by`: `at_meeting`, `past_meeting`, `closed`, `unknown_stage`). Nunca retrocede una etapa. Sin una etapa de reunión en el workspace (`MEETING`, o una opción con `MEET` o `REUNI`): `no_meeting_stage`.
+5. Si la reunión aún no ha pasado, `create_crm_task` crea **«🧾 Preparar reunión con `<empresa>`»** (`TODO`), con vencimiento a las 09:00 del **día laborable anterior** a la reunión (hoy si ese día ya pasó). El cuerpo lleva fecha, asistentes y enlaces a la empresa, la oportunidad y las hipótesis del tenant; sin LLM. Una reunión que ya pasó (ayer) mueve la etapa y deja la nota, pero no crea tarea.
+6. Una fila `opportunity.meeting_detected` en `audit_log` (`actor = agent`, `subject_type = opportunity`, `subject_id` = la oportunidad, `payload.event_key` = el iCalUID del evento, o su id) y el evento de dominio `opportunity.meeting_detected`.
+
+**Una vez por oportunidad y reunión, para siempre**: la marca de `audit_log` sobrevive a que borres la nota o la tarea, y una oportunidad que devuelves a mano a una etapa anterior no vuelve a avanzar por la misma reunión. Si una ejecución muere a mitad, la siguiente encuentra la nota por título y completa la tarea (`resumed`). Máximo 20 detecciones por ejecución (`MEETING_SYNC_MAX_PER_RUN`).
+
+### Qué tienes que activar en Twenty
+
+1. En **Settings > Accounts**, en la cuenta del comercial (IMAP/SMTP/CalDAV), activa la sincronización del **calendario** (CalDAV). Hasta entonces, `meeting-sync` termina `SKIPPED` (`no_calendar_channel`) y la propuesta de huecos cae a `link` o `none`.
+1. En la configuración del canal de calendario, elige la visibilidad **Share everything** (`SHARE_EVERYTHING`). Con **Metadata** (`METADATA`), Twenty oculta título y descripción a quien no es el dueño del canal: las horas siguen sirviendo para los huecos y los asistentes para el casado, pero la nota y la tarea dirán «sin título».
+1. Comprueba que el rol **Agent runtime** de la API key puede **leer** los objetos `Calendar events`, `Calendar event participants` y `Calendar channel event associations` (son objetos de sistema: según la configuración del rol pueden quedar fuera de «todos los objetos»). Si no, `meeting-sync` termina `SKIPPED` con `calendar_unreadable`. El runtime no necesita escribir en ellos.
+
+El canal en sí (`calendarChannel`) no es un objeto REST en Twenty 2.45: el runtime deduce que hay un canal sincronizado porque existe al menos una asociación canal-evento (`calendarChannelEventAssociations`). Si el rol no puede leer las asociaciones, basta con que se lea algún evento.
+
+### Tests
+
+`test/unit/meetings.test.ts` (configuración, huecos, disponibilidad contra el Twenty simulado con calendario, sin canal, oculto e ilegible, y casado), `test/unit/meeting-sync.test.ts` (agente: `SKIPPED` sin canal, avance a `MEETING`, idempotencia, etapas que no se tocan, reunión pasada, reanudación) y `test/integration/meeting-sync.test.ts` (seed, `RunProcessor` y `audit_log` en PostgreSQL).
 
 ## Borradores de email
 

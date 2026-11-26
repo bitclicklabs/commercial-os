@@ -65,6 +65,33 @@ describe('createCrmTask', () => {
     expect(fake.tables.taskTargets).toEqual([expect.objectContaining({ taskId: orphan.id, targetCommercialSignalId: sig.id })]);
   });
 
+  it("tanda 25 — scope 'open': any day, never a DONE task; appendOnReuse once by marker; anchor 'none' only adopts orphans", async () => {
+    const fake = new FakeTwenty();
+    const old = fake.seed('tasks', { title: 'Abierta', status: 'IN_PROGRESS', bodyV2: { markdown: 'cuerpo  \n', blocknote: null }, dueAt: null, createdAt: '2026-01-01T10:00:00.000Z' });
+    fake.seed('taskTargets', { taskId: old.id, targetCompanyId: 'c1' });
+    const append = { markdown: '### Nuevo\n\ntexto', marker: '### Nuevo' };
+    const a = await createCrmTask(fake.client(), { title: 'Abierta', body: 'otro', scope: 'open', targets: { companyId: 'c1', personId: 'p1' }, appendOnReuse: append }, { now: NOW });
+    expect(a).toMatchObject({ created: false, taskId: old.id, appended: true });
+    expect(fake.tables.tasks[0]!.bodyV2).toMatchObject({ markdown: 'cuerpo\n\n---\n\n### Nuevo\n\ntexto' });
+    // Only the missing target (the person) is added.
+    expect(fake.tables.taskTargets).toHaveLength(2);
+    expect(fake.tables.taskTargets[1]).toMatchObject({ taskId: old.id, targetPersonId: 'p1' });
+    // Same marker again: not appended twice.
+    expect(await createCrmTask(fake.client(), { title: 'Abierta', body: 'otro', scope: 'open', targets: { companyId: 'c1' }, appendOnReuse: append })).toMatchObject({ created: false, appended: false });
+    // Without appendOnReuse the result carries no `appended` and the body is untouched.
+    expect(await createCrmTask(fake.client(), { title: 'Abierta', body: 'otro', scope: 'open', targets: { companyId: 'c1' } })).not.toHaveProperty('appended');
+    // DONE: not reused.
+    fake.tables.tasks[0]!.status = 'DONE';
+    expect(await createCrmTask(fake.client(), { title: 'Abierta', body: 'otro', scope: 'open', targets: { companyId: 'c1' } })).toMatchObject({ created: true });
+    // anchor 'none': a same-title open task WITH targets is not reused (even on the same target); an orphan is adopted.
+    const fake2 = new FakeTwenty();
+    const targeted = fake2.seed('tasks', { title: 'Sin ancla', status: 'TODO', bodyV2: null, dueAt: null });
+    fake2.seed('taskTargets', { taskId: targeted.id, targetPersonId: 'p1' });
+    expect(await createCrmTask(fake2.client(), { title: 'Sin ancla', body: 'b', scope: 'open', anchor: 'none', targets: { personId: 'p1' } })).toMatchObject({ created: true });
+    const orphan = fake2.seed('tasks', { title: 'Huérfana', status: 'TODO', bodyV2: null, dueAt: null });
+    expect(await createCrmTask(fake2.client(), { title: 'Huérfana', body: 'b', scope: 'open', anchor: 'none', targets: { personId: 'p1' } })).toMatchObject({ created: false, adopted: true, taskId: orphan.id });
+  });
+
   it('works on the in-memory CRM of the optimizer experiments too', async () => {
     const crm = new MemoryTwenty();
     const r = await createCrmTask(crm.client(), { title: 'X', body: 'y', dueAt: dueInDays(NOW, 3) }, { now: NOW });

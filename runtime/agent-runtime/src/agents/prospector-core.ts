@@ -198,7 +198,7 @@ export function parseExhibitorDecision(text: string): Parsed<ExhibitorDecision> 
 /**
  * Tools the Prospector may use (all modes). `fetch_url` and `render_url` are READ and only used
  * by the scout mode; `list_event_signals` (READ) and `expire_signal` (LOW_WRITE, only to EXPIRED)
- * only by the signals mode. Lead-time window (tanda 18): `list_hypotheses_for_expiry` (READ) and
+ * by the signals mode (tanda 25: the scout also reads `list_event_signals` once per run for the dedupe of fairs by name). Lead-time window (tanda 18): `list_hypotheses_for_expiry` (READ) and
  * `expire_hypothesis` (LOW_WRITE, only PROPOSED -> EXPIRED) in the signals mode;
  * when a qualification falls outside the window, `create_crm_task` (LOW_WRITE, tanda 19: a Twenty
  * Task on the signal; it replaces `create_signal_note`, still registered for older versions).

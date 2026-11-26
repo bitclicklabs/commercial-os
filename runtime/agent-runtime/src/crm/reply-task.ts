@@ -4,9 +4,8 @@
  * excerpt). Created by the triage for INTERESADO and PREGUNTA replies, linked through
  * `taskTargets` to the opportunity (if any), the company and the person.
  *
- * Direct REST on purpose (agreement with the parallel branch `feat/native-tasks-views`, which
- * adds the generic `createCrmTask` helper in src/integrations/twenty/tasks.ts): the PM unifies
- * both helpers when merging. Shape verified read-only (GET /rest/open-api/core): Task
+ * Tanda 25: built on the generic `createCrmTask` helper (src/integrations/twenty/tasks.ts), the
+ * only place that decides whether a Task already exists. Shape verified read-only (GET /rest/open-api/core): Task
  * `{ title, bodyV2: { markdown }, dueAt, status TODO|IN_PROGRESS|DONE, assigneeId }`,
  * TaskTarget `{ taskId, targetCompanyId, targetPersonId, targetOpportunityId, ... }`.
  *
@@ -15,7 +14,8 @@
  * same opportunity (or, without one, the same company) is reused and only its missing targets
  * are added. A retried run never duplicates it.
  */
-import { TWENTY_OBJECTS, filterValue, type TwentyClient, type TwentyTask, type TwentyTaskTarget } from '../integrations/twenty/index.js';
+import type { TwentyClient } from '../integrations/twenty/index.js';
+import { createCrmTask } from '../integrations/twenty/tasks.js';
 
 /**
  * Tanda 23: TEXT FIRST, emoji at the end. Twenty draws the icon of a Task / note with the first
@@ -186,57 +186,38 @@ export interface ReplyTaskResult {
   targetIds: string[];
 }
 
-async function targetsOf(twenty: TwentyClient, taskId: string, signal?: AbortSignal): Promise<TwentyTaskTarget[]> {
-  const { records } = await twenty.list<TwentyTaskTarget>(TWENTY_OBJECTS.taskTarget, { filter: `taskId[eq]:${filterValue(taskId)}`, limit: 50, ...(signal ? { signal } : {}) });
-  return records;
-}
-
+/**
+ * Tanda 25: built on `createCrmTask` (src/integrations/twenty/tasks.ts), the single place that
+ * decides whether a Task already exists, with the semantics this task always had: any day, only
+ * an OPEN task (`scope: 'open'`), anchored on the opportunity, else the company (else only an
+ * orphan is adopted: `anchor: 'none'`), same targets (opportunity, company, person) and the
+ * idempotent append (`appendOnReuse`).
+ */
 export async function upsertReplyTask(twenty: TwentyClient, input: ReplyTaskInput, signal?: AbortSignal): Promise<ReplyTaskResult> {
-  const opts = signal ? { signal } : {};
-  const anchor = input.opportunityId ? { key: 'targetOpportunityId' as const, id: input.opportunityId } : input.companyId ? { key: 'targetCompanyId' as const, id: input.companyId } : null;
-  // The current title first, then the older spellings (tanda 23).
-  const titles = [input.title, ...(input.legacyTitles ?? [])].filter((t, i, all) => t.length > 0 && all.indexOf(t) === i);
-  const sameTitle: TwentyTask[] = [];
-  for (const title of titles) {
-    const { records } = await twenty.list<TwentyTask>(TWENTY_OBJECTS.task, { filter: `title[eq]:${filterValue(title)}`, limit: 20, ...opts });
-    for (const r of records) if (!sameTitle.some((x) => x.id === r.id)) sameTitle.push(r);
-  }
-  let task: TwentyTask | null = null;
-  let targets: TwentyTaskTarget[] = [];
-  let orphan: TwentyTask | null = null;
-  for (const candidate of sameTitle) {
-    if (candidate.deletedAt || candidate.status === 'DONE') continue;
-    const t = await targetsOf(twenty, candidate.id, signal);
-    if (anchor && t.some((x) => x[anchor.key] === anchor.id)) {
-      task = candidate;
-      targets = t;
-      break;
-    }
-    // A task with that title and no targets at all: a previous call died between the POSTs.
-    if (t.length === 0 && !orphan) orphan = candidate;
-  }
-  if (!task && orphan) task = orphan;
-  const created = task === null;
-  let appended = false;
-  if (!task) {
-    task = await twenty.create<TwentyTask>(TWENTY_OBJECTS.task, { title: input.title, bodyV2: { markdown: input.bodyMarkdown }, dueAt: input.dueAt, status: 'TODO' }, opts);
-  } else if (input.appendOnReuse) {
-    const current = task.bodyV2?.markdown ?? '';
-    if (!current.includes(input.appendOnReuse.marker)) {
-      const markdown = `${current.replace(/\s+$/, '')}\n\n---\n\n${input.appendOnReuse.markdown}`;
-      const updated = await twenty.update<TwentyTask>(TWENTY_OBJECTS.task, task.id, { bodyV2: { markdown } }, opts);
-      task = { ...task, ...updated };
-      appended = true;
-    }
-  }
-  const want: Array<[keyof TwentyTaskTarget, string | null | undefined]> = [
-    ['targetOpportunityId', input.opportunityId],
-    ['targetCompanyId', input.companyId],
-    ['targetPersonId', input.personId],
-  ];
-  for (const [key, id] of want) {
-    if (!id || targets.some((t) => t[key] === id)) continue;
-    targets.push(await twenty.create<TwentyTaskTarget>(TWENTY_OBJECTS.taskTarget, { taskId: task.id, [key]: id }, opts));
-  }
-  return { created, ...(input.appendOnReuse ? { appended } : {}), task: { id: task.id, title: task.title ?? input.title, status: task.status ?? 'TODO', dueAt: task.dueAt ?? input.dueAt }, targetIds: targets.map((t) => t.id) };
+  const r = await createCrmTask(
+    twenty,
+    {
+      title: input.title,
+      legacyTitles: input.legacyTitles,
+      body: input.bodyMarkdown,
+      dueAt: input.dueAt,
+      status: 'TODO',
+      scope: 'open',
+      anchor: input.opportunityId ? 'opportunityId' : input.companyId ? 'companyId' : 'none',
+      targets: {
+        opportunityId: input.opportunityId ?? undefined,
+        companyId: input.companyId ?? undefined,
+        personId: input.personId ?? undefined,
+      },
+      appendOnReuse: input.appendOnReuse ?? null,
+    },
+    signal ? { signal } : {},
+  );
+  const task = r.task;
+  return {
+    created: r.created,
+    ...(input.appendOnReuse ? { appended: r.appended ?? false } : {}),
+    task: { id: task.id, title: task.title ?? r.title, status: task.status ?? 'TODO', dueAt: task.dueAt ?? r.dueAt ?? input.dueAt },
+    targetIds: r.targetIds,
+  };
 }

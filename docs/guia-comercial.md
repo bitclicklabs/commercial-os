@@ -19,6 +19,7 @@ Desde la tanda 19, el trabajo se reparte entre las pestañas nativas de Twenty e
 1. [Borradores de email](#borradores-de-email)
 1. [Respuestas de los clientes](#respuestas-de-los-clientes)
 1. [Seguimiento de lo que has enviado](#seguimiento-de-lo-que-has-enviado)
+1. [Responder y cerrar reuniones](#responder-y-cerrar-reuniones)
 1. [Estados: cuándo usar cada uno](#estados-cuándo-usar-cada-uno)
 1. [Por qué tu feedback importa](#por-qué-tu-feedback-importa)
 1. [Preguntas frecuentes](#preguntas-frecuentes)
@@ -204,7 +205,9 @@ Las alertas que piden una acción ya no se quedan enterradas en notas: el sistem
 
 | Tarea | Cuándo aparece | Fecha | Qué haces |
 |---|---|---|---|
-| **📬 Responder a…** | Alguien ha contestado a tu correo con interés (o con una pregunta) | La que fija el sistema al crearla | Responde desde tu correo y márcala como hecha. Es la más importante |
+| **📬 Responder a…** | Alguien ha contestado a tu correo con interés (o con una pregunta) | La que fija el sistema al crearla | Desde la tanda 22 trae un **borrador de respuesta** en el cuerpo: revísalo, responde desde tu correo y márcala como hecha. Es la más importante |
+| **📅 Cerrar reunión con {empresa}** | El cliente ya propone o acepta una reunión (tanda 22) | La que fija el sistema | Confirma la fecha con el borrador del cuerpo y crea la reunión en tu calendario invitando al cliente. Ver [Responder y cerrar reuniones](#responder-y-cerrar-reuniones) |
+| **🧾 Preparar reunión con {empresa}** | El sistema detecta tu reunión en el calendario (tanda 22) | El día anterior a la reunión | Repasa la hipótesis y la conversación antes de la reunión |
 | **⚠️ Revalidación fallida** | Una versión de skill en uso ha dado peor resultado al medirla con tus veredictos | +1 día | Avisa al equipo técnico: decide si se revierte. Tú no tienes que hacer nada más |
 | **Propuesta de promoción** | El optimizador propone una skill mejor y ha pasado el Release Gate | +3 días | Avisa al equipo técnico para que la revise. Si no se hace nada, no pasa nada |
 | **🔔 Seguimiento — {empresa}** | Has enviado un correo a esa empresa hace 5 días laborables o más y no ha respondido (ni está en la lista de supresión) | El mismo día en que se crea | Lee el cuerpo (fecha y asunto del envío, destinatario, ángulo y guion sugerido), decide si escribes de nuevo, llamas o lo dejas, y márcala como hecha. **El sistema no envía nada**. Ver [Seguimiento](#seguimiento-de-lo-que-has-enviado) |
@@ -362,6 +365,7 @@ Qué debes saber:
 
 - **Una sola oportunidad abierta por empresa.** Si la empresa ya tiene una abierta, no se crea otra.
 - **El sistema no la mueve de etapa.** El pipeline es tuyo: arrastra la tarjeta en **Oportunidades · Pipeline** según avance el trato (reunión, propuesta, cliente...).
+- **Excepción desde la tanda 22:** cuando detecta una reunión tuya con esa empresa en tu calendario, el sistema pasa la oportunidad a **Meeting** (nunca retrocede una etapa). Consulta [Responder y cerrar reuniones](#responder-y-cerrar-reuniones).
 - **La hipótesis no cambia sola.** Un interesado no pasa la hipótesis a `Validated`; si procede, valídala tú.
 - **El funnel de venta vive aquí**, no en la hipótesis. La hipótesis es la idea del sistema; la oportunidad es el trato real.
 
@@ -509,6 +513,50 @@ Hasta ahora, un correo sin respuesta se perdía en silencio. Desde la tanda 21, 
 > **Nota:** la tarea de seguimiento cuenta como cualquier otra de tu bandeja: aparece en la vista **Tareas · Bandeja**, y el sistema nunca la cierra ni la borra.
 
 El detalle técnico está en [Seguimiento de leads enviados](seguimiento-leads.md).
+
+## Responder y cerrar reuniones
+
+> **Novedad (tanda 22, 2026-11-26).** El sistema ya no solo te avisa de que alguien ha respondido: te deja **la contestación redactada** y te propone huecos de tu calendario. Sigue valiendo la regla de siempre: **el sistema no envía ni agenda nada; lo haces tú.** Los detalles de implementación están marcados `[POR CONFIRMAR]` hasta integrar la tanda. El modelo completo está en [AI Setter](ai-setter.md).
+
+Cuando un cliente contesta con interés o con una pregunta, el sistema (que revisa el buzón cada 2 horas) crea una Task en tu bandeja con el borrador de la respuesta en el cuerpo. Dos casos:
+
+| Tarea | Cuándo aparece | El borrador... |
+|---|---|---|
+| **📬 Responder a…** | El cliente muestra interés o hace una pregunta | Contesta a lo que dijo y termina proponiendo una reunión. |
+| **📅 Cerrar reunión con {empresa}** | El cliente ya propone o acepta una reunión | Se centra en confirmar la fecha. |
+
+### Tu día a día
+
+1. Abre **Tareas → Tareas · Bandeja** y localiza las que empiezan por 📬 o 📅.
+1. Abre la tarea y lee primero el correo del cliente en tu bandeja (el borrador responde a él), y después el **borrador** en el cuerpo de la tarea.
+1. Revisa el borrador. Comprueba que:
+   - Responde a lo que el cliente preguntó.
+   - **No promete precios, plazos ni stock** que no hayas confirmado. El sistema no los inventa, pero compruébalo.
+   - Los **huecos propuestos** te vienen bien. Son huecos libres de tu calendario en ese momento; si ya no lo son, cámbialos.
+   - Lleva la firma de PubliEXPE («expertos en merchandising») y no mete prisas.
+1. Copia el texto y **responde en el hilo** desde tu correo, con los cambios que quieras. El sistema no envía nada.
+1. Si el cliente acepta un hueco o propone otro, **crea la reunión en tu calendario de IONOS e invita al cliente por email**, con su dirección como participante.
+1. Marca la tarea como hecha (*Done*).
+
+> **Importante:** invita al cliente **como participante del evento**. Es lo que permite al sistema reconocer la reunión y asociarla a la oportunidad. Una reunión creada sin invitados no se detecta.
+
+> **Nota:** si el sistema no pudo redactar el borrador, la tarea se crea igualmente, sin borrador. Responde a mano como hasta ahora; no se pierde el aviso.
+
+### Qué verás después
+
+Cuando el sistema detecta tu reunión en el calendario (revisa cada 30 minutos):
+
+- La **oportunidad** de esa empresa pasa a la etapa **Meeting** y verás una **nota** que lo explica. Nunca la mueve hacia atrás: si ya estaba más avanzada, no la toca.
+- Aparece una tarea **🧾 Preparar reunión con {empresa}** con vencimiento **el día anterior** a la reunión. Úsala para repasar la hipótesis, la conversación y lo que quieres conseguir.
+
+Si no ves esos cambios tras una hora, avisa al equipo técnico: el calendario puede no estar sincronizado en Twenty ([cómo activarlo](runbook-local.md#activar-el-calendario-en-twenty)).
+
+### Qué no hace el sistema
+
+- **No responde al cliente** ni envía invitaciones.
+- **No crea eventos en tu calendario.** La reunión la creas tú.
+- **No mueve la oportunidad hacia atrás** ni a etapas posteriores a Meeting.
+- **No inventa precios ni stock** en el borrador.
 
 
 ## Estados: cuándo usar cada uno

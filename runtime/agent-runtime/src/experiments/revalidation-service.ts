@@ -8,8 +8,8 @@
  * `experiment_revalidations` (migration 0016). The same label set returns the existing row.
  *
  * Consequence (only for a NEW row with verdict REFUTED whose version is still ACTIVE or in an
- * ACTIVE canary): a Twenty TASK (tanda 19; before, a note) "⚠️ Revalidación fallida — <subject>
- * v<N>", status TODO, due the next day, with the numbers and the options (rollback / canary /
+ * ACTIVE canary): a Twenty TASK (tanda 19; before, a note) "Revalidación fallida — <subject>
+ * v<N> ⚠️" (emoji last since tanda 23; the old emoji-first title is still reused), status TODO, due the next day, with the numbers and the options (rollback / canary /
  * iterate), and the internal event `experiment.revalidation_failed` (n8n may subscribe). Nothing
  * is deactivated or rolled back: the human decides. The task id and the event id are written once
  * into `consequence` (`consequence.task`; rows from before tanda 19 keep `consequence.note`).
@@ -27,7 +27,7 @@ import { evaluationCases, evaluationDatasets, experimentRevalidations, optimizat
 import type { EventPublisher } from '../events/event-bus.js';
 import { findHarness, listHarnessVersions } from '../harness/service.js';
 import type { TwentyClient } from '../integrations/twenty/index.js';
-import { createCrmTask, crmTaskTitle, dueInDays } from '../integrations/twenty/tasks.js';
+import { createCrmTask, crmTaskTitle, dueInDays, legacyEmojiFirstTitle } from '../integrations/twenty/tasks.js';
 import { runLabel } from '../optimizer/core.js';
 import { activeCanaryOf, findSkill, listVersions } from '../skills/service.js';
 import type { AccuracyMetric } from './gate.js';
@@ -373,7 +373,9 @@ async function recordConsequence(deps: RevalidationDeps, opts: RevalidateOptions
         ...(deps.apiUrl ? { apiUrl: deps.apiUrl } : {}),
       });
       const now = new Date();
-      const created = await createCrmTask(deps.twenty, { title, body: markdown, dueAt: dueInDays(now, REVALIDATION_TASK_DUE_DAYS) }, { now });
+      // Tanda 23: the title ends with its emoji; a task created before (emoji first) is still reused.
+      const legacy = legacyEmojiFirstTitle(title);
+      const created = await createCrmTask(deps.twenty, { title, body: markdown, dueAt: dueInDays(now, REVALIDATION_TASK_DUE_DAYS), ...(legacy ? { legacyTitles: [legacy] } : {}) }, { now });
       task = { id: created.taskId, title, created: created.created, due_at: created.dueAt };
     } catch (err) {
       task = { error: err instanceof Error ? err.message.slice(0, 500) : String(err), title };

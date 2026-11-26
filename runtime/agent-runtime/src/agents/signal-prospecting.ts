@@ -41,6 +41,7 @@
 import { and, eq, ne, or, sql } from 'drizzle-orm';
 import { z } from 'zod';
 import type { Db } from '../db/client.js';
+import { legacyEmojiFirstTitle } from '../integrations/twenty/tasks.js';
 import { agentExecutions } from '../db/schema.js';
 import type { EventSignal, ExpireSignalOutput, ListEventSignalsOutput } from '../tools/twenty/signal-tools.js';
 import type { ExpireHypothesisOutput, HypothesisForExpiry, ListHypothesesForExpiryOutput } from '../tools/twenty/hypothesis-expiry-tools.js';
@@ -727,7 +728,7 @@ export function outOfWindowNote(args: {
   const { signalName, status, days, eventDate, today, window } = args;
   if (status === 'no_date') {
     return {
-      title: `⏳ Sin fecha de feria (${today}): ${signalName}`,
+      title: `Sin fecha de feria (${today}): ${signalName} ⏳`,
       body: [
         '⏳ Sin fecha de feria: añade la fecha a la señal para que entre al reparto.',
         `El Prospector no prospecta una feria a ciegas: sin fecha no puede comprobar la ventana de lead time (${windowLabel(window)}). La señal sigue QUALIFIED.`,
@@ -746,7 +747,8 @@ export function outOfWindowNote(args: {
     lines.push('No da tiempo a producir merchandising: el Prospector no la prospecta. La señal sigue QUALIFIED; si merece una acción manual, decide tú.');
   }
   lines.push(`Ventana de lead time: ${windowLabel(window)} (Europe/Madrid, hoy ${today}).`);
-  return { title: `⏳ Fuera de ventana (${today}): ${signalName}`, body: lines.join('\n\n') };
+  // Tanda 23: titles put the text first and the emoji last (Twenty draws the task icon with the first character).
+  return { title: `Fuera de ventana (${today}): ${signalName} ⏳`, body: lines.join('\n\n') };
 }
 
 /** Days until the due date of the "⏳ Sin fecha" task (a person adds the date). */
@@ -799,7 +801,9 @@ export async function qualifiedLeadTimeGate(run: ProspectorRun, input: Record<st
   const note = outOfWindowNote({ signalName: eventName ?? signalId, status: v.status, days: v.days, eventDate, today, window });
   // Tanda 19: a Twenty Task (TODO) on the signal instead of a note, due when the person can act.
   const dueAt = outOfWindowTaskDue({ status: v.status, eventDate, today, window });
-  const tasked = await run.callTool('create_crm_task', { title: note.title, bodyMarkdown: note.body, dueAt, targets: { signalId } });
+  // Tanda 23: a task of the same day with the old emoji-first title is reused.
+  const legacy = legacyEmojiFirstTitle(note.title);
+  const tasked = await run.callTool('create_crm_task', { title: note.title, bodyMarkdown: note.body, dueAt, targets: { signalId }, ...(legacy ? { legacyTitles: [legacy] } : {}) });
   let noteInfo: Record<string, unknown>;
   if (tasked.result.status === 'ok') noteInfo = { task: tasked.result.output };
   else if (toolError(tasked).code === 'TOOL_NOT_ALLOWED') {

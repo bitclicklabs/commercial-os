@@ -345,7 +345,7 @@ describe.skipIf(!dbAvailable)('re-validation of PASS_FORM experiments (PostgreSQ
     expect(b2).toMatchObject({ verdict: 'REFUTED', labels: { used: 6 }, version_state: { state: 'CANARY', relevant: true } });
     const cons = b2.revalidation!.consequence as { task: { id: string; title: string; created: boolean; due_at: string }; event: { id: string; type: string } };
     // Tanda 19: a Task (TODO, due the next day, no CRM target: the subject is a skill version), not a note.
-    expect(cons.task).toMatchObject({ created: true, title: `⚠️ Revalidación fallida — ${PROSPECTOR_SKILL_ID} v3` });
+    expect(cons.task).toMatchObject({ created: true, title: `Revalidación fallida — ${PROSPECTOR_SKILL_ID} v3 ⚠️` });
     expect(crm.tables.notes).toHaveLength(0);
     expect(crm.tables.tasks).toHaveLength(1);
     expect(crm.tables.taskTargets).toHaveLength(0);

@@ -70,7 +70,8 @@ describe('catalog gate', () => {
     expect(events.published[0]).toMatchObject({ type: 'catalog.unavailable', tenantId: 'publiexpe', idempotencyKey: 'evt:catalog.unavailable:publiexpe:2026-10-09', data: { code: 'CATALOG_UNAUTHENTICATED', provider: 'stub' } });
     expect(tasks(fake)).toHaveLength(1);
     expect(tasks(fake)[0]!.title).toBe(catalogUnavailableNoteTitle('2026-10-09', 'publiexpe'));
-    expect(tasks(fake)[0]!.title.startsWith('⚠️ Catálogo no disponible')).toBe(true);
+    expect(tasks(fake)[0]!.title.startsWith('Catálogo no disponible')).toBe(true);
+    expect(tasks(fake)[0]!.title.endsWith(' ⚠️')).toBe(true);
     expect(tasks(fake)[0]!.bodyV2.markdown).toContain('familias genéricas');
     expect(tasks(fake)[0]!.bodyV2.markdown).toContain('No se envía ningún correo');
     expect(tasks(fake)[0]).toMatchObject({ status: 'TODO', dueAt: '2026-10-09T07:00:00.000Z' }); // due today, 09:00 Madrid

@@ -223,7 +223,7 @@ describe('the note of a REFUTED version in use', () => {
   };
 
   it('ACTIVE: numbers and the three options; it proposes, it changes nothing', () => {
-    expect(revalidationNoteTitle('prospector-event-exhibitors', 4)).toBe('⚠️ Revalidación fallida — prospector-event-exhibitors v4');
+    expect(revalidationNoteTitle('prospector-event-exhibitors', 4)).toBe('Revalidación fallida — prospector-event-exhibitors v4 ⚠️');
     const md = revalidationNoteMarkdown({ ...input, versionState: { state: 'ACTIVE', status: 'ACTIVE', canary: null, relevant: true } });
     expect(md).toMatch(/No se ha cambiado nada/);
     expect(md).toMatch(/\| v4 \(candidata\) \| 0,600 \| 3\/5 \| 5 \|/);

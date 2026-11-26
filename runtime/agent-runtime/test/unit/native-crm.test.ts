@@ -206,6 +206,23 @@ describe('reply task', () => {
     expect(replyTaskTitle('Ana "la" \\ Ruiz')).toBe('Responder a Ana la Ruiz 📬');
   });
 
+  it('tanda 25 (on createCrmTask): any day, anchored on the opportunity, else the company; person only never reuses a targeted task', async () => {
+    const fake = new FakeTwenty();
+    const client = fake.client();
+    const base = { title: replyTaskTitle('Ana'), bodyMarkdown: 'Responder', dueAt: '2026-10-12T07:00:00.000Z' };
+    // An open task of another day on the same company is reused (scope: open, not the day).
+    const old = fake.seed('tasks', { title: replyTaskTitle('Ana'), status: 'TODO', bodyV2: null, dueAt: null, createdAt: '2026-01-05T10:00:00.000Z' });
+    fake.seed('taskTargets', { taskId: old.id, targetCompanyId: 'c1' });
+    expect(await upsertReplyTask(client, { ...base, companyId: 'c1' }, signal())).toMatchObject({ created: false, task: { id: old.id } });
+    // Another opportunity of the same company: the anchor is the opportunity, so a new task.
+    expect(await upsertReplyTask(client, { ...base, companyId: 'c1', opportunityId: 'o9' }, signal())).toMatchObject({ created: true });
+    // Only a person: the same-title task that targets that person is not reused (no anchor).
+    const fake2 = new FakeTwenty();
+    const p = fake2.seed('tasks', { title: replyTaskTitle('Ana'), status: 'TODO', bodyV2: null, dueAt: null });
+    fake2.seed('taskTargets', { taskId: p.id, targetPersonId: 'p1' });
+    expect(await upsertReplyTask(fake2.client(), { ...base, personId: 'p1' }, signal())).toMatchObject({ created: true });
+  });
+
   it('create_reply_task tool: links the note and the opportunity in the body', async () => {
     const fake = new FakeTwenty();
     const registry = createDefaultToolRegistry({ twenty: fake.client() });

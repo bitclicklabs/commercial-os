@@ -55,7 +55,7 @@
  *   their domains in its text or links; free text is scrubbed of foreign URLs.
  */
 import { z } from 'zod';
-import { normalizeDomain } from '../integrations/twenty/index.js';
+import { normalizeDomain, SIGNAL_STATUSES } from '../integrations/twenty/index.js';
 import type { FetchUrlOutput } from '../tools/web/fetch-url.js';
 import type { RenderUrlOutput } from '../tools/web/render-url.js';
 import { findExhibitorListInJson, inferProfileUrls, type JsonAnswer, type JsonCatalogList } from './catalog-json.js';
@@ -104,6 +104,7 @@ import { hostOf, normalizeUrl, scrubUnknownUrls, SourceLedger } from './source-l
 import { classifyLeadTime, daysUntil, leadTimeWindowFromEnv, madridToday, windowInfo, type LeadTimeWindow } from '../signals/lead-time.js';
 import { domainResolverConfigFromEnv, DomainResolverSession, resolveExhibitorDomain, type DomainResolverConfig, type ResolverPageRead } from './domain-resolver.js';
 import { CompanySignalSeen, discoverCompanySignals, type CompanyDiscoveryResult } from './company-signals.js';
+import { FAIR_SIGNAL_TYPES, findSameFair, type KnownFair } from './fair-name-dedupe.js';
 import { COMPANY_SIGNAL_EXPIRY_DAYS, COMPANY_SIGNAL_KINDS, COMPANY_SIGNAL_LABEL_ES } from '../signals/company-signal.js';
 
 // ---------------------------------------------------------------------------
@@ -609,6 +610,42 @@ export interface ScoutRunOptions {
 export interface ScoutSeen {
   fairs: Set<string>;
   companies: CompanySignalSeen;
+  /** Tanda 25: the tenant's event-level fair signals, read once per run for the dedupe by name. */
+  knownFairs?: KnownFairs;
+}
+
+/**
+ * Tanda 25: the event-level fair signals of the tenant (all statuses), read lazily with ONE
+ * `list_event_signals` call per run (shared by the sectors), plus the fairs recorded by this run.
+ * When the listing fails the dedupe by name is skipped (the other dedupes still apply).
+ */
+export class KnownFairs {
+  private list: KnownFair[] | null = null;
+  error: string | null = null;
+
+  async load(run: ProspectorRun): Promise<readonly KnownFair[]> {
+    if (this.list) return this.list;
+    if (this.error) return [];
+    const out = await run.callTool('list_event_signals', { statuses: [...SIGNAL_STATUSES] });
+    if (out.result.status !== 'ok') {
+      this.error = toolError(out).code;
+      return [];
+    }
+    const { signals } = out.result.output as { signals: Array<{ id: string; name: string; status: string; signalType: string; eventDate: string | null }> };
+    this.list = signals
+      .filter((s) => (FAIR_SIGNAL_TYPES as readonly string[]).includes(s.signalType))
+      .map((s) => ({ id: s.id, name: s.name, status: s.status, date: s.eventDate }));
+    return this.list;
+  }
+
+  /** A fair recorded by this run (created or found existing): later candidates are compared with it too. */
+  add(fair: KnownFair): void {
+    if (this.list && !this.list.some((f) => f.id === fair.id)) this.list.push(fair);
+  }
+
+  get loaded(): boolean {
+    return this.list !== null;
+  }
 }
 
 /** Keys of a fair for the cross-sector dedupe: its URLs and its folded name + start date. */
@@ -646,6 +683,7 @@ export async function runScout(run: ProspectorRun, rawInput: Record<string, unkn
   const input = parsed.data;
   if (input.sectors && !input.event_url) return runScoutSectors(run, input, today, opts);
   const seen = opts.seen;
+  const knownFairs = seen ? (seen.knownFairs ??= new KnownFairs()) : new KnownFairs();
   const maxEvents = Math.max(1, Math.min(input.max_events ?? cfg.maxEvents, cfg.maxEvents));
   const maxExhibitors = Math.max(1, Math.min(input.max_exhibitors ?? cfg.maxExhibitorsPerEvent, cfg.maxExhibitorsPerEvent));
   const until = addMonths(today, input.horizon_months);
@@ -886,7 +924,14 @@ export async function runScout(run: ProspectorRun, rawInput: Record<string, unkn
 
   // ------------------------------------------------------------- a) candidates
   const candidates: Candidate[] = [];
-  const discarded: Array<{ name: string; reason: string; url?: string | null; days?: number | null }> = [];
+  const discarded: Array<{
+    name: string;
+    reason: string;
+    url?: string | null;
+    days?: number | null;
+    /** `duplicada_por_nombre` (tanda 25): the existing signal it matched and the rule. */
+    duplicate_of?: { id: string; name: string; status: string; event_date: string | null; rule: string };
+  }> = [];
   let searchInfo: { queries: string[]; sources: number; proposed: number; verification: 'grounding_sources' | 'fetch_corroboration' | 'none' } | null = null;
   let searchFailed: { code: string; message: string } | null = null;
 
@@ -943,6 +988,18 @@ export async function runScout(run: ProspectorRun, rawInput: Record<string, unkn
           }
           if (seen && fairKeys({ name: e.name, date: start, urls: [e.website_url, e.exhibitors_url] }).some((k) => seen.fairs.has(k))) {
             discarded.push({ name: e.name, reason: 'duplicada_en_otro_sector', url: e.website_url });
+            continue;
+          }
+          // Tanda 25: the same fair spelled differently ("(BWW)", "15ª edición", a city) is not recorded again,
+          // whatever the status of the existing signal (a DISCARDED or EXPIRED one is not brought back).
+          const same = findSameFair({ name: e.name, date: start }, await knownFairs.load(run));
+          if (same) {
+            discarded.push({
+              name: e.name,
+              reason: 'duplicada_por_nombre',
+              url: e.website_url,
+              duplicate_of: { id: same.fair.id, name: same.fair.name, status: same.fair.status, event_date: same.fair.date, rule: same.rule },
+            });
             continue;
           }
           candidates.push({
@@ -1512,6 +1569,7 @@ export async function runScout(run: ProspectorRun, rawInput: Record<string, unkn
       ev.signal_id = so.record.id;
       ev.signal_created = so.created;
       if (seen) for (const k of fairKeys({ name: ev.name, date: ev.date, urls: [websiteUrl, exhibitorsUrl, sourceUrl] })) seen.fairs.add(k);
+      knownFairs.add({ id: so.record.id, name: ev.name, status: 'NEW', date: ev.date });
     } else {
       ev.status = 'event_signal_error';
       ev.error = toolError(sig);
@@ -1555,6 +1613,7 @@ export async function runScout(run: ProspectorRun, rawInput: Record<string, unkn
     event_signals_created: events.filter((e) => e.status === 'event_signal' && e.signal_created === true).length,
     event_signals_existing: events.filter((e) => e.status === 'event_signal' && e.signal_created === false).length,
     events_duplicated_other_sector: discarded.filter((d) => d.reason === 'duplicada_en_otro_sector').length,
+    events_duplicated_by_name: discarded.filter((d) => d.reason === 'duplicada_por_nombre').length,
     ...(company
       ? {
           company_signals_proposed: company.counters.proposed,
@@ -1630,6 +1689,15 @@ export async function runScout(run: ProspectorRun, rawInput: Record<string, unkn
     ...(searchInfo
       ? [`Búsqueda con Google (grounding): ${searchInfo.queries.length} consultas, ${searchInfo.sources} fuentes; ferias propuestas: ${searchInfo.proposed}, verificadas: ${events.length}, descartadas: ${discarded.length}.`]
       : []),
+    ...(counters.events_duplicated_by_name > 0
+      ? [
+          `Ferias ya registradas en el CRM con otro nombre (sin señal nueva): ${discarded
+            .filter((d) => d.reason === 'duplicada_por_nombre')
+            .map((d) => `${d.name} = ${d.duplicate_of?.name ?? '?'} [${d.duplicate_of?.status ?? '?'}]`)
+            .join('; ')}.`,
+        ]
+      : []),
+    ...(knownFairs.error ? [`Dedupe por nombre de ferias no disponible (${knownFairs.error}): solo se aplicaron los dedupes por URL y fecha.`] : []),
     ...(input.discover_only
       ? [`Ventana de lead time: ${leadTime.minDays}–${leadTime.maxDays} días (hoy ${leadTimeToday}, Europe/Madrid); ferias propuestas fuera de ventana (sin señal): ${discardedOutOfWindow}.`]
       : []),
@@ -1672,6 +1740,7 @@ export async function runScout(run: ProspectorRun, rawInput: Record<string, unkn
       ...(searchInfo ? { search: searchInfo } : {}),
       events,
       discarded_events: discarded,
+      ...(knownFairs.loaded || knownFairs.error ? { fair_name_dedupe: { checked: knownFairs.loaded, error: knownFairs.error } } : {}),
       ...(input.discover_only ? { lead_time: { window: windowInfo(leadTime, leadTimeToday), discarded_out_of_window: discardedOutOfWindow } } : {}),
       counters: { ...counters, errors },
       results,
@@ -1725,6 +1794,8 @@ export interface SectorSummary {
   fairs_discarded: number;
   fairs_out_of_window: number;
   fairs_duplicated_other_sector: number;
+  /** Tanda 25: fairs that matched an existing signal by normalized name (`duplicada_por_nombre`). */
+  fairs_duplicated_by_name: number;
   /** Company signals (news) proposed / created / already existing / discarded. */
   company_signals_proposed: number;
   company_signals_created: number;
@@ -1762,7 +1833,7 @@ async function runScoutSectors(run: ProspectorRun, input: ScoutInput, today: str
   const order = rotateSectors(input.sectors ?? [], madrid);
   const timeBudgetMs = Math.min(input.scout_time_budget_ms ?? cfg.timeBudgetMs, cfg.timeBudgetMs);
   const deadline = run.startedAt.getTime() + timeBudgetMs;
-  const seen: ScoutSeen = opts.seen ?? { fairs: new Set(), companies: new CompanySignalSeen() };
+  const seen: ScoutSeen = opts.seen ?? { fairs: new Set(), companies: new CompanySignalSeen(), knownFairs: new KnownFairs() };
   const sectors: SectorSummary[] = [];
   const runs: Array<{ sector: string; output: Record<string, unknown> }> = [];
   const sectorLines: string[] = [];
@@ -1771,7 +1842,7 @@ async function runScoutSectors(run: ProspectorRun, input: ScoutInput, today: str
     run.ctx.signal.throwIfAborted();
     const empty: SectorSummary = {
       sector, order: i + 1, status: 'skipped_time_budget', fairs_proposed: 0, fairs_verified: 0, fair_signals_created: 0, fair_signals_existing: 0, fairs_discarded: 0,
-      fairs_out_of_window: 0, fairs_duplicated_other_sector: 0, company_signals_proposed: 0, company_signals_created: 0, company_signals_existing: 0, company_signals_discarded: 0,
+      fairs_out_of_window: 0, fairs_duplicated_other_sector: 0, fairs_duplicated_by_name: 0, company_signals_proposed: 0, company_signals_created: 0, company_signals_existing: 0, company_signals_discarded: 0,
       errors: 0, llm_calls: 0, grounding_calls: 0, cost_eur: 0, elapsed_ms: 0, partial_reasons: [],
     };
     if (run.clock().getTime() >= deadline) {
@@ -1795,6 +1866,7 @@ async function runScoutSectors(run: ProspectorRun, input: ScoutInput, today: str
       fairs_discarded: c.events_discarded ?? 0,
       fairs_out_of_window: c.discarded_out_of_window ?? 0,
       fairs_duplicated_other_sector: c.events_duplicated_other_sector ?? 0,
+      fairs_duplicated_by_name: c.events_duplicated_by_name ?? 0,
       company_signals_proposed: c.company_signals_proposed ?? 0,
       company_signals_created: c.company_signals_created ?? 0,
       company_signals_existing: c.company_signals_existing ?? 0,
@@ -1810,7 +1882,7 @@ async function runScoutSectors(run: ProspectorRun, input: ScoutInput, today: str
     runs.push({ sector, output: r.output });
     const extra = s.outcome !== 'SUCCESS' ? ` [${s.outcome}${s.partial_reasons.length > 0 ? `: ${s.partial_reasons.join(' | ').slice(0, 200)}` : ''}]` : '';
     sectorLines.push(
-      `- ${sector}: ferias propuestas ${s.fairs_proposed}, verificadas ${s.fairs_verified}, señales nuevas ${s.fair_signals_created}${s.fair_signals_existing > 0 ? ` (+${s.fair_signals_existing} ya existentes)` : ''}, fuera de ventana ${s.fairs_out_of_window}${s.fairs_duplicated_other_sector > 0 ? `, repetidas de otro sector ${s.fairs_duplicated_other_sector}` : ''}; señales de empresa nuevas ${s.company_signals_created}${s.company_signals_existing > 0 ? ` (+${s.company_signals_existing} ya existentes)` : ''} de ${s.company_signals_proposed} propuestas; coste ${formatEur(s.cost_eur)}${extra}.`,
+      `- ${sector}: ferias propuestas ${s.fairs_proposed}, verificadas ${s.fairs_verified}, señales nuevas ${s.fair_signals_created}${s.fair_signals_existing > 0 ? ` (+${s.fair_signals_existing} ya existentes)` : ''}, fuera de ventana ${s.fairs_out_of_window}${s.fairs_duplicated_other_sector > 0 ? `, repetidas de otro sector ${s.fairs_duplicated_other_sector}` : ''}${s.fairs_duplicated_by_name > 0 ? `, ya en el CRM con otro nombre ${s.fairs_duplicated_by_name}` : ''}; señales de empresa nuevas ${s.company_signals_created}${s.company_signals_existing > 0 ? ` (+${s.company_signals_existing} ya existentes)` : ''} de ${s.company_signals_proposed} propuestas; coste ${formatEur(s.cost_eur)}${extra}.`,
     );
   }
   const done = sectors.filter((s) => s.status === 'done');
@@ -1827,6 +1899,7 @@ async function runScoutSectors(run: ProspectorRun, input: ScoutInput, today: str
     events_discarded: sum('fairs_discarded'),
     discarded_out_of_window: sum('fairs_out_of_window'),
     events_duplicated_other_sector: sum('fairs_duplicated_other_sector'),
+    events_duplicated_by_name: sum('fairs_duplicated_by_name'),
     company_signals_proposed: sum('company_signals_proposed'),
     company_signals_created: sum('company_signals_created'),
     company_signals_existing: sum('company_signals_existing'),
@@ -1847,7 +1920,7 @@ async function runScoutSectors(run: ProspectorRun, input: ScoutInput, today: str
   const minutes = (ms: number) => (ms / 60_000).toLocaleString('es-ES', { maximumFractionDigits: 1 });
   const lines = [
     `Modo scout${input.discover_only ? ' (solo descubrimiento: ferias y señales de empresa se registran como señal NEW)' : ''}: ${sectors.length} sectores en ${input.region} (orden de esta semana: ${order.map((o) => o.sector).join(' → ')}).`,
-    `Totales: ferias propuestas ${counters.events_proposed}, señales de feria nuevas ${counters.event_signals_created} (ya existentes ${counters.event_signals_existing}), fuera de ventana ${counters.discarded_out_of_window}, repetidas entre sectores ${counters.events_duplicated_other_sector}; señales de empresa nuevas ${counters.company_signals_created} (ya existentes ${counters.company_signals_existing}) de ${counters.company_signals_proposed} propuestas; sectores corridos ${done.length} de ${sectors.length}; errores ${counters.errors}.`,
+    `Totales: ferias propuestas ${counters.events_proposed}, señales de feria nuevas ${counters.event_signals_created} (ya existentes ${counters.event_signals_existing}), fuera de ventana ${counters.discarded_out_of_window}, repetidas entre sectores ${counters.events_duplicated_other_sector}${counters.events_duplicated_by_name > 0 ? `, ya en el CRM con otro nombre ${counters.events_duplicated_by_name}` : ''}; señales de empresa nuevas ${counters.company_signals_created} (ya existentes ${counters.company_signals_existing}) de ${counters.company_signals_proposed} propuestas; sectores corridos ${done.length} de ${sectors.length}; errores ${counters.errors}.`,
     `Coste del modelo: ${formatEur(run.costEur())} (${run.llmCalls} llamadas, ${run.groundingCalls} con búsqueda: ${formatEur(groundingEur)} de búsqueda). Tiempo: ${minutes(counters.elapsed_ms)} min de ${minutes(timeBudgetMs)} min.`,
     ...(partialReasons.length > 0 ? [`Motivos: ${partialReasons.join(' | ')}`] : []),
     'Por sector:',

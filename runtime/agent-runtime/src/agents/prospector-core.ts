@@ -356,6 +356,12 @@ export interface JsonCallRequest<T> {
   maxAttempts?: number;
   /** Overrides `max_output_tokens` for this call. */
   maxTokens?: number;
+  /**
+   * Model of this call (same provider as the execution), e.g. the model of another role of the
+   * model router (tanda 22: the InboxAgent drafts replies with the drafting role). Default: the
+   * version's model.
+   */
+  model?: string;
 }
 
 /** Steps, tokens and cost of one Prospector execution. */
@@ -400,7 +406,7 @@ export class ProspectorRun {
       let completion: CompletionResult;
       try {
         completion = await ctx.provider.complete({
-          model: ctx.version.model,
+          model: req.model ?? ctx.version.model,
           system: req.system,
           messages,
           maxTokens: req.maxTokens ?? this.cfg.maxTokens,
@@ -412,7 +418,7 @@ export class ProspectorRun {
         const e = err as { code?: unknown; message?: unknown };
         const code = typeof e.code === 'string' ? e.code : 'MODEL_ERROR';
         const message = String(e.message ?? err);
-        this.steps.push({ type: 'MODEL', timestamp: new Date(), model: ctx.version.model, input: { ...req.label, attempt }, error: { code, message }, latencyMs: 0 });
+        this.steps.push({ type: 'MODEL', timestamp: new Date(), model: req.model ?? ctx.version.model, input: { ...req.label, attempt }, error: { code, message }, latencyMs: 0 });
         return { status: 'model_error', code, message };
       }
       this.llmCalls += 1;

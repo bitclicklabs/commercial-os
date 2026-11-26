@@ -17,17 +17,28 @@
 import { TWENTY_OBJECTS, filterValue, type TwentyClient, type TwentyTask, type TwentyTaskTarget } from '../integrations/twenty/index.js';
 
 export const REPLY_TASK_PREFIX = '📬 Responder a ';
+/** Tanda 22: the client accepts or proposes a meeting (`meeting_intent`): the task is to close it. */
+export const MEETING_TASK_PREFIX = '📅 Cerrar reunión con ';
 export const TASK_TITLE_MAX = 255;
 export const REPLY_TASK_BUSINESS_DAYS = 2;
 
 /** `📬 Responder a <who>`: no quotes or backslashes (filter values cannot carry them), bounded. */
 export function replyTaskTitle(who: string): string {
+  return taskTitle(REPLY_TASK_PREFIX, who, 'la respuesta');
+}
+
+/** `📅 Cerrar reunión con <empresa>` (same sanitising as the reply task). */
+export function meetingTaskTitle(company: string): string {
+  return taskTitle(MEETING_TASK_PREFIX, company, 'el cliente');
+}
+
+function taskTitle(prefix: string, who: string, empty: string): string {
   const w = who
     .replace(/["\\]/g, '')
     .replace(/[\u0000-\u001f\u007f]/g, ' ')
     .replace(/\s+/g, ' ')
     .trim();
-  const title = `${REPLY_TASK_PREFIX}${w || 'la respuesta'}`;
+  const title = `${prefix}${w || empty}`;
   return title.length <= TASK_TITLE_MAX ? title : `${title.slice(0, TASK_TITLE_MAX - 1)}…`;
 }
 
@@ -78,15 +89,21 @@ export interface ReplyTaskBodyInput {
   timezone: string;
   /** The send it answers, when known. */
   sendSubject: string | null;
+  /** Tanda 22: the client accepts or proposes a meeting (the task is «📅 Cerrar reunión con …»). */
+  meetingIntent?: boolean;
+  /** Tanda 22: the «Borrador de respuesta» section (src/agents/reply-draft.ts), already markdown. */
+  draftSection?: string | null;
 }
 
 /** Markdown body of the reply task: what to do, the excerpt, where it came from. Plain values only. */
 export function replyTaskBody(b: ReplyTaskBodyInput): string {
   const plain = (s: string) => s.replace(/[`*_[\]()<>|~#\\]/g, '').replace(/\s+/g, ' ').trim();
   return [
-    b.class === 'INTERESADO'
-      ? `**Respuesta interesada de ${plain(b.fromEmail)}.** Respóndela tú hoy o mañana: pide lo que falte (cantidades, fechas, logo) y prepara la propuesta.`
-      : `**Pregunta de ${plain(b.fromEmail)}.** Contéstala tú desde tu bandeja.`,
+    b.meetingIntent
+      ? `**${plain(b.fromEmail)} quiere reunirse.** Cierra tú la fecha: revisa el borrador de respuesta, comprueba tu agenda y envíalo desde tu bandeja.`
+      : b.class === 'INTERESADO'
+        ? `**Respuesta interesada de ${plain(b.fromEmail)}.** Respóndela tú hoy o mañana: pide lo que falte (cantidades, fechas, logo) y prepara la propuesta.`
+        : `**Pregunta de ${plain(b.fromEmail)}.** Contéstala tú desde tu bandeja.`,
     '',
     `- Recibido: ${b.receivedLocal} (${b.timezone})`,
     `- Asunto: ${plain(b.subject) || 'sin asunto'}`,
@@ -96,6 +113,7 @@ export function replyTaskBody(b: ReplyTaskBodyInput): string {
     '',
     `> ${b.excerpt.length > 0 ? b.excerpt : '(sin texto)'}`,
     '',
+    ...(b.draftSection ? [b.draftSection, ''] : []),
     'El Commercial OS no responde ni envía nada: la respuesta es tuya. Marca la tarea como hecha cuando hayas contestado.',
   ].join('\n');
 }
@@ -112,10 +130,18 @@ export interface ReplyTaskInput {
   companyId?: string | null;
   opportunityId?: string | null;
   personId?: string | null;
+  /**
+   * Tanda 22: markdown appended to the body when an OPEN task is reused (another reply of the
+   * same contact), so its new reply draft is there too. Append-only (what a person wrote in the
+   * task stays) and idempotent: skipped when the body already contains `marker`.
+   */
+  appendOnReuse?: { markdown: string; marker: string } | null;
 }
 
 export interface ReplyTaskResult {
   created: boolean;
+  /** Tanda 22: the reused task got `appendOnReuse` appended to its body. */
+  appended?: boolean;
   task: { id: string; title: string; status: string | null; dueAt: string | null };
   targetIds: string[];
 }
@@ -145,8 +171,17 @@ export async function upsertReplyTask(twenty: TwentyClient, input: ReplyTaskInpu
   }
   if (!task && orphan) task = orphan;
   const created = task === null;
+  let appended = false;
   if (!task) {
     task = await twenty.create<TwentyTask>(TWENTY_OBJECTS.task, { title: input.title, bodyV2: { markdown: input.bodyMarkdown }, dueAt: input.dueAt, status: 'TODO' }, opts);
+  } else if (input.appendOnReuse) {
+    const current = task.bodyV2?.markdown ?? '';
+    if (!current.includes(input.appendOnReuse.marker)) {
+      const markdown = `${current.replace(/\s+$/, '')}\n\n---\n\n${input.appendOnReuse.markdown}`;
+      const updated = await twenty.update<TwentyTask>(TWENTY_OBJECTS.task, task.id, { bodyV2: { markdown } }, opts);
+      task = { ...task, ...updated };
+      appended = true;
+    }
   }
   const want: Array<[keyof TwentyTaskTarget, string | null | undefined]> = [
     ['targetOpportunityId', input.opportunityId],
@@ -157,5 +192,5 @@ export async function upsertReplyTask(twenty: TwentyClient, input: ReplyTaskInpu
     if (!id || targets.some((t) => t[key] === id)) continue;
     targets.push(await twenty.create<TwentyTaskTarget>(TWENTY_OBJECTS.taskTarget, { taskId: task.id, [key]: id }, opts));
   }
-  return { created, task: { id: task.id, title: task.title ?? input.title, status: task.status ?? 'TODO', dueAt: task.dueAt ?? input.dueAt }, targetIds: targets.map((t) => t.id) };
+  return { created, ...(input.appendOnReuse ? { appended } : {}), task: { id: task.id, title: task.title ?? input.title, status: task.status ?? 'TODO', dueAt: task.dueAt ?? input.dueAt }, targetIds: targets.map((t) => t.id) };
 }

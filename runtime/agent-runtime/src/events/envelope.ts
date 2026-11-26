@@ -77,8 +77,13 @@ export type HypothesisEventType = (typeof HYPOTHESIS_EVENT_TYPES)[number];
  * `origin: 'manual'`) opens a NEW Opportunity in Twenty (a reused one emits nothing). For n8n.
  * Data: `{opportunityId, name, stage, companyId, pointOfContactId, hypothesisId, taskId, origin}`;
  * ids only, never an address.
+ *
+ * `opportunity.meeting_detected` (tanda 22, task `meeting-sync`): a meeting of the salesperson's
+ * calendar matched an open Opportunity (moved to the meeting stage when it was in an earlier one).
+ * Once per (opportunity, meeting). Data: `{opportunityId, companyId, calendarEventId, startsAt,
+ * stageFrom, stageTo, noteId, taskId, via}`; ids only, never an address.
  */
-export const OPPORTUNITY_EVENT_TYPES = ['opportunity.created'] as const;
+export const OPPORTUNITY_EVENT_TYPES = ['opportunity.created', 'opportunity.meeting_detected'] as const;
 export type OpportunityEventType = (typeof OPPORTUNITY_EVENT_TYPES)[number];
 
 export const EVENT_TYPE_RE =/^[a-z]+(\.[a-z_]+)+$/;

@@ -10,6 +10,7 @@ import { MEETING_BRIEF_SKILL_ID, MEETING_BRIEF_SYSTEM_PROMPT } from '../../src/a
 import { MeetingSyncAgent, readMeetingBriefConfig } from '../../src/agents/meeting-sync-agent.js';
 import type { AuditInsert } from '../../src/audit/service.js';
 import {
+  findQuoteInText,
   MEETING_BRIEF_AUDIT_ACTION,
   meetingBriefSection,
   minimalMeetingBriefSection,
@@ -424,5 +425,86 @@ describe('append_crm_task_section / get_meeting_brief_context', () => {
     const opp = fake.seed('opportunities', { name: 'Z', stage: 'NEW', companyId: c.id, pointOfContactId: null, amount: { amountMicros: null, currencyCode: null } });
     const r = await tool(fake, 'get_meeting_brief_context').execute({ opportunityId: opp.id } as never, tctx);
     expect(r).toMatchObject({ status: 'ok', output: { found: true, hypotheses: [{ name: 'Mía', origin: null }], opportunity: { amount: null }, company: { domain: 'z.example' } } });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Live test 2026-11-26 (Adpan): the model answered without tildes and its ASCII quote was dropped
+// ---------------------------------------------------------------------------
+
+describe('meeting brief: orthography and quotes (live test 2026-11-26)', () => {
+  const ANDREA = 'Buenos días Jesús,\n\nMuchas gracias por contactar con nosotros; ¿Podrías enviarnos algunas propuestas visuales junto al presupuesto de las mismas?\n\nAsí valoramos toda la información en conjunto.';
+  const ORIGINAL = '¿Podrías enviarnos algunas propuestas visuales junto al presupuesto de las mismas?';
+  const thread: BriefEmail[] = [
+    { id: 'o1', direction: 'OUTBOUND', subject: 'Merchandising para vuestro stand en Anuga Select Ibérica 2027', text: 'Revisar muestras físicas con calma.', receivedAt: '2026-10-22T07:13:35.000Z', textRestricted: false },
+    { id: 'i1', direction: 'INBOUND', subject: 'Re: Merchandising para vuestro stand en Anuga Select Ibérica 2027', text: ANDREA, receivedAt: '2026-10-22T07:28:00.000Z', textRestricted: false },
+  ];
+  const opts = { timeZone: 'Europe/Madrid', emailTextMax: 1200 };
+  const ascii = (cita: string) =>
+    JSON.stringify({
+      quien: 'Adpan Europa S.L., empresa expositora. El contacto es Andrea, cuyo cargo no consta en los datos.',
+      origen: 'Contacto iniciado tras detectar su participacion como expositores en la feria Anuga Select Iberica 2027.',
+      conversacion: [{ fecha: '2026-10-22', de: 'cliente', texto: 'Solicita propuestas visuales junto a sus opciones economicas.', cita }],
+      huecos: ['Cantidad exacta de unidades que necesitan.', 'Persona o equipo responsable de la decision final.'],
+      preguntas_sugeridas: ['De las opciones que os planteamos, cual encaja mejor con la dinamica de vuestro stand?', 'Que volumen de piezas estimais oportuno para cubrir los dias de la feria?', 'Que fecha limite teneis prevista para recibir el material?'],
+      agenda: ['Repaso conjunto de las propuestas visuales enviadas.', 'Definicion de las necesidades de stand.', 'Coordinacion del envio de muestras fisicas.'],
+      llevar: ['Muestras fisicas de bolsa o talega de pan.', 'Muestra de grabado a laser sobre soporte de bambu.'],
+    });
+  const ASCII_QUOTE = 'Podrias enviarnos algunas propuestas visuales junto al presupuesto de las mismas';
+
+  it('a quote is found ignoring tildes, case, quote marks and «¿¡», and the ORIGINAL text of the email is shown', () => {
+    expect(findQuoteInText(ASCII_QUOTE, ANDREA)).toBe(ORIGINAL);
+    expect(findQuoteInText('«¿PODRÍAS enviarnos algunas propuestas visuales junto al presupuesto de las mismas?»', ANDREA)).toBe(ORIGINAL);
+    expect(findQuoteInText('asi valoramos toda la informacion', ANDREA)).toBe('Así valoramos toda la información');
+    expect(findQuoteInText('Podríais enviarnos el catálogo con precios', ANDREA)).toBeNull();
+    expect(findQuoteInText('sí', ANDREA)).toBeNull();
+  });
+
+  it('the client bullet with the ASCII quote of the model is kept with the original quote; an invented one is still dropped', () => {
+    const p = parseMeetingBrief('ficha');
+    // The first ASCII-folded answer is sent back once; the second is accepted.
+    expect(p(ascii(ASCII_QUOTE))).toMatchObject({ ok: false, error: expect.stringContaining('tildes') });
+    const parsed = p(ascii(ASCII_QUOTE));
+    if (!parsed.ok) throw new Error(parsed.error);
+    const v = validateMeetingBrief(parsed.value, thread, opts);
+    expect(v.conversation).toEqual([{ date: '2026-10-22', from: 'cliente', text: 'Solicita propuestas visuales junto a sus opciones economicas.', quote: ORIGINAL }]);
+    expect(v.discarded.bullets).toBe(0);
+    // Spanish punctuation of the questions by code.
+    expect(v.questions[0]!.startsWith('¿De las opciones')).toBe(true);
+    const pi = parseMeetingBrief('actualizacion');
+    pi(ascii('x'));
+    const invented = pi(ascii('Necesitamos 5.000 bolsas para enero'));
+    if (!invented.ok) throw new Error(invented.error);
+    const w = validateMeetingBrief(invented.value, thread, opts);
+    expect(w.conversation).toEqual([]);
+    expect(w.discarded.bullets).toBe(1);
+  });
+
+  it('agent: the model gets the emails with their spelling; an answer without tildes is repaired once and the task keeps «Ibérica», «física», «¿», «¡» and the original quote', async () => {
+    const accented = JSON.stringify({
+      quien: 'Adpan Europa S.L., expositora en Anuga Select Ibérica 2027; hablas con Laura, responsable de marketing.',
+      origen: 'Les escribimos al ver que participarán en Anuga Select Ibérica 2027.',
+      conversacion: [{ fecha: '2026-10-22', de: 'cliente', texto: 'Pidió propuestas visuales con su presupuesto.', cita: ASCII_QUOTE }],
+      huecos: ['Quién decide la compra.'],
+      preguntas_sugeridas: ['¿Cuántas unidades necesitáis?', '¿Quién decide?', '¡Qué buena feria! ¿Qué día montáis?'],
+      agenda: ['Repasar las propuestas.', 'Ver muestras físicas.', 'Próximos pasos.'],
+      llevar: ['Muestras físicas de talegas de pan.'],
+    });
+    const s = setup({ responses: [ascii(ASCII_QUOTE), accented] });
+    s.adpan();
+    s.mail('m5', CLIENT, ME, '2026-10-22T07:40:00.000Z', 'Re: Merchandising para vuestro stand en Anuga Select Ibérica 2027', ANDREA);
+    const r = await s.run();
+    expect(r.output).toMatchObject({ counters: { briefs_created: 1 }, cost: { llm_calls: 2 } });
+    const first = s.provider.requests[0]!.messages[0]!.content;
+    expect(first).toContain(ORIGINAL);
+    expect(first).toContain('Ortografía: escribe TODOS los textos en español');
+    expect(JSON.stringify(s.provider.requests[1]!.messages)).toContain('sin tildes');
+    const body = taskBody(s.fake);
+    expect(body).toContain('Anuga Select Ibérica 2027');
+    expect(body).toContain('Ver muestras físicas.');
+    expect(body).toContain(`— «${ORIGINAL}»`);
+    expect(body).toContain('1. ¿Cuántas unidades necesitáis?');
+    expect(body).toContain('¡Qué buena feria!');
+    expect(body).not.toContain('Se ha descartado');
   });
 });

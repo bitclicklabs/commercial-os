@@ -165,7 +165,12 @@ describe.skipIf(!dbAvailable)('inbound triage: process-inbox -> InboxAgent -> no
 
   it('triages the mailbox read-only: baja and no-interesado suppressed, notes for the commercial, events, rows', async () => {
     stub = new StubProvider({
-      responses: [JSON.stringify({ clase: 'INTERESADO', confianza: 0.93, motivo: 'pide precios' }), JSON.stringify({ clase: 'NO_INTERESADO', confianza: 0.96, motivo: 'rechazo explícito' })],
+      responses: [
+        JSON.stringify({ clase: 'INTERESADO', confianza: 0.93, motivo: 'pide precios' }),
+        JSON.stringify({ clase: 'NO_INTERESADO', confianza: 0.96, motivo: 'rechazo explícito' }),
+        // Tanda 22: the reply draft of the interested reply (after the whole batch is classified).
+        JSON.stringify({ cuerpo: 'Hola, Carmen:\n\nGracias por contestar. Te preparo una propuesta de 500 bolsas con vuestro logo y te paso los precios.' }),
+      ],
     });
     imap.commands.length = 0;
     const run = await runOnce();
@@ -174,10 +179,10 @@ describe.skipIf(!dbAvailable)('inbound triage: process-inbox -> InboxAgent -> no
       outcome: 'SUCCESS',
       sends_email: false,
       new_entries: ['luis@baja.example', 'marta@cliente2.example'],
-      counters: { messages_reviewed: 6, already_triaged: 1, bajas_detected: 1, interesados: 1, no_interesados: 1, auto_replies: 1, rebotes: 1, rebotes_duros: 1, llm_calls: 2, notes_created: 2, unmatched: 1 },
+      counters: { messages_reviewed: 6, already_triaged: 1, bajas_detected: 1, interesados: 1, no_interesados: 1, auto_replies: 1, rebotes: 1, rebotes_duros: 1, llm_calls: 3, notes_created: 2, unmatched: 1, reply_drafts_created: 1 },
       cursor: { uid_validity: 1000, from_uid: 0, to_uid: 36, reset: false },
     });
-    expect(stub.requests).toHaveLength(2);
+    expect(stub.requests).toHaveLength(3);
 
     // Suppression note: append-only, two new lines.
     const md = (fake.tables.notes!.find((n) => n.id === supp.id)!.bodyV2 as { markdown: string }).markdown;
@@ -199,6 +204,12 @@ describe.skipIf(!dbAvailable)('inbound triage: process-inbox -> InboxAgent -> no
     expect(fake.tables.opportunities).toEqual([expect.objectContaining({ name: 'Cliente SA', stage: 'NEW', companyId: company.id, pointOfContactId: carmen.id })]);
     const opp = fake.tables.opportunities[0]!;
     expect(fake.tables.tasks).toEqual([expect.objectContaining({ title: '📬 Responder a Carmen', status: 'TODO', dueAt: '2026-10-12T07:00:00.000Z' })]);
+    // Tanda 22: the draft of the answer in the task body (never sent), with the meeting paragraph.
+    const taskMd = (fake.tables.tasks[0]!.bodyV2 as { markdown: string }).markdown;
+    expect(taskMd).toContain('### Borrador de respuesta');
+    expect(taskMd).toContain('**Asunto:** Re: Material para vuestro stand');
+    expect(taskMd).toContain('¿Qué día y hora os vendría bien para una llamada de 30 minutos?');
+    expect(taskMd).toContain('PubliEXPE · expertos en merchandising para empresas');
     expect(fake.tables.taskTargets.map((t) => t.targetOpportunityId ?? t.targetCompanyId ?? t.targetPersonId).sort()).toEqual([opp.id, company.id, carmen.id].sort());
     const interestedNote = notes.find((n) => String(n.title).startsWith('📬'))!;
     expect(fake.tables.noteTargets.filter((t) => t.noteId === interestedNote.id && (t.targetOpportunityId === opp.id || t.targetPersonId === carmen.id))).toHaveLength(2);
@@ -243,11 +254,11 @@ describe.skipIf(!dbAvailable)('inbound triage: process-inbox -> InboxAgent -> no
     expect(verbs).toMatch(/^EXAMINE /m);
     expect(verbs).not.toMatch(/\b(?:STORE|EXPUNGE|CLOSE|MOVE|COPY|DELETE|APPEND|SELECT)\b/i);
 
-    // Trace: the two MODEL calls and the tool calls.
+    // Trace: the three MODEL calls (two triage, one draft) and the tool calls.
     const trace = await handle.db.query.traces.findFirst({ where: eq(traces.taskRunId, run.id) });
     const steps = await handle.db.query.traceSteps.findMany({ where: eq(traceSteps.traceId, trace!.id), orderBy: traceSteps.sequence });
-    expect(steps.filter((s) => s.type === 'MODEL')).toHaveLength(2);
-    expect(steps.map((s) => s.tool).filter(Boolean)).toEqual(['imap.fetch', 'get_note', 'update_note', 'create_note', 'upsert_person', 'upsert_opportunity', 'create_reply_task', 'find_company', 'create_note']);
+    expect(steps.filter((s) => s.type === 'MODEL')).toHaveLength(3);
+    expect(steps.map((s) => s.tool).filter(Boolean)).toEqual(['imap.fetch', 'get_note', 'update_note', 'get_company', 'get_hypothesis', 'create_note', 'upsert_person', 'upsert_opportunity', 'create_reply_task', 'find_company', 'create_note']);
   });
 
   it('is idempotent: a second run and a UIDVALIDITY reset change nothing (no LLM, no notes, no events)', async () => {
@@ -258,7 +269,7 @@ describe.skipIf(!dbAvailable)('inbound triage: process-inbox -> InboxAgent -> no
     imap.uidValidity = 1001;
     const reset = await runOnce();
     expect(reset.output).toMatchObject({ outcome: 'SUCCESS', counters: { messages_reviewed: 6, already_triaged: 6, llm_calls: 0 }, cursor: { reset: true, uid_validity: 1001, to_uid: 36 } });
-    expect(stub.requests).toHaveLength(2);
+    expect(stub.requests).toHaveLength(3);
     expect(fake.tables.notes!.length).toBe(notesBefore);
     expect(fake.count('PATCH', 'notes')).toBe(patches);
     expect(await replyEvents()).toHaveLength(5);
@@ -269,7 +280,14 @@ describe.skipIf(!dbAvailable)('inbound triage: process-inbox -> InboxAgent -> no
   });
 
   it('PREGUNTA (tanda 19): Person of a named sender + Task, NO Opportunity; a new interested reply reuses the open one', async () => {
-    stub = new StubProvider({ responses: [JSON.stringify({ clase: 'PREGUNTA', confianza: 0.9, motivo: 'pregunta plazos' }), JSON.stringify({ clase: 'INTERESADO', confianza: 0.92, motivo: 'pide más' })] });
+    stub = new StubProvider({
+      responses: [
+        JSON.stringify({ clase: 'PREGUNTA', confianza: 0.9, motivo: 'pregunta plazos' }),
+        JSON.stringify({ clase: 'INTERESADO', confianza: 0.92, motivo: 'pide más' }),
+        JSON.stringify({ cuerpo: 'Hola, Pedro:\n\nGracias por escribir. Lo que tardamos depende de la personalización: lo confirmo con el taller y te lo digo.' }),
+        JSON.stringify({ cuerpo: 'Hola, Carmen:\n\nApuntado: añado las 200 bolsas a la propuesta y te la envío junto con lo demás.' }),
+      ],
+    });
     const at = (h: number) => new Date(`2026-10-09T${String(h).padStart(2, '0')}:00:00Z`);
     imap.messages = [
       ...imap.messages,
@@ -286,6 +304,11 @@ describe.skipIf(!dbAvailable)('inbound triage: process-inbox -> InboxAgent -> no
     expect(fake.tables.taskTargets.filter((t) => t.taskId === pedroTask.id).some((t) => t.targetOpportunityId)).toBe(false);
     // Carmen's second reply: the open «📬 Responder a Carmen» task is reused; no new event.
     expect(fake.tables.tasks).toHaveLength(2);
+    // Tanda 22: both drafts; Carmen's reused task gets the new reply and its draft appended.
+    expect(run.output).toMatchObject({ counters: { reply_drafts_created: 2, reply_drafts_failed: 0 } });
+    const carmenMd = (fake.tables.tasks.find((t) => t.title === '📬 Responder a Carmen')!.bodyV2 as { markdown: string }).markdown;
+    expect(carmenMd).toContain('añado las 200 bolsas');
+    expect(carmenMd).toContain('Te preparo una propuesta de 500 bolsas');
     expect(await handle.db.query.events.findMany({ where: and(eq(events.tenantId, tenant), eq(events.type, 'opportunity.created')) })).toHaveLength(1);
   });
 

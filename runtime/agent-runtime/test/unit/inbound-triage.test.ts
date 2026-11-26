@@ -402,7 +402,9 @@ function setup(opts: { messages: RawMessage[]; responses?: string[]; configurati
   const company = fake.seed('companies', { name: 'Cliente SA', domainName: { primaryLinkUrl: 'cliente.example', primaryLinkLabel: '', secondaryLinks: [] } });
   const otherCompany = fake.seed('companies', { name: 'Dominio SL', domainName: { primaryLinkUrl: 'dominio.example', primaryLinkLabel: '', secondaryLinks: [] } });
   const hypothesisId = '3b6f0d6e-1c1a-4c7e-9a55-0d8f2f6a9b01';
-  const configuration = { ...desiredInboxVersion().configuration, suppression_note_id: supp.id, ...opts.configuration };
+  // The tanda 19 tests run without reply drafts (one scripted answer per triage call); the
+  // tanda 22 tests (test/unit/reply-drafts.test.ts) turn them on.
+  const configuration = { ...desiredInboxVersion().configuration, suppression_note_id: supp.id, reply_draft: { enabled: false }, ...opts.configuration };
   const registry = createDefaultToolRegistry({ twenty: fake.client() });
   const mailbox = new FakeMailbox(opts.messages);
   const store = new MemoryInboundStateStore();

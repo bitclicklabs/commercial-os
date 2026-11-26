@@ -209,25 +209,6 @@ El seguimiento de la secuencia cubre los envíos que nadie contestó. Falta un c
 > **Importante:** el correo conectado en Twenty necesita visibilidad **Share everything**. Con «solo metadatos», Twenty entrega asunto y texto enmascarados (`FIELD_RESTRICTED_…`): el sistema lo detecta (contador `threads_text_restricted`), sigue detectando silencios y lo avisa en la Task.
 
 
-## Lo que el sistema no hace
-
-- **No envía ninguna respuesta.** Ni al cliente ni a nadie: el nivel 1 es exactamente esto.
-- **No crea eventos de calendario ni envía invitaciones.** La reunión la creas tú.
-- **No inventa precios, plazos ni stock** en el borrador, ni datos de cualificación sin cita literal.
-- **No retrocede una Oportunidad** de etapa.
-- **No sobrescribe** los campos de la Oportunidad que ya rellenaste tú.
-- **No genera un seguimiento** si no enviaste el anterior.
-- **No borra nada.**
-
-## Requisitos
-
-Para que el ciclo funcione entero necesitas, aparte del sistema ya desplegado:
-
-1. **Sincronizar el calendario de tu cuenta IONOS en Twenty** (**Settings → Accounts →** tu cuenta **→ Calendario**), con visibilidad **Share everything**. Sin esto, los borradores salen sin huecos concretos y `meeting-sync` no detecta nada. El procedimiento está en el [runbook](runbook-local.md#activar-el-calendario-en-twenty).
-1. **Crear las reuniones en ese calendario, invitando al cliente por email.** Sin invitar al cliente como participante, el sistema no puede asociar el evento a la Oportunidad.
-
-> **Importante:** sin calendario sincronizado el AI Setter degrada con elegancia, no se rompe: los borradores proponen solo el enlace de reserva o hacen una pregunta abierta, y las Oportunidades siguen siendo tuyas para moverlas a mano.
-
 ## Tanda C: ficha previa, métricas y trato de vosotros
 
 > **Estado: en curso (tanda 24, 2026-11-26).** Es la última tanda del AI Setter y mantiene el nivel 1: el sistema prepara, tú decides. Lo que depende del código aún sin contrastar va marcado `[POR CONFIRMAR]`.
@@ -324,6 +305,25 @@ flowchart TD
 Lo que el sistema nunca hace en ninguna etapa: enviar un correo, crear un evento o invitar a nadie, retroceder una Oportunidad, pisar lo que escribiste tú o inventar datos, precios y stock.
 
 > **Nota:** subir al nivel 2 (envío con límites) es una decisión nueva del usuario. Las métricas del resumen semanal, sobre todo la tasa de respuesta y la velocidad de respuesta del comercial, son los datos con los que tomarla.
+
+## Lo que el sistema no hace
+
+- **No envía ninguna respuesta.** Ni al cliente ni a nadie: el nivel 1 es exactamente esto.
+- **No crea eventos de calendario ni envía invitaciones.** La reunión la creas tú.
+- **No inventa precios, plazos ni stock** en el borrador, ni datos de cualificación sin cita literal.
+- **No retrocede una Oportunidad** de etapa.
+- **No sobrescribe** los campos de la Oportunidad que ya rellenaste tú.
+- **No genera un seguimiento** si no enviaste el anterior.
+- **No borra nada.**
+
+## Requisitos
+
+Para que el ciclo funcione entero necesitas, aparte del sistema ya desplegado:
+
+1. **Sincronizar el calendario de tu cuenta IONOS en Twenty** (**Settings → Accounts →** tu cuenta **→ Calendario**), con visibilidad **Share everything**. Sin esto, los borradores salen sin huecos concretos y `meeting-sync` no detecta nada. El procedimiento está en el [runbook](runbook-local.md#activar-el-calendario-en-twenty).
+1. **Crear las reuniones en ese calendario, invitando al cliente por email.** Sin invitar al cliente como participante, el sistema no puede asociar el evento a la Oportunidad.
+
+> **Importante:** sin calendario sincronizado el AI Setter degrada con elegancia, no se rompe: los borradores proponen solo el enlace de reserva o hacen una pregunta abierta, y las Oportunidades siguen siendo tuyas para moverlas a mano.
 
 ## Documentos relacionados
 

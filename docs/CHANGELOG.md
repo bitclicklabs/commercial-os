@@ -219,7 +219,7 @@ Integración de `feat/mvp0-bootstrap` en `main` (PR #1).
 - Requisito del usuario: activar la sincronización del calendario de su cuenta IONOS en Twenty con visibilidad **Share everything**, y crear las reuniones invitando al cliente por email.
 - Docs: nuevo [ai-setter.md](ai-setter.md); sección «Responder y cerrar reuniones» en la [guía comercial](guia-comercial.md#responder-y-cerrar-reuniones); en el [runbook](runbook-local.md), las cinco variables, la tarea del seed, «Activar el calendario en Twenty» y dos problemas frecuentes nuevos; ESTADO con el tablero de la tanda. Todo lo que depende de la implementación queda marcado `[POR CONFIRMAR]` para reconciliar al integrar.
 
-## 2026-11-26 — Tanda 23 (en curso)
+## 2026-11-26 — Tanda 23 (cerrada)
 
 - AI Setter, tanda B (diseño cerrado; implementación en curso, nivel 1: el sistema prepara, el humano envía). La tanda A queda marcada como hecha y probada: prueba de punta a punta del 2026-11-26 (correo de prueba → Task 📅 con borrador y 3 huecos reales del calendario IONOS, 0,002 €).
 - Secuencias de seguimiento: de una Task con guion fijo a hasta 2 seguimientos (`FOLLOWUP_MAX_TOUCHES`, 2) a los 5 días laborables del último toque **enviado**, detectado en los correos salientes que Twenty importa del buzón. Si el comercial no envió el anterior, no se genera el siguiente. Tasks «Seguimiento 1 — {empresa} 🔔» y «Seguimiento 2 — {empresa} 🔔» con borrador en el mismo hilo (skill `email-followup-draft` v1: recordatorio con ángulo nuevo de valor; cierre amable) y propuesta de reunión con huecos. Se para con cualquier respuesta (salvo automáticas), rebote o baja.

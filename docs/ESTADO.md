@@ -261,7 +261,7 @@ Notas:
 - **Pendiente del usuario:** activar la sincronización del calendario de su cuenta IONOS en Twenty ([procedimiento](runbook-local.md#activar-el-calendario-en-twenty), ruta exacta por confirmar) y crear las reuniones en ese calendario invitando al cliente por email.
 - **Decisión de producto:** nivel 1 de autonomía; subir de nivel exigirá una decisión nueva del usuario.
 
-## Tanda 23 — AI Setter, tanda B: secuencias y cualificación 🚧 (en curso, 2026-11-26)
+## Tanda 23 — AI Setter, tanda B: secuencias y cualificación ✅ (cerrada, 2026-11-26; suite 1376, desplegada; ensayo en vivo de «Retomar conversación» con Adpan; arreglos de la recuperación: SUPPRESSION_NOTE_ID y MEETING_CALENDAR_SYNCED)
 
 Origen: continuación del AI Setter con el mismo **nivel 1 de autonomía** (el sistema prepara, el humano envía). La tanda A (tanda 22) quedó **hecha y probada**: prueba de punta a punta del 2026-11-26 (correo de prueba → Task 📅 con borrador y 3 huecos reales del calendario IONOS, 0,002 €). La tanda B cierra cuatro huecos: el seguimiento era un único aviso con guion, la cualificación del cliente se perdía en el correo, los huecos ignoraban el plazo que pedía el cliente y las Tasks con emoji delante se veían con un icono roto.
 

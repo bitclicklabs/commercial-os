@@ -27,6 +27,15 @@
  *      due in 2 working days) and the event `opportunity.created` when it is new;
  *      PREGUNTA -> Person (only when the From header carries a name) + the same Task, NO
  *      Opportunity. The 📬 note stays: it is the record with the excerpt, the Task is the action;
+ *    - reply DRAFT (tanda 22, `configuration.reply_draft.enabled`): for INTERESADO / PREGUNTA
+ *      replies with the native records, ONE LLM call (skill `email-reply-draft`, model of the
+ *      drafting role of the model router) writes the answer; the code adds «Re: …», the meeting
+ *      paragraph (from a `MeetingAvailability`, src/meetings/types.ts), the farewell and the
+ *      signature. It goes into the body of the Task (section «Borrador de respuesta») and,
+ *      summarised, into the 📬 note. NEVER sent: the commercial reviews it and sends it himself
+ *      (autonomy level 1). A failed draft never blocks: the Task says «borrador no disponible».
+ *      With `meeting_intent` (the client accepts / proposes a meeting) the Task is
+ *      «📅 Cerrar reunión con <empresa>» and the draft focuses on closing the date;
  *    - AUTO_REPLY, soft bounces, OTRO -> only recorded.
  *    Every triaged message emits `email.reply_received` (with its class) and gets its
  *    `inbound_triage` row, written after the actions.
@@ -43,7 +52,7 @@ import type { Db } from '../db/client.js';
 import { NOOP_EVENT_PUBLISHER, type EventPublisher } from '../events/event-bus.js';
 import { ImapFlowMailboxReader, imapConfigFromEnv, mailboxKey, type MailboxSession, type RawMessage } from '../inbound/imap-mailbox.js';
 import { DrizzleInboundStateStore } from '../inbound/inbound-state.js';
-import { DEFAULT_REPLY_THRESHOLDS, REPLY_CLASSIFICATION_JSON_SCHEMA, REPLY_CLASSIFIER_SYSTEM_PROMPT, buildReplyPrompt, decideReplyClass, parseReplyClassification, LLM_TEXT_MAX_DEFAULT, type ReplyThresholds } from '../inbound/reply-classifier.js';
+import { DEFAULT_REPLY_THRESHOLDS, MEETING_INTENT_SIGNAL, REPLY_CLASSIFICATION_JSON_SCHEMA, REPLY_CLASSIFIER_SYSTEM_PROMPT, buildReplyPrompt, decideReplyClass, parseReplyClassification, LLM_TEXT_MAX_DEFAULT, type ReplyThresholds } from '../inbound/reply-classifier.js';
 import { DrizzleSendLookup, FREEMAIL_DOMAINS, type SendLookup, type SendMatch } from '../inbound/reply-links.js';
 import { localDate, noInterestLine, sanitizeSubject, suppressionLine } from '../inbound/suppression-list.js';
 import { appendSuppressionEntries, toolError } from '../inbound/suppression-writer.js';
@@ -51,6 +60,14 @@ import { bounceNoteBody, bounceNoteTitle, NOTE_CLASSES, replyNoteBody, replyNote
 import { cleanPersonName, personDisplayName, type PersonSummary } from '../crm/people.js';
 import { opportunityCreatedEvent } from '../crm/opportunities.js';
 import { addBusinessDays, REPLY_TASK_BUSINESS_DAYS, replyTaskBody } from '../crm/reply-task.js';
+import { NULL_AVAILABILITY, type MeetingAvailability, type MeetingProposal } from '../meetings/types.js';
+import { meetingParagraph, MEETING_SLOTS_IN_DRAFT } from '../inbound/meeting-paragraph.js';
+import { defaultModelRouter, isModelRole, type ModelRole, type ModelRouter } from '../providers/model-router.js';
+import { useKnowledge } from '../knowledge/resolver.js';
+import { useSkill } from '../skills/resolver.js';
+import type { GetHypothesisOutput } from '../tools/twenty/hypothesis-tools.js';
+import { DEFAULT_REPLY_SENDER, finalizeReplyDraft, parseReplyDraft, replyDraftNoteSection, replyDraftSection, replyDraftSectionTitle, type ReplyDraftOutcome, type ReplySender } from './reply-draft.js';
+import { buildReplyDraftPrompt, REPLY_DRAFT_JSON_SCHEMA, REPLY_DRAFT_SKILL_ID, REPLY_DRAFT_SYSTEM_PROMPT, REPLY_TEXT_MAX } from './reply-draft-prompt.js';
 import { classifyByRules, extractTriageFeatures, type BounceInfo, type TriageClass, type TriageFeatures } from '../inbound/triage-rules.js';
 import { DrizzleInboundTriageStore, messageKeyOf, type InboundTriageStore } from '../inbound/triage-store.js';
 import { emailDomain, isDomainOrSubdomain, parseRawMessage, type ParsedInboundMessage } from '../inbound/unsubscribe-classifier.js';
@@ -63,7 +80,9 @@ export const INBOX_IMPLEMENTATION = 'inbound_inbox';
 export const INBOX_CONSUMER = 'inbox';
 /** Native Person / Opportunity / Task of a reply (tanda 19), plus `get_company` to name the task. */
 export const INBOX_CRM_TOOLS = ['upsert_person', 'upsert_opportunity', 'create_reply_task', 'get_company'] as const;
-export const INBOX_TOOLS = ['get_note', 'update_note', 'create_note', 'find_company', ...INBOX_CRM_TOOLS] as const;
+/** Tanda 22: READ of the hypothesis of the send (need, why now, first email) for the reply draft. */
+export const INBOX_DRAFT_TOOLS = ['get_hypothesis'] as const;
+export const INBOX_TOOLS = ['get_note', 'update_note', 'create_note', 'find_company', ...INBOX_CRM_TOOLS, ...INBOX_DRAFT_TOOLS] as const;
 export const REPLY_RECEIVED_EVENT = 'email.reply_received';
 
 export interface InboxTriageConfig extends ReplyThresholds {
@@ -75,12 +94,51 @@ export interface InboxTriageConfig extends ReplyThresholds {
   emitEvents: boolean;
 }
 
+/** `configuration.reply_draft` (tanda 22). Absent (older versions): disabled. */
+export interface ReplyDraftConfig {
+  enabled: boolean;
+  /** Model router role of the drafting call (default `executor_cheap`, the EmailDrafter's). */
+  modelRole: ModelRole;
+  /** Model pinned for the role (optional; MODEL_ROUTE_<ROL> still wins). Default: the role's. */
+  model: string | null;
+  maxPerRun: number;
+  maxAttempts: number;
+  maxOutputTokens: number;
+  textMax: number;
+  slots: number;
+  sender: ReplySender;
+}
+
 export interface InboxConfig extends BajasConfig {
   triage: InboxTriageConfig;
+  replyDraft: ReplyDraftConfig;
 }
 
 const num01 = (v: unknown, d: number) => (typeof v === 'number' && Number.isFinite(v) && v >= 0 && v <= 1 ? v : d);
 const int = (v: unknown, d: number, min: number, max: number) => (typeof v === 'number' && Number.isInteger(v) && v >= min && v <= max ? v : d);
+
+export function readReplyDraftConfig(configuration: Record<string, unknown>): ReplyDraftConfig {
+  const r = (configuration.reply_draft ?? {}) as Record<string, unknown>;
+  const s = (r.sender ?? {}) as Record<string, unknown>;
+  const str = (v: unknown, d: string) => (typeof v === 'string' && v.trim().length > 0 ? v.trim() : d);
+  const role = r.model_role;
+  return {
+    enabled: r.enabled === true,
+    modelRole: isModelRole(role) && role !== 'judge' ? role : 'executor_cheap',
+    model: typeof r.model === 'string' && r.model.trim().length > 0 ? r.model.trim() : null,
+    maxPerRun: int(r.max_per_run, 40, 0, 200),
+    maxAttempts: int(r.max_attempts, 2, 1, 3),
+    maxOutputTokens: int(r.max_output_tokens, 2_048, 256, 8_192),
+    textMax: int(r.text_max, REPLY_TEXT_MAX, 200, 6_000),
+    slots: int(r.slots, MEETING_SLOTS_IN_DRAFT, 1, MEETING_SLOTS_IN_DRAFT),
+    sender: {
+      name: str(s.name, DEFAULT_REPLY_SENDER.name),
+      company: str(s.company, DEFAULT_REPLY_SENDER.company),
+      descriptor: str(s.descriptor, DEFAULT_REPLY_SENDER.descriptor),
+      web: s.web === null ? null : str(s.web, DEFAULT_REPLY_SENDER.web ?? ''),
+    },
+  };
+}
 
 export function readInboxConfig(configuration: Record<string, unknown>): InboxConfig {
   const t = (configuration.triage ?? {}) as Record<string, unknown>;
@@ -98,6 +156,7 @@ export function readInboxConfig(configuration: Record<string, unknown>): InboxCo
       lookupCompanyByDomain: t.lookup_company_by_domain !== false,
       emitEvents: t.emit_events !== false,
     },
+    replyDraft: readReplyDraftConfig(configuration),
   };
 }
 
@@ -105,6 +164,10 @@ export interface InboxAgentDeps extends BajasAgentDeps {
   triageStore?: InboundTriageStore;
   sends?: SendLookup;
   events?: EventPublisher;
+  /** Tanda 22: free slots / booking link for the meeting paragraph of the reply drafts. */
+  availability?: MeetingAvailability;
+  /** Tanda 22: resolves the model of the drafting role (default: router over process.env). */
+  router?: ModelRouter;
 }
 
 type Outcome = 'SUCCESS' | 'SKIPPED' | 'FAILED';
@@ -147,6 +210,9 @@ function zeroCounters() {
     opportunities_created: 0,
     opportunities_reused: 0,
     reply_tasks: 0,
+    reply_drafts_created: 0,
+    reply_drafts_failed: 0,
+    meeting_tasks: 0,
   };
 }
 
@@ -422,7 +488,7 @@ export class InboxAgent implements AgentImplementation {
         }
         try {
           const suppressionAdded = p.email !== null && (p.class === 'BAJA' || p.class === 'NO_INTERESADO') && unattributed.delete(p.email);
-          const { row: done, crm } = await this.act(ctx, cfg, p, { sends, events, suppressionAdded, steps, counters, mailbox: key.mailbox, uidValidity: session.uidValidity, crmTools });
+          const { row: done, crm, draft } = await this.act(ctx, cfg, p, { sends, events, suppressionAdded, steps, counters, mailbox: key.mailbox, uidValidity: session.uidValidity, crmTools, allowed, llm });
           await triageStore.insert(done);
           counters.messages_reviewed++;
           counters[CLASS_COUNTER[p.class]]++;
@@ -439,7 +505,8 @@ export class InboxAgent implements AgentImplementation {
             hypothesis_id: done.hypothesisId,
             match_by: done.matchBy,
             note_id: done.noteId,
-            ...(crm ? { person_id: crm.personId, opportunity_id: crm.opportunityId, opportunity_created: crm.opportunityCreated, task_id: crm.taskId } : {}),
+            ...(crm ? { person_id: crm.personId, opportunity_id: crm.opportunityId, opportunity_created: crm.opportunityCreated, task_id: crm.taskId, task_kind: crm.taskKind } : {}),
+            ...(draft ? { reply_draft: draft } : {}),
           });
           lastDoneUid = Math.max(lastDoneUid, p.item.raw.uid);
         } catch (err) {
@@ -483,7 +550,18 @@ export class InboxAgent implements AgentImplementation {
     ctx: AgentContext,
     cfg: InboxConfig,
     d: Decision,
-    o: { sends: SendLookup; events: EventPublisher; suppressionAdded: boolean; steps: AgentStep[]; counters: Counters; mailbox: string; uidValidity: number; crmTools: boolean },
+    o: {
+      sends: SendLookup;
+      events: EventPublisher;
+      suppressionAdded: boolean;
+      steps: AgentStep[];
+      counters: Counters;
+      mailbox: string;
+      uidValidity: number;
+      crmTools: boolean;
+      allowed: ReadonlySet<string>;
+      llm: ProspectorRun;
+    },
   ) {
     const tools = ctx.tools!;
     const msg = d.item.msg;
@@ -503,6 +581,7 @@ export class InboxAgent implements AgentImplementation {
     let matchBy: string | null = match?.by ?? null;
     let noteId: string | null = null;
     let crm: CrmFollowUp | null = null;
+    let prepared: PreparedDraft | null = null;
     const signals = [...d.signals];
 
     if (needsNote) {
@@ -521,6 +600,12 @@ export class InboxAgent implements AgentImplementation {
       }
       if (companyId) {
         const sentLocal = match ? localMinute(match.sentAt, cfg.timezone) : null;
+        const followUp = o.crmTools && (d.class === 'INTERESADO' || d.class === 'PREGUNTA') && fromEmail !== null;
+        // Tanda 22: the reply draft BEFORE the note, so the note carries it too. Never blocking.
+        if (followUp && cfg.replyDraft.enabled) {
+          prepared = await this.prepareReplyDraft(ctx, cfg, d, o, { companyId, hypothesisId, fromEmail: fromEmail!, sendSubject: match?.subject ?? null });
+          signals.push(...prepared.signals);
+        }
         const note = isBounce
           ? {
               title: bounceNoteTitle(receivedLocal),
@@ -549,13 +634,27 @@ export class InboxAgent implements AgentImplementation {
                 suppressionAdded: o.suppressionAdded,
               }),
             };
+        if (prepared) note.bodyMarkdown = `${note.bodyMarkdown.replace(/s+$/, '')}
+
+${replyDraftNoteSection(prepared.outcome)}
+`;
         const created = await tools.call('create_note', { companyId, ...(hypothesisId ? { hypothesisId } : {}), ...note });
         o.steps.push(created.step);
         if (created.result.status !== 'ok') throw new StopRun('error', toolError('create_note', created.result as { status: string } & Record<string, unknown>));
         noteId = (created.result.output as { record: { id: string } }).record.id;
         o.counters.notes_created++;
-        if (o.crmTools && (d.class === 'INTERESADO' || d.class === 'PREGUNTA') && fromEmail) {
-          crm = await this.crmFollowUp(ctx, cfg, d, o, { companyId, hypothesisId, noteId, fromEmail, when, receivedLocal, sendSubject: match?.subject ?? null });
+        if (followUp) {
+          crm = await this.crmFollowUp(ctx, cfg, d, o, {
+            companyId,
+            hypothesisId,
+            noteId,
+            fromEmail: fromEmail!,
+            when,
+            receivedLocal,
+            sendSubject: match?.subject ?? null,
+            companyName: prepared?.companyName ?? null,
+            draft: prepared?.outcome ?? null,
+          });
           signals.push(...crm.signals);
         }
       } else {
@@ -620,9 +719,18 @@ export class InboxAgent implements AgentImplementation {
       suppressionAdded: o.suppressionAdded,
       eventId,
       executionId: ctx.executionId,
-      costEur: d.costEur,
+      costEur: round6(d.costEur + (prepared?.costEur ?? 0)),
     };
-    return { row, crm };
+    const draft = prepared
+      ? {
+          status: prepared.outcome.status,
+          ...(prepared.outcome.status === 'failed' ? { reason: prepared.outcome.reason } : { subject: prepared.outcome.draft.subject, meeting_source: prepared.outcome.draft.meeting.source, fixes: prepared.outcome.draft.fixes, warnings: prepared.outcome.draft.warnings }),
+          meeting_intent: prepared.outcome.meetingIntent,
+          model: prepared.model,
+          cost_eur: prepared.costEur,
+        }
+      : null;
+    return { row, crm, draft };
   }
 
   /**
@@ -636,11 +744,24 @@ export class InboxAgent implements AgentImplementation {
     cfg: InboxConfig,
     d: Decision,
     o: { events: EventPublisher; steps: AgentStep[]; counters: Counters },
-    r: { companyId: string; hypothesisId: string | null; noteId: string; fromEmail: string; when: Date; receivedLocal: string; sendSubject: string | null },
+    r: {
+      companyId: string;
+      hypothesisId: string | null;
+      noteId: string;
+      fromEmail: string;
+      when: Date;
+      receivedLocal: string;
+      sendSubject: string | null;
+      /** Already read by the draft step (tanda 22); null = read it here when needed. */
+      companyName: string | null;
+      /** Tanda 22: the reply draft (or why it is not available); null = drafts disabled. */
+      draft: ReplyDraftOutcome | null;
+    },
   ): Promise<CrmFollowUp> {
     const tools = ctx.tools!;
     const msg = d.item.msg;
-    const out: CrmFollowUp = { personId: null, personName: null, opportunityId: null, opportunityCreated: false, taskId: null, signals: [] };
+    const meetingIntent = d.signals.includes(MEETING_INTENT_SIGNAL);
+    const out: CrmFollowUp = { personId: null, personName: null, opportunityId: null, opportunityCreated: false, taskId: null, taskKind: meetingIntent ? 'meeting' : 'reply', signals: [] };
     const call = async (tool: string, input: Record<string, unknown>) => {
       const res = await tools.call(tool, input);
       o.steps.push(res.step);
@@ -680,33 +801,178 @@ export class InboxAgent implements AgentImplementation {
       }
     }
 
-    // 3. Task «📬 Responder a <persona/empresa>», due in 2 working days.
-    let who = out.personName;
-    if (!who) {
-      const c = (await call('get_company', { companyId: r.companyId })) as { company: { name: string } | null };
-      who = c.company?.name ?? r.fromEmail;
-    }
+    // 3. Task «📬 Responder a <persona/empresa>» (or, tanda 22, «📅 Cerrar reunión con <empresa>»
+    //    when the client accepts or proposes a meeting), due in 2 working days, with the draft.
+    let companyName = r.companyName;
+    const company = async (): Promise<string> => {
+      if (companyName === null) {
+        const c = (await call('get_company', { companyId: r.companyId })) as { company: { name: string } | null };
+        companyName = c.company?.name ?? r.fromEmail;
+      }
+      return companyName;
+    };
+    const who = meetingIntent ? await company() : (out.personName ?? (await company()));
+    const excerpt = sanitizeExcerpt(msg?.authoredText ?? '');
+    const section = r.draft ? replyDraftSection(r.draft, r.receivedLocal) : null;
     const task = (await call('create_reply_task', {
       who,
+      kind: out.taskKind,
       bodyMarkdown: replyTaskBody({
         class: d.class as 'INTERESADO' | 'PREGUNTA',
         fromEmail: r.fromEmail,
         subject: msg?.subject ?? '',
-        excerpt: sanitizeExcerpt(msg?.authoredText ?? ''),
+        excerpt,
         receivedLocal: r.receivedLocal,
         timezone: cfg.timezone,
         sendSubject: r.sendSubject,
+        meetingIntent,
+        draftSection: section,
       }),
       dueAt: addBusinessDays(r.when, REPLY_TASK_BUSINESS_DAYS, cfg.timezone).toISOString(),
       companyId: r.companyId,
       opportunityId: out.opportunityId,
       personId: out.personId,
       noteId: r.noteId,
-    })) as { created: boolean; task: { id: string } };
+      // An open task reused by another reply of the same contact gets this reply and its draft
+      // appended (once: the section title carries the receive time).
+      ...(section ? { appendOnReuse: { marker: replyDraftSectionTitle(r.receivedLocal), markdown: reuseAppendix(r.fromEmail, r.receivedLocal, excerpt, section) } } : {}),
+    })) as { created: boolean; appended?: boolean; task: { id: string } };
     out.taskId = task.task.id;
     o.counters.reply_tasks++;
+    if (meetingIntent) o.counters.meeting_tasks++;
+    if (task.appended) out.signals.push('reply_task_draft_appended');
     return out;
   }
+
+  /**
+   * Tanda 22: the draft of the answer to an INTERESADO / PREGUNTA reply. Reads the company (name)
+   * and, when the send has one, the hypothesis (need, why now, our first email); asks the
+   * availability for a meeting proposal; ONE LLM call with the skill `email-reply-draft` and the
+   * model of the drafting role; the code finalises it (subject, meeting paragraph, signature).
+   * Never blocking: a model error, an invalid answer, the per-run limit or an unreadable
+   * hypothesis end as `failed` with the reason (the Task is created anyway). Only a Twenty error
+   * reading the company stops the run, as in the rest of the CRM step (retried, idempotent).
+   */
+  private async prepareReplyDraft(
+    ctx: AgentContext,
+    cfg: InboxConfig,
+    d: Decision,
+    o: { steps: AgentStep[]; counters: Counters; allowed: ReadonlySet<string>; llm: ProspectorRun },
+    r: { companyId: string; hypothesisId: string | null; fromEmail: string; sendSubject: string | null },
+  ): Promise<PreparedDraft> {
+    const tools = ctx.tools!;
+    const msg = d.item.msg;
+    const rc = cfg.replyDraft;
+    const meetingIntent = d.signals.includes(MEETING_INTENT_SIGNAL);
+    const signals: string[] = [];
+    const failed = (reason: string, extra: Partial<PreparedDraft> = {}): PreparedDraft => {
+      o.counters.reply_drafts_failed++;
+      return { outcome: { status: 'failed', reason, meetingIntent }, companyName: null, costEur: 0, model: null, ...extra, signals: [...signals, 'reply_draft_failed'] };
+    };
+    if (o.counters.reply_drafts_created + o.counters.reply_drafts_failed >= rc.maxPerRun) return failed('se ha alcanzado el límite de borradores por ejecución');
+
+    // Company (name for the prompt and the task). A Twenty error stops the run (as the CRM step).
+    const got = await tools.call('get_company', { companyId: r.companyId });
+    o.steps.push(got.step);
+    if (got.result.status !== 'ok') throw new StopRun('error', toolError('get_company', got.result as { status: string } & Record<string, unknown>));
+    const company = (got.result.output as { company: { name: string; domain?: string | null } | null }).company;
+    const companyName = company?.name ?? null;
+
+    // Hypothesis of the send: need, why now and our first email. Optional, never fatal.
+    let hypothesis: { need: string | null; whyNow: string | null } | null = null;
+    let firstEmail: { subject: string | null; body: string | null } | null = r.sendSubject ? { subject: r.sendSubject, body: null } : null;
+    if (r.hypothesisId && o.allowed.has('get_hypothesis')) {
+      const h = await tools.call('get_hypothesis', { hypothesisId: r.hypothesisId });
+      o.steps.push(h.step);
+      const out = h.result.status === 'ok' ? (h.result.output as GetHypothesisOutput) : null;
+      const hyp = out?.found ? out.hypothesis : null;
+      if (hyp && (hyp.companyId === null || hyp.companyId === r.companyId)) {
+        hypothesis = { need: hyp.need, whyNow: hyp.whyNow };
+        if (hyp.emailSubject || hyp.emailBody) firstEmail = { subject: hyp.emailSubject ?? r.sendSubject, body: hyp.emailBody };
+      } else signals.push(h.result.status !== 'ok' ? 'draft_hypothesis_unavailable' : hyp ? 'draft_hypothesis_other_company' : 'draft_hypothesis_not_found');
+    }
+
+    // Meeting proposal (code). An availability error falls back to «¿qué día os viene bien?».
+    let proposal: MeetingProposal;
+    try {
+      proposal = await (this.deps.availability ?? NULL_AVAILABILITY).propose({ now: this.clock(), count: rc.slots });
+    } catch {
+      signals.push('availability_error');
+      proposal = await NULL_AVAILABILITY.propose({ now: this.clock(), count: rc.slots });
+    }
+
+    const model = this.draftModel(ctx, rc, signals);
+    const fromName = cleanPersonName(msg?.fromName ?? null);
+    const firstName = fromName ? (fromName.split(/\s+/)[0] ?? null) : null;
+    const system = useKnowledge(ctx, useSkill(ctx, REPLY_DRAFT_SKILL_ID, REPLY_DRAFT_SYSTEM_PROMPT));
+    const eurBefore = o.llm.costEur();
+    const call = await o.llm.completeJson({
+      label: { step: 'reply_draft', uid: d.item.raw.uid },
+      system,
+      messages: [
+        {
+          role: 'user',
+          content: buildReplyDraftPrompt({
+            today: localMinute(this.clock(), cfg.timezone).slice(0, 10),
+            sender: { name: rc.sender.name, company: rc.sender.company, descriptor: rc.sender.descriptor },
+            class: d.class as 'INTERESADO' | 'PREGUNTA',
+            meetingIntent,
+            meetingSource: meetingParagraph(proposal).source,
+            company: { name: companyName ?? r.fromEmail, domain: company?.domain ?? null },
+            person: { name: fromName, email: r.fromEmail },
+            firstEmail,
+            hypothesis,
+            incoming: { subject: msg?.subject ?? '', text: msg?.authoredText ?? '' },
+            textMax: rc.textMax,
+          }),
+        },
+      ],
+      parse: parseReplyDraft,
+      schema: REPLY_DRAFT_JSON_SCHEMA,
+      maxAttempts: rc.maxAttempts,
+      maxTokens: rc.maxOutputTokens,
+      model,
+    });
+    o.steps.push(...o.llm.steps.splice(0));
+    const costEur = round6(o.llm.costEur() - eurBefore);
+    if (call.status === 'model_error') return failed(`error del modelo (${call.code})`, { companyName, costEur, model });
+    if (call.status === 'invalid') return failed(`la respuesta del modelo no cumplía las reglas (${call.message.slice(0, 200)})`, { companyName, costEur, model });
+    const draft = finalizeReplyDraft(call.value, {
+      sender: rc.sender,
+      personFirstName: firstName,
+      companyName: companyName ?? '',
+      incomingSubject: msg?.subject ?? '',
+      sendSubject: r.sendSubject,
+      proposal,
+      timeZone: cfg.timezone,
+    });
+    o.counters.reply_drafts_created++;
+    return { outcome: { status: 'created', draft, to: r.fromEmail, meetingIntent }, companyName, costEur, model, signals: [...signals, 'reply_draft_created'] };
+  }
+
+  /**
+   * Model of the drafting role (model router: MODEL_ROUTE_<ROL>, the pinned `reply_draft.model`,
+   * legacy env, code table). The execution has ONE provider: when the role points to another
+   * one, the version's model is used and the run says so. Stub executions keep their model.
+   */
+  private draftModel(ctx: AgentContext, rc: ReplyDraftConfig, signals: string[]): string {
+    if (ctx.version.modelProvider === 'stub') return rc.model ?? ctx.version.model;
+    try {
+      const router = this.deps.router ?? defaultModelRouter(this.deps.env ?? process.env);
+      const route = router.resolve(rc.modelRole, rc.model ? { pinned: { provider: ctx.version.modelProvider, model: rc.model } } : {});
+      if (route.provider === ctx.version.modelProvider) return route.model;
+      signals.push('draft_route_other_provider');
+    } catch {
+      signals.push('draft_route_invalid');
+    }
+    return ctx.version.model;
+  }
+}
+
+/** What is appended to a reused reply task: the new reply, its excerpt and its draft section. */
+function reuseAppendix(fromEmail: string, receivedLocal: string, excerpt: string, section: string): string {
+  const from = fromEmail.replace(/[`*_[\]()<>|~#\\]/g, '');
+  return [`**Nueva respuesta de ${from} (recibida ${receivedLocal}).**`, '', `> ${excerpt.length > 0 ? excerpt : '(sin texto)'}`, '', section].join('\n');
 }
 
 interface OpportunityOut {
@@ -717,7 +983,16 @@ interface OpportunityOut {
   pointOfContactId: string | null;
 }
 
+interface PreparedDraft {
+  outcome: ReplyDraftOutcome;
+  companyName: string | null;
+  costEur: number;
+  model: string | null;
+  signals: string[];
+}
+
 interface CrmFollowUp {
+  taskKind: 'reply' | 'meeting';
   personId: string | null;
   personName: string | null;
   opportunityId: string | null;

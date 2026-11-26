@@ -12,10 +12,11 @@
  * - MEETING_INTERNAL_DOMAINS (`publiexpe.info,publiexpe.com`): domains of the salesperson's own
  *   team; their participants never match a client opportunity.
  */
+import { DEFAULT_MEETING_DURATION_MIN } from './types.js';
+
 export const MEETING_TIMEZONE = 'Europe/Madrid';
 export const DEFAULT_MEETING_HORIZON_DAYS = 7;
 export const DEFAULT_MEETING_HOURS = '10:00-13:30,16:00-18:00';
-export const DEFAULT_MEETING_DURATION_MIN = 30;
 /** Margin kept free before and after every existing event. */
 export const MEETING_BUFFER_MIN = 15;
 /** Grid of the proposed starts (on the hour and half hour). */

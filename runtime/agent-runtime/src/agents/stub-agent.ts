@@ -7,6 +7,7 @@ import { EmailDrafterAgent } from './email-drafter.js';
 import { FOLLOWUP_IMPLEMENTATION, FollowUpAgent } from './followup-agent.js';
 import { INBOX_IMPLEMENTATION, InboxAgent } from './inbox-agent.js';
 import { MEETING_SYNC_IMPLEMENTATION, MeetingSyncAgent } from './meeting-sync-agent.js';
+import { meetingAvailabilityFromEnv } from '../meetings/index.js';
 import { ProspectorAgent } from './prospector-agent.js';
 import { SmokeAgent } from './smoke-agent.js';
 
@@ -101,7 +102,8 @@ export function resolveAgentImplementation(configuration: Record<string, unknown
     case BAJAS_IMPLEMENTATION:
       return new BajasAgent(deps.db ? { db: deps.db } : {});
     case INBOX_IMPLEMENTATION:
-      return new InboxAgent({ ...(deps.db ? { db: deps.db } : {}), ...(deps.events ? { events: deps.events } : {}) });
+      // Reply drafts (tanda 22) propose meeting slots from the salesperson's calendar synced in Twenty.
+      return new InboxAgent({ ...(deps.db ? { db: deps.db } : {}), ...(deps.events ? { events: deps.events } : {}), availability: meetingAvailabilityFromEnv() });
     case FOLLOWUP_IMPLEMENTATION:
       // Lead follow-up (tanda 21): email_sends, inbound_triage and audit_log live in the database.
       return new FollowUpAgent(deps.db ? { db: deps.db } : {});

@@ -6,7 +6,10 @@
  * enforces its uniqueness, rejects unknown SELECT values and returns 404 for unknown ids.
  * Standard objects of tanda 19: `opportunities` (stage SELECT = `opportunityStages`, served by
  * `GET /rest/open-api/core` like the real server), `tasks` / `taskTargets`, and a unique
- * `people.emails.primaryEmail` (case-insensitive) when `uniquePersonEmails` is on.
+ * `people.emails.primaryEmail` (case-insensitive) when `uniquePersonEmails` is on. Tanda 22: the
+ * calendar objects `calendarEvents`, `calendarEventParticipants` and
+ * `calendarChannelEventAssociations` (read only), the `[in]` and range (`gte`/`lte`/`gt`/`lt`)
+ * filters, `expandRelations` (depth 1) and `hiddenObjects` (an object the API key cannot see).
  */
 import { randomUUID } from 'node:crypto';
 import { TwentyClient } from '../../src/integrations/twenty/index.js';
@@ -25,6 +28,9 @@ const SINGULAR: Record<string, string> = {
   opportunities: 'Opportunity',
   tasks: 'Task',
   taskTargets: 'TaskTarget',
+  calendarEvents: 'CalendarEvent',
+  calendarEventParticipants: 'CalendarEventParticipant',
+  calendarChannelEventAssociations: 'CalendarChannelEventAssociation',
 };
 /** `opportunity.stage` options of a default Twenty workspace, in order (GET /rest/open-api/core, tanda 19). */
 export const DEFAULT_OPPORTUNITY_STAGES = ['NEW', 'SCREENING', 'MEETING', 'PROPOSAL', 'CUSTOMER'];
@@ -64,12 +70,25 @@ function matches(rec: Rec, filter: string): boolean {
   const f = filter.trim();
   if (f.startsWith('and(') && f.endsWith(')')) return splitTopLevel(f.slice(4, -1)).every((c) => matches(rec, c));
   if (f.startsWith('or(') && f.endsWith(')')) return splitTopLevel(f.slice(3, -1)).some((c) => matches(rec, c));
-  const m = /^([\w.]+)\[(eq|ilike|is)\]:(?:"(.*)"|(NULL))$/.exec(f);
+  const inList = /^([\w.]+)\[in\]:\[(.*)\]$/.exec(f);
+  if (inList) {
+    const values = [...inList[2]!.matchAll(/"([^"]*)"/g)].map((x) => x[1]);
+    return values.includes(getPath(rec, inList[1]!) as string);
+  }
+  const m = /^([\w.]+)\[(eq|ilike|is|gte|lte|gt|lt)\]:(?:"(.*)"|(NULL))$/.exec(f);
   if (!m) throw new Error(`fake-twenty: unsupported filter ${f}`);
   const [, path, op, value] = m;
   const actual = getPath(rec, path!);
   if (op === 'is') return actual === null || actual === undefined;
   if (op === 'eq') return actual === value;
+  // Range filters (ISO dates): compared as instants when both parse, else as strings.
+  if (op === 'gte' || op === 'lte' || op === 'gt' || op === 'lt') {
+    if (typeof actual !== 'string' || value === undefined) return false;
+    const a = Date.parse(actual);
+    const b = Date.parse(value);
+    const cmp = Number.isNaN(a) || Number.isNaN(b) ? actual.localeCompare(value) : a - b;
+    return op === 'gte' ? cmp >= 0 : op === 'lte' ? cmp <= 0 : op === 'gt' ? cmp > 0 : cmp < 0;
+  }
   const needle = (value ?? '').replace(/^%|%$/g, '').toLowerCase();
   return typeof actual === 'string' && actual.toLowerCase().includes(needle);
 }
@@ -80,7 +99,20 @@ function json(status: number, body: unknown): Response {
 
 export class FakeTwenty {
   readonly tables: Record<
-    'companies' | 'commercialSignals' | 'researches' | 'commercialHypotheses' | 'agentRunSummaries' | 'people' | 'notes' | 'noteTargets' | 'opportunities' | 'tasks' | 'taskTargets',
+    | 'companies'
+    | 'commercialSignals'
+    | 'researches'
+    | 'commercialHypotheses'
+    | 'agentRunSummaries'
+    | 'people'
+    | 'notes'
+    | 'noteTargets'
+    | 'opportunities'
+    | 'tasks'
+    | 'taskTargets'
+    | 'calendarEvents'
+    | 'calendarEventParticipants'
+    | 'calendarChannelEventAssociations',
     Rec[]
   > &
     Record<string, Rec[] | undefined> = {
@@ -95,7 +127,19 @@ export class FakeTwenty {
     opportunities: [],
     tasks: [],
     taskTargets: [],
+    calendarEvents: [],
+    calendarEventParticipants: [],
+    calendarChannelEventAssociations: [],
   };
+  /**
+   * Expand relations with `depth=1` like the real server (tanda 22, verified on Twenty 2.45): lists
+   * of `opportunities` carry `company` and `pointOfContact`, lists of `calendarEvents` carry
+   * `calendarEventParticipants`, and a company read with depth 1 carries its `people`. Off by
+   * default (the older suites expect the bare records), so both code paths get exercised.
+   */
+  expandRelations = false;
+  /** Objects the server answers with 400 `object '<plural>' not found` (e.g. a role without access). */
+  readonly hiddenObjects = new Set<string>();
   /** Options of `opportunity.stage`, in order (the first one is the entry stage). */
   opportunityStages: string[] = [...DEFAULT_OPPORTUNITY_STAGES];
   /** Twenty refuses a second person with the same primary email. */
@@ -123,6 +167,7 @@ export class FakeTwenty {
       return json(200, { openapi: '3.0.3', components: { schemas: { Opportunity: { type: 'object', properties: { name: { type: 'string' }, stage: { type: 'string', enum: [...this.opportunityStages] } } } } } });
     }
     const [, rest, plural, id] = url.pathname.split('/');
+    if (plural && this.hiddenObjects.has(plural)) return json(400, { statusCode: 400, error: 'BadRequestException', messages: [`object '${plural}' not found. eg: companies`] });
     if (rest !== 'rest' || !plural || !this.tables[plural]) return json(404, { messages: ['Unknown object'] });
     const table = this.tables[plural]!;
 
@@ -148,6 +193,7 @@ export class FakeTwenty {
           researches: this.tables.researches!.filter((s) => s.companyId === id),
           commercialHypotheses: this.tables.commercialHypotheses!.filter((s) => s.companyId === id),
           agentRunSummaries: this.tables.agentRunSummaries!.filter((s) => s.companyId === id),
+          ...(this.expandRelations ? { people: this.tables.people!.filter((p) => p.companyId === id) } : {}),
         };
       }
       return json(200, { data: { [singular[0]!.toLowerCase() + singular.slice(1)]: out } });
@@ -156,7 +202,13 @@ export class FakeTwenty {
       const filter = url.searchParams.get('filter');
       const limit = Number(url.searchParams.get('limit') ?? 60);
       const rows = filter ? table.filter((r) => matches(r, filter)) : table;
-      return json(200, { data: { [plural]: rows.slice(0, limit) }, totalCount: rows.length, pageInfo: { hasNextPage: rows.length > limit } });
+      let page = rows.slice(0, limit);
+      if (this.expandRelations && url.searchParams.get('depth') === '1') {
+        const byId = (t: string, v: unknown) => this.tables[t]!.find((r) => r.id === v) ?? null;
+        if (plural === 'opportunities') page = page.map((o) => ({ ...o, company: byId('companies', o.companyId), pointOfContact: byId('people', o.pointOfContactId) }));
+        if (plural === 'calendarEvents') page = page.map((e) => ({ ...e, calendarEventParticipants: this.tables.calendarEventParticipants!.filter((p) => p.calendarEventId === e.id) }));
+      }
+      return json(200, { data: { [plural]: page }, totalCount: rows.length, pageInfo: { hasNextPage: rows.length > limit } });
     }
     if (method === 'POST' && body && this.failNextCreate === plural) {
       this.failNextCreate = null;

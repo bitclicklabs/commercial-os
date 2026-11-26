@@ -155,7 +155,8 @@ Requisitos: Node.js 22, pnpm, y los contenedores `pxos-postgres` (127.0.0.1:5440
 | `OPTIMIZER_SCHEDULE_ENABLED` | `false` | `true` activa el Skill Optimizer programado en el rol `scheduler`. Consulta [Programado](#programado) |
 | `OPTIMIZER_SCHEDULE_CRON` | `0 9 * * 3` | Cuándo se encola el run programado (CRON de 5 campos, hora de `Europe/Madrid`): miércoles a las 09:00 |
 | `OPTIMIZER_SCHEDULE_SKILLS` | `prospector-event-exhibitors` | Skills que optimiza el run programado, separadas por comas. Solo las que tienen runner de experimentos |
-| `FOLLOWUP_AFTER_BUSINESS_DAYS` | `5` | Días laborables (lunes a viernes, Europe/Madrid, sin festivos) desde el primer envío tras los que `lead-followup-check` crea la tarea «🔔 Seguimiento» si no hay respuesta. `0` desactiva el chequeo; un valor no válido (no entero entre 0 y 60) vuelve a 5. Consulta [Seguimiento de envíos sin respuesta](#seguimiento-de-envíos-sin-respuesta-tanda-21) |
+| `FOLLOWUP_AFTER_BUSINESS_DAYS` | `5` | Días laborables (lunes a viernes, Europe/Madrid, sin festivos) desde el último toque enviado tras los que `lead-followup-check` crea el siguiente seguimiento si no hay respuesta (y plazo de silencio de «Retomar conversación»). `0` desactiva el chequeo; un valor no válido (no entero entre 0 y 60) vuelve a 5. Consulta [Seguimiento de envíos sin respuesta](#seguimiento-de-envíos-sin-respuesta-tanda-21) |
+| `FOLLOWUP_MAX_TOUCHES` | `2` | Seguimientos tras el primer email (tanda 23): el primer envío es el toque 1, «Seguimiento 1 — X 🔔» el toque 2 y «Seguimiento 2 — X 🔔» el toque 3. También es el máximo de emails nuestros seguidos sin respuesta en «Retomar conversación». Entero de 0 a 3; `0` = el chequeo corre y no crea ninguna tarea (`max_touches_zero`); un valor no válido vuelve a 2. Consulta [Secuencia de seguimiento](#secuencia-de-seguimiento-y-retomar-conversación-tanda-23) |
 | `MEETING_HORIZON_DAYS` | `7` | Días naturales tras hoy en los que se proponen huecos de reunión (1 a 30), empezando por el siguiente día laborable. Consulta [Reuniones: huecos y detección](#reuniones-huecos-y-detección-tanda-22) |
 | `MEETING_HOURS` | `10:00-13:30,16:00-18:00` | Franjas locales (Europe/Madrid) para proponer reuniones, `HH:MM-HH:MM` separadas por comas. La primera es la de mañana (preferida). Un valor no válido vuelve al de por defecto |
 | `MEETING_DURATION_MIN` | `30` | Duración de la reunión propuesta, en minutos (15 a 240) |
@@ -645,6 +646,7 @@ Las skills son objetos versionados en la BD (LLD v0.1 §6.3, MVP-1, sin optimiza
 | `exhibitor-list-extraction` | Prospector, modo scout (extracción de expositores) | `SCOUT_EXTRACT_SYSTEM_PROMPT` |
 | `email-first-contact-draft` | EmailDrafter | `EMAIL_DRAFTER_SYSTEM_PROMPT` |
 | `email-reply-draft` | InboxAgent (borrador de la contestación, tanda 22; v2 DRAFT de la tanda 23 con ventana del cliente y cualificación: `REPLY_DRAFT_V2_SYSTEM_PROMPT`) | `REPLY_DRAFT_SYSTEM_PROMPT` |
+| `email-followup-draft` | FollowUpAgent (borrador del seguimiento o de «retomar conversación», tanda 23) | `FOLLOWUP_DRAFT_SYSTEM_PROMPT` |
 
 `exhibitor-list-extraction` formaba parte de `event-source-discovery` v4 en el código; en la BD es una skill propia para poder versionarla por separado.
 
@@ -2659,9 +2661,12 @@ Las alertas que piden a una persona hacer algo son **tareas** nativas de Twenty 
 |---|---|---|
 | ⚠️ Revalidación fallida — `<skill>` v`<N>` | Al día siguiente | Ningún registro CRM (el sujeto es una versión de skill) |
 | Propuesta de promoción — `<skill>` v`<N>` | A 3 días | Ningún registro CRM; una por versión |
-| ⚠️ Catálogo no disponible — `<día>` (`<tenant>`) | Hoy | Ninguno; como mucho una por tenant y día |
-| ⏳ Fuera de ventana / Sin fecha de feria | El día en que entra en ventana; a 7 días sin fecha; hoy si está cerca o ya pasó | La señal (`taskTarget`) |
-| 🔔 Seguimiento — `<empresa>` (tanda 21) | Hoy (el día del chequeo) | La empresa y la hipótesis; una por hipótesis, para siempre |
+| Catálogo no disponible — `<día>` (`<tenant>`) ⚠️ | Hoy | Ninguno; como mucho una por tenant y día |
+| Fuera de ventana / Sin fecha de feria (`<día>`): `<señal>` ⏳ | El día en que entra en ventana; a 7 días sin fecha; hoy si está cerca o ya pasó | La señal (`taskTarget`) |
+| Seguimiento N — `<empresa>` 🔔 (tanda 21; secuencia tanda 23) | El día en que vence el toque | La empresa y la hipótesis; una por toque e hipótesis, para siempre |
+| Retomar conversación con `<empresa>` 🔔 (tanda 23) | Hoy | La empresa y la oportunidad; una por cada silencio tras un email nuestro |
+
+**Títulos sin emoji delante (tanda 23).** Twenty dibuja el icono de cada Task con el primer carácter del título, y un emoji delante sale como «?» en un rombo rojo. Los títulos llevan el texto primero y el emoji al final. Las búsquedas idempotentes por título reconocen también el formato antiguo con el emoji delante (`legacyTitles` de `createCrmTask` y `legacyEmojiFirstTitle`), así que una tarea creada antes del cambio se reutiliza y no se duplica. El seguimiento de la tanda 21 («🔔 Seguimiento — X») cuenta como «Seguimiento 1 — X 🔔».
 
 Formato de Twenty 2.45 (verificado en solo lectura contra `GET /rest/open-api/core`):
 
@@ -2715,6 +2720,53 @@ Lunes a viernes en `Europe/Madrid`, **sin festivos**, contados de día local a d
 ### Tests
 
 `test/unit/lead-followup.test.ts` (reglas, ancla de `createCrmTask` y agente contra el Twenty simulado) y `test/integration/lead-followup.test.ts` (seed, `RunProcessor`, `email_sends`, `inbound_triage` y `audit_log` en PostgreSQL).
+
+## Secuencia de seguimiento y retomar conversación (tanda 23)
+
+> **Importante:** nivel 1 de autonomía. El sistema prepara la tarea y el borrador; **el comercial revisa y envía**. Ninguna tool envía correo.
+
+Desde la tanda 23 el FollowUpAgent (versión nueva en el seed; la anterior se conserva) usa el modelo del rol de redacción del model router (`executor_cheap`, `MODEL_ROUTE_EXECUTOR_CHEAP`) y la skill `email-followup-draft` v1, con el conocimiento de los dominios `email` y `prospeccion`. Hace dos cosas en la misma pasada de las 08:30.
+
+### Secuencia de cada primer email
+
+- Numeración: el primer envío es el **toque 1**; «Seguimiento 1 — `<empresa>` 🔔» es el toque 2 y «Seguimiento 2 — `<empresa>` 🔔» el toque 3 (hasta `FOLLOWUP_MAX_TOUCHES` seguimientos).
+- El toque 2 vence `FOLLOWUP_AFTER_BUSINESS_DAYS` días laborables después del último envío registrado en `email_sends`; el toque 3, los mismos días después del **último seguimiento que el comercial envió de verdad**.
+- **Cómo se sabe que se envió:** la tool `list_crm_messages` (READ, `src/integrations/twenty/messages.ts`) lee los objetos estándar `messages` y `messageParticipants` que Twenty importa del buzón conectado. Un seguimiento cuenta como enviado si hay un mensaje con participante `FROM` de un dominio propio (`MEETING_INTERNAL_DOMAINS` y el dominio de `IONOS_IMAP_USER`) y el destinatario de la hipótesis en `TO` o `CC`, posterior al primer envío. Las copias del propio primer envío (30 minutos alrededor de cada fila de `email_sends`) no cuentan.
+- **Condición:** un seguimiento enviado desde cualquier cliente de correo cuenta solo si Twenty lo importa como mensaje saliente de la cuenta conectada. El webmail de IONOS guarda lo enviado en «Enviados», así que cuenta; un cliente que no guarde en «Enviados» de esa cuenta, no.
+- Si el comercial **no envía** el seguimiento, no se crea el siguiente (no se acumulan tareas) y tampoco se repite: la tarea pendiente sigue abierta (`previous_touch_not_sent`).
+- Se para con cualquier respuesta (la misma regla de la tanda 21: `AUTO_REPLY` no corta, un rebote corta y nunca genera), también con un correo del destinatario en el buzón; con el destinatario en la lista de supresión; o al agotar los toques (`touches_exhausted`). Al agotarse no se crea nada más.
+- Sin rastro del buzón (Twenty no devuelve mensajes, el rol no tiene permiso o la tool no está en la política) degrada a la tanda 21: solo cuenta el primer envío, así que solo se crea el toque 2 (`messages_unavailable`), y la salida lo marca en `mailbox_trace` (`degraded: true`).
+- Toque 2: recordatorio breve con un ángulo nuevo ligado a la feria o a la necesidad. Último toque: cierre amable y muy corto.
+- Idempotencia por hipótesis y toque: `audit_log` `lead.followup_task` con `touch` (2 o 3) en el detalle; una fila antigua sin `touch` cuenta como toque 2. Además, `create_crm_task` con `scope: 'ever'` anclado en la hipótesis.
+
+### Retomar conversación
+
+Para cada Opportunity **abierta** en una etapa anterior a la de reunión (las etapas se leen del SELECT del workspace, como `src/crm/opportunities.ts`), con su punto de contacto o, si no hay, con las Personas de la empresa de dominio no genérico:
+
+- si el **último mensaje** con ese contacto es nuestro, tiene `FOLLOWUP_AFTER_BUSINESS_DAYS` días laborables o más y no hay entrante posterior (en cualquier hilo), se crea «Retomar conversación con `<empresa>` 🔔» (vence hoy) con borrador;
+- como mucho `FOLLOWUP_MAX_TOUCHES` emails nuestros seguidos sin respuesta, contando el último: al alcanzarlo, nada más hasta que el cliente vuelva a escribir;
+- no se crea si la oportunidad tiene abierta una tarea «Retomar conversación» o «Cerrar reunión» (en los dos formatos de título);
+- idempotencia por (oportunidad, id del último mensaje saliente): `lead.followup_task` con `subject_type = opportunity` y `kind: 'conversation'` en el detalle. Cada nuevo silencio tras un nuevo envío puede generar su tarea; el mismo, nunca dos veces.
+
+El borrador usa el último mensaje del cliente, nuestro último mensaje y la nota «Cualificación — `<empresa>` 🧾» si existe, siempre como datos no confiables.
+
+### El borrador
+
+- El modelo escribe solo el cuerpo. Por código: asunto «Re: `<asunto del hilo>`», párrafo de reunión (`meetingAvailabilityFromEnv()`), despedida y firma; reglas comprobadas con los validadores de `src/agents/reply-draft.ts` (sin «plazo», «urgente» ni «prisa», sin importes ni porcentajes, sin enlaces), más sin reproches y una longitud por modo. Una respuesta inválida se reintenta una vez.
+- Si el modelo falla, la tarea sale con el guion fijo y «Borrador no disponible: `<motivo>`».
+- **Texto restringido por Twenty:** con el canal de correo en visibilidad `METADATA`, la API devuelve `subject` y `text` con el marcador literal `FIELD_RESTRICTED_…`. Se trata como valor ausente (`isRestrictedFieldValue`): nunca llega a un «Re:», a un prompt ni al cuerpo de una tarea. La detección de silencios sigue funcionando (participantes y fechas), el borrador se hace con el contexto disponible, el asunto sale del primer envío (`email_sends` o hipótesis) o, si no hay, «Seguimiento: `<empresa>`», y la tarea pide poner la visibilidad en **Share everything** y responder en el hilo existente. Contador `threads_text_restricted`.
+
+### Modo prueba manual
+
+Lanza la tarea con el input `{ "dry_run": true, "as_of": "AAAA-MM-DD" }`: no escribe nada en Twenty ni en `audit_log` y devuelve en `output.examined`, por hipótesis y oportunidad, lo que haría (`result: would_create`, con el título, el vencimiento y el cuerpo completo con el borrador). `as_of` evalúa como si fueran las 08:30 de ese día.
+
+### Permisos del rol «Agent runtime»
+
+Lectura de `messages`, `messageParticipants` y `messageThreads`, y la visibilidad del canal de correo en **Share everything** para que el borrador vea el texto. Sin lectura, el chequeo degrada como se explica arriba; no falla.
+
+### Tests
+
+`test/unit/followup-sequences.test.ts` (reglas, lector del buzón, secuencia, caso Adpan, `dry_run`, marcador `FIELD_RESTRICTED` y títulos en los dos formatos).
 
 ## Reuniones: huecos y detección (tanda 22)
 

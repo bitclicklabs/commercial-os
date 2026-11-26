@@ -12,7 +12,8 @@
  *   product families) and, at most once a day per tenant (Europe/Madrid day):
  *     1. the event `catalog.unavailable` on the event bus (idempotency key per tenant and day,
  *        so a second worker or a restart does not publish it twice), for n8n to route;
- *     2. one ⚠️ Twenty TASK (tanda 19; before, a note) "Catálogo no disponible — <día> (<tenant>)",
+ *     2. one Twenty TASK (tanda 19; before, a note) "Catálogo no disponible — <día> (<tenant>) ⚠️"
+ *        (emoji last since tanda 23; the emoji-first title of before is still reused),
  *        status TODO, due today (idempotent by title + day: an existing task is reused, never
  *        duplicated or edited).
  *   Never an email: the runtime does not send mail by principle.
@@ -68,6 +69,12 @@ export function localDay(date: Date, timeZone = CATALOG_GATE_TIMEZONE): string {
 }
 
 export function catalogUnavailableNoteTitle(day: string, tenantId: string): string {
+  // Tanda 23: text first, emoji last (Twenty draws the task icon with the first character).
+  return crmTaskTitle(`Catálogo no disponible — ${day} (${tenantId}) ⚠️`);
+}
+
+/** Tanda 23: the title of the same day before the change (emoji first), still reused. */
+export function legacyCatalogUnavailableNoteTitle(day: string, tenantId: string): string {
   return crmTaskTitle(`⚠️ Catálogo no disponible — ${day} (${tenantId})`);
 }
 
@@ -181,6 +188,7 @@ export class CatalogGate {
             body: catalogUnavailableNoteMarkdown({ day, tenantId: args.tenantId, availability, provider: this.catalog.api?.kind ?? null }),
             dueAt: day,
             scope: 'ever',
+            legacyTitles: [legacyCatalogUnavailableNoteTitle(day, args.tenantId)],
           },
           { now: this.now(), timeZone: this.timeZone },
         );

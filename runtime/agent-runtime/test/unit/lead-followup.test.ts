@@ -54,8 +54,8 @@ describe('follow-up rules', () => {
   });
 
   it('builds the title and a fixed, calm script with the angle of the hypothesis', () => {
-    expect(followUpTaskTitle('Cliente "SA"')).toBe('🔔 Seguimiento — Cliente SA');
-    expect(followUpTaskTitle('')).toBe('🔔 Seguimiento — empresa sin nombre');
+    expect(followUpTaskTitle('Cliente "SA"')).toBe('Seguimiento 1 — Cliente SA 🔔');
+    expect(followUpTaskTitle('')).toBe('Seguimiento 1 — empresa sin nombre 🔔');
     const body = followUpTaskBody({
       company: 'Cliente SA',
       hypothesisName: 'Cliente SA — Anuga',
@@ -72,7 +72,8 @@ describe('follow-up rules', () => {
     expect(body).toContain('- Destinatario: carmen@cliente.example');
     expect(body).toContain('- Necesidad: Bolsas personalizadas para el stand');
     expect(body).toContain('- Por qué ahora: Expone en Anuga en marzo');
-    expect(body.match(/^- /gm)?.length).toBe(4 + 2 + 3);
+    // 4 facts + 2 touches (first email, this task) + 2 angle lines + 3 script lines.
+    expect(body.match(/^- /gm)?.length).toBe(4 + 2 + 2 + 3);
     // House rule: no urgency, never "plazos cortos".
     expect(body).not.toMatch(/plazo|urgen|últim|prisa|cuanto antes|oferta limitada/i);
     expect(body).toContain('no envía nada');
@@ -115,7 +116,7 @@ function setup(opts: { suppression?: string | null; env?: NodeJS.ProcessEnv } = 
     store,
     audit: async (row) => {
       audits.push(row);
-      store.followedUp.push({ tenantId: row.tenantId, hypothesisId: String(row.subjectId) });
+      store.followedUp.push({ tenantId: row.tenantId, hypothesisId: String(row.subjectId), touch: (row.payload as { touch?: number }).touch ?? 2 });
     },
     env: opts.env ?? {},
     clock: () => now,
@@ -193,7 +194,7 @@ describe('FollowUpAgent', () => {
     expect(examined.map((e) => e.hypothesis_id)[0]).toBe(hReplied.id);
 
     // The task: title, due today 09:00 Madrid, targets company + hypothesis, fixed script.
-    const task = s.fake.tables.tasks.find((t) => t.title === '🔔 Seguimiento — Cliente SA')!;
+    const task = s.fake.tables.tasks.find((t) => t.title === 'Seguimiento 1 — Cliente SA 🔔')!;
     expect(task).toMatchObject({ status: 'TODO', dueAt: '2026-10-19T07:00:00.000Z' });
     const md = (task.bodyV2 as { markdown: string }).markdown;
     expect(md).toContain('- Primer envío: 2026-10-12 10:15 (Europe/Madrid)');
@@ -212,12 +213,13 @@ describe('FollowUpAgent', () => {
       ]),
     );
     expect(s.audits).toHaveLength(2);
-    expect(s.audits[0]).toMatchObject({ actor: 'agent', subjectType: 'commercial_hypothesis', result: 'ok', method: 'AGENT', payload: { task_created: true } });
+    expect(s.audits[0]).toMatchObject({ actor: 'agent', subjectType: 'commercial_hypothesis', result: 'ok', method: 'AGENT', payload: { task_created: true, touch: 2 } });
 
-    // Next day: task_exists, nothing new.
+    // Next day: touch 2 exists and, without the mailbox trace (no messages in Twenty), nothing more.
     s.setNow('2026-10-20T06:30:00Z');
     const again = await s.run();
-    expect(again.output.counters).toMatchObject({ tasks_created: 0, skipped_by: { task_exists: 2 } });
+    expect(again.output.counters).toMatchObject({ tasks_created: 0, skipped_by: { messages_unavailable: 2 } });
+    expect(again.output.mailbox_trace).toMatchObject({ status: 'no_messages', degraded: true });
     expect(s.fake.tables.tasks).toHaveLength(2);
   });
 
@@ -231,7 +233,7 @@ describe('FollowUpAgent', () => {
     s.fake.tables.tasks[0]!.deletedAt = new Date().toISOString();
     s.fake.tables.tasks.length = 0; // gone from the REST listing
     const again = await s.run();
-    expect(again.output.counters).toMatchObject({ tasks_created: 0, skipped_by: { task_exists: 1 } });
+    expect(again.output.counters).toMatchObject({ tasks_created: 0, skipped_by: { messages_unavailable: 1 } });
     expect(s.fake.tables.tasks).toHaveLength(0);
   });
 
@@ -293,15 +295,15 @@ describe('FollowUpAgent', () => {
 });
 
 describe('follow-up seed and wiring', () => {
-  it('lead-followup-check: CRON 08:30 Europe/Madrid, stub model, three tools', () => {
+  it('lead-followup-check: CRON 08:30 Europe/Madrid, drafting model, the follow-up tools', () => {
     expect(FOLLOWUP_TASK_NAME).toBe('lead-followup-check');
     expect(desiredFollowUpTask()).toMatchObject({ schedule: { type: 'CRON', expression: '30 8 * * *' }, timezone: 'Europe/Madrid', enabled: true, maxConcurrency: 1 });
     const v = desiredFollowUpVersion();
-    expect(v).toMatchObject({ modelProvider: 'stub', configuration: { implementation: FOLLOWUP_IMPLEMENTATION } });
+    expect(v).toMatchObject({ modelProvider: 'gemini', configuration: { implementation: FOLLOWUP_IMPLEMENTATION, followup_draft: { enabled: true, model_role: 'executor_cheap' }, conversations: true }, skillRefs: [{ name: 'email-followup-draft' }] });
     const policy = parseToolPolicy(v.configuration);
     expect(policy.allow).toEqual([...FOLLOWUP_TOOLS]);
     expect(policy.maxRiskLevel).toBe('LOW_WRITE');
-    expect(policy.maxCallsPerTool).toMatchObject({ list_sent_hypotheses: 1, get_note: 1, create_crm_task: FOLLOWUP_MAX_TASKS_PER_RUN });
+    expect(policy.maxCallsPerTool).toMatchObject({ list_sent_hypotheses: 1, get_note: 1, list_crm_messages: 1, list_open_opportunities: 1, list_opportunity_followup_context: 1, create_crm_task: FOLLOWUP_MAX_TASKS_PER_RUN });
     expect(resolveAgentImplementation({ implementation: FOLLOWUP_IMPLEMENTATION }).kind).toBe(FOLLOWUP_IMPLEMENTATION);
   });
 });

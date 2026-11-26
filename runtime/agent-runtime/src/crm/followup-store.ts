@@ -1,5 +1,6 @@
 /**
- * Runtime-database side of the lead follow-up (tanda 21). Three read-only questions:
+ * Runtime-database side of the lead follow-up (tanda 21, sequence and conversations tanda 23).
+ * Read-only questions:
  *
  * - `sends`: the rows of `email_sends` (the log the email-ops webhook writes when a hypothesis
  *   turns SENT in Twenty) of the given hypotheses: the date and subject of the first send.
@@ -8,13 +9,16 @@
  *   row per message, with the hypothesis / company of the send it answers (by address, by domain,
  *   or by the company domain in Twenty), BEFORE or together with the 📬 note, the Opportunity and
  *   the 📬 task, which all derive from it. Append-only, so it cannot be lost by an edit in Twenty.
- * - `alreadyFollowedUp`: hypotheses with an `audit_log` row `lead.followup_task` (one per task
- *   created). Append-only: the «already done» mark survives a task deleted in Twenty.
+ * - `followUpTouches`: per hypothesis, the touches whose task was already created, from the
+ *   `audit_log` rows `lead.followup_task` (one per task). Detail `touch` (2, 3, 4); a tanda-21
+ *   row without it is touch 2. Append-only: the mark survives a task deleted in Twenty.
+ * - `conversationMarks`: per opportunity, the ids of the last outbound messages whose «Retomar
+ *   conversación» task was already created (`lead.followup_task`, `kind: 'conversation'`).
  */
 import { and, eq, gte, inArray, isNull, or, type SQL } from 'drizzle-orm';
 import type { Db } from '../db/client.js';
 import { auditLog, emailSends, inboundTriage, type InboundTriageClass } from '../db/schema.js';
-import { FOLLOWUP_AUDIT_ACTION, FOLLOWUP_AUDIT_SUBJECT } from './followup.js';
+import { CONVERSATION_AUDIT_SUBJECT, FOLLOWUP_AUDIT_ACTION, FOLLOWUP_AUDIT_SUBJECT } from './followup.js';
 
 export interface FollowUpSend {
   hypothesisId: string;
@@ -37,8 +41,16 @@ export interface FollowUpStore {
   sends(tenantId: string, hypothesisIds: readonly string[]): Promise<FollowUpSend[]>;
   /** Triaged messages linked to the hypothesis or its company, received at or after `since`. */
   replies(tenantId: string, q: { hypothesisId: string; companyIds: readonly string[]; since: Date }): Promise<FollowUpReply[]>;
-  /** Hypotheses (of `hypothesisIds`) that already got a follow-up task. */
-  alreadyFollowedUp(tenantId: string, hypothesisIds: readonly string[]): Promise<Set<string>>;
+  /** Touches (2, 3, 4) whose follow-up task was already created, per hypothesis of `hypothesisIds`. */
+  followUpTouches(tenantId: string, hypothesisIds: readonly string[]): Promise<Map<string, Set<number>>>;
+  /** Last-outbound message ids already followed up, per opportunity of `opportunityIds`. */
+  conversationMarks(tenantId: string, opportunityIds: readonly string[]): Promise<Map<string, Set<string>>>;
+}
+
+/** Touch of an audit detail: `touch` 2..4; anything else (tanda-21 rows) is touch 2. */
+export function touchOfPayload(payload: unknown): number {
+  const t = (payload as { touch?: unknown } | null | undefined)?.touch;
+  return typeof t === 'number' && Number.isInteger(t) && t >= 2 && t <= 4 ? t : 2;
 }
 
 export class DrizzleFollowUpStore implements FollowUpStore {
@@ -71,21 +83,39 @@ export class DrizzleFollowUpStore implements FollowUpStore {
       .limit(50);
   }
 
-  async alreadyFollowedUp(tenantId: string, hypothesisIds: readonly string[]): Promise<Set<string>> {
-    if (hypothesisIds.length === 0) return new Set();
-    const rows = await this.db
-      .select({ subjectId: auditLog.subjectId })
+  private async marks(tenantId: string, subjectType: string, ids: readonly string[]) {
+    if (ids.length === 0) return [];
+    return this.db
+      .select({ subjectId: auditLog.subjectId, payload: auditLog.payload })
       .from(auditLog)
       .where(
         and(
           eq(auditLog.tenantId, tenantId),
           eq(auditLog.action, FOLLOWUP_AUDIT_ACTION),
-          eq(auditLog.subjectType, FOLLOWUP_AUDIT_SUBJECT),
+          eq(auditLog.subjectType, subjectType),
           eq(auditLog.result, 'ok'),
-          inArray(auditLog.subjectId, [...new Set(hypothesisIds)]),
+          inArray(auditLog.subjectId, [...new Set(ids)]),
         ),
       );
-    return new Set(rows.map((r) => r.subjectId).filter((s): s is string => typeof s === 'string'));
+  }
+
+  async followUpTouches(tenantId: string, hypothesisIds: readonly string[]): Promise<Map<string, Set<number>>> {
+    const out = new Map<string, Set<number>>();
+    for (const r of await this.marks(tenantId, FOLLOWUP_AUDIT_SUBJECT, hypothesisIds)) {
+      if (typeof r.subjectId !== 'string') continue;
+      out.set(r.subjectId, new Set([...(out.get(r.subjectId) ?? []), touchOfPayload(r.payload)]));
+    }
+    return out;
+  }
+
+  async conversationMarks(tenantId: string, opportunityIds: readonly string[]): Promise<Map<string, Set<string>>> {
+    const out = new Map<string, Set<string>>();
+    for (const r of await this.marks(tenantId, CONVERSATION_AUDIT_SUBJECT, opportunityIds)) {
+      const p = (r.payload ?? {}) as { kind?: unknown; last_outbound_message_id?: unknown };
+      if (typeof r.subjectId !== 'string' || p.kind !== 'conversation' || typeof p.last_outbound_message_id !== 'string') continue;
+      out.set(r.subjectId, new Set([...(out.get(r.subjectId) ?? []), p.last_outbound_message_id]));
+    }
+    return out;
   }
 }
 
@@ -93,7 +123,9 @@ export class DrizzleFollowUpStore implements FollowUpStore {
 export class MemoryFollowUpStore implements FollowUpStore {
   sendRows: Array<FollowUpSend & { tenantId: string }> = [];
   replyRows: Array<FollowUpReply & { tenantId: string }> = [];
-  followedUp: Array<{ tenantId: string; hypothesisId: string }> = [];
+  /** Hypothesis marks; `touch` omitted = a tanda-21 row (touch 2). */
+  followedUp: Array<{ tenantId: string; hypothesisId: string; touch?: number }> = [];
+  conversations: Array<{ tenantId: string; opportunityId: string; messageId: string }> = [];
 
   async sends(tenantId: string, hypothesisIds: readonly string[]): Promise<FollowUpSend[]> {
     const ids = new Set(hypothesisIds);
@@ -109,8 +141,23 @@ export class MemoryFollowUpStore implements FollowUpStore {
     );
   }
 
-  async alreadyFollowedUp(tenantId: string, hypothesisIds: readonly string[]): Promise<Set<string>> {
+  async followUpTouches(tenantId: string, hypothesisIds: readonly string[]): Promise<Map<string, Set<number>>> {
     const ids = new Set(hypothesisIds);
-    return new Set(this.followedUp.filter((f) => f.tenantId === tenantId && ids.has(f.hypothesisId)).map((f) => f.hypothesisId));
+    const out = new Map<string, Set<number>>();
+    for (const f of this.followedUp) {
+      if (f.tenantId !== tenantId || !ids.has(f.hypothesisId)) continue;
+      out.set(f.hypothesisId, new Set([...(out.get(f.hypothesisId) ?? []), touchOfPayload({ touch: f.touch })]));
+    }
+    return out;
+  }
+
+  async conversationMarks(tenantId: string, opportunityIds: readonly string[]): Promise<Map<string, Set<string>>> {
+    const ids = new Set(opportunityIds);
+    const out = new Map<string, Set<string>>();
+    for (const c of this.conversations) {
+      if (c.tenantId !== tenantId || !ids.has(c.opportunityId)) continue;
+      out.set(c.opportunityId, new Set([...(out.get(c.opportunityId) ?? []), c.messageId]));
+    }
+    return out;
   }
 }

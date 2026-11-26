@@ -480,7 +480,7 @@ Cómo funciona por dentro, las garantías y el evento para n8n están en [Triaje
 
 Hasta ahora, un correo sin respuesta se perdía en silencio. Desde la tanda 21, **el sistema te avisa cuando un envío lleva 5 días laborables sin respuesta**: te deja una tarea en tu bandeja y tú decides qué hacer. Activo en producción desde el 2026-10-22.
 
-> **Novedad (tanda 23, 2026-11-26) `[POR CONFIRMAR]`.** El aviso ya no es una sola tarea con un guion: es una **secuencia de hasta 2 seguimientos** y cada uno trae **un borrador redactado en el mismo hilo**. Sigue valiendo la regla de siempre: **el sistema no envía nada; lo envías tú.** Más abajo, «Cómo funciona la secuencia».
+> **Novedad (tanda 23, 2026-11-26).** El aviso ya no es una sola tarea con un guion: es una **secuencia de hasta 2 seguimientos** y cada uno trae **un borrador redactado en el mismo hilo**. Sigue valiendo la regla de siempre: **el sistema no envía nada; lo envías tú.** Más abajo, «Cómo funciona la secuencia».
 
 **Cuándo aparece la tarea.** Cada día a las 08:30 el sistema revisa las hipótesis con **Email status** = `Sent` y crea la tarea **Seguimiento 1 — {empresa} 🔔** si se cumplen las tres condiciones (desde la tanda 23 el plazo se cuenta desde el último correo que enviaste; antes, desde el primer envío):
 
@@ -518,10 +518,11 @@ Hasta ahora, un correo sin respuesta se perdía en silencio. Desde la tanda 21, 
 | **Seguimiento 2 — {empresa} 🔔** | Un **cierre amable**. |
 
 1. **El Seguimiento 2 solo aparece si enviaste el Seguimiento 1** y han pasado otros 5 días laborables sin respuesta. Si no lo enviaste, el sistema no genera el siguiente: es normal.
-1. El sistema sabe que lo enviaste porque ve el correo saliente en tu buzón conectado en Twenty. Envía siempre desde esa cuenta.
+1. El sistema sabe que lo enviaste porque ve el correo saliente en la carpeta «Enviados» de tu buzón conectado en Twenty (el webmail de IONOS sirve). Envía siempre desde esa cuenta.
+1. Si el modelo no pudo redactar el borrador, la tarea sale con un guion fijo y la indicación «borrador no disponible».
 1. Si el cliente responde, o el correo rebota, o se da de baja, la secuencia termina.
 
-> **Nota:** el borrador propone una reunión con huecos libres de tu calendario. Si el cliente ya había dicho cuándo le viene bien («la semana que viene», «por las tardes»), los huecos lo respetan; si no hay huecos en ese plazo, te propone los más cercanos y lo dice.
+> **Nota:** el borrador propone una reunión con huecos libres de tu calendario. Si el cliente dijo cuándo le viene bien («la semana que viene», «por las tardes», «a partir del 10»), los huecos lo respetan; si no hay ninguno en ese plazo, el borrador usa el horizonte normal y lo dice («En las fechas que comentáis no me queda ningún hueco libre…»).
 
 **Tu tablero de envíos.** La vista **Hipótesis · Envíos** (en **Commercial OS → Hypotheses**) muestra tus hipótesis en columnas por **Email status**: `Draft` (por revisar), `Reviewed` (listas para enviar), `Sending` (en curso) y `Sent` (ya enviadas). Úsala para ver de un vistazo qué te queda por revisar y qué has enviado ya; las enviadas con tarea 🔔 son las que no han contestado.
 
@@ -557,11 +558,23 @@ Cuando un cliente contesta con interés o con una pregunta, el sistema (que revi
 
 > **Nota:** si el sistema no pudo redactar el borrador, la tarea se crea igualmente, sin borrador. Responde a mano como hasta ahora; no se pierde el aviso.
 
-### La cualificación de la oportunidad (tanda 23) `[POR CONFIRMAR]`
+### Retomar una conversación que se enfrió (tanda 23)
+
+Si tienes una **Oportunidad abierta** (antes de la etapa Meeting) y el **último mensaje con el contacto es tuyo** y lleva **5 días laborables o más sin respuesta**, el sistema crea la tarea **«Retomar conversación con {empresa} 🔔»**, con vencimiento hoy. Trae un **borrador que retoma el hilo**: lee el último mensaje del cliente y el tuyo.
+
+1. Abre la tarea y lee el borrador. Comprueba que cita lo que de verdad hablasteis.
+1. Ajústalo y **envíalo tú** desde tu correo conectado en Twenty.
+1. Marca la tarea como hecha.
+
+> **Nota:** como mucho se generan `FOLLOWUP_MAX_TOUCHES` mensajes tuyos seguidos sin respuesta (2 por defecto) y no se repite la tarea para el mismo silencio. Si la tarea avisa de que no pudo leer el hilo, el correo de Twenty está compartido solo como metadatos: avisa al equipo técnico para ponerlo en **Share everything**.
+
+### La cualificación de la oportunidad (tanda 23)
+
+> **Importante:** la cualificación y los huecos que respetan el plazo del cliente dependen de la skill `email-reply-draft` **v2**, que está en **DRAFT** hasta que se active de forma explícita. Mientras esté activa la v1, no verás la nota de Cualificación.
 
 Cuando el cliente responde con interés y menciona datos de su pedido, el sistema los deja anotados en la **Oportunidad** para que no tengas que releer el correo:
 
-- Una nota **«Cualificación — {empresa} 🧾»** con lo que haya dicho sobre **cantidad aproximada, presupuesto, fecha necesaria, decisor y productos de interés**. Cada dato lleva la **cita literal** del correo; si el cliente no lo dijo, el dato no aparece. **El sistema no inventa nada.**
+- Una nota **«Cualificación — {empresa} 🧾»** con lo que haya dicho sobre **cantidad aproximada, presupuesto, fecha necesaria, decisor y productos de interés**. Cada dato lleva la **cita literal** del correo; si el cliente no lo dijo, el dato no aparece. **El sistema no inventa nada.** Las cifras tienen que estar escritas en la cita (un «dos mil» en letras se descarta). Si el cliente da un rango, el Importe toma el extremo inferior y la nota recoge el rango completo. La nota queda enlazada a la Oportunidad, la empresa y la Persona, con una sección por cada respuesta.
 - Si el **Importe** y la **Fecha de cierre** de la Oportunidad están vacíos, el sistema los rellena con lo que dijo el cliente.
 - **Nunca pisa lo que hayas puesto tú.** Si ya tenías un Importe o una Fecha de cierre, se quedan como están.
 
@@ -569,7 +582,7 @@ Cuando el cliente responde con interés y menciona datos de su pedido, el sistem
 
 ### Títulos con el emoji al final (tanda 23)
 
-Las tareas nuevas llevan el texto primero y el emoji al final: «Responder a Adpan Europa S.L. 📬», «Seguimiento 1 — Adpan Europa S.L. 🔔». Es un cambio de formato (Twenty mostraba un «?» en un rombo rojo cuando el título empezaba por emoji). Las tareas antiguas, con el emoji delante, siguen en tu bandeja y funcionan igual.
+Las tareas y las notas nuevas llevan el texto primero y el emoji al final: «Responder a X 📬», «Cerrar reunión con X 📅», «Preparar reunión con X 🧾», «Seguimiento N — X 🔔», «Retomar conversación con X 🔔», «Revalidación fallida — X vN ⚠️», «Catálogo no disponible — día ⚠️», «Fuera de ventana (día): X ⏳» y «Sin fecha de feria (día): X ⏳»; en las notas, «Respuesta recibida — … 📬», «Rebote … ⚠️», «Reunión detectada — … 📅» y «Cualificación — X 🧾». Es un cambio de formato (Twenty mostraba un «?» en un rombo rojo cuando el título empezaba por emoji). Los registros antiguos, con el emoji delante, conservan su título y funcionan igual.
 
 ### Qué verás después
 

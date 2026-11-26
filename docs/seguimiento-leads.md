@@ -4,7 +4,7 @@ Hasta la tanda 20, el ciclo de un lead terminaba en el clic: pulsabas **Enviar b
 
 Este documento es técnico-operativo: describe el ciclo del lead después del envío, la regla de los 5 días laborables, qué hace y qué no hace el seguimiento y cómo comprobarlo. Lo que ve y hace el comercial está en la [guía del equipo comercial](guia-comercial.md#seguimiento-de-lo-que-has-enviado).
 
-> **Nota:** este documento describe el diseño cerrado de la pieza B de la tanda 21 y su evolución en la tanda 23 (secuencias con borrador). Lo que cambió en la tanda 23 se marca como tal; el comportamiento de la tanda 21 (una sola Task con guion fijo) queda como histórico en las notas «Antes de la tanda 23». Lo que depende de la implementación va marcado `[POR CONFIRMAR]` y se reconcilia al integrar la tanda. Los nombres exactos de tareas, eventos y variables son los del código y del [README del runtime](../runtime/agent-runtime/README.md); si alguno difiere, manda el README.
+> **Nota:** este documento describe el diseño cerrado de la pieza B de la tanda 21 y su evolución en la tanda 23 (secuencias con borrador). Lo que cambió en la tanda 23 se marca como tal; el comportamiento de la tanda 21 (una sola Task con guion fijo) queda como histórico en las notas «Antes de la tanda 23». Está reconciliado con la implementación del FollowUpAgent v2. Los nombres exactos de tareas, eventos y variables son los del código y del [README del runtime](../runtime/agent-runtime/README.md); si alguno difiere, manda el README.
 
 ## Contenido
 
@@ -59,7 +59,7 @@ El plazo sale de la variable [`FOLLOWUP_AFTER_BUSINESS_DAYS`](#configuración) (
 
 ### Idempotencia: una Task por hipótesis y toque, para siempre
 
-> **Tanda 23:** el límite pasa de «una Task por hipótesis» a **una Task por hipótesis y por toque** (hasta `FOLLOWUP_MAX_TOUCHES`). Antes de la tanda 23 era una sola Task por hipótesis. `[POR CONFIRMAR]` el nombre de la entrada de `audit_log` de cada toque (el seguimiento de la tanda 21 usa `lead.followup_task`).
+> **Tanda 23:** el límite pasa de «una Task por hipótesis» a **una Task por hipótesis y por toque** (hasta `FOLLOWUP_MAX_TOUCHES`). Antes de la tanda 23 era una sola Task por hipótesis. La entrada de `audit_log` sigue siendo `lead.followup_task`, ahora con el detalle `touch` (2 o 3); las marcas antiguas sin `touch` cuentan como toque 2.
 
 El sistema crea **como máximo una Task por cada toque de la secuencia, de por vida**. Da igual lo que hagas con ella:
 
@@ -88,20 +88,21 @@ Ambos borradores:
 
 ### La regla del último toque enviado
 
-El plazo de 5 días laborables se cuenta desde el **último toque que enviaste**, no desde que se creó la Task. El sistema lo detecta en **los correos salientes que Twenty importa del buzón** (la misma sincronización de IONOS que usa el triaje).
+El plazo de 5 días laborables se cuenta desde el **último toque que enviaste**, no desde que se creó la Task. El sistema lo detecta en **los correos salientes que Twenty importa del buzón** (la misma sincronización de IONOS que usa el triaje): un mensaje **saliente** (con `FROM` de un dominio propio: `MEETING_INTERNAL_DOMAINS` más el dominio del buzón) dirigido al destinatario y **posterior al primer envío**. Cuenta si el envío llega a «Enviados» de la cuenta conectada; el webmail de IONOS sí cumple.
 
 1. Si **no enviaste** el toque anterior, **no se genera el siguiente**. Una Task «Seguimiento 1» sin enviar no dispara la «Seguimiento 2».
 1. Si lo enviaste, el reloj de 5 días laborables arranca el día del envío.
-1. Si el último toque no aparece en los salientes importados, el sistema lo trata como no enviado.
+1. Si el último toque no aparece en los salientes importados, el sistema lo trata como no enviado (`previous_touch_not_sent`).
+1. Si no hay rastro del buzón (`messages_unavailable`), la secuencia **degrada a un solo toque**: genera el Seguimiento 1 y no el 2.
 
-> **Importante:** esta regla evita encadenar recordatorios sobre un correo que el cliente nunca recibió. Para que funcione, el envío debe salir **desde la cuenta de correo conectada en Twenty**; un envío desde otro programa de correo o cuenta no queda registrado. `[POR CONFIRMAR]` si un envío manual desde el cliente de correo de IONOS cuenta siempre, según lo que Twenty importe.
+> **Importante:** esta regla evita encadenar recordatorios sobre un correo que el cliente nunca recibió. Para que funcione, el envío debe llegar a la carpeta «Enviados» de la cuenta conectada en Twenty: el webmail de IONOS cuenta; un envío desde otra cuenta no queda registrado.
 
 ### Cuándo se para la secuencia
 
 La secuencia se detiene, sin generar más Tasks, cuando ocurre cualquiera de estas cosas:
 
-- **Llega cualquier respuesta**, salvo las respuestas automáticas («fuera de la oficina»), que no la detienen.
-- **Hay un rebote**: ese envío no llegó.
+- **Llega cualquier respuesta triada**, salvo las respuestas automáticas (`AUTO_REPLY`, como un «fuera de la oficina»), que no la detienen. También la corta un **correo entrante del destinatario** visto en el buzón.
+- **Hay un rebote**: ese envío no llegó. Un rebote corta y nunca genera Task.
 - **El destinatario causa baja** o entra en la lista de supresión.
 - **Se alcanza `FOLLOWUP_MAX_TOUCHES`.**
 
@@ -116,13 +117,33 @@ Es una **Task nativa de Twenty**, la misma que ya usas para **📬 Responder a�
 | **Cuerpo** | Fecha y asunto del primer envío; destinatario; el ángulo de la hipótesis (qué se le propuso y por qué); y, desde la tanda 23, el **borrador del seguimiento** (antes: un guion sugerido fijo, sin urgencia) |
 | **Enlace** | La Task cuelga de la empresa **y** de la hipótesis (si la hipótesis no tiene empresa, solo de la hipótesis) |
 
-El borrador es una propuesta de texto, no un correo enviado (en la tanda 21 era un guion fijo por código). Su tono es el de «retomo el mensaje por si se perdió», nunca el de empujar: el ángulo comercial de PubliEXPE es el de ofrecer tiempo para hacerlo bien ([ventana de lead time](prospeccion-por-senales.md#ventana-de-lead-time)), no el de presionar. El guion de la tanda 21 era una plantilla fija por código, sin modelo; un test comprobaba que nunca contenía «plazo», «urgente» ni «prisa». `[POR CONFIRMAR]` si el borrador de la tanda 23, que sí usa modelo, mantiene esa comprobación en un test; el tono no cambia.
+El borrador es una propuesta de texto, no un correo enviado (en la tanda 21 era un guion fijo por código). Su tono es el de «retomo el mensaje por si se perdió», nunca el de empujar: el ángulo comercial de PubliEXPE es el de ofrecer tiempo para hacerlo bien ([ventana de lead time](prospeccion-por-senales.md#ventana-de-lead-time)), no el de presionar. El guion de la tanda 21 era una plantilla fija por código, sin modelo; un test comprobaba que nunca contenía «plazo», «urgente» ni «prisa». El borrador de la tanda 23 sí usa modelo, y el código le impone reglas: sin «plazo», «urgente» ni «prisa»; sin importes ni enlaces puestos por el modelo; sin reproches; y una longitud de 15 a 140 palabras (de 8 a 80 en el cierre). **Si el modelo falla**, la Task se crea con el guion fijo y la indicación «borrador no disponible».
+
+**Modo prueba.** Lanza la tarea con la entrada `{ "dry_run": true, "as_of": "AAAA-MM-DD" }`: no escribe nada y devuelve las Tasks y los borradores que crearía en esa fecha.
 
 > **Nota:** como el resto de Tasks nativas, no lleva `tenantId` y la crea el runtime con el rol «Agent runtime» ([límite conocido](twenty-nativo.md#límites-conocidos)). El sistema nunca la cierra ni la borra.
 
 ### Títulos sin emoji delante
 
 Twenty dibujaba un «?» en un rombo rojo como icono de las Tasks cuyo título empezaba por emoji. Desde la tanda 23 el título lleva el texto primero y el emoji al final. El sistema **sigue reconociendo las Tasks antiguas** con el emoji delante: no las duplica y no cuenta dos veces un toque.
+
+## Retomar conversación (tanda 23)
+
+La secuencia atiende al envío que nadie contestó. **Retomar conversación** atiende a la conversación que **ya existía y se enfrió**.
+
+**Cuándo se crea.** Cuando se cumplen todas estas condiciones:
+
+1. Hay una **Oportunidad abierta** en una etapa **anterior a Meeting**.
+1. El **último mensaje con el contacto es nuestro**.
+1. Lleva **5 días laborables o más sin mensaje entrante**.
+1. No se ha alcanzado el máximo de `FOLLOWUP_MAX_TOUCHES` salientes seguidos sin respuesta.
+
+Entonces crea la Task **«Retomar conversación con {empresa} 🔔»**, con vencimiento el día en que se crea. El borrador **retoma el hilo**: lee el último mensaje del cliente y el nuestro, y propone seguir desde ahí.
+
+- **Idempotencia:** por (Oportunidad, último saliente). Un mismo silencio genera una sola Task.
+- **Estreno:** Adpan Europa S.L., con 25 días laborables de silencio tras la propuesta del 22 de octubre. El ensayo `dry_run` del 2026-11-26 produjo un borrador que cita la propuesta visual (talegas, delantales, tablas grabadas), ofrece una muestra física y propone 3 huecos del calendario.
+
+> **Importante:** necesita el correo de Twenty con visibilidad **Share everything**. Con «solo metadatos», Twenty entrega asunto y texto enmascarados (`FIELD_RESTRICTED_…`). El sistema lo detecta (contador `threads_text_restricted`), sigue detectando silencios y avisa en la Task de que no pudo leer el hilo.
 
 ## Qué hace y qué no hace
 
@@ -157,7 +178,7 @@ La vista **no existe hasta que se sincroniza la App**. El sync lo hace la person
 | Variable | Defecto | Significado |
 |---|---|---|
 | `FOLLOWUP_AFTER_BUSINESS_DAYS` | `5` | Días laborables sin respuesta tras el primer envío antes de crear la Task 🔔. Con `0`, el seguimiento queda **desactivado** y la tarea de las 08:30 no crea nada. Desde la tanda 23 el plazo se cuenta desde el último toque enviado |
-| `FOLLOWUP_MAX_TOUCHES` | `2` | Seguimientos máximos por hipótesis (tanda 23). Con `2`: Seguimiento 1 y Seguimiento 2. `[POR CONFIRMAR]` el comportamiento con `0` y el tope admitido |
+| `FOLLOWUP_MAX_TOUCHES` | `2` | Seguimientos máximos por hipótesis (tanda 23). Entero de 0 a 3. Con `2`: Seguimiento 1 y Seguimiento 2. Con `0`, el chequeo termina `SKIPPED` (`max_touches_zero`) sin crear Tasks; un valor inválido vale `2`. (`FOLLOWUP_AFTER_BUSINESS_DAYS=0` desactiva el chequeo entero) |
 
 Como el resto de variables del runtime, se define en `deployments/.env`, debe llegar al bloque `environment` de `pxos-runtime` y se aplica recreando el servicio (`docker compose up -d pxos-runtime`): consulta la [lista de variables](runbook-local.md#variables-del-runtime).
 
@@ -187,7 +208,7 @@ La tarea se registra con el seed (`pnpm seed`), como el resto de tareas del Agen
 ## Limitaciones y deuda anotada
 
 - **Sin envío automático.** El sistema prepara el borrador del seguimiento; lo envías tú (nivel 1 de autonomía del [AI Setter](ai-setter.md)). Un envío automático exigiría una decisión nueva del usuario y salvaguardas de reputación del dominio.
-- **Deuda: hilo de email por hipótesis (parcialmente resuelta en la tanda 23).** El borrador usa «Re: <asunto del primer envío>» y el último toque se detecta en los salientes que Twenty importa, pero `[POR CONFIRMAR]` si el hilo (`Message-ID`) queda ligado a la hipótesis. Hasta la tanda 22, el sistema no guardaba el hilo (`Message-ID`) del primer envío ligado a la hipótesis. Por eso el seguimiento se apoya en la tabla de envíos y en el triaje del buzón, y por eso el guion no puede continuar el hilo original: lo que enviaste y lo que respondieron no cuelga de la hipótesis. Está anotada como deuda para una tanda posterior.
+- **Deuda: hilo de email por hipótesis (parcialmente resuelta en la tanda 23).** El borrador usa «Re: <asunto del primer envío>» y el último toque se detecta en los salientes que Twenty importa,. Hasta la tanda 22, el sistema no guardaba el hilo (`Message-ID`) del primer envío ligado a la hipótesis. Por eso el seguimiento se apoya en la tabla de envíos y en el triaje del buzón, y por eso el guion no puede continuar el hilo original: lo que enviaste y lo que respondieron no cuelga de la hipótesis. Está anotada como deuda para una tanda posterior.
 - **La detección de respuesta depende del triaje.** Si el buzón no sincroniza o el triaje no asocia una respuesta a su empresa (por ejemplo, contesta alguien desde otra dirección), el sistema creerá que no hay respuesta y creará la Task. Es un falso positivo inocuo: cierra la tarea.
 - **Máximo 2 seguimientos por hipótesis.** Si necesita más, lo decides tú.
 - **Depende de que Twenty importe los correos enviados.** Si no los importa, el sistema no ve tus envíos y no genera el seguimiento 2 (ver [problemas frecuentes](runbook-local.md#problemas-frecuentes)).

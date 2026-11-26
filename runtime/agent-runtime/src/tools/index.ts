@@ -12,6 +12,7 @@ import { createExpireHypothesisTool, createListHypothesesForExpiryTool } from '.
 import { createCreateCrmTaskTool } from './twenty/task-tools.js';
 import { createListEmailMessagesTool, createListOpportunityFollowUpContextTool, createListSentHypothesesTool } from './twenty/followup-tools.js';
 import { createListCalendarEventsTool, createListOpenOpportunitiesTool, createMarkOpportunityMeetingTool } from './twenty/meeting-tools.js';
+import { createAppendCrmTaskSectionTool, createGetMeetingBriefContextTool } from './twenty/meeting-brief-tools.js';
 import {
   createCreateAgentRunSummaryTool,
   createCreateHypothesisTool,
@@ -38,6 +39,7 @@ export * from './twenty/task-tools.js';
 export * from './twenty/crm-tools.js';
 export * from './twenty/followup-tools.js';
 export * from './twenty/meeting-tools.js';
+export * from './twenty/meeting-brief-tools.js';
 export * from './web/fetch-url.js';
 export * from './web/ip-guard.js';
 export * from './web/html-text.js';
@@ -82,6 +84,9 @@ export function registerTwentyTools(registry: ToolRegistry, twenty: TwentyClient
   registry.register(createListCalendarEventsTool(deps));
   registry.register(createListOpenOpportunitiesTool(deps));
   registry.register(createMarkOpportunityMeetingTool(deps));
+  // Meeting brief (tanda 24): the context of one opportunity (read only) and the append-only section of the 🧾 task.
+  registry.register(createGetMeetingBriefContextTool(deps));
+  registry.register(createAppendCrmTaskSectionTool(deps));
   return registry;
 }
 

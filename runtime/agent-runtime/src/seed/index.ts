@@ -16,7 +16,8 @@
  * every 2 hours), the ContactFinder and the FollowUpAgent with its task `lead-followup-check` (CRON
  * 08:30, tanda 21: one «🔔 Seguimiento» task per first email without a reply) and the MeetingSyncAgent
  * with its task `meeting-sync` (CRON every 30 minutes, tanda 22: meetings booked in the calendar
- * synced in Twenty move their open Opportunity to MEETING; all idempotent).
+ * synced in Twenty move their open Opportunity to MEETING; tanda 24: the 🧾 task carries the «Ficha previa»,
+ * skill `meeting-brief` v1 seeded ACTIVE with the other code skills; all idempotent).
  * The daily task default input is `{ mode: 'signals' }` (tanda 15: the fairs QUALIFIED in Twenty);
  * `--input` still accepts a direct-mode fixture (`{ event, exhibitors[] }`, e.g.
  * `test/fixtures/feria-ejemplo.json`) for a demo tenant.
